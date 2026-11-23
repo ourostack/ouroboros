@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1381",
+      "changes": [
+        "A delegated command's audit notice goes to the owner's Telegram silently, not to the owner route, so the peer that sent the command can't receive its own audit notice."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1380",
       "changes": [
         "Seven Butler tool texts say what the tool does instead of giving the reader rules (no 'never' or 'always'), and leave the booklet-words baseline."

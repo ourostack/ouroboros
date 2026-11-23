@@ -2184,11 +2184,21 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       if (Buffer.byteLength(noticeId) > 512) throw new Error("Telegram owner notice id is invalid")
       await runWithAcceptanceAuditOwner(async () => {
         const text = requiredText(input.text, "owner notice")
-        const telegramText = await routeSelfStarted(text, `owner-notice:${noticeId}`, undefined, input.signal)
+        // A delegated command's audit notice tells the owner what a peer is doing in their name. The owner route would hand it
+        // to that same peer, so it goes to Telegram instead: silently when there is a route (the peer is the voice that buzzes).
+        const delegatedAudit = noticeId.startsWith("delegated:")
+        const telegramText = delegatedAudit ? text : await routeSelfStarted(text, `owner-notice:${noticeId}`, undefined, input.signal)
         if (telegramText === null) return
         if (holdNoticeDuringHandoff(telegramText, `owner-notice:${noticeId}`)) return
         await releaseHeldNotices(input.signal)
-        const effect = await deliverButlerEffect(telegramText, `owner-notice:${noticeId}`, input.signal)
+        const quietAudit = delegatedAudit && options.ownerRoute !== undefined
+        if (quietAudit) emitNervesEvent({ component: "senses", event: "senses.telegram_delegated_notice_off_route", message: "sent a delegated command's audit notice to Telegram silently, not to the owner route", meta: { agentName: options.agentName } })
+        const effect = quietAudit
+          ? await executeAuthorizedEffect({
+            idempotencyKey: `owner-notice:${noticeId}`, target: configuredOwnerTarget(), authorClass: "butler",
+            effect: { kind: "text", text: telegramText, silent: true }, ...(input.signal ? { signal: input.signal } : {}),
+          })
+          : await deliverButlerEffect(telegramText, `owner-notice:${noticeId}`, input.signal)
         countProactiveSend()
         const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
         await recordAcceptedEffects(sessionPath, [effect])

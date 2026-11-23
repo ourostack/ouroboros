@@ -2129,6 +2129,28 @@ describe("Telegram sense", () => {
     const sends = (f: ReturnType<typeof fixture>) => f.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage").map(([, body]: [string, any]) => body.text)
     const heldPath = (f: ReturnType<typeof fixture>) => path.join(f.agentRoot, "state", "telegram", "held-owner-notices.json")
 
+    // A delegated command's audit notice is the owner's record of what a peer did in their name. The route would hand it to
+    // that same peer, so it never goes there.
+    it("sends a delegated command's audit notice to Telegram silently, never to the primary agent", async () => {
+      const ownerRoute = vi.fn(async () => ({ status: "delivered" as const }))
+      const f = fixture({ ownerRoute })
+      await f.app.sendOwnerNotice({ noticeId: "delegated:cmd-1", text: "Slugger asked me, on your behalf, to restart Plex.", signal: new AbortController().signal })
+      expect(ownerRoute).not.toHaveBeenCalled()
+      const sent = f.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage").map(([, body]: [string, any]) => body)
+      expect(sent).toEqual([expect.objectContaining({ text: "Slugger asked me, on your behalf, to restart Plex.", disable_notification: true })])
+      // Any other owner notice still goes to the primary agent.
+      await f.app.sendOwnerNotice({ noticeId: "failure-fixed:7", text: "Plex is back up." })
+      expect(ownerRoute).toHaveBeenCalledTimes(1)
+    })
+
+    it("sends a delegated command's audit notice to Telegram as before when there is no route", async () => {
+      const f = fixture({})
+      await f.app.sendOwnerNotice({ noticeId: "delegated:cmd-2", text: "A peer asked me to restart Plex." })
+      const [body] = f.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage").map(([, b]: [string, any]) => b)
+      expect(body).toMatchObject({ text: "A peer asked me to restart Plex." })
+      expect(body).not.toHaveProperty("disable_notification")
+    })
+
     it("sends what it starts itself to the primary agent, and keeps replies on Telegram", async () => {
       const ownerRoute = vi.fn(async () => ({ status: "delivered" as const }))
       const f = fixture({ ownerRoute })
