@@ -165,7 +165,7 @@ describe("audited provenance correction", () => {
     const out = JSON.parse(await stewardPolicyToolDefinition.handler({ action: "correct_provenance", key: "container:calibre-web", source: "Books stays on", correction: correct.correction }, context as any) as string)
     expect(out.version).toBe(2)
     expect(out.desiredStates["container:calibre-web"]).toMatchObject({ value: "on", source: "Ari via Claude Code (delegated): Books stays on", correction: correct.correction })
-    expect(stewardPolicyToolDefinition.tool.function.description).toContain("never changes the value")
+    expect(stewardPolicyToolDefinition.tool.function.description).toContain("the value stays as it was")
     await expect(stewardPolicyToolDefinition.handler({ action: "correct_provenance", key: "container:calibre-web", source: "x" }, toolContext(agentRoot, "real-peer", "task-3").context as any)).rejects.toThrow("correction must be nonempty")
     await expect(stewardPolicyToolDefinition.handler({ action: "correct_provenance", source: "x", correction: "y" }, toolContext(agentRoot, "real-peer", "task-4").context as any)).rejects.toThrow("key must be nonempty")
   })
