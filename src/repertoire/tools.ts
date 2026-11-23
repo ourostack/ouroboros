@@ -88,7 +88,7 @@ export const SANCTUARY_OWNER_ADDITIONS: ReadonlySet<string> = new Set([
 const SANCTUARY_OWNER_SYNC_TOOLS: ReadonlySet<string> = new Set(["bundle_push", "bundle_pull_rebase"])
 
 // Re-export types and constants used by the rest of the codebase
-export { tools, settleTool, observeTool, ponderTool, restTool, speakTool } from "./tools-base";
+export { tools, settleTool, settleCheckBackTool, observeTool, ponderTool, restTool, speakTool } from "./tools-base";
 export type { ToolContext, ToolHandler, ToolDefinition, ToolExecutionOutcome, ToolSelection } from "./tools-base";
 
 // Re-export surface tool schema for consumers (e.g. heart/core.ts)
