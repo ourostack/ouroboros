@@ -159,7 +159,7 @@ export const toolCards: ToolDoorCard[] = [
     { code: "rest-alone", means: "rest came in one batch with other tool calls, so nothing in the batch ran.", fix: "Make the other calls first, read their results, then call rest on its own." },
     { code: "held-work-unsurfaced", means: "This private turn still holds work someone is waiting on.", fix: "Return each listed item with surface(delegationId=...), then rest." },
     { code: "fresh-work-pending", means: "New messages arrived during this turn, so rest waits once.", fix: "Read the pending messages and act on them, then rest." },
-    { code: "surface-not-sent", means: "A surface this turn came back not sent (saved for the person's next message), so rest waits once.", fix: "Reach them another way if the surface result names one, or rest again to let it wait." },
+    { code: "surface-not-sent", means: "A surface this turn came back not sent (saved for the person's next message), so rest waits once.", fix: "Reach them another way if the surface result names one, or rest again and it waits for their next message." },
   ] },
   { id: "tool:ponder", group: "turn-flow", when: "Pick this when a question needs more thought than this turn allows, or harness friction should be worked on privately later.", effect: "write", errors: [
     { code: "ponder-fields-missing", means: "A field ponder needs was missing, or payload_json was not a JSON object.", fix: "Call ponder again with kind, objective, success_criteria and payload_json, plus packet_id to revise." },
