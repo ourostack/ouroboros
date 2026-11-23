@@ -20,6 +20,7 @@ export const H_CODEX_FIDELITY: readonly string[] = [
   "plugins and apps are off, and with them tool suggestions: the sandbox has no route off the host",
   "bundled skills are off ([skills.bundled] enabled = false): they are about codex itself, not the household",
   "analytics, the otel exporters and check_for_update_on_startup are off: the sandbox has no route off the host; the model sees no difference",
+  "the request's own settings (tool_choice, parallel_tool_calls, reasoning, include, store, prompt_cache_key and the like) are not passed on: the host's runtime sets the model's settings, as it does for the ouro arm",
   "codex doesn't know the model's name, so it runs as for any unknown model: its generic base prompt, no apply_patch tool, and output of each tool call cut at 10,000 bytes",
   "the brand words in codex's base prompt are replaced before the call reaches the model",
   "the shell can still show the brand: the CODEX_HOME variable's name, and codex's own helper folder at the front of PATH; neither is in the prompt",
