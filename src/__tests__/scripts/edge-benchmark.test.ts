@@ -156,6 +156,31 @@ describe("edge-benchmark ratchet", () => {
     expect(bench.renderRatchet(rows.slice(0, 1), "label edge-benchmark-regression-accepted")).toContain("**Ratchet: 1 regression accepted** (label edge-benchmark-regression-accepted).")
   })
 
+  it("holds a run to the median of several main runs, so one fast main run is not the bar", () => {
+    const fs = require("fs") as typeof import("fs")
+    const os = require("os") as typeof import("os")
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "edge-median-"))
+    try {
+      expect(bench.readBaseline(undefined)).toBeNull()
+      expect(bench.readBaseline(path.join(dir, "missing"))).toBeNull()
+      expect(bench.readBaseline(dir)).toBeNull()
+      expect(bench.medianBaseline([])).toEqual({ host: undefined })
+      const wallTimes = [96, 170, 173, 174, 168]
+      wallTimes.forEach((wallMs, index) => {
+        fs.mkdirSync(path.join(dir, `run-${index}`))
+        fs.writeFileSync(path.join(dir, `run-${index}`, "edge-benchmark.json"), JSON.stringify(run(linuxArm, { cli: { wallMs }, install: { packages: 44 } })))
+      })
+      const baseline = bench.readBaseline(dir)
+      expect(baseline.cli.wallMs).toBe(170)
+      expect(baseline.install.packages).toBe(44)
+      expect(baseline.host).toEqual(linuxArm)
+      expect(bench.ratchetViolations(run(linuxArm, { cli: { wallMs: 175 } }), baseline)).toEqual([])
+      expect(bench.ratchetViolations(run(linuxArm, { cli: { wallMs: 300 } }), baseline).map((row: { key: string }) => row.key)).toEqual(["cli.wallMs"])
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("fails the report on an unaccepted regression only when gating", () => {
     const fs = require("fs") as typeof import("fs")
     const os = require("os") as typeof import("os")

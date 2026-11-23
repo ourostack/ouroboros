@@ -3,7 +3,7 @@ name: edge-benchmark
 # How lean the harness is on each host: install size, startup time, idle and
 # peak memory, modules loaded and turn latency (.github/scripts/edge-benchmark.cjs).
 # Linux runs under a 1 GiB memory cap, the size of the smallest machine we run
-# on. Each pull request compares itself with main's latest run in the job
+# on. Each pull request compares itself with the median of main's last five runs in the job
 # summary, and the ratchet fails the job when a metric gets worse than main by
 # more than its noise allowance (ratchetLimit in the script). To land an
 # intentional regression, label the PR edge-benchmark-regression-accepted and
@@ -70,16 +70,23 @@ jobs:
             "${bench[@]}"
           fi
 
-      - name: Fetch main's latest result
+      - name: Fetch main's latest results
         if: github.event_name != 'push'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          run_id=$(gh run list -R "$GITHUB_REPOSITORY" --workflow edge-benchmark.yml --branch main --event push --status success --limit 1 --json databaseId --jq '.[0].databaseId')
-          if [ -n "$run_id" ]; then
-            gh run download "$run_id" -R "$GITHUB_REPOSITORY" --name "edge-benchmark-${{ matrix.host }}" --dir "$RUNNER_TEMP/baseline"
-            echo "BASELINE_LABEL=main (run $run_id)" >> "$GITHUB_ENV"
+          # The median of main's last five runs, not its latest one: two main runs on 2026-11-23 read 96 and 102 ms
+          # where the others read 162-184 ms, and each became the bar for every pull request after it.
+          ids=$(gh run list -R "$GITHUB_REPOSITORY" --workflow edge-benchmark.yml --branch main --event push --status success --limit 5 --json databaseId --jq '.[].databaseId')
+          fetched=()
+          for run_id in $ids; do
+            if gh run download "$run_id" -R "$GITHUB_REPOSITORY" --name "edge-benchmark-${{ matrix.host }}" --dir "$RUNNER_TEMP/baseline/$run_id"; then
+              fetched+=("$run_id")
+            fi
+          done
+          if [ "${#fetched[@]}" -gt 0 ]; then
+            echo "BASELINE_LABEL=main (median of ${#fetched[@]} runs: ${fetched[*]})" >> "$GITHUB_ENV"
           fi
 
       - name: Report
@@ -91,7 +98,7 @@ jobs:
           if [ -n "$ACCEPTED" ]; then accepted=(--accepted "$ACCEPTED"); fi
           node .github/scripts/edge-benchmark.cjs report \
             --current "$RUNNER_TEMP/edge-benchmark.json" \
-            --baseline "$RUNNER_TEMP/baseline/edge-benchmark.json" \
+            --baseline "$RUNNER_TEMP/baseline" \
             --baseline-label "${BASELINE_LABEL:-main}" \
             --summary "$GITHUB_STEP_SUMMARY" \
             --gate "$GATE" "${accepted[@]}"
