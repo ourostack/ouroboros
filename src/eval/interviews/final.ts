@@ -7,6 +7,7 @@
 import type OpenAI from "openai"
 import type { ProviderRuntime } from "../../heart/core"
 import { emitNervesEvent } from "../../nerves/runtime"
+import type { ToolDoorCard } from "../../repertoire/tools-base"
 import { messageOf, NO_CALLBACKS, withoutThinking } from "./guest/loop"
 import { CHOOSE_NUDGE, FINAL_SYSTEM_PROMPT, IDENTIFY_QUESTION, choiceQuestion, type Note, type Product } from "./protocol"
 
@@ -20,6 +21,22 @@ export type FinalResult = {
   replies: string[]
 }
 
+/** The code of a choose or identify call that recorded nothing (its answer is "Not recorded."). */
+const NOT_RECORDED = "not-recorded"
+
+/** The two closing tools' Ouro AX cards, for the census: they are offered only to the study's model. */
+export const toolCards: ToolDoorCard[] = [
+  {
+    id: "tool:choose", group: "eval-interview", effect: "write",
+    when: "Record which of the three tool interfaces you would pick first and second for the household's book jobs, with the reason.",
+    errors: [{ code: NOT_RECORDED, means: "The call named a label that isn't one of the three, or a choice was already recorded.", fix: "Call choose once, with first and second each one of the three labels." }],
+  },
+  {
+    id: "tool:identify", group: "eval-interview", effect: "write",
+    when: "Record your guess of which product each tool interface label was, or no idea.",
+    errors: [{ code: NOT_RECORDED, means: "The call had no guesses object, or guesses were already recorded.", fix: "Call identify once, with guesses keyed by label." }],
+  },
+]
 
 export function finalTools(labels: readonly string[]): OpenAI.ChatCompletionFunctionTool[] {
   return [
@@ -96,6 +113,7 @@ export async function runFinalConversation(input: { runtime: ProviderRuntime; pr
     for (const toolCall of turn.toolCalls) {
       const ok = accepted(toolCall.name, toolCall.arguments)
       const content = ok ? "Recorded." : "Not recorded."
+      if (!ok) emitNervesEvent({ component: "eval", level: "warn", event: "eval.interview_final_not_recorded", message: "a closing tool call recorded nothing", meta: { code: NOT_RECORDED, tool: toolCall.name } })
       messages.push({ role: "tool", tool_call_id: toolCall.id, content })
       input.runtime.appendToolOutput(toolCall.id, content)
     }

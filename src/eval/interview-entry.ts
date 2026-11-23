@@ -91,12 +91,15 @@ async function main(): Promise<number> {
   return exitCode
 }
 
+const STOPPED = "budget-stopped"
+const FAILED = "eval-error"
+
 main().then((code) => {
-  if (code === 2) process.stderr.write("code: budget-stopped\n")
+  if (code === 2) process.stderr.write(`code: ${STOPPED}\n`)
   process.exitCode = code
 }).catch((error: unknown) => {
   emitNervesEvent({ component: "eval", level: "error", event: "eval.interview_entry_error", message: "the interviews command failed", meta: { error: error instanceof Error ? error.message : String(error) } })
   process.stderr.write(`interviews: ${error instanceof Error ? error.message : String(error)}\n`)
-  process.stderr.write("code: eval-error\n")
+  process.stderr.write(`code: ${FAILED}\n`)
   process.exitCode = 1
 })
