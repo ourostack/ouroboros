@@ -74,6 +74,8 @@ describe("settle's check-back", () => {
     for (const profileId of ["sanctuary-owner", "sanctuary-household", "sanctuary-agent-peer"]) {
       expect(settleProperties(relationshipContext(profileId))).toEqual(["answer", "intent", "check_back_at", "condition"])
     }
+    const settle = schemas(relationshipContext("sanctuary-owner")).find((tool) => tool.function.name === "settle")!
+    expect(settle.function.description).toMatch(/^delivers answer to the person.* with check_back_at and condition, it also files an await that wakes at that time/)
   })
 
   it("offers plain settle to a turn that may not file await_condition", () => {
