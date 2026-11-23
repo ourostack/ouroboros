@@ -16,6 +16,7 @@ import type { Case } from "../../../domain/case"
 import { createProxyRuntime, createStreamChannel, type GuestOutcome } from "../../../transport/provider-proxy"
 import { runTelegramTurn } from "../../../transport/telegram-turn"
 import { codexArm } from "./codex"
+import { openhandsArm } from "./openhands"
 
 export type HTurnFile = {
   product: "H"
@@ -37,7 +38,7 @@ export function ouroArm(runTurn: typeof runTelegramTurn = runTelegramTurn): HArm
 }
 
 /** The H arms this guest runs. */
-export const H_ARMS: Readonly<Record<string, HArmRunner>> = { ouro: ouroArm(), codex: codexArm() }
+export const H_ARMS: Readonly<Record<string, HArmRunner>> = { ouro: ouroArm(), codex: codexArm(), openhands: openhandsArm() }
 
 function readTurnFile(file: string): HTurnFile {
   const value = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<HTurnFile>
