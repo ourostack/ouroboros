@@ -232,8 +232,8 @@ describe("claimPending", () => {
   })
 
   describe("at a stop signal", () => {
-    function pendingGuard(): () => void {
-      const guard = process.rawListeners("SIGTERM").find((listener) => (listener as unknown as Record<symbol, unknown>)[Symbol.for("ouro.terminationGuard")] === true)
+    function pendingGuard(signal: "SIGTERM" | "SIGINT" = "SIGTERM"): () => void {
+      const guard = process.rawListeners(signal).find((listener) => (listener as unknown as Record<symbol, unknown>)[Symbol.for("ouro.terminationGuard")] === true)
       expect(guard).toBeDefined()
       return guard as () => void
     }
@@ -253,11 +253,11 @@ describe("claimPending", () => {
       claim.release()
     })
 
-    it("puts held claims back uncounted and re-raises when nothing else handles it", () => {
+    it.each(["SIGTERM", "SIGINT"] as const)("puts held claims back uncounted and re-raises %s when nothing else handles it", (signal) => {
       const dir = pendingDir()
       queuePendingMessage(dir, message("held while stopping", 1))
       claimPending(dir)
-      const guard = pendingGuard()
+      const guard = pendingGuard(signal)
       vi.spyOn(process, "rawListeners").mockReturnValue([guard])
       const kill = vi.spyOn(process, "kill").mockImplementation(() => true)
       try {
@@ -265,13 +265,13 @@ describe("claimPending", () => {
 
         expect(suffixes(dir)).toEqual([".json"])
         expect(readStored(dir)).not.toHaveProperty("failedTries")
-        expect(kill).toHaveBeenCalledWith(process.pid, "SIGTERM")
+        expect(kill).toHaveBeenCalledWith(process.pid, signal)
         vi.restoreAllMocks()
-        expect(process.rawListeners("SIGTERM")).not.toContain(guard)
+        expect(process.rawListeners(signal)).not.toContain(guard)
       } finally {
         vi.restoreAllMocks()
         // Put the guard back for later tests, as a fresh process would have it.
-        if (!process.rawListeners("SIGTERM").includes(guard)) {
+        if (!process.rawListeners(signal).includes(guard)) {
           process.removeListener("exit", releaseHeldPendingClaimsOnExit)
           claimPending(pendingDir()).release()
         }
