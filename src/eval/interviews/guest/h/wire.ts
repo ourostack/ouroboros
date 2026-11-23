@@ -161,7 +161,9 @@ export function createWire(input: { runtime: ProviderRuntime; prefix: Message[] 
       } catch (error) {
         failure = messageOf(error)
         emitNervesEvent({ component: "eval", level: "warn", event: "eval.h_wire_failed", message: "a call through the H wire failed", meta: { reason: failure } })
-        return errorAnswer(500, failure)
+        // 400, never 500: codex retries a server error, and every retry would be another metered call. A failed or
+        // refused call ends the conversation in every arm.
+        return errorAnswer(400, failure)
       }
       for (const call of result.toolCalls) {
         const entry: TraceCall = { kind: "call", name: call.name, args: call.arguments, result: "" }
@@ -182,16 +184,22 @@ export async function serveWire(wire: Wire): Promise<{ url: string; close(): Pro
     request.on("data", (chunk: Buffer) => chunks.push(chunk))
     request.on("end", () => {
       void (async () => {
-        let body: unknown
+        let answer: WireAnswer
         try {
-          body = JSON.parse(Buffer.concat(chunks).toString("utf8"))
-        } catch {
-          const bad = errorAnswer(400, "the body is not JSON")
-          response.writeHead(bad.status, { "content-type": bad.contentType }).end(bad.body)
-          return
+          let body: unknown
+          try {
+            body = JSON.parse(Buffer.concat(chunks).toString("utf8"))
+          } catch {
+            answer = errorAnswer(400, "the body is not JSON")
+            return
+          }
+          answer = await wire.handle(new URL(request.url!, "http://wire").pathname, body)
+        } catch (error) {
+          // Anything else is answered too, so no request hangs and the guest never dies of one.
+          answer = errorAnswer(400, messageOf(error))
+        } finally {
+          response.writeHead(answer!.status, { "content-type": answer!.contentType }).end(answer!.body)
         }
-        const answer = await wire.handle(new URL(request.url!, "http://wire").pathname, body)
-        response.writeHead(answer.status, { "content-type": answer.contentType }).end(answer.body)
       })()
     })
   })

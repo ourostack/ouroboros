@@ -129,7 +129,8 @@ describe("the H wire", () => {
   it("answers a refused or failed call with an error the client stops on, and remembers why", async () => {
     const wire = createWire({ runtime: runtime([], []), prefix: [] })
     const failed = await wire.handle("/v1/responses", { input: [] })
-    expect(failed).toEqual({ status: 500, contentType: "application/json", body: JSON.stringify({ error: { message: "the host refused the call" } }) })
+    // 400, which codex never retries: a retry would be another metered call.
+    expect(failed).toEqual({ status: 400, contentType: "application/json", body: JSON.stringify({ error: { message: "the host refused the call" } }) })
     expect(wire.error()).toBe("the host refused the call")
     expect(wire.calls()).toBe(1)
     // A body the wire can't carry is never sent.
@@ -139,7 +140,7 @@ describe("the H wire", () => {
     expect(refused.error()).toBe("the H wire can't carry an input item of type local_shell_call")
     expect(await refused.handle("/v1/models", {})).toEqual({ status: 404, contentType: "application/json", body: JSON.stringify({ error: { message: "no route /v1/models" } }) })
     const odd = createWire({ runtime: { ...runtime([], []), streamTurn: async () => { throw "plain" } }, prefix: [] })
-    expect((await odd.handle("/responses", { input: [] })).status).toBe(500)
+    expect((await odd.handle("/responses", { input: [] })).status).toBe(400)
     expect(odd.error()).toBe("plain")
   })
 
@@ -156,6 +157,18 @@ describe("the H wire", () => {
       const bad = await fetch(`${served.url}/responses`, { method: "POST", body: "not json" })
       expect(bad.status).toBe(400)
       expect(seen).toHaveLength(1)
+    } finally {
+      await served.close()
+    }
+  })
+
+  it("answers a request whose handling throws, so none hangs and the guest stays up", async () => {
+    const throwing: Parameters<typeof serveWire>[0] = { handle: async () => { throw new Error("broken") }, timeline: () => [], calls: () => 0, error: () => null }
+    const served = await serveWire(throwing)
+    try {
+      const response = await fetch(`${served.url}/responses`, { method: "POST", body: "{}" })
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({ error: { message: "broken" } })
     } finally {
       await served.close()
     }
