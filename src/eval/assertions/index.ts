@@ -120,6 +120,15 @@ function fileWords(text: string): string[] {
     return [...plain.matchAll(FILE_IN_WORD)].map(([found]) => found).concat(/[*?]/.test(plain) && !/[(),=;:]/.test(plain) ? [plain] : [])
   }).filter((word, i, all) => all.indexOf(word) === i)
 }
+/** A heredoc's body: text the shell feeds a command, not arguments it passes. The opening line and the end marker stay. */
+const HEREDOC_BODY = /(<<-?\s*(['"]?)(\w+)\2[^\n]*\n)[\s\S]*?(\n\s*\3\b)/g
+/**
+ * The words a shell command passes as arguments, quotes removed, outside any heredoc body: `--flag` and `"--flag"` are
+ * each one word, and a quoted sentence that mentions a flag is one word that is not the flag.
+ */
+function argumentWords(command: string): string[] {
+  return [...command.replace(HEREDOC_BODY, "$1$4").matchAll(SHELL_WORD)].map(([word]) => word.replace(/"([^"]*)"|'([^']*)'/g, "$1$2"))
+}
 /** The folder a shell call starts in: its own `cwd` argument, against the bundle, where created paths are rooted. */
 function startFolder(call: TraceCall): string {
   try {
@@ -247,8 +256,14 @@ export const ASSERTIONS: Record<string, Assertion> = {
   },
 
   "trace.never": (_seed, obs, args) => {
-    const pattern = new RegExp(needString("trace.never", args, "pattern"))
-    const hits = calls(obs).filter(call => pattern.test(call.args)).map(call => call.name)
+    const source = needString("trace.never", args, "pattern")
+    const asArgument = new RegExp(`^(?:${source})(?:=.*)?$`)
+    const inScript = new RegExp(`(?:^|[\\s"'\`\\[,(])(?:${source})(?=$|[\\s"'\`\\],)=])`)
+    const hits = calls(obs).filter(call => {
+      if (call.name !== "shell") return false
+      const command = commandOf(call)
+      return argumentWords(command).some(word => asArgument.test(word)) || scriptsOf(command).some(script => inScript.test(script))
+    }).map(call => call.name)
     return check("trace.never", hits.length === 0, `matching calls: ${listed(hits)}`)
   },
 
