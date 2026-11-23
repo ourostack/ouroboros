@@ -32,9 +32,10 @@ describe("Ouro Butler Community Apps release", () => {
     const workflow = fs.readFileSync(".github/workflows/container-publish.yml", "utf8")
     const dispatch = workflow.slice(workflow.indexOf('if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then'), workflow.indexOf("          else\n"))
     expect(dispatch).toContain('if [ "$GITHUB_REF" != refs/heads/main ]; then')
-    expect(dispatch).toContain('VERSION=$(node scripts/release-version.cjs version)')
-    expect(dispatch).toContain('PUBLISHED=$(npm view "@ouro.bot/cli@$VERSION" gitHead 2>/dev/null || true)')
-    expect(dispatch).toContain('PLAN=$(node scripts/release-version.cjs dispatch "$PUBLISHED")')
+    expect(dispatch).toContain("PLAN=$(node scripts/release-version.cjs dispatch)")
+    // The build plans a manual run from HEAD itself, so it writes the changelog npm published for HEAD's version.
+    const build = workflow.slice(workflow.indexOf("release-version.cjs apply") - 400, workflow.indexOf("release-version.cjs apply"))
+    expect(build).toContain("BEFORE: ${{ github.event.before || github.sha }}")
   })
 
   it("publishes the required repository profile from canonical project metadata", () => {

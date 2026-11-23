@@ -669,6 +669,7 @@ jobs:
         run: |
           test "$(node scripts/release-version.cjs apply "$BEFORE")" = "${{ steps.release-version.outputs.version }}"
           node scripts/changelog-gate.cjs
+          node scripts/release-version.cjs assert-new "${{ steps.release-version.outputs.version }}"
 
       - name: Build
         if: steps.release-version.outputs.release == 'true'

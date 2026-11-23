@@ -73,6 +73,14 @@ describe("package metadata", () => {
     expect(verifyJob).not.toContain('verify_tag "ouro.bot@${WRAPPER_TAG}"')
   })
 
+  it("refuses to publish a version at or below npm's highest before building it", () => {
+    const workflow = fs.readFileSync(path.resolve(__dirname, "../../../.github/workflows/coverage.yml"), "utf8")
+    const publishJob = workflow.slice(workflow.indexOf("  publish:"), workflow.indexOf("  verify-npm:"))
+    const check = publishJob.indexOf('node scripts/release-version.cjs assert-new "${{ steps.release-version.outputs.version }}"')
+    expect(check).toBeGreaterThan(publishJob.indexOf("release-version.cjs apply"))
+    expect(check).toBeLessThan(publishJob.indexOf("name: Publish @ouro.bot/cli"))
+  })
+
   it("gives verify-npm room for every bounded wait it can make", () => {
     const workflow = fs.readFileSync(path.resolve(__dirname, "../../../.github/workflows/coverage.yml"), "utf8")
     const start = workflow.indexOf("  verify-npm:")
