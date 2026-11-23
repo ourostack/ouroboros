@@ -14,6 +14,9 @@ import type { PageIssue } from "./size-check.ts";
 // were drawn in one place and it then moved to another, as a popup does when it is measured against the viewport and
 // drawn inside a layer further down the page.
 //
+// A listbox with no opener (no aria-controls or aria-owns naming it, no popover or placement markers) is page content
+// inside its container, not a popup, so it rides the container's opening motion unjudged.
+//
 // A page opts a popup out with data-ouro-allow="popup-first-frame" and data-ouro-allow-why="<reason>" on it or a box
 // around it; an allow without a reason does not count.
 
@@ -36,6 +39,12 @@ function watchPopups(): void {
   if (state.__ouroPopups) cancelAnimationFrame(state.__ouroPopups.handle);
   const watching: Watching = { frames: new Map(), handle: 0 };
   state.__ouroPopups = watching;
+  // A listbox is a popup only when something opens it: a control that names it with aria-controls or aria-owns, a
+  // popover of its own, or Base UI's placement markers. One with no opener is page content, judged with its container.
+  const isOpened = (el: Element) => {
+    if (el.getAttribute("role") !== "listbox" || el.matches("[popover], [data-side]")) return true;
+    return !!el.id && !!document.querySelector(`[aria-controls~="${CSS.escape(el.id)}"], [aria-owns~="${CSS.escape(el.id)}"]`);
+  };
   const layout = (el: Element): Seen | null => {
     const r = el.getBoundingClientRect();
     if (r.width < 1 || r.height < 1) return null;
@@ -64,6 +73,7 @@ function watchPopups(): void {
   };
   const sample = () => {
     for (const el of document.querySelectorAll(POPUPS)) {
+      if (!isOpened(el)) continue;
       const seen = layout(el);
       if (!seen) continue;
       const frames = watching.frames.get(el) ?? [];
