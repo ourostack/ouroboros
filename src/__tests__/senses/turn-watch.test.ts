@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as nerves from "../../nerves/runtime"
 import type { ChannelCallbacks } from "../../heart/core"
 import {
+  PROGRESS_WRITE_EVERY_MS,
+  TOOL_STALLED_AFTER_MS,
   TURN_STALLED_AFTER_MS,
   beginTurnInFlight,
   isWatchedSense,
@@ -13,6 +15,7 @@ import {
 } from "../../senses/turn-watch"
 
 const START = Date.parse("2026-11-22T10:00:00.000Z")
+const STALL = TURN_STALLED_AFTER_MS + PROGRESS_WRITE_EVERY_MS
 
 function markerDir(root: string, sense: string): string {
   return path.join(root, "state", "senses", sense, "turns-in-flight")
@@ -22,6 +25,19 @@ function markers(root: string, sense: string): Array<Record<string, unknown>> {
   const dir = markerDir(root, sense)
   if (!fs.existsSync(dir)) return []
   return fs.readdirSync(dir).filter((name) => name.endsWith(".json")).map((name) => JSON.parse(fs.readFileSync(path.join(dir, name), "utf-8")))
+}
+
+function writeRecord(root: string, sense: string, name: string, fields: Record<string, unknown>): void {
+  const dir = markerDir(root, sense)
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, name), JSON.stringify({
+    pid: process.pid,
+    sessionKey: "x",
+    startedAt: "2026-11-22T09:00:00.000Z",
+    lastProgressAt: "2026-11-22T09:00:00.000Z",
+    toolsRunning: 0,
+    ...fields,
+  }))
 }
 
 function callbacksSpy(): ChannelCallbacks & Record<string, ReturnType<typeof vi.fn>> {
@@ -37,6 +53,8 @@ function callbacksSpy(): ChannelCallbacks & Record<string, ReturnType<typeof vi.
   } as unknown as ChannelCallbacks & Record<string, ReturnType<typeof vi.fn>>
 }
 
+const noProgress = () => ({ touch: vi.fn(), toolStarted: vi.fn(), toolEnded: vi.fn() })
+
 describe("turn watch", () => {
   let root: string
 
@@ -48,36 +66,41 @@ describe("turn watch", () => {
     vi.restoreAllMocks()
   })
 
-  it("watches the senses that have a status row of their own, and leaves iMessage to its own tracker", () => {
-    for (const sense of ["teams", "mail", "voice", "a2a", "telegram"]) expect(isWatchedSense(sense)).toBe(true)
-    for (const sense of ["bluebubbles", "cli", "inner", "mcp", "external-event"]) expect(isWatchedSense(sense)).toBe(false)
+  it("watches the pipeline senses that have a status row, and leaves iMessage and mail out", () => {
+    for (const sense of ["teams", "voice", "a2a", "telegram"]) expect(isWatchedSense(sense)).toBe(true)
+    for (const sense of ["bluebubbles", "mail", "cli", "inner", "mcp", "external-event"]) expect(isWatchedSense(sense)).toBe(false)
   })
 
   it("records a turn while it runs and removes the record when it ends", () => {
     const watch = beginTurnInFlight(root, "telegram", "chat-1", START)
-    expect(markers(root, "telegram")).toEqual([
-      expect.objectContaining({ pid: process.pid, sessionKey: "chat-1", startedAt: "2026-11-22T10:00:00.000Z", lastProgressAt: "2026-11-22T10:00:00.000Z" }),
-    ])
+    expect(markers(root, "telegram")).toEqual([{
+      pid: process.pid,
+      sessionKey: "chat-1",
+      startedAt: "2026-11-22T10:00:00.000Z",
+      lastProgressAt: "2026-11-22T10:00:00.000Z",
+      toolsRunning: 0,
+    }])
     watch.finish()
     expect(markers(root, "telegram")).toEqual([])
     watch.finish()
     expect(markers(root, "telegram")).toEqual([])
   })
 
-  it("counts a turn as stalled only after five minutes with no progress", () => {
+  it("counts a quiet turn as stalled only once the record is surely five minutes old", () => {
     const watch = beginTurnInFlight(root, "teams", "conv", START)
-    expect(snapshotTurnsInFlight(root, "teams", START + TURN_STALLED_AFTER_MS - 1)).toEqual({
+    expect(snapshotTurnsInFlight(root, "teams", START + STALL - 1)).toEqual({
       activeTurnCount: 1,
       stalledTurnCount: 0,
       oldestActiveTurnStartedAt: "2026-11-22T10:00:00.000Z",
-      oldestActiveTurnAgeMs: TURN_STALLED_AFTER_MS - 1,
+      oldestActiveTurnAgeMs: STALL - 1,
     })
-    expect(snapshotTurnsInFlight(root, "teams", START + TURN_STALLED_AFTER_MS)).toEqual({
+    expect(snapshotTurnsInFlight(root, "teams", START + STALL)).toEqual({
       activeTurnCount: 1,
       stalledTurnCount: 1,
       oldestActiveTurnStartedAt: "2026-11-22T10:00:00.000Z",
-      oldestActiveTurnAgeMs: TURN_STALLED_AFTER_MS,
-      longestSilenceMs: TURN_STALLED_AFTER_MS,
+      oldestActiveTurnAgeMs: STALL,
+      longestSilenceMs: STALL,
+      stalledPids: [process.pid],
     })
     watch.finish()
   })
@@ -88,26 +111,40 @@ describe("turn watch", () => {
     expect(markers(root, "teams")[0]!.lastProgressAt).toBe("2026-11-22T10:00:00.000Z")
     watch.touch(START + 30_000)
     expect(markers(root, "teams")[0]!.lastProgressAt).toBe("2026-11-22T10:00:30.000Z")
-    expect(snapshotTurnsInFlight(root, "teams", START + 30_000 + TURN_STALLED_AFTER_MS - 1).stalledTurnCount).toBe(0)
-    expect(snapshotTurnsInFlight(root, "teams", START + 30_000 + TURN_STALLED_AFTER_MS).stalledTurnCount).toBe(1)
+    expect(snapshotTurnsInFlight(root, "teams", START + 30_000 + STALL - 1).stalledTurnCount).toBe(0)
+    expect(snapshotTurnsInFlight(root, "teams", START + 30_000 + STALL).stalledTurnCount).toBe(1)
     watch.finish()
     watch.touch(START + 120_000)
     expect(markers(root, "teams")).toEqual([])
   })
 
-  it("ignores turns of a process that is gone, and records from other senses", () => {
-    const dir = markerDir(root, "mail")
-    fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(path.join(dir, "dead.json"), JSON.stringify({ pid: 999_999, sessionKey: "x", startedAt: "2026-11-22T09:00:00.000Z", lastProgressAt: "2026-11-22T09:00:00.000Z" }))
-    const other = beginTurnInFlight(root, "voice", "call", START - 3_600_000)
-    expect(snapshotTurnsInFlight(root, "mail", START, (pid) => pid !== 999_999)).toEqual({ activeTurnCount: 0, stalledTurnCount: 0 })
-    other.finish()
+  it("gives a running tool up to 15 minutes, and goes back to five once it ends", () => {
+    const watch = beginTurnInFlight(root, "a2a", "peer", START)
+    watch.toolStarted(START + 1_000)
+    watch.toolStarted(START + 2_000)
+    expect(markers(root, "a2a")[0]).toEqual(expect.objectContaining({ toolsRunning: 2, lastProgressAt: "2026-11-22T10:00:02.000Z" }))
+    const toolStall = START + 2_000 + TOOL_STALLED_AFTER_MS + PROGRESS_WRITE_EVERY_MS
+    expect(snapshotTurnsInFlight(root, "a2a", toolStall - 1).stalledTurnCount).toBe(0)
+    expect(snapshotTurnsInFlight(root, "a2a", toolStall).stalledTurnCount).toBe(1)
+    watch.toolEnded(START + 3_000)
+    expect(markers(root, "a2a")[0]!.toolsRunning).toBe(1)
+    watch.toolEnded(START + 4_000)
+    watch.toolEnded(START + 5_000)
+    expect(markers(root, "a2a")[0]).toEqual(expect.objectContaining({ toolsRunning: 0, lastProgressAt: "2026-11-22T10:00:05.000Z" }))
+    expect(snapshotTurnsInFlight(root, "a2a", START + 5_000 + STALL).stalledTurnCount).toBe(1)
+    watch.finish()
+    watch.toolStarted(START + 6_000)
+    watch.toolEnded(START + 7_000)
+    expect(markers(root, "a2a")).toEqual([])
+  })
+
+  it("ignores turns of a process that is gone", () => {
+    writeRecord(root, "voice", "dead.json", { pid: 999_999 })
+    expect(snapshotTurnsInFlight(root, "voice", START, (pid) => pid !== 999_999)).toEqual({ activeTurnCount: 0, stalledTurnCount: 0 })
   })
 
   it("ignores a turn recorded before the sense's current process started", () => {
-    const dir = markerDir(root, "telegram")
-    fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(path.join(dir, "earlier.json"), JSON.stringify({ pid: process.pid, sessionKey: "x", startedAt: "2026-11-22T09:00:00.000Z", lastProgressAt: "2026-11-22T09:00:00.000Z" }))
+    writeRecord(root, "telegram", "earlier.json", {})
     expect(snapshotTurnsInFlight(root, "telegram", START, undefined, Date.parse("2026-11-22T09:30:00.000Z"))).toEqual({ activeTurnCount: 0, stalledTurnCount: 0 })
     expect(snapshotTurnsInFlight(root, "telegram", START, undefined, Date.parse("2026-11-22T09:00:00.000Z")).stalledTurnCount).toBe(1)
   })
@@ -116,24 +153,37 @@ describe("turn watch", () => {
     const dir = markerDir(root, "a2a")
     fs.mkdirSync(dir, { recursive: true })
     fs.writeFileSync(path.join(dir, "garbled.json"), "{not json")
-    fs.writeFileSync(path.join(dir, "partial.json"), JSON.stringify({ pid: process.pid, startedAt: "not a date" }))
-    fs.writeFileSync(path.join(dir, "bad-date.json"), JSON.stringify({ pid: process.pid, sessionKey: "x", startedAt: "2026-11-22T09:00:00.000Z", lastProgressAt: "soon" }))
     fs.writeFileSync(path.join(dir, "null.json"), "null")
     fs.writeFileSync(path.join(dir, "note.txt"), "ignored")
+    writeRecord(root, "a2a", "no-session.json", { sessionKey: 7 })
+    writeRecord(root, "a2a", "no-tools.json", { toolsRunning: undefined })
+    writeRecord(root, "a2a", "bad-start.json", { startedAt: "not a date" })
+    writeRecord(root, "a2a", "bad-progress.json", { lastProgressAt: "soon" })
     expect(snapshotTurnsInFlight(root, "a2a", START)).toEqual({ activeTurnCount: 0, stalledTurnCount: 0 })
     expect(snapshotTurnsInFlight(root, "telegram", START)).toEqual({ activeTurnCount: 0, stalledTurnCount: 0 })
   })
 
+  it("finds the oldest turn whichever order the records are listed in, and names each stalled process once", () => {
+    writeRecord(root, "voice", "a.json", { startedAt: "2026-11-22T09:59:00.000Z" })
+    writeRecord(root, "voice", "b.json", { startedAt: "2026-11-22T09:58:00.000Z" })
+    writeRecord(root, "voice", "c.json", { pid: process.ppid, startedAt: "2026-11-22T09:30:00.000Z", lastProgressAt: "2026-11-22T09:30:00.000Z" })
+    writeRecord(root, "voice", "d.json", { startedAt: "2026-11-22T09:59:30.000Z", lastProgressAt: "2026-11-22T09:59:30.000Z" })
+    expect(snapshotTurnsInFlight(root, "voice", START)).toEqual(expect.objectContaining({
+      activeTurnCount: 4,
+      stalledTurnCount: 3,
+      oldestActiveTurnStartedAt: "2026-11-22T09:30:00.000Z",
+      longestSilenceMs: 60 * 60_000,
+      stalledPids: [process.ppid, process.pid].sort((a, b) => a - b),
+    }))
+  })
+
   it("clears its own process's records left by a turn that never finished, but not another live process's", () => {
-    const dir = markerDir(root, "telegram")
-    fs.mkdirSync(dir, { recursive: true })
-    const stale = { pid: process.pid, sessionKey: "old", startedAt: "2026-11-22T09:00:00.000Z", lastProgressAt: "2026-11-22T09:00:00.000Z" }
-    fs.writeFileSync(path.join(dir, "stale-same-pid.json"), JSON.stringify(stale))
-    fs.writeFileSync(path.join(dir, "dead-pid.json"), JSON.stringify({ ...stale, pid: 999_999 }))
-    fs.writeFileSync(path.join(dir, "live-other.json"), JSON.stringify({ ...stale, pid: process.ppid }))
-    fs.writeFileSync(path.join(dir, "garbled.json"), "{")
+    writeRecord(root, "telegram", "stale-same-pid.json", {})
+    writeRecord(root, "telegram", "dead-pid.json", { pid: 999_999 })
+    writeRecord(root, "telegram", "live-other.json", { pid: process.ppid })
+    fs.writeFileSync(path.join(markerDir(root, "telegram"), "garbled.json"), "{")
     const watch = beginTurnInFlight(root, "telegram", "new", START)
-    expect(fs.readdirSync(dir).sort()).toEqual(["live-other.json", expect.stringMatching(/^\d+-\d+\.json$/)].sort())
+    expect(fs.readdirSync(markerDir(root, "telegram")).sort()).toEqual(["live-other.json", expect.stringMatching(/^\d+-\d+\.json$/)].sort())
     watch.finish()
   })
 
@@ -141,31 +191,8 @@ describe("turn watch", () => {
     const first = beginTurnInFlight(root, "teams", "one", START)
     const second = beginTurnInFlight(root, "teams", "two", START + 1_000)
     expect(markers(root, "teams").map((record) => record.sessionKey).sort()).toEqual(["one", "two"])
-    expect(snapshotTurnsInFlight(root, "teams", START + 2_000)).toEqual(expect.objectContaining({ activeTurnCount: 2, oldestActiveTurnStartedAt: "2026-11-22T10:00:00.000Z" }))
     first.finish()
     second.finish()
-  })
-
-  it("finds the oldest turn whichever order the records are listed in", () => {
-    const dir = markerDir(root, "voice")
-    fs.mkdirSync(dir, { recursive: true })
-    const record = (startedAt: string) => JSON.stringify({ pid: process.pid, sessionKey: "call", startedAt, lastProgressAt: startedAt })
-    fs.writeFileSync(path.join(dir, "a.json"), record("2026-11-22T09:59:00.000Z"))
-    fs.writeFileSync(path.join(dir, "b.json"), record("2026-11-22T09:58:00.000Z"))
-    expect(snapshotTurnsInFlight(root, "voice", START).oldestActiveTurnStartedAt).toBe("2026-11-22T09:58:00.000Z")
-  })
-
-  it("warns once when progress can no longer be written, and the turn carries on", () => {
-    const emit = vi.spyOn(nerves, "emitNervesEvent")
-    const watch = beginTurnInFlight(root, "mail", "inbox", START)
-    const dir = markerDir(root, "mail")
-    fs.renameSync(dir, `${dir}-moved`)
-    fs.writeFileSync(dir, "a file where the folder was")
-    watch.touch(START + 30_000)
-    watch.touch(START + 60_000)
-    expect(emit.mock.calls.filter(([event]) => event.event === "senses.turn_watch_write_error")).toHaveLength(1)
-    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ meta: expect.objectContaining({ sense: "mail", action: "write" }) }))
-    watch.finish()
   })
 
   it("never throws into the turn when the record cannot be written or removed", () => {
@@ -174,8 +201,26 @@ describe("turn watch", () => {
     fs.writeFileSync(blocked, "a file where the state folder should be")
     const watch = beginTurnInFlight(blocked, "teams", "conv", START)
     watch.touch(START + 60_000)
+    watch.toolStarted(START + 61_000)
     watch.finish()
-    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ level: "warn", event: "senses.turn_watch_write_error", meta: expect.objectContaining({ sense: "teams" }) }))
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ level: "warn", event: "senses.turn_watch_write_error", meta: expect.objectContaining({ sense: "teams", action: "prepare" }) }))
+  })
+
+  it("warns once when progress can no longer be written, leaves no temporary file, and the turn carries on", () => {
+    const emit = vi.spyOn(nerves, "emitNervesEvent")
+    const watch = beginTurnInFlight(root, "voice", "call", START)
+    const dir = markerDir(root, "voice")
+    const [file] = fs.readdirSync(dir)
+    // A folder now sits where the record goes, so the rename fails; the temporary file must not stay behind.
+    fs.rmSync(path.join(dir, file!), { force: true })
+    fs.mkdirSync(path.join(dir, file!, "occupied"), { recursive: true })
+    watch.touch(START + 30_000)
+    watch.touch(START + 60_000)
+    expect(emit.mock.calls.filter(([event]) => event.event === "senses.turn_watch_write_error")).toHaveLength(1)
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ meta: expect.objectContaining({ sense: "voice", action: "write" }) }))
+    expect(fs.readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([])
+    watch.finish()
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ meta: expect.objectContaining({ sense: "voice", action: "remove" }) }))
   })
 
   it("logs when a turn starts and ends", () => {
@@ -185,29 +230,31 @@ describe("turn watch", () => {
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.turn_watch_finished", meta: expect.objectContaining({ sense: "teams" }) }))
   })
 
-  it("counts every model and tool callback as progress, and passes each call through unchanged", () => {
+  it("counts model and tool callbacks as progress, marks tool calls, and passes each call through unchanged", () => {
     const callbacks = callbacksSpy()
-    const touch = vi.fn()
-    const watched = watchTurnCallbacks(callbacks, touch)
+    const progress = noProgress()
+    const watched = watchTurnCallbacks(callbacks, progress)
     watched.onModelStart()
     watched.onModelStreamStart()
     watched.onTextChunk("hi")
     watched.onReasoningChunk("hmm")
-    watched.onToolStart("shell", { command: "ls" })
-    watched.onToolEnd("shell", "ok", true)
     watched.onToolResult?.([])
-    expect(touch).toHaveBeenCalledTimes(7)
+    expect(progress.touch).toHaveBeenCalledTimes(5)
+    watched.onToolStart("shell", { command: "ls" })
+    expect(progress.toolStarted).toHaveBeenCalledTimes(1)
+    watched.onToolEnd("shell", "ok", true)
+    expect(progress.toolEnded).toHaveBeenCalledTimes(1)
     expect(callbacks.onTextChunk).toHaveBeenCalledWith("hi")
     expect(callbacks.onToolStart).toHaveBeenCalledWith("shell", { command: "ls" })
     expect(callbacks.onToolEnd).toHaveBeenCalledWith("shell", "ok", true)
     watched.onError(new Error("x"), "transient")
-    expect(touch).toHaveBeenCalledTimes(7)
+    expect(progress.touch).toHaveBeenCalledTimes(5)
     expect(callbacks.onError).toHaveBeenCalledTimes(1)
   })
 
   it("keeps the callbacks object's own fields live in both directions", () => {
     const callbacks = callbacksSpy() as ChannelCallbacks & { label?: string }
-    const watched = watchTurnCallbacks(callbacks, vi.fn()) as ChannelCallbacks & { label?: string }
+    const watched = watchTurnCallbacks(callbacks, noProgress()) as ChannelCallbacks & { label?: string }
     watched.label = "set through the watch"
     expect(callbacks.label).toBe("set through the watch")
     callbacks.settleOutputMode = "text-only" as never
@@ -218,7 +265,7 @@ describe("turn watch", () => {
   it("calls each callback on the original object", () => {
     const seen: unknown[] = []
     const callbacks = { ...callbacksSpy(), onTextChunk(this: unknown) { seen.push(this) } } as ChannelCallbacks
-    watchTurnCallbacks(callbacks, vi.fn()).onTextChunk("x")
+    watchTurnCallbacks(callbacks, noProgress()).onTextChunk("x")
     expect(seen).toEqual([callbacks])
   })
 })

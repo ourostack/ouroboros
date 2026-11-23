@@ -4040,7 +4040,9 @@ describe("handleInboundTurn records each watched turn so status can see one stal
     vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
     const callbacks = makeCallbacks()
     let duringTurn: string[] = []
+    let duringTool: Record<string, unknown> | undefined
     let callbacksDuringTurn: ChannelCallbacks | undefined
+    const readRecord = () => JSON.parse(fs.readFileSync(path.join(agentRoot, "state", "senses", "teams", "turns-in-flight", turnRecords(agentRoot, "teams")[0]!), "utf-8"))
     const input = makeInput({
       channel: "teams" as Channel,
       capabilities: makeCapabilities({ channel: "teams" }),
@@ -4049,14 +4051,19 @@ describe("handleInboundTurn records each watched turn so status can see one stal
         duringTurn = turnRecords(agentRoot, "teams")
         callbacksDuringTurn = turnCallbacks
         turnCallbacks.onTextChunk("hello")
+        turnCallbacks.onToolStart("shell", { command: "make" })
+        duringTool = readRecord()
+        turnCallbacks.onToolEnd("shell", "ok", true)
         return { usage: usageData, outcome: "settled" as const }
       }),
     })
     try {
       await handleInboundTurn(input)
       expect(duringTurn).toHaveLength(1)
+      expect(duringTool).toEqual(expect.objectContaining({ pid: process.pid, toolsRunning: 1 }))
       expect(callbacksDuringTurn).not.toBe(callbacks)
       expect(callbacks.onTextChunk).toHaveBeenCalledWith("hello")
+      expect(callbacks.onToolStart).toHaveBeenCalledWith("shell", { command: "make" })
       expect(input.callbacks).toBe(callbacks)
       expect(turnRecords(agentRoot, "teams")).toEqual([])
     } finally {
@@ -4083,12 +4090,14 @@ describe("handleInboundTurn records each watched turn so status can see one stal
     }
   })
 
-  it("leaves CLI and iMessage turns alone", async () => {
-    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-turn-watch-cli-"))
+  it.each(["cli", "bluebubbles"])("leaves %s turns alone", async (channel) => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-turn-watch-unwatched-"))
     vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
     const callbacks = makeCallbacks()
     let seen: ChannelCallbacks | undefined
     const input = makeInput({
+      channel: channel as Channel,
+      capabilities: makeCapabilities({ channel: channel as Channel }),
       callbacks,
       runAgent: vi.fn(async (_messages: unknown, turnCallbacks: ChannelCallbacks) => {
         seen = turnCallbacks

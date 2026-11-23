@@ -798,8 +798,9 @@ function readBlueBubblesRuntimeFacts(
 }
 
 /** The row's turn facts for a sense watched by `senses/turn-watch.ts`, and the failure when a turn has stalled. */
-function turnWatchFields(turns: TurnsInFlightSnapshot | undefined): Partial<DaemonSenseRow> {
-  if (!turns) return {}
+function turnWatchFields(watched: { snapshot: TurnsInFlightSnapshot; workerPid?: number } | undefined): Partial<DaemonSenseRow> {
+  if (!watched) return {}
+  const turns = watched.snapshot
   const facts = {
     activeTurnCount: turns.activeTurnCount,
     stalledTurnCount: turns.stalledTurnCount,
@@ -808,13 +809,17 @@ function turnWatchFields(turns: TurnsInFlightSnapshot | undefined): Partial<Daem
   }
   if (turns.stalledTurnCount === 0) return facts
   const count = turns.stalledTurnCount
-  const detail = `${count} ${count === 1 ? "turn has" : "turns have"} made no progress for ${Math.floor(Number(turns.longestSilenceMs) / 60_000)}m`
+  const detail = `${count} ${count === 1 ? "turn has" : "turns have"} recorded no progress for ${Math.floor(Number(turns.longestSilenceMs) / 60_000)}m`
+  // A turn can run outside the sense's worker (a daemon ask, a foreground serve), where restarting the sense won't end it.
+  const others = (turns.stalledPids as number[]).filter((pid) => pid !== watched.workerPid)
   return {
     ...facts,
     detail,
     lastFailure: detail,
     failureLayer: "live_turn_stall",
-    recoveryAction: "look in the sense's log for the turn's last step; restarting the sense ends the turn",
+    recoveryAction: others.length === 0
+      ? "look in the sense's log for the turn's last step; restarting the sense ends the turn"
+      : `look in the sense's log for the turn's last step; the turn runs in process ${others.join(", ")}, outside the sense's worker, and ends only with that process`,
   }
 }
 
@@ -1315,6 +1320,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
   listSenseRows(): DaemonSenseRow[] {
     const runtime = new Map<string, Partial<Record<SenseName, SenseRuntimeInfo>>>()
     const runningSince = new Map<string, number>()
+    const workerPids = new Map<string, number>()
     for (const snapshot of this.processManager.listAgentSnapshots()) {
       const parsed = parseSenseSnapshotName(snapshot.name)
       if (!parsed) continue
@@ -1324,6 +1330,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       if (snapshot.status === "running") {
         const startedMs = Date.parse(snapshot.startedAt ?? "")
         runningSince.set(snapshot.name, Number.isFinite(startedMs) ? startedMs : Number.NEGATIVE_INFINITY)
+        if (typeof snapshot.pid === "number") workerPids.set(snapshot.name, snapshot.pid)
       }
     }
 
@@ -1384,14 +1391,14 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           ...(runtime.get(agent)?.["app-sessions"] ?? {}),
         },
       }
-      // A running turn on a sense that has made no progress for five minutes makes the sense an error.
-      const turns: Partial<Record<SenseName, TurnsInFlightSnapshot>> = {}
+      // A running turn on a sense that has gone quiet for too long makes the sense an error.
+      const turns: Partial<Record<SenseName, { snapshot: TurnsInFlightSnapshot; workerPid?: number }>> = {}
       for (const sense of Object.keys(runtimeInfo) as SenseName[]) {
         const since = runningSince.get(`${agent}:${sense}`)
         if (!isWatchedSense(sense) || !context.senses[sense].enabled || since === undefined) continue
         const snapshot = snapshotTurnsInFlight(path.join(this.bundlesRoot, `${agent}.ouro`), sense, Date.now(), undefined, since)
         if (snapshot.activeTurnCount === 0) continue
-        turns[sense] = snapshot
+        turns[sense] = { snapshot, workerPid: workerPids.get(`${agent}:${sense}`) }
         if (snapshot.stalledTurnCount > 0) runtimeInfo[sense] = { ...runtimeInfo[sense], runtime: "error" }
       }
       const inventory = getSenseInventory({ senses: context.senses }, runtimeInfo)

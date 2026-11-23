@@ -786,7 +786,7 @@ async function handleWatchedInboundTurn(input: InboundTurnInput): Promise<Inboun
   }
   const watch = beginTurnInFlight(agentRoot, input.channel, input.sessionKey ?? "session")
   const callbacks = input.callbacks
-  input.callbacks = watchTurnCallbacks(callbacks, () => watch.touch())
+  input.callbacks = watchTurnCallbacks(callbacks, watch)
   try {
     return await handleInboundTurnExclusive(input)
   } finally {

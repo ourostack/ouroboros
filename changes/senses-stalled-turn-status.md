@@ -1,1 +1,1 @@
-- Status shows Teams, mail, voice, A2A or Telegram as an error, with failure layer `live_turn_stall`, when one of its turns has made no progress for five minutes. Until now only iMessage could show a stalled turn.
+- Status shows Teams, voice, A2A or Telegram as an error, with failure layer `live_turn_stall`, when one of its turns has gone quiet for five minutes, or for 15 while a tool call is running. Until now only iMessage could show a stalled turn.

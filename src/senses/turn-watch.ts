@@ -4,23 +4,34 @@ import type { ChannelCallbacks } from "../heart/core"
 import { emitNervesEvent } from "../nerves/runtime"
 
 /**
- * Lets status see a turn that has stopped moving, on every sense that has a status row. Each running turn leaves a
- * record under `state/senses/<sense>/turns-in-flight/`; the daemon reads them and shows the sense as an error once a
- * turn has made no progress for five minutes. iMessage keeps its own tracker (`bluebubbles/active-turns.ts`).
+ * Lets status see a turn that has stopped moving, on the senses whose turns run through the shared pipeline and have
+ * a status row of their own. Each running turn leaves a record under `state/senses/<sense>/turns-in-flight/`; the
+ * daemon reads them and shows the sense as an error once a turn has gone quiet for too long. iMessage keeps its own
+ * tracker (`bluebubbles/active-turns.ts`). Mail is not here: its messages are answered by inner turns.
  */
 
 /** A turn with no model output or tool activity for this long counts as stalled. */
 export const TURN_STALLED_AFTER_MS = 5 * 60_000
-/** Progress is written at most this often, so a streaming reply doesn't write a file per chunk. */
-const PROGRESS_WRITE_EVERY_MS = 30_000
+/**
+ * While a tool runs, the turn is quiet until it ends. The shell and MCP tools stop a call after at most 10 minutes
+ * (`tools-shell.ts`, `mcp-client.ts`), so a tool still running after 15 counts as stalled.
+ */
+export const TOOL_STALLED_AFTER_MS = 15 * 60_000
+/**
+ * Progress is written at most this often, so a streaming reply doesn't write a file per chunk. The record can be this
+ * far behind, so a turn counts as stalled only this much after the limit, which keeps every stall a real one.
+ */
+export const PROGRESS_WRITE_EVERY_MS = 30_000
 
-const WATCHED_SENSES = new Set(["teams", "mail", "voice", "a2a", "telegram"])
+const WATCHED_SENSES = new Set(["teams", "voice", "a2a", "telegram"])
 
 export interface TurnInFlightRecord {
   pid: number
   sessionKey: string
   startedAt: string
   lastProgressAt: string
+  /** Tool calls started and not yet ended. */
+  toolsRunning: number
 }
 
 export interface TurnsInFlightSnapshot {
@@ -28,13 +39,22 @@ export interface TurnsInFlightSnapshot {
   stalledTurnCount: number
   oldestActiveTurnStartedAt?: string
   oldestActiveTurnAgeMs?: number
-  /** How long the quietest stalled turn has gone without progress. Set only when a turn is stalled. */
+  /** How long the quietest stalled turn has gone without recorded progress. Set only when a turn is stalled. */
   longestSilenceMs?: number
+  /** The processes running the stalled turns. Set only when a turn is stalled. */
+  stalledPids?: number[]
 }
 
-export interface TurnInFlight {
+export interface TurnProgress {
   /** Notes progress. Cheap to call on every chunk. */
   touch(nowMs?: number): void
+  /** A tool call started: the turn may be quiet until it ends. */
+  toolStarted(nowMs?: number): void
+  /** A tool call ended. */
+  toolEnded(nowMs?: number): void
+}
+
+export interface TurnInFlight extends TurnProgress {
   /** Removes the record. Safe to call twice. */
   finish(): void
 }
@@ -66,7 +86,7 @@ function parseRecord(raw: string): TurnInFlightRecord | null {
   }
   if (!parsed || typeof parsed !== "object") return null
   const record = parsed as Partial<TurnInFlightRecord>
-  if (typeof record.pid !== "number" || typeof record.sessionKey !== "string") return null
+  if (typeof record.pid !== "number" || typeof record.sessionKey !== "string" || typeof record.toolsRunning !== "number") return null
   if (!Number.isFinite(Date.parse(String(record.startedAt))) || !Number.isFinite(Date.parse(String(record.lastProgressAt)))) return null
   return record as TurnInFlightRecord
 }
@@ -122,11 +142,13 @@ export function beginTurnInFlight(agentRoot: string, sense: string, sessionKey: 
   const file = path.join(dir, `${process.pid}-${turnSequence}.json`)
   const startedAt = new Date(nowMs).toISOString()
   let lastWrittenMs = nowMs
+  let toolsRunning = 0
   let finished = false
   let failed = false
 
   const write = (progressMs: number): void => {
-    const record: TurnInFlightRecord = { pid: process.pid, sessionKey, startedAt, lastProgressAt: new Date(progressMs).toISOString() }
+    lastWrittenMs = progressMs
+    const record: TurnInFlightRecord = { pid: process.pid, sessionKey, startedAt, lastProgressAt: new Date(progressMs).toISOString(), toolsRunning }
     const tmp = `${file}.tmp`
     try {
       fs.writeFileSync(tmp, JSON.stringify(record) + "\n", "utf-8")
@@ -134,6 +156,11 @@ export function beginTurnInFlight(agentRoot: string, sense: string, sessionKey: 
     } catch (error) {
       if (!failed) reportWriteError(sense, "write", error)
       failed = true
+      try {
+        fs.rmSync(tmp, { force: true })
+      } catch {
+        // The folder itself is gone or unusable; nothing was left in it.
+      }
     }
   }
 
@@ -151,7 +178,16 @@ export function beginTurnInFlight(agentRoot: string, sense: string, sessionKey: 
   return {
     touch(progressMs = Date.now()) {
       if (finished || progressMs - lastWrittenMs < PROGRESS_WRITE_EVERY_MS) return
-      lastWrittenMs = progressMs
+      write(progressMs)
+    },
+    toolStarted(progressMs = Date.now()) {
+      if (finished) return
+      toolsRunning += 1
+      write(progressMs)
+    },
+    toolEnded(progressMs = Date.now()) {
+      if (finished) return
+      toolsRunning = Math.max(0, toolsRunning - 1)
       write(progressMs)
     },
     finish() {
@@ -184,15 +220,18 @@ export function snapshotTurnsInFlight(
     .filter((record): record is TurnInFlightRecord => record !== null && Date.parse(record.startedAt) >= notBeforeMs && isAlive(record.pid))
   if (records.length === 0) return { activeTurnCount: 0, stalledTurnCount: 0 }
   const oldest = records.reduce((a, b) => (Date.parse(b.startedAt) < Date.parse(a.startedAt) ? b : a))
-  const silences = records
-    .map((record) => nowMs - Date.parse(record.lastProgressAt))
-    .filter((silenceMs) => silenceMs >= TURN_STALLED_AFTER_MS)
+  const stalled = records
+    .map((record) => ({ pid: record.pid, silenceMs: nowMs - Date.parse(record.lastProgressAt), limitMs: record.toolsRunning > 0 ? TOOL_STALLED_AFTER_MS : TURN_STALLED_AFTER_MS }))
+    .filter((turn) => turn.silenceMs >= turn.limitMs + PROGRESS_WRITE_EVERY_MS)
   return {
     activeTurnCount: records.length,
-    stalledTurnCount: silences.length,
+    stalledTurnCount: stalled.length,
     oldestActiveTurnStartedAt: oldest.startedAt,
     oldestActiveTurnAgeMs: Math.max(0, nowMs - Date.parse(oldest.startedAt)),
-    ...(silences.length > 0 ? { longestSilenceMs: Math.max(...silences) } : {}),
+    ...(stalled.length > 0 ? {
+      longestSilenceMs: Math.max(...stalled.map((turn) => turn.silenceMs)),
+      stalledPids: [...new Set(stalled.map((turn) => turn.pid))].sort((a, b) => a - b),
+    } : {}),
   }
 }
 
@@ -201,22 +240,25 @@ const PROGRESS_CALLBACKS = new Set<string | symbol>([
   "onModelStreamStart",
   "onTextChunk",
   "onReasoningChunk",
-  "onToolStart",
-  "onToolEnd",
   "onToolResult",
 ])
 
 /**
- * The same callbacks, with every model or tool callback also counting as progress. Every other field reads and writes
- * through to the original object, and each call runs on it.
+ * The same callbacks, with every model or tool callback also counting as progress, and tool calls marked while they
+ * run. Every other field reads and writes through to the original object, and each call runs on it.
  */
-export function watchTurnCallbacks(callbacks: ChannelCallbacks, touch: () => void): ChannelCallbacks {
+export function watchTurnCallbacks(callbacks: ChannelCallbacks, progress: TurnProgress): ChannelCallbacks {
   return new Proxy(callbacks, {
     get(target, key) {
       const value = Reflect.get(target, key, target) as unknown
-      if (typeof value !== "function" || !PROGRESS_CALLBACKS.has(key)) return value
+      if (typeof value !== "function") return value
+      const note = key === "onToolStart" ? () => progress.toolStarted()
+        : key === "onToolEnd" ? () => progress.toolEnded()
+          : PROGRESS_CALLBACKS.has(key) ? () => progress.touch()
+            : null
+      if (!note) return value
       return (...args: unknown[]) => {
-        touch()
+        note()
         return (value as (...callArgs: unknown[]) => unknown).apply(target, args)
       }
     },

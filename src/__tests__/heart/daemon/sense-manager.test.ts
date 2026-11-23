@@ -2550,7 +2550,7 @@ describe("daemon sense manager", () => {
   })
 
   describe("a turn that stops moving on another sense", () => {
-    async function a2aManager(snapshot: { status: string; startedAt?: string | null }) {
+    async function a2aManager(snapshot: { status: string; startedAt?: string | null; pid?: number | null }) {
       const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-turn-watch-"))
       writeAgentJson(bundlesRoot, "slugger", {
         version: 1,
@@ -2567,7 +2567,7 @@ describe("daemon sense manager", () => {
         processManager: {
           startAutoStartAgents: async () => undefined,
           stopAll: async () => undefined,
-          listAgentSnapshots: () => [{ name: "slugger:a2a", pid: 4242, ...snapshot }],
+          listAgentSnapshots: () => [{ name: "slugger:a2a", pid: process.pid, ...snapshot }],
         },
       })
       const turnsDir = path.join(bundlesRoot, "slugger.ouro", "state", "senses", "a2a", "turns-in-flight")
@@ -2577,12 +2577,13 @@ describe("daemon sense manager", () => {
         sessionKey: "peer",
         startedAt: new Date(Date.now() - startedAgoMs).toISOString(),
         lastProgressAt: new Date(Date.now() - quietForMs).toISOString(),
+        toolsRunning: 0,
       }))
       return { manager, writeTurn }
     }
     const row = (manager: { listSenseRows(): Array<{ sense: string }> }) => manager.listSenseRows().find((entry) => entry.sense === "a2a")
 
-    it("shows the sense as an error once a turn has made no progress for five minutes", async () => {
+    it("shows the sense as an error once a turn has gone quiet for five minutes", async () => {
       const { manager, writeTurn } = await a2aManager({ status: "running", startedAt: new Date(Date.now() - 3_600_000).toISOString() })
       writeTurn(10 * 60_000, 6 * 60_000)
       expect(row(manager)).toEqual(expect.objectContaining({
@@ -2591,10 +2592,22 @@ describe("daemon sense manager", () => {
         activeTurnCount: 1,
         stalledTurnCount: 1,
         oldestActiveTurnAgeMs: expect.any(Number),
-        detail: expect.stringContaining("1 turn has made no progress for 6m"),
-        lastFailure: expect.stringContaining("1 turn has made no progress for 6m"),
-        recoveryAction: expect.stringContaining("turn"),
+        detail: "1 turn has recorded no progress for 6m",
+        lastFailure: "1 turn has recorded no progress for 6m",
+        recoveryAction: "look in the sense's log for the turn's last step; restarting the sense ends the turn",
       }))
+    })
+
+    it("says when the stalled turn runs outside the sense's worker, where a restart won't end it", async () => {
+      const { manager, writeTurn } = await a2aManager({ status: "running", startedAt: null, pid: 4242 })
+      writeTurn(10 * 60_000, 6 * 60_000)
+      expect(row(manager)).toEqual(expect.objectContaining({
+        status: "error",
+        recoveryAction: `look in the sense's log for the turn's last step; the turn runs in process ${process.pid}, outside the sense's worker, and ends only with that process`,
+      }))
+      const unknownWorker = await a2aManager({ status: "running", startedAt: null, pid: null })
+      unknownWorker.writeTurn(10 * 60_000, 6 * 60_000)
+      expect(row(unknownWorker.manager)).toEqual(expect.objectContaining({ recoveryAction: expect.stringContaining(`process ${process.pid}, outside`) }))
     })
 
     it("shows a turn that is still moving without calling the sense broken", async () => {
@@ -2619,7 +2632,7 @@ describe("daemon sense manager", () => {
       const { manager, writeTurn } = await a2aManager({ status: "running", startedAt: null })
       writeTurn(10 * 60_000, 6 * 60_000)
       writeTurn(20 * 60_000, 12 * 60_000, `${process.pid}-2.json`)
-      expect(row(manager)).toEqual(expect.objectContaining({ status: "error", stalledTurnCount: 2, detail: "2 turns have made no progress for 12m" }))
+      expect(row(manager)).toEqual(expect.objectContaining({ status: "error", stalledTurnCount: 2, detail: "2 turns have recorded no progress for 12m" }))
     })
   })
 
