@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1393",
+      "changes": [
+        "When an agent tells a person something unprompted, surface now texts them on their own iMessage, Telegram or Teams chat, or says plainly it was not sent and saves it for their next message; it never queues it into an MCP or CLI session they don't read."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1392",
       "changes": [
         "A2A records every inbound before its turn, ends it in one recorded outcome, and lets cancel and shutdown stop the turn."
