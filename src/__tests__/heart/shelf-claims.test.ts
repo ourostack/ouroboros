@@ -102,6 +102,42 @@ describe("shelfClaimError", () => {
     ]) expect(shelfClaimError(BOOK_REPLY, tools), tools[0].args.command).not.toBeNull()
   })
 
+  // 2026-11-23, eval replay: the agent ran the books CLI through a shell variable (`B=…/books; $B library find …`), looked
+  // again after removing a copy, and said the clean one "is the only copy on the shelf now". The gate did not see the
+  // lookup and put "I haven't checked the library" in front of a reply that had checked.
+  const ALMANAC = { ok: true, results: [{ id: 189, title: "The Harbour Almanac" }] }
+  const ALMANAC_REPLY = "done, the messy copy (187) is out of the library. The Harbour Almanac (189), the clean one, is the only copy on the shelf now."
+  it("sees the books CLI run through a variable the same command set first", () => {
+    for (const command of [
+      "B=/home/ouro/AgentBundles/house.ouro/books/books; $B library find \"The Harbour Almanac\"",
+      "B=/home/ouro/AgentBundles/house.ouro/books/books; $B library remove 187; $B library find \"The Harbour Almanac\"",
+      "B=\"/home/ouro/bundle/books/books\" && \"$B\" library find 'The Harbour Almanac'",
+      "export BOOKS='/home/ouro/bundle/books/books'; ${BOOKS} library find 'The Harbour Almanac'",
+    ]) {
+      const tools = [shell(command, ALMANAC)]
+      expect(shelfClaimError(ALMANAC_REPLY, tools), command).toBeNull()
+    }
+  })
+
+  it("still discloses when the variable is not the books CLI, or the run did not look anything up", () => {
+    for (const command of [
+      "$B library find 'The Harbour Almanac'",
+      "B=/usr/bin/calibredb; $B library find 'The Harbour Almanac'",
+      // A shell runs from /bin/sh, where an alias set in the same command is not used: it is never a lookup.
+      "alias bk=/home/ouro/bundle/books/books; bk library find 'The Harbour Almanac'; echo searched",
+      // Set only after it is used, or reset to something else before it.
+      "B=/bin/ls; $B library find 'The Harbour Almanac'; B=/home/ouro/bundle/books/books",
+      "B=/home/ouro/bundle/books/books; B=/bin/ls; $B library find 'The Harbour Almanac'",
+      "B=/home/ouro/bundle/books/books; $B library remove 187",
+    ]) {
+      const tools = [shell(command, ALMANAC)]
+      expect(shelfClaimError(ALMANAC_REPLY, tools), command).not.toBeNull()
+    }
+    // No lookup at all: the reply still goes out with the truth in front.
+    expect(withShelfDisclosure(ALMANAC_REPLY, [shell("B=/home/ouro/bundle/books/books; $B library remove 187", { ok: true })]))
+      .toBe(`I haven't checked the library for that yet, so I can't promise it's on the shelf.\n\n${ALMANAC_REPLY}`)
+  })
+
   // The next turn the Butler apologised for that line, and the gate put it in front of the apology too.
   it("never gates a reply that apologises for or corrects an earlier disclosure", () => {
     for (const reply of [
