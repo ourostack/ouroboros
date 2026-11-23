@@ -5,6 +5,7 @@ import {
   classifyTelegramPersistedApprovalState,
   createTelegramApprovalTransport,
   TELEGRAM_APPROVAL_RELAYED_NOTE,
+  TELEGRAM_APPROVAL_RELAYED_UNAPPLIED_NOTE,
   type TelegramPendingApprovalStore,
 } from "../../senses/telegram-client"
 
@@ -25,7 +26,7 @@ function fixture(input: {
   const order: string[] = []
   const edits: string[] = []
   const acknowledgements: Array<{ callbackQueryId: string; text?: string }> = []
-  const onDecision = input.onDecision ?? vi.fn(async () => { order.push("decide"); return { accepted: false, terminalText: "❌ Denied — no action taken" } })
+  const onDecision = input.onDecision ?? vi.fn(async (decision: { relay?: unknown }) => { order.push("decide"); return { accepted: false, terminalText: "❌ Denied — no action taken", ...(decision.relay ? { relayApplied: true } : {}) } })
   const transport = createTelegramApprovalTransport({
     api: { request: vi.fn(), stop: vi.fn() },
     expectedUserId: "10",
@@ -56,12 +57,11 @@ async function sent(f: ReturnType<typeof fixture>) {
 }
 
 describe("relayDeny", () => {
-  it("edits the card first, then decides deny with the relay's provenance, then edits it to its final state", async () => {
+  it("decides deny with the relay's provenance, then edits the card once, to its final state", async () => {
     const f = fixture()
     await sent(f)
     expect(await f.transport.relayDeny(relayed())).toEqual({ status: "settled", approvalId: "approval-1" })
     expect(f.order).toEqual([
-      `edit:Restart plex?\n\n${TELEGRAM_APPROVAL_RELAYED_NOTE}`,
       "decide",
       `edit:❌ Denied — no action taken\n\n${TELEGRAM_APPROVAL_RELAYED_NOTE}`,
     ])
@@ -107,17 +107,19 @@ describe("relayDeny", () => {
     expect(f.onDecision).not.toHaveBeenCalled()
   })
 
-  it("refuses and decides nothing when the card edit fails, leaving the tap path working", async () => {
-    let failEdits = true
-    const f = fixture({ edit: async () => { if (failEdits) throw new Error("telegram down") } })
+  it("leaves the card as it was when deciding throws, so it never says Deny for a pending approval", async () => {
+    const f = fixture({ onDecision: vi.fn(async () => { throw new Error("store busy") }) })
     await sent(f)
-    expect(await f.transport.relayDeny(relayed())).toEqual({ status: "refused", reason: "card_edit_failed" })
-    expect(f.onDecision).not.toHaveBeenCalled()
-    expect(f.records()[0]?.decisionAttempt).toBeUndefined()
-    failEdits = false
-    expect(await f.transport.handleUpdate(tap("d:deny"))).toEqual({ handled: true, accepted: false, reason: "decision_refused" })
-    expect(f.onDecision).toHaveBeenCalledTimes(1)
-    expect(f.onDecision.mock.calls[0]![0]).not.toHaveProperty("relay")
+    await expect(f.transport.relayDeny(relayed())).rejects.toThrow("store busy")
+    expect(f.edits).toEqual([])
+  })
+
+  it("says on the card that a relayed deny didn't apply when the store had already decided", async () => {
+    const f = fixture({ onDecision: vi.fn(async () => ({ accepted: true, terminalText: "✅ Approved — restarted", relayApplied: false })) })
+    await sent(f)
+    expect(await f.transport.relayDeny(relayed())).toEqual({ status: "settled", approvalId: "approval-1" })
+    expect(f.edits).toEqual([`✅ Approved — restarted\n\n${TELEGRAM_APPROVAL_RELAYED_UNAPPLIED_NOTE}`])
+    expect(f.edits.join("\n")).not.toContain(TELEGRAM_APPROVAL_RELAYED_NOTE)
   })
 
   it("makes a tap during a relayed deny wait, then find the card already settled", async () => {
@@ -132,14 +134,6 @@ describe("relayDeny", () => {
     expect(await relay).toEqual({ status: "settled", approvalId: "approval-1" })
     expect(await tapped).toEqual({ handled: true, accepted: false, reason: "stale_callback" })
     expect(f.onDecision).toHaveBeenCalledTimes(1)
-  })
-
-  it("marks a card saved without its prompt text by a generic line", async () => {
-    const f = fixture()
-    await sent(f)
-    const g = fixture({ records: f.records().map(({ prompt: _prompt, ...record }) => record) })
-    expect(await g.transport.relayDeny(relayed())).toEqual({ status: "settled", approvalId: "approval-1" })
-    expect(g.edits[0]).toBe(`Approval request\n\n${TELEGRAM_APPROVAL_RELAYED_NOTE}`)
   })
 
   it("finds nothing for a prompt that was never delivered", async () => {

@@ -1197,8 +1197,8 @@ export interface TelegramApprovalTransport {
   validatePendingTerminalControl(approvalId: string): Promise<void>
   /**
    * Ari's deny relayed by his primary agent, after the caller has checked the envelope, the sender and the switch. It
-   * finds the card by its relay token, edits it silently before deciding (and refuses if that edit fails), then
-   * decides through the same signed attempt, settlement and recovery as a tap.
+   * finds the card by its relay token and decides through the same signed attempt, settlement and recovery as a tap.
+   * The card is edited once, after the decision settles, with what actually happened.
    */
   relayDeny(input: TelegramRelayDenyInput): Promise<TelegramRelayDenyResult>
   /**
@@ -1224,10 +1224,11 @@ export type TelegramRelayDenyResult =
   | { status: "settled"; approvalId: string }
   | { status: "not_pending" }
   | { status: "expired" }
-  | { status: "refused"; reason: "card_edit_failed" }
 
 /** The line a relayed answer adds to its card, before the decision and in the final state. */
 export const TELEGRAM_APPROVAL_RELAYED_NOTE = "↪️ Answered through Slugger: Deny"
+/** When the relayed deny didn't take effect (the store had already decided), the card says so instead. */
+export const TELEGRAM_APPROVAL_RELAYED_UNAPPLIED_NOTE = "↪️ A Deny came through Slugger, but this was already decided"
 
 export interface TelegramApprovalTransportOptions {
   api: TelegramBotApi
@@ -1241,7 +1242,8 @@ export interface TelegramApprovalTransportOptions {
   expectedChatId: string
   pendingStore: TelegramPendingApprovalStore
   createOpaqueHandle: () => string
-  onDecision: (decision: TelegramApprovalDecision) => Promise<{ accepted: boolean; terminalText: string }>
+  /** `relayApplied`, for a relayed decision only: whether this relay's deny is the one the store recorded. */
+  onDecision: (decision: TelegramApprovalDecision) => Promise<{ accepted: boolean; terminalText: string; relayApplied?: boolean }>
   onExpire?: (approvalId: string) => void | Promise<void>
   resolveDecisionToken?: (approvalId: string) => Promise<string>
   now?: () => number
@@ -1277,8 +1279,8 @@ function relayQueryIdDigest(relay: TelegramRelayOrigin): string {
   return createHash("sha256").update(`relay\0${relay.envelopeBindingId}`).digest("hex")
 }
 
-function withRelayedNote(text: string): string {
-  const note = `\n\n${TELEGRAM_APPROVAL_RELAYED_NOTE}`
+function withRelayedNote(text: string, applied: boolean): string {
+  const note = `\n\n${applied ? TELEGRAM_APPROVAL_RELAYED_NOTE : TELEGRAM_APPROVAL_RELAYED_UNAPPLIED_NOTE}`
   return `${text.slice(0, 4_096 - note.length)}${note}`
 }
 
@@ -1662,7 +1664,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         ...(pending.acceptanceBinding ? { acceptanceBinding: pending.acceptanceBinding } : {}),
         ...(attempt.relay ? { relay: { ...attempt.relay } } : {}),
       })
-      outcome = attempt.relay ? { ...decided, terminalText: withRelayedNote(decided.terminalText) } : decided
+      outcome = attempt.relay ? { accepted: decided.accepted, terminalText: withRelayedNote(decided.terminalText, decided.relayApplied === true) } : decided
       persistMutation(pending, () => {
         pending.terminal = outcome
         pending.terminalMac = signState("telegram.approval_terminal_outcome_state", pending, terminalOutcomeFields(pending))
@@ -1857,18 +1859,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         if (!pending || !await matches(pending) || classifyTelegramPersistedApprovalState(pending) !== "ordinary") return { status: "not_pending" }
         const lowerBound = pending.acceptanceBinding?.boundAt ?? pending.expiresAt - TELEGRAM_APPROVAL_TTL_MS
         if (receivedAt >= pending.expiresAt || receivedAt < lowerBound) return { status: "expired" }
-        try {
-          effectBarrier()
-          await options.effects.edit({
-            idempotencyKey: `approval:${pending.approvalId}:relayed`,
-            chatId: options.expectedChatId,
-            messageId: Number(pending.messageId),
-            text: withRelayedNote(pending.prompt ?? "Approval request"),
-          })
-        } catch {
-          emitNervesEvent({ level: "warn", component: "senses", event: "telegram.approval_relay_refused", message: "a relayed deny was refused because the card could not be edited first", meta: { reason: "card_edit_failed" } })
-          return { status: "refused", reason: "card_edit_failed" }
-        }
+        // Deny only, so nothing runs: the card is edited once, after the decision settles, with what actually happened.
         const relay = { senderDid: input.senderDid, envelopeBindingId: input.envelopeBindingId }
         await settleDecisionAttempt(pending, { decision: "deny", queryIdDigest: relayQueryIdDigest(relay), callbackQueryId: "", observedAt: receivedAt, relay })
         emitNervesEvent({ component: "senses", event: "telegram.approval_relay_settled", message: "a relayed deny was decided", meta: { senderDid: input.senderDid } })

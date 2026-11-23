@@ -1078,9 +1078,10 @@ describe("a deny relayed through the owner's primary agent", () => {
     const effectBarrier = vi.fn()
     makeRuntime(effectBarrier)
     runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state: "proposed" })
-    runtimeMocks.store.decideRelayed.mockReturnValue({ ...baseRecord, state: "denied" })
+    runtimeMocks.store.decideRelayed.mockReturnValue({ ...baseRecord, state: "denied", relayDecision: { envelopeBindingId: "binding-1" } })
 
-    await transportOptions().onDecision({ approvalId: "approval-1", decision: "deny", decisionToken: "t".repeat(43), decisionAt: 123, relay })
+    const decided = await transportOptions().onDecision({ approvalId: "approval-1", decision: "deny", decisionToken: "t".repeat(43), decisionAt: 123, relay })
+    expect(decided).toMatchObject({ relayApplied: true })
 
     expect(effectBarrier).toHaveBeenCalled()
     expect(runtimeMocks.store.decideRelayed).toHaveBeenCalledWith({
@@ -1094,8 +1095,10 @@ describe("a deny relayed through the owner's primary agent", () => {
     makeRuntime()
     runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state })
 
-    await transportOptions().onDecision({ approvalId: "approval-1", decision: "deny", decisionToken: "t".repeat(43), relay })
+    const decided = await transportOptions().onDecision({ approvalId: "approval-1", decision: "deny", decisionToken: "t".repeat(43), relay })
 
+    // Kept, not decided by this relay: the card must not say this deny applied.
+    expect(decided).toMatchObject({ relayApplied: false })
     expect(runtimeMocks.store.decideRelayed).not.toHaveBeenCalled()
     expect(runtimeMocks.resumeApprovalContinuation).toHaveBeenCalled()
   })
@@ -1119,7 +1122,6 @@ describe("a deny relayed through the owner's primary agent", () => {
     ["gone from the store", { status: "settled", approvalId: "approval-1" }, undefined, "already_decided"],
     ["not waiting", { status: "not_pending" }, undefined, "not_pending"],
     ["past its expiry", { status: "expired" }, undefined, "expired"],
-    ["unable to edit the card first", { status: "refused", reason: "card_edit_failed" }, undefined, "refused:card_edit_failed"],
   ])("tells the relay %s", async (_label, result, record, answer) => {
     const runtime = makeRuntime()
     runtimeMocks.transport.relayDeny.mockResolvedValue(result)
