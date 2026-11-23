@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1388",
       "changes": [
-        "An approval-gated tool, including a bundle's declared consequential MCP tool, no longer runs on a voice call or through ouro mcp call, where no one can be asked: it answers that it needs approval and nothing runs."
+        "The daemon sends SIGKILL to a worker that ignores SIGTERM past the stop timeout, then starts its replacement."
       ]
     },
     {

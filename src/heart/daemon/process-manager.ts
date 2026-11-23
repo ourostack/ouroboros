@@ -66,9 +66,13 @@ export interface DaemonProcessManagerOptions {
   cooldownRecoveryMs?: number
   maxCooldownRetries?: number
   startupStaleAfterMs?: number
-  /** Maximum time a managed worker may take to exit after SIGTERM. A
-   *  replacement is never spawned unless the old worker emits `exit`. */
+  /** Maximum time a managed worker may take to exit after SIGTERM before it
+   *  is sent SIGKILL. A replacement is never spawned unless the old worker
+   *  emits `exit`. */
   stopTimeoutMs?: number
+  /** How long to wait for `exit` after SIGKILL before reporting the stop as
+   *  failed. */
+  killTimeoutMs?: number
   spawn?: (command: string, args: string[], options: Record<string, unknown>) => ChildProcess
   now?: () => number
   setTimeoutFn?: (cb: () => void, delay: number) => unknown
@@ -165,6 +169,7 @@ export class DaemonProcessManager {
   private readonly maxCooldownRetries: number
   private readonly startupStaleAfterMs: number
   private readonly stopTimeoutMs: number
+  private readonly killTimeoutMs: number
   private readonly existsSyncFn: ((p: string) => boolean) | null
   private readonly configCheckFn: ((agent: string) => { ok: boolean; error?: string; fix?: string; skip?: boolean } | Promise<{ ok: boolean; error?: string; fix?: string; skip?: boolean }>) | null
   private readonly statusWriterFn: (text: string) => void
@@ -251,6 +256,7 @@ export class DaemonProcessManager {
     this.maxCooldownRetries = options.maxCooldownRetries ?? 3
     this.startupStaleAfterMs = options.startupStaleAfterMs ?? 45_000
     this.stopTimeoutMs = options.stopTimeoutMs ?? 4_000
+    this.killTimeoutMs = options.killTimeoutMs ?? 2_000
     this.spawnFn = options.spawn ?? ((command, args, spawnOptions) => nodeSpawn(command, args, spawnOptions))
     this.now = options.now ?? (() => Date.now())
     this.setTimeoutFn = options.setTimeoutFn ?? ((cb, delay) => setTimeout(cb, delay))
@@ -642,21 +648,60 @@ export class DaemonProcessManager {
       }
 
       if (settled) return
-      timeout = this.setTimeoutFn(() => {
-        if (settled) return
-        const errorReason = `managed agent did not exit within ${this.stopTimeoutMs}ms; replacement was not started`
+      const reportStopFailure = (errorReason: string, fixHint: string, killed: boolean): void => {
         state.stopFailureActive = true
         state.snapshot.errorReason = errorReason
-        state.snapshot.fixHint = `Inspect managed worker PID ${childPidLabel}; retry only after that worker has exited.`
+        state.snapshot.fixHint = fixHint
         emitNervesEvent({
           level: "error",
           component: "daemon",
           event: "daemon.agent_stop_timeout",
           message: errorReason,
-          meta: { agent, pid: childPid, timeoutMs: this.stopTimeoutMs },
+          meta: { agent, pid: childPid, timeoutMs: this.stopTimeoutMs, killed, ...(killed ? { killTimeoutMs: this.killTimeoutMs } : {}) },
         })
         this.notifySnapshotChange(state.snapshot)
         finish(new Error(errorReason))
+      }
+      timeout = this.setTimeoutFn(() => {
+        if (settled) return
+        // A worker stuck past its own shutdown grace (a turn that never ends, a blocked event loop) would otherwise
+        // stay alive with no replacement. SIGKILL ends it; the replacement replays whatever it left pending.
+        let killAccepted = false
+        try {
+          killAccepted = child.kill("SIGKILL")
+        } catch {
+          killAccepted = false
+        }
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.agent_stop_escalated",
+          message: killAccepted
+            ? "managed agent ignored SIGTERM past the stop timeout; sent SIGKILL"
+            : "managed agent ignored SIGTERM past the stop timeout; SIGKILL could not be sent",
+          meta: { agent, pid: childPid, timeoutMs: this.stopTimeoutMs, killAccepted },
+        })
+        if (settled) return
+        if (!killAccepted) {
+          reportStopFailure(
+            `managed agent did not exit within ${this.stopTimeoutMs}ms and SIGKILL could not be sent; replacement was not started`,
+            `Inspect managed worker PID ${childPidLabel}; retry only after that worker has exited.`,
+            false,
+          )
+          return
+        }
+        timeout = this.setTimeoutFn(() => {
+          // A busy daemon runs due timers before it reads child exits, so an exit may already be waiting. Look once
+          // more after that I/O has been read, so a worker that did die is not reported as stuck.
+          setImmediate(() => {
+            if (settled) return
+            reportStopFailure(
+              `managed agent did not exit within ${this.stopTimeoutMs}ms, nor ${this.killTimeoutMs}ms after SIGKILL; replacement was not started`,
+              `Inspect managed worker PID ${childPidLabel}; retry only after that worker has exited.`,
+              true,
+            )
+          })
+        }, this.killTimeoutMs)
       }, this.stopTimeoutMs)
     })
   }

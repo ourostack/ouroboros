@@ -1243,6 +1243,10 @@ describe("daemon process manager", () => {
 
     expect(timers).toHaveLength(1)
     timers[0]?.cb()
+    // Past the stop timeout it is sent SIGKILL, and given the kill timeout to exit.
+    expect(hung.kill).toHaveBeenLastCalledWith("SIGKILL")
+    expect(timers[1]?.delay).toBe(2_000)
+    timers[1]?.cb()
     await expect(stopError).resolves.toEqual(expect.objectContaining({
       message: expect.stringContaining("failed to stop 1 managed worker(s)"),
     }))
@@ -1428,6 +1432,8 @@ describe("daemon process manager", () => {
     expect(timers).toHaveLength(1)
     expect(timers[0]?.delay).toBe(25)
     timers[0]?.cb()
+    expect(child.kill).toHaveBeenLastCalledWith("SIGKILL")
+    timers[1]?.cb()
     await rejection
 
     expect(spawn).toHaveBeenCalledTimes(1)
@@ -1445,6 +1451,131 @@ describe("daemon process manager", () => {
       errorReason: null,
       fixHint: null,
     }))
+  })
+
+  it.each([
+    ["refuses", () => false],
+    ["throws on", () => { throw new Error("EPERM") }],
+  ])("reports the stop as failed at once when the worker %s SIGKILL", async (_label, onKill) => {
+    const hung = new MockChild()
+    hung.pid = 111
+    hung.kill.mockImplementation((signal?: string) => (signal === "SIGKILL" ? onKill() : true))
+    spawn.mockReturnValue(hung)
+    now.mockReturnValue(1_000)
+    const nerves = await import("../../../nerves/runtime")
+    const spy = vi.spyOn(nerves, "emitNervesEvent")
+    try {
+      const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn, stopTimeoutMs: 25 })
+      await manager.startAgent("slugger")
+      const stop = manager.stopAgent("slugger")
+      const rejection = expect(stop).rejects.toThrow("SIGKILL could not be sent")
+      await Promise.resolve()
+      timers[0]?.cb()
+      await rejection
+      expect(timers).toHaveLength(1)
+      expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({ status: "running", pid: 111 }))
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.agent_stop_escalated",
+        message: "managed agent ignored SIGTERM past the stop timeout; SIGKILL could not be sent",
+        meta: expect.objectContaining({ killAccepted: false }),
+      }))
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.agent_stop_timeout",
+        meta: expect.not.objectContaining({ killTimeoutMs: expect.anything() }),
+      }))
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it("counts a worker that exits a moment after SIGKILL as stopped", async () => {
+    const hung = new MockChild()
+    hung.pid = 111
+    hung.kill.mockImplementation(() => true)
+    spawn.mockReturnValue(hung)
+    now.mockReturnValue(1_000)
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn, stopTimeoutMs: 25, killTimeoutMs: 500 })
+    await manager.startAgent("slugger")
+    const stop = manager.stopAgent("slugger")
+    await Promise.resolve()
+    timers[0]?.cb()
+    expect(hung.kill).toHaveBeenLastCalledWith("SIGKILL")
+    expect(timers[1]?.delay).toBe(500)
+    hung.emit("exit", null, "SIGKILL")
+    await stop
+    // The kill timeout firing after the exit changes nothing.
+    timers[1]?.cb()
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({ status: "stopped", pid: null, errorReason: null }))
+  })
+
+  it("counts a worker as stopped when its exit is seen in the same moment the kill timeout fires", async () => {
+    // A busy daemon runs its due timers before it notices a child's exit, so the kill timeout can fire first even
+    // though the worker died at once. The stop waits for the exit already queued before calling itself failed.
+    const hung = new MockChild()
+    hung.pid = 111
+    hung.kill.mockImplementation(() => true)
+    spawn.mockReturnValue(hung)
+    now.mockReturnValue(1_000)
+    const nerves = await import("../../../nerves/runtime")
+    const spy = vi.spyOn(nerves, "emitNervesEvent")
+    try {
+      const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn, stopTimeoutMs: 25 })
+      await manager.startAgent("slugger")
+      const stop = manager.stopAgent("slugger")
+      await Promise.resolve()
+      timers[0]?.cb()
+      timers[1]?.cb()
+      hung.emit("exit", null, "SIGKILL")
+      await expect(stop).resolves.toBeUndefined()
+      expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({ status: "stopped", pid: null, errorReason: null }))
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.agent_stop_escalated",
+        message: "managed agent ignored SIGTERM past the stop timeout; sent SIGKILL",
+        meta: expect.objectContaining({ killAccepted: true }),
+      }))
+      expect(spy).not.toHaveBeenCalledWith(expect.objectContaining({ event: "daemon.agent_stop_timeout" }))
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it("kills a worker that ignores SIGTERM once the stop timeout passes, and then starts its replacement", async () => {
+    const hung = new MockChild()
+    hung.pid = 111
+    hung.kill.mockImplementation((signal?: string) => {
+      // Like a sense stuck in a turn: SIGTERM does nothing, SIGKILL ends it.
+      if (signal === "SIGKILL") {
+        hung.connected = false
+        hung.emit("exit", null, "SIGKILL")
+      }
+      return true
+    })
+    const replacement = new MockChild()
+    replacement.pid = 222
+    spawn.mockReturnValueOnce(hung).mockReturnValueOnce(replacement)
+    now.mockReturnValue(1_000)
+    const events: string[] = []
+    const nerves = await import("../../../nerves/runtime")
+    const spy = vi.spyOn(nerves, "emitNervesEvent").mockImplementation((event) => { events.push(event.event) })
+
+    try {
+      const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn, stopTimeoutMs: 25 })
+      await manager.startAgent("slugger")
+      const restart = manager.restartAgent("slugger")
+      await Promise.resolve()
+
+      expect(hung.kill).toHaveBeenCalledWith("SIGTERM")
+      expect(timers[0]?.delay).toBe(25)
+      timers[0]?.cb()
+      expect(hung.kill).toHaveBeenLastCalledWith("SIGKILL")
+      await restart
+
+      expect(events).toContain("daemon.agent_stop_escalated")
+      expect(spawn).toHaveBeenCalledTimes(2)
+      expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({ status: "running", pid: 222, errorReason: null }))
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it("clears scheduled restart timers before manual restarts", async () => {
