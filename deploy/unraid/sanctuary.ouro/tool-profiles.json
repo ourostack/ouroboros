@@ -2,7 +2,7 @@
   "version": 2,
   "profiles": {
     "sanctuary-owner": {
-      "version": 23,
+      "version": 24,
       "contextScopes": [
         "household.status",
         "household.policy",
@@ -49,6 +49,7 @@
         "shell_status",
         "shell_tail",
         "read_file",
+        "load_skill",
         "write_file",
         "edit_file",
         "glob",
@@ -179,7 +180,7 @@
       ]
     },
     "sanctuary-agent-peer": {
-      "version": 13,
+      "version": 14,
       "toolNames": [
         "external_event_disposition",
         "query_active_work",
@@ -218,6 +219,7 @@
         "shell_status",
         "shell_tail",
         "read_file",
+        "load_skill",
         "write_file",
         "edit_file",
         "glob",
