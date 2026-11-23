@@ -14,6 +14,8 @@ import {
 } from "../../../repertoire/coding/orca-manager"
 import type { OrcaAgent, OrcaLaunch, OrcaTerminal } from "../../../repertoire/coding/orca-client"
 import type { CodingSessionRequest, CodingSessionUpdate } from "../../../repertoire/coding/types"
+import { createLogger, type LogEvent } from "../../../nerves"
+import { setRuntimeLogger } from "../../../nerves/runtime"
 
 const worktree = { id: "repo::/wt/fix-login", path: "/wt/fix-login", branch: "ari/fix-login", isMainWorktree: false }
 const launch: OrcaLaunch = { worktree, terminalHandle: "term_1", promptDelivered: true, detail: "terminal per settings" }
@@ -423,11 +425,46 @@ describe("OrcaCodingSessionManager polling and persistence", () => {
     await vi.advanceTimersByTimeAsync(1000)
     expect(cli.listTerminals).toHaveBeenCalledTimes(2)
 
+    // With no one listening it keeps polling while the session is open, so a finish is still heard.
     first()
     second()
     cli.listTerminals.mockClear()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(cli.listTerminals).toHaveBeenCalledTimes(1)
+
+    // Once the session's terminal is gone for good, polling stops.
+    cli.listTerminals.mockResolvedValue([])
+    await vi.advanceTimersByTimeAsync(ORCA_MISSES_BEFORE_GONE * 1000)
+    expect(manager.getSession("orca-abc12345")?.status).toBe("completed")
+    cli.listTerminals.mockClear()
     await vi.advanceTimersByTimeAsync(5000)
     expect(cli.listTerminals).not.toHaveBeenCalled()
+  })
+
+  it("polls sessions it restores from its state file, and reports every update to onUpdate, logging a listener that fails", async () => {
+    vi.useFakeTimers()
+    const { manager: first, files } = setup()
+    await first.spawnSession(request)
+    first.shutdown()
+
+    const reported: string[] = []
+    const events: LogEvent[] = []
+    setRuntimeLogger(createLogger({ level: "debug", sinks: [(entry) => events.push(entry)] }))
+    const onUpdate = vi.fn(async (update: CodingSessionUpdate) => {
+      reported.push(update.kind)
+      if (update.kind === "waiting_input") throw new Error("queue full")
+    })
+    const { manager, cli } = setup({ pollIntervalMs: 1000, onUpdate, existsSync: (target) => files.has(target), readFileSync: (target) => files.get(target)! })
+    cli.listAgents.mockResolvedValue([{ state: "done", paneKey: "tab:leaf" }])
+    manager.subscribe("orca-abc12345", () => {
+      throw "plain"
+    })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(reported).toEqual(["waiting_input"])
+    expect(events.filter((event) => event.event === "repertoire.orca_coding_listener_error").map((event) => event.meta?.reason).sort())
+      .toEqual(["plain", "queue full"])
+    manager.shutdown()
+    setRuntimeLogger(null)
   })
 
   it("keeps sessions in memory when its state file can't be written", async () => {

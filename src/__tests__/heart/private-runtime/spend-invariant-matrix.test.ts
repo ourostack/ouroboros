@@ -369,11 +369,11 @@ const WAKE_ROWS: MatrixRow[] = [
     expectedWorkerType: "message",
   },
   {
-    name: "coding feedback obligation",
-    command: () => privateWake("coding-feedback", {
-      reason: "coding feedback received",
-      triggerSource: "coding-feedback",
-      originRefs: [{ kind: "coding-obligation", id: "obl-1" }, { kind: "coding-session", id: "sess-1" }],
+    name: "delegated work report",
+    command: () => privateWake("delegated-work", {
+      reason: "coding session sess-1 finished",
+      triggerSource: "delegated-work",
+      originRefs: [{ kind: "delegated-work", id: "sess-1" }, { kind: "delegated-work-status", id: "completed" }],
     }),
     expectedWorkerType: "message",
   },
