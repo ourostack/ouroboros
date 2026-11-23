@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "child_process"
+import { markTerminationGuard, signalHandlersBesidesGuards } from "./termination-guard"
 import { createHash } from "crypto"
 import * as fs from "fs"
 import * as path from "path"
@@ -412,8 +413,8 @@ const heldLocks = new Set<SyncLockHandle>()
 const TERMINATION_SIGNALS = ["SIGTERM", "SIGINT"] as const
 type TerminationSignal = (typeof TERMINATION_SIGNALS)[number]
 const terminationListeners: Record<TerminationSignal, () => void> = {
-  SIGTERM: () => onTerminationSignal("SIGTERM"),
-  SIGINT: () => onTerminationSignal("SIGINT"),
+  SIGTERM: markTerminationGuard(() => onTerminationSignal("SIGTERM")),
+  SIGINT: markTerminationGuard(() => onTerminationSignal("SIGINT")),
 }
 let guardInstalled = false
 
@@ -446,7 +447,7 @@ export function abortInFlightSync(): void {
  * other listener exists does it re-raise, restoring the default exit.
  */
 function onTerminationSignal(signal: TerminationSignal): void {
-  const others = process.rawListeners(signal).filter((listener) => listener !== terminationListeners[signal])
+  const others = signalHandlersBesidesGuards(signal)
   abortInFlightSync()
   removeTerminationGuard()
   /* v8 ignore next -- re-raising ends the process; the SIGTERM child-process test covers it @preserve */
