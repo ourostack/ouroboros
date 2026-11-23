@@ -2069,17 +2069,19 @@ describe("Telegram sense", () => {
       // A held notice already speaks for the rest of its batch.
       await expect(f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "endpoint:books", generation: 9, relatedEvents: [{ source: "sanctuary-health", eventId: "endpoint:media", generation: 23 }], text: "Books is down too." })).resolves.toMatchObject({ status: "covered" })
       await f.app.sendProactive("Self-recovered; the shelf was down for about 15 minutes.")
+      await f.app.sendOwnerNotice({ noticeId: "restart:sonarr", text: "Sonarr restarted itself." })
+      await f.app.sendOwnerNotice({ noticeId: "restart:sonarr", text: "Sonarr restarted itself." })
       // A delegated command's notice can't wait and can't go to Sam, so it is refused, and so is the command.
       await expect(f.app.sendOwnerNotice({ noticeId: "delegated:task-9", text: "Delegated command ran." })).rejects.toThrow("handed to someone else")
       expect(sends()).toEqual([])
       // Sam's next message gets its reply, and the notices keep waiting.
       await f.getOnMessage()({ updateId: 90, messageId: "91", userId: "42", chatId: "42", text: "something silly please" })
       expect(sends()).toEqual(["All systems nominal."])
-      expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "held-owner-notices.json"), "utf8"))).toHaveLength(2)
+      expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "held-owner-notices.json"), "utf8"))).toHaveLength(3)
 
       vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1000 + 1)
       await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "endpoint:books", generation: 1, text: "Books is back." })
-      expect(sends()).toEqual(["All systems nominal.", "The shelf is down.", "Self-recovered; the shelf was down for about 15 minutes.", "Books is back."])
+      expect(sends()).toEqual(["All systems nominal.", "The shelf is down.", "Self-recovered; the shelf was down for about 15 minutes.", "Sonarr restarted itself.", "Books is back."])
       expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "held-owner-notices.json"), "utf8"))).toEqual([])
     } finally {
       vi.useRealTimers()
