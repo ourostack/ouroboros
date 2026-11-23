@@ -1,0 +1,16 @@
+{
+  "name": "u-tools",
+  "private": true,
+  "version": "1.0.0",
+  "description": "The U arms' checking tools: type-check, axe scan and the hidden remove-copy-card test, the same in every arm.",
+  "type": "module",
+  "dependencies": {
+    "@testing-library/dom": "10.4.1",
+    "@testing-library/user-event": "14.6.1",
+    "axe-core": "4.11.0",
+    "dom-accessibility-api": "0.5.16",
+    "esbuild": "0.25.12",
+    "jsdom": "26.1.0",
+    "typescript": "5.9.3"
+  }
+}

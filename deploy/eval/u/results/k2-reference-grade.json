@@ -1,0 +1,1 @@
+{"typecheck":{"ok":true,"output":""},"axe":{"ok":true,"violations":0,"output":"no violations"},"hidden":{"firstPressHeld":true,"confirmedOnce187":true,"statusSaysDone":true,"detail":"remove control \"Remove copy 187\"; confirm control \"Remove copy 187\"; onRemove calls: [[187]]; status \"Copy 187 removed.\""},"escape":{"hits":[]}}
