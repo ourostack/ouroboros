@@ -14,7 +14,7 @@ import type OpenAI from "openai"
 import { emitNervesEvent } from "../../../nerves/runtime"
 import { createProxyRuntime, createStreamChannel, type GuestOutcome } from "../../transport/provider-proxy"
 import type { Product } from "../protocol"
-import { buildArm } from "./arms"
+import { buildArm, type Arm } from "./arms"
 import { booksCore, type BooksCore } from "./books-core"
 import { messageOf, runConversation } from "./loop"
 
@@ -46,18 +46,38 @@ function readTurnFile(file: string): InterviewTurnFile {
   return value as InterviewTurnFile
 }
 
-export async function runInterviewGuest(input: { stdin: Readable; stdout: Writable; turnFile: string; bundle: string; core?: BooksCore }): Promise<GuestOutcome> {
+/** What an arm builder gets: the mounted bundle, and the books core when a test gives its own. */
+export type ArmContext = { bundle: string; core?: BooksCore }
+export type ArmBuilder = (arm: string, context: ArmContext) => Arm
+
+/** Each product's arm builder in the guest; a product without one is refused. */
+export const ARM_BUILDERS: Partial<Record<Product, ArmBuilder>> = {
+  X: (arm, context) => buildArm(arm, context.core ?? booksCore({ home: path.join(context.bundle, "books") })),
+}
+
+export async function runInterviewGuest(input: { stdin: Readable; stdout: Writable; turnFile: string; bundle: string; core?: BooksCore; builders?: Partial<Record<Product, ArmBuilder>> }): Promise<GuestOutcome> {
   emitNervesEvent({ component: "eval", event: "eval.interview_guest_start", message: "interview guest starting a conversation", meta: {} })
   const channel = createStreamChannel(input.stdin, input.stdout)
   let outcome: GuestOutcome
   try {
     const turn = readTurnFile(input.turnFile)
-    const arm = buildArm(turn.arm, input.core ?? booksCore({ home: path.join(input.bundle, "books") }))
+    const builders = input.builders ?? ARM_BUILDERS
+    const builder = Object.hasOwn(builders, turn.product) ? builders[turn.product] : undefined
+    if (!builder) throw new Error(`no arms for product ${turn.product} in the guest`)
+    const arm = builder(turn.arm, { bundle: input.bundle, ...(input.core ? { core: input.core } : {}) })
     const runtime = await createProxyRuntime(channel)
     const system = `${personaPrompt(input.bundle)}\n\n${turn.labelLine}`
     const conversation = await runConversation({ runtime, product: turn.product, system, prefix: turn.prefix, userTexts: [turn.userText, ...turn.followUps], arm })
     const job = conversation.turns[0]!
-    outcome = { ok: true, result: { timeline: conversation.timeline, finalReply: job.finalReply, outcome: job.outcome, turns: conversation.turns } }
+    // A product graded in the container grades once the whole conversation (the job and its debrief) has ended.
+    // A grader that fails is the job's failure, reported as the grade, not the loss of the conversation.
+    let grade: unknown
+    try {
+      grade = arm.grade ? await arm.grade() : undefined
+    } catch (error) {
+      grade = { error: messageOf(error) }
+    }
+    outcome = { ok: true, result: { timeline: conversation.timeline, finalReply: job.finalReply, outcome: job.outcome, turns: conversation.turns, ...(grade !== undefined ? { grade } : {}) } }
     emitNervesEvent({ component: "eval", event: "eval.interview_guest_end", message: "interview guest finished its conversation", meta: { turns: conversation.turns.length } })
   } catch (error) {
     outcome = { ok: false, error: messageOf(error) }
