@@ -312,6 +312,25 @@ describe("private-runtime policy and ledger", () => {
       .resolves.toMatchObject({ result: "deny", deniedReason: "default policy deny" })
   })
 
+  it("allows a delegated-work wake only with the work's id and status refs", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps()
+    const request = (originRefs: Array<{ kind: string; id: string }>, key: string) => privateTurnRequest({
+      origin: "daemon.private.wake",
+      reason: "coding session coding-001 finished",
+      triggerSource: "delegated-work",
+      idempotencyKey: key,
+      originRefs,
+    })
+
+    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "delegated-work", id: "coding-001" }, { kind: "delegated-work-status", id: "completed" }], "delegated-work:1"), { ...deps, evaluatePolicy: undefined }))
+      .resolves.toMatchObject({ result: "allow", executable: true, reason: "delegated work changed state" })
+    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "delegated-work", id: "coding-001" }], "delegated-work:2"), { ...deps, evaluatePolicy: undefined }))
+      .resolves.toMatchObject({ result: "deny", deniedReason: "default policy deny" })
+    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "delegated-work-status", id: "completed" }], "delegated-work:3"), { ...deps, evaluatePolicy: undefined }))
+      .resolves.toMatchObject({ result: "deny", deniedReason: "default policy deny" })
+  })
+
   it("keeps spoofed operator CLI private wakes denied by default", async () => {
     const privateRuntime = await loadPrivateRuntime()
     const deps = policyDeps()

@@ -73,6 +73,11 @@ export interface DelegatedWorkReport {
   /** Where more of the result can be read. */
   detailHint?: string
   obligationId?: string
+  /**
+   * When the work reached this status (its end, or its last activity). A session that waits, is answered and waits
+   * again reaches waiting_input twice; this tells the two apart so the second is reported too.
+   */
+  transitionAt?: string
   now: number
 }
 
@@ -119,11 +124,11 @@ export function delegatedWorkContent(report: DelegatedWorkReport): string {
 
 /**
  * Tell the agent that delegated work finished, failed, stopped or needs input, and wake it to pass that on.
- * Each status of each piece of work is reported at most once per process; the wake's idempotency key holds it to
- * once across processes.
+ * Each time a piece of work reaches a status is reported at most once in this process, and the wake's idempotency
+ * key (kept in the private-turn ledger) holds it to one turn across processes.
  */
 export async function reportDelegatedWork(report: DelegatedWorkReport): Promise<boolean> {
-  const identity = `${report.agent}:${report.kind}:${report.id}:${report.status}`
+  const identity = `${report.agent}:${report.kind}:${report.id}:${report.status}${report.transitionAt ? `@${report.transitionAt}` : ""}`
   if (reported.has(identity)) return false
   reported.add(identity)
   const delivered = await deliverToPrivateRuntime({

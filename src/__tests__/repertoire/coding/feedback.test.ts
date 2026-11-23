@@ -870,6 +870,7 @@ describe("reporting a coding session to the agent", () => {
       origin: { friendId: "ari", channel: "bluebubbles", key: "chat-1" },
       detailHint: "Read the full output with coding_tail (sessionId coding-001).",
       obligationId: "ob-7",
+      transitionAt: "2026-03-05T23:50:00.000Z",
       now: 42,
     })
   })
@@ -879,7 +880,7 @@ describe("reporting a coding session to the agent", () => {
     await reportCodingSessionUpdate({ kind: "spawned", session: makeSession() })
     await reportCodingSessionUpdate({ kind: "progress", session: makeSession(), text: "thinking" })
     expect(report.reportDelegatedWork).not.toHaveBeenCalled()
-    await reportCodingSessionUpdate({ kind: "completed", session: makeSession({ status: "completed", stdoutTail: "all done" }) })
-    expect(report.reportDelegatedWork).toHaveBeenCalledWith(expect.objectContaining({ origin: null, result: "all done", obligationId: undefined, now: expect.any(Number) }))
+    await reportCodingSessionUpdate({ kind: "completed", session: makeSession({ status: "completed", stdoutTail: "all done", endedAt: "2026-03-06T00:00:00.000Z" }) })
+    expect(report.reportDelegatedWork).toHaveBeenCalledWith(expect.objectContaining({ origin: null, result: "all done", obligationId: undefined, transitionAt: "2026-03-06T00:00:00.000Z", now: expect.any(Number) }))
   })
 })

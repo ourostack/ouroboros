@@ -337,6 +337,7 @@ export async function reportCodingSessionUpdate(update: CodingSessionUpdate, now
     origin: session.originSession ?? null,
     detailHint: `Read the full output with coding_tail (sessionId ${session.id}).`,
     obligationId: session.obligationId,
+    transitionAt: session.endedAt ?? session.lastActivityAt,
     now,
   })
 }

@@ -108,15 +108,21 @@ describe("reporting delegated work", () => {
     })
   })
 
-  it("reports each status of a piece of work once", async () => {
+  it("reports each time work reaches a status once, and a later return to that status again", async () => {
     wake.requestPrivateWake.mockResolvedValue({ ok: true })
     const events: LogEvent[] = []
     setRuntimeLogger(createLogger({ level: "debug", sinks: [entry => events.push(entry)] }))
-    await reportDelegatedWork({ ...base, status: "waiting_input" })
-    expect(await reportDelegatedWork({ ...base, status: "waiting_input" })).toBe(false)
+    await reportDelegatedWork({ ...base, status: "waiting_input", transitionAt: "t1" })
+    expect(await reportDelegatedWork({ ...base, status: "waiting_input", transitionAt: "t1" })).toBe(false)
+    await reportDelegatedWork({ ...base, status: "waiting_input", transitionAt: "t2" })
     await reportDelegatedWork({ ...base, status: "completed" })
-    expect(queued()).toHaveLength(2)
-    expect(events.filter(event => event.event === "heart.delegated_work_reported").map(event => event.meta?.status)).toEqual(["waiting_input", "completed"])
+    expect(queued()).toHaveLength(3)
+    expect(events.filter(event => event.event === "heart.delegated_work_reported").map(event => event.meta?.status)).toEqual(["waiting_input", "waiting_input", "completed"])
+    expect(wake.requestPrivateWake.mock.calls.map(call => call[2].idempotencyKey)).toEqual([
+      "delegated-work:slugger:coding session:coding-007:waiting_input@t1",
+      "delegated-work:slugger:coding session:coding-007:waiting_input@t2",
+      "delegated-work:slugger:coding session:coding-007:completed",
+    ])
   })
 
   it("words work with no chat, no title and no result, and asks for a decision when it is waiting or stalled", () => {
