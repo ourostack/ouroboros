@@ -56,9 +56,17 @@ export type TelegramTurnInput = {
   prefix: Case["prefix"]
   userText: string
   providerRuntime: ProviderRuntime
+  /** The blind interviews' label line, added to the end of every request's system prompt. */
+  systemLine?: string
+  /** Later owner messages in the same chat (the interviews' debrief), each its own turn after the job's. */
+  followUps?: string[]
 }
 
-export type TelegramTurnResult = Pick<Observation, "timeline" | "finalReply" | "outcome" | "steps">
+/** Per owner message, where its part of the timeline starts, its answer, its outcome and its model calls. */
+export type TelegramTurns = Array<{ start: number; finalReply: string; outcome: string; calls: number }>
+
+/** The job's reply and outcome are the first message's; `turns` is there only when later messages were given. */
+export type TelegramTurnResult = Pick<Observation, "timeline" | "finalReply" | "outcome" | "steps"> & { turns?: TelegramTurns }
 
 async function writeOwner(agentRoot: string): Promise<void> {
   const now = new Date().toISOString()
@@ -109,6 +117,26 @@ export function recordModelTraffic(inner: ProviderRuntime, timeline: TelegramTur
   return { runtime, steps: () => steps }
 }
 
+/**
+ * Adds one line to the end of every request's system prompt: to the structured prompt's volatile part and to the
+ * system message the turn puts first, which is that prompt flattened. The turn's own state is left as it is.
+ */
+export function withSystemLine(inner: ProviderRuntime, line: string): ProviderRuntime {
+  const add = (text: string): string => text ? `${text}\n\n${line}` : line
+  const streamTurn: ProviderRuntime["streamTurn"] = (request) => inner.streamTurn({
+    ...request,
+    messages: request.messages.map((message, index) => index === 0 && message.role === "system" && typeof message.content === "string" ? { ...message, content: add(message.content) } : message),
+    ...(request.systemPrompt ? { systemPrompt: { ...request.systemPrompt, volatile: add(request.systemPrompt.volatile) } } : {}),
+  })
+  return new Proxy(inner, {
+    get(target, property) {
+      if (property === "streamTurn") return streamTurn
+      const value: unknown = Reflect.get(target, property)
+      return typeof value === "function" ? value.bind(target) : value
+    },
+  })
+}
+
 const idle = async (): Promise<void> => undefined
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: "\"", "#39": "'" }
@@ -132,7 +160,7 @@ export async function runTelegramTurn(input: TelegramTurnInput): Promise<Telegra
     saveSession(sessionPath, [{ role: "system", content: "" }, ...input.prefix])
 
     const timeline: TelegramTurnResult["timeline"] = []
-    const recorded = recordModelTraffic(input.providerRuntime, timeline)
+    const recorded = recordModelTraffic(input.systemLine ? withSystemLine(input.providerRuntime, input.systemLine) : input.providerRuntime, timeline)
     const withButtons = new Map<TraceReply, boolean>()
     let messageId = 1
     const api = {
@@ -183,21 +211,32 @@ export async function runTelegramTurn(input: TelegramTurnInput): Promise<Telegra
         }
       },
     })
+    const turns: TelegramTurns = []
     try {
-      await onMessage({ updateId: 1, messageId: "1", userId: OWNER_USER, chatId: OWNER_USER, text: input.userText })
+      // The owner's messages, one Telegram update each, in the same chat: the job, then any later ones.
+      for (const [index, text] of [input.userText, ...input.followUps ?? []].entries()) {
+        turn = undefined
+        const start = timeline.length
+        const stepsBefore = recorded.steps()
+        await onMessage({ updateId: index + 1, messageId: String(index + 1), userId: OWNER_USER, chatId: OWNER_USER, text })
+        if (turnError) throw turnError
+        // A bundle that already answered this message has its outcome recorded, and the sense does not run it again.
+        if (!turn) throw new Error("the sense did not run the turn: this bundle already has an outcome for its message, so use a fresh bundle")
+        // The answer is every message sent after the model's last tool call: Telegram splits a long one into several.
+        const own = timeline.slice(start)
+        const lastCall = own.findLastIndex((entry) => entry.kind === "call")
+        const finalReply = (own.slice(lastCall + 1) as TraceReply[]).filter((entry) => !withButtons.get(entry)).map((entry) => entry.text).join("\n")
+        turns.push({ start, finalReply, outcome: String((turn as RunSenseTurnResult).turnOutcome), calls: recorded.steps() - stepsBefore })
+      }
     } finally {
       await app.stop()
     }
-    if (turnError) throw turnError
-    // A bundle that already answered this message has its outcome recorded, and the sense does not run it again.
-    if (!turn) throw new Error("the sense did not run the turn: this bundle already has an outcome for its message, so use a fresh bundle")
-    // The answer is every message sent after the model's last tool call: Telegram splits a long one into several.
-    const lastCall = timeline.findLastIndex((entry) => entry.kind === "call")
     const result: TelegramTurnResult = {
       timeline,
-      finalReply: (timeline.slice(lastCall + 1) as TraceReply[]).filter((entry) => !withButtons.get(entry)).map((entry) => entry.text).join("\n"),
-      outcome: String(turn!.turnOutcome),
+      finalReply: turns[0]!.finalReply,
+      outcome: turns[0]!.outcome,
       steps: recorded.steps(),
+      ...(input.followUps ? { turns } : {}),
     }
     emitNervesEvent({ component: "eval", event: "eval.telegram_turn_end", message: "eval Telegram turn finished", meta: { outcome: result.outcome, steps: result.steps } })
     return result

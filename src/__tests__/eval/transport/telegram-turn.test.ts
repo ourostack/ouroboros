@@ -6,7 +6,7 @@ import type { ProviderRuntime, ProviderTurnRequest } from "../../../heart/core"
 import { resetConfigCache } from "../../../heart/config"
 import { resetIdentity } from "../../../heart/identity"
 import { createProxyRuntime, serveProxyRuntime, type ProxyChannel, type ProxyMessage } from "../../../eval/transport/provider-proxy"
-import { recordModelTraffic, runTelegramTurn } from "../../../eval/transport/telegram-turn"
+import { recordModelTraffic, runTelegramTurn, withSystemLine } from "../../../eval/transport/telegram-turn"
 
 function scriptedRuntime(steps: Array<{ name: string; arguments: Record<string, string> }>, seen: ProviderTurnRequest[]): ProviderRuntime {
   return {
@@ -92,6 +92,58 @@ describe("runTelegramTurn", () => {
     expect(firstRequest).toContain("Say hi from the shell, please.")
   }, 60_000)
 
+  it("adds the interviews' line to every request's system prompt, and answers later owner messages in the same chat as their own turns", async () => {
+    const seen: ProviderTurnRequest[] = []
+    const line = "You are working in environment K."
+    const result = await runTelegramTurn({
+      agentRoot, prefix: [{ role: "user", content: "Morning." }, { role: "assistant", content: "Morning, Ari." }], userText: "Say hi from the shell, please.",
+      providerRuntime: scriptedRuntime([
+        { name: "shell", arguments: { command: "echo hi" } },
+        { name: "settle", arguments: { answer: "done", intent: "complete" } },
+        { name: "settle", arguments: { answer: "6\nIt went fine.", intent: "complete" } },
+      ], seen),
+      systemLine: line,
+      followUps: ["How did that go?"],
+    })
+    expect(seen).toHaveLength(3)
+    for (const request of seen) {
+      expect(request.systemPrompt!.volatile.endsWith(`\n\n${line}`)).toBe(true)
+      const system = request.messages[0]!
+      expect(system.role).toBe("system")
+      expect(String(system.content).endsWith(`\n\n${line}`)).toBe(true)
+      expect(String(system.content).split(line)).toHaveLength(2)
+    }
+    // The later message is answered in the same conversation: it sees the first answer and the prefix.
+    const third = JSON.stringify(seen[2]!.messages)
+    expect(third).toContain("How did that go?")
+    expect(third).toContain("Morning, Ari.")
+    expect(third).toContain("done")
+    // The job's reply and outcome are the first turn's; each turn says where it starts, as the interviews' guests do.
+    expect(result.finalReply).toBe("done")
+    expect(result.outcome).toBe("settled")
+    expect(result.steps).toBe(3)
+    expect(result.timeline.map((entry) => entry.kind === "call" ? `call:${entry.name}` : `reply:${entry.text}`)).toEqual([
+      "call:shell", "call:settle", "reply:done", "call:settle", "reply:6\nIt went fine.",
+    ])
+    expect(result.turns).toEqual([
+      { start: 0, finalReply: "done", outcome: "settled", calls: 2 },
+      { start: 3, finalReply: "6\nIt went fine.", outcome: "settled", calls: 1 },
+    ])
+  }, 60_000)
+
+  it("runs a replay-eval turn as before when no line or later message is given", async () => {
+    const seen: ProviderTurnRequest[] = []
+    const result = await runTelegramTurn({
+      agentRoot, prefix: [], userText: "hello",
+      providerRuntime: scriptedRuntime([{ name: "settle", arguments: { answer: "hi", intent: "complete" } }], seen),
+    })
+    // The same result, field for field, with nothing added, and a system prompt the turn alone wrote.
+    expect(Object.keys(result)).toEqual(["timeline", "finalReply", "outcome", "steps"])
+    expect(result).toEqual({ timeline: [{ kind: "call", name: "settle", args: JSON.stringify({ answer: "hi", intent: "complete" }), result: expect.any(String) }, { kind: "reply", text: "hi" }], finalReply: "hi", outcome: "settled", steps: 1 })
+    expect(String(seen[0]!.messages[0]!.content)).toBe([seen[0]!.systemPrompt!.stable, seen[0]!.systemPrompt!.volatile].filter(Boolean).join("\n\n"))
+    expect(JSON.stringify(seen[0])).not.toContain("environment")
+  }, 60_000)
+
   it("reports a provider error as an errored turn after one call, never retrying or rebuilding the provider", async () => {
     const runtime = scriptedRuntime([], [])
     let calls = 0
@@ -174,6 +226,23 @@ describe("runTelegramTurn", () => {
       userText: "hello",
       providerRuntime: scriptedRuntime([], []),
     })).rejects.toThrow("must be the sanctuary bundle")
+  })
+})
+
+describe("withSystemLine", () => {
+  it("adds the line to an empty prompt as the whole prompt, leaves a first message that is not the system text alone, and keeps the runtime's own fields", async () => {
+    const seen: ProviderTurnRequest[] = []
+    const inner = scriptedRuntime([{ name: "settle", arguments: {} }, { name: "settle", arguments: {} }], seen)
+    const wrapped = withSystemLine(inner, "L")
+    await wrapped.streamTurn({ messages: [{ role: "system", content: "" }, { role: "user", content: "u" }], activeTools: [], callbacks: {} as never, systemPrompt: { stable: "s", volatile: "" } })
+    expect(seen[0]!.messages).toEqual([{ role: "system", content: "L" }, { role: "user", content: "u" }])
+    expect(seen[0]!.systemPrompt).toEqual({ stable: "s", volatile: "L" })
+    const parts = [{ type: "text" as const, text: "parts" }]
+    await wrapped.streamTurn({ messages: [{ role: "user", content: "u" }, { role: "system", content: parts }], activeTools: [], callbacks: {} as never })
+    expect(seen[1]!.messages).toEqual([{ role: "user", content: "u" }, { role: "system", content: parts }])
+    expect(seen[1]).not.toHaveProperty("systemPrompt")
+    expect(wrapped.model).toBe("eval-scripted")
+    await expect(wrapped.ping()).resolves.toBeUndefined()
   })
 })
 
