@@ -47,15 +47,14 @@ import("../heart/runtime-credentials")
         }
       }
     }
-    const shutdown = (): void => {
-      app.stop()
-      void (attention?.close() ?? Promise.resolve()).then(() => process.exit(0), error => {
-        emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_attention_shutdown_error", message: "could not close native session attention", meta: { error: String(error) } })
-        process.exit(1)
-      })
-    }
-    process.once("SIGTERM", shutdown)
-    process.once("SIGINT", shutdown)
+    const { installSenseShutdown } = await import("./sense-shutdown")
+    installSenseShutdown({
+      sense: "shepherd",
+      stop: async () => {
+        app.stop()
+        await attention?.close()
+      },
+    })
   })
   .catch((error) => {
     emitNervesEvent({

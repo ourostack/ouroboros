@@ -330,16 +330,50 @@ export function observationSchedulingKeys(
   return Object.freeze([...keys])
 }
 
+/**
+ * Resolves when every blocker settles or any signal aborts, whichever comes first.
+ * Listeners are removed either way, so a long-lived fence holds no references.
+ */
+function untilSettledOrAborted(
+  blockers: readonly PendingObservation[],
+  signals: readonly AbortSignal[],
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const done = (): void => {
+      for (const signal of signals) signal.removeEventListener("abort", done)
+      resolve()
+    }
+    for (const signal of signals) signal.addEventListener("abort", done, { once: true })
+    void Promise.all(blockers.map((entry) => entry.settled)).then(done)
+  })
+}
+
+/**
+ * Waits until no newer observation in this chat could still supersede the turn.
+ * Resolves false once the turn is no longer current (superseded, cancelled or
+ * timed out). Rejects with the reason when `signal` aborts, so a fence that is
+ * never settled can never hold a turn past its deadline or shutdown.
+ */
 export async function awaitDeliveryAdmission(
   capability: BlueBubblesLatestTurnCapability,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const value = internal(capability)
+  const signals = signal ? [value.signal, signal] : [value.signal]
   while (isCurrent(value)) {
+    signal?.throwIfAborted()
     const blockers = [...pending.values()].filter((entry) => pendingIntersects(value, entry))
     if (blockers.length === 0) return true
-    await Promise.all(blockers.map((entry) => entry.settled))
+    await untilSettledOrAborted(blockers, signals)
   }
   return false
+}
+
+/** Every observation still pending, oldest first. The sense's ownership audit checks each has an owner. */
+export function listPendingObservationsForAudit(): BlueBubblesObservationReservation[] {
+  return [...pending.values()]
+    .sort((left, right) => left.reservation.ordinal - right.reservation.ordinal)
+    .map((entry) => entry.reservation)
 }
 
 export function isDeliveryAdmittedNow(
