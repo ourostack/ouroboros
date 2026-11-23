@@ -7,7 +7,7 @@ import { PassThrough } from "node:stream"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { ProviderRuntime } from "../../../heart/core"
 import type { Case } from "../../../eval/domain/case"
-import { buildSandboxImage, dockerCli, HOUSEHOLD_IMAGE, runSandboxed, SANDBOX_IMAGE, type Docker, type DockerProcess } from "../../../eval/sandbox/docker"
+import { buildSandboxImage, dockerCli, HOUSEHOLD_IMAGE, runSandboxed, SANDBOX_IMAGE, splitTurns, type Docker, type DockerProcess } from "../../../eval/sandbox/docker"
 import { runGuest } from "../../../eval/sandbox/guest"
 import type { runTelegramTurn } from "../../../eval/transport/telegram-turn"
 
@@ -328,6 +328,46 @@ describe("runSandboxed", () => {
   it("reports a done message without a result as a sandbox error", async () => {
     const { docker } = fakeDocker({ agent: "null-result" })
     expect((await runSandboxed(input(docker, { turnTimeoutMs: 2000 }))).outcome).toBe("sandbox-error: the guest's result is malformed")
+  })
+
+  it("runs another guest with its own turn file, scores its first turn and returns the later turns", async () => {
+    const turn = { prefix: [], userText: "job", followUps: ["debrief"] }
+    let written: unknown
+    const { docker, calls } = fakeDocker({
+      runTurn: async (t) => {
+        written = { prefix: t.prefix, userText: t.userText }
+        const first = await t.providerRuntime.streamTurn({ messages: [], activeTools: [], callbacks: {} } as never)
+        const second = await t.providerRuntime.streamTurn({ messages: [], activeTools: [], callbacks: {} } as never)
+        const call = (id: string, args: string) => ({ kind: "call" as const, name: "shell", args, result: id })
+        return {
+          timeline: [call("a", first.toolCalls[0]!.arguments), { kind: "reply", text: "Done." }, call("b", second.toolCalls[0]!.arguments), { kind: "reply", text: "6\nfine" }],
+          finalReply: "Done.", outcome: "settled", steps: 2,
+          turns: [{ start: 0, finalReply: "Done.", outcome: "settled", calls: 2 }, { start: 2, finalReply: "6\nfine", outcome: "settled", calls: 1 }],
+        } as never
+      },
+    })
+    const obs = await runSandboxed(input(docker, { guest: { entry: "interview-guest-entry.js", turn } }))
+    expect(calls.find((args) => args.includes("--name") && args[args.indexOf("--name") + 1]!.endsWith("-agent"))!.slice(-3)).toEqual([SANDBOX_IMAGE, "node", "/opt/ouro/dist/eval/interview-guest-entry.js"])
+    expect(written).toEqual({ prefix: [], userText: "job" })
+    expect(obs.outcome).toBe("settled")
+    expect(obs.finalReply).toBe("Done.")
+    expect(obs.timeline).toHaveLength(2)
+    expect(obs.followUps).toEqual([{ finalReply: "6\nfine", outcome: "settled", calls: 1, toolCalls: 1 }])
+    expect(obs.gaps).not.toEqual(expect.arrayContaining([...DECLARED_GAPS]))
+  })
+
+  it("reports another guest's malformed turns as a sandbox error, and a single turn as no follow-ups", async () => {
+    const reply = { timeline: [], finalReply: "", outcome: "settled", steps: 0 }
+    const bad = fakeDocker({ runTurn: async () => ({ ...reply, turns: [{ start: "0" }] }) as never })
+    expect((await runSandboxed(input(bad.docker, { guest: { entry: "interview-guest-entry.js", turn: { prefix: [], userText: "x" } } }))).outcome).toBe("sandbox-error: the guest's result is malformed")
+    const one = fakeDocker({ runTurn: async () => ({ ...reply, turns: [{ start: 0, finalReply: "", outcome: "settled", calls: 0 }] }) as never })
+    expect((await runSandboxed(input(one.docker, { guest: { entry: "interview-guest-entry.js", turn: { prefix: [], userText: "x" } } }))).followUps).toEqual([])
+  })
+
+  it("splits no follow-ups out of a timeline the guest's turn starts no longer index", () => {
+    const observation = { timeline: [{ kind: "reply" as const, text: "a" }], finalReply: "a", outcome: "trace-mismatch", steps: 1 }
+    const turns = [{ start: 0, finalReply: "a", outcome: "settled", calls: 1 }, { start: 1, finalReply: "b", outcome: "settled", calls: 1 }]
+    expect(splitTurns(observation, turns)).toEqual({ observation, followUps: [] })
   })
 
   it("keeps the host's calls when the guest's trace disagrees with them", async () => {

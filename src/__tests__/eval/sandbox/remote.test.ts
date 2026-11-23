@@ -46,6 +46,15 @@ describe("remote sandbox", () => {
     expect({ log, taken }).toEqual({ log: ["call"], taken: 1 })
   })
 
+  it("sends another guest with the job, and returns the observation's follow-ups", async () => {
+    let seen: RemoteJob | undefined
+    const guest = { entry: "interview-guest-entry.js" as const, turn: { userText: "job", followUps: ["debrief"] } }
+    const withFollowUps = { ...observation, followUps: [{ finalReply: "6", outcome: "settled", calls: 1, toolCalls: 0 }] }
+    const runCase = remoteRunCase({ start: () => loopback(async (job) => { seen = job; return withFollowUps }), paths })
+    expect(await runCase({ case: theCase, host: hostRuntime([]), budget: { take: () => true }, guest })).toEqual(withFollowUps)
+    expect(seen).toEqual({ case: theCase, ...paths, guest })
+  })
+
   it("fails when the remote run fails, returns something that is not an observation, exits early or runs too long", async () => {
     const host = hostRuntime([])
     const budget = { take: () => true }

@@ -122,7 +122,7 @@ export function formatUpdateStatusLine(
       line = `Updates: pinned to ${version} (checked ${age}; ${state.detail ?? "pin honored"})`
       break
     case "deferred":
-      line = `Updates: ${state.latestVersion ?? "a new version"} waits for memory, staying on ${version} (checked ${age}; ${state.detail ?? "deferred"})`
+      line = `Updates: ${state.latestVersion ?? "a new version"} waits, staying on ${version} (checked ${age}; ${state.detail ?? "deferred"})`
       break
     default:
       line = `Updates: needs attention: ${state.outcome} ${age} on ${version}${state.latestVersion ? ` (latest ${state.latestVersion})` : ""}: ${state.detail ?? "no detail"}`
