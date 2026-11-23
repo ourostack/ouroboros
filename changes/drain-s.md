@@ -1,0 +1,1 @@
+- The Sanctuary upgrade and rollback no longer fail when an unrelated container is removed between the host's container list and its inspect; "No such object" skips that container, and any other inspect failure still refuses.

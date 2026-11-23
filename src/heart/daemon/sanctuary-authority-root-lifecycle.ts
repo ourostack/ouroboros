@@ -1046,7 +1046,15 @@ export class SanctuaryAuthorityRootLifecycle {
     const names = this.#docker(["ps", "--format", "{{json .}}"]).trim().split("\n").filter(Boolean).map((line) => String(JSON.parse(line).Names))
     for (const name of names) {
       if (["ouro-butler", "ouro-butler-rollback"].includes(name)) continue
-      const containers = JSON.parse(this.#docker(["inspect", name])) as Container[]
+      let containers: Container[]
+      try {
+        containers = JSON.parse(this.#docker(["inspect", name])) as Container[]
+      } catch (error) {
+        // A container removed between the list and the inspect is gone, so it cannot be a poller; any other
+        // failure leaves the host unchecked and still refuses.
+        if (/No such (object|container)/iu.test(`${(error as { stderr?: unknown }).stderr ?? ""}${(error as Error).message}`)) continue
+        throw error
+      }
       if (containers.some((container) => container.Mounts.some((mount) => mount.Source === BUNDLE || mount.Source === RUNTIME))) throw new Error("Sanctuary has an unowned possible direct poller")
     }
   }

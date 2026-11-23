@@ -1100,6 +1100,19 @@ describe("fixed root installation effects", () => {
     await expect(f.lifecycle.effect("freeze-resident").apply()).rejects.toThrow(/poller/u)
     expect(host.exec.mock.calls.some((call) => call[1][0] === "stop")).toBe(false)
   })
+  it("skips an unrelated container that vanishes between the list and its inspect, and still refuses any other inspect failure", async () => {
+    const f = fixture()
+    const base = host.exec.getMockImplementation()!
+    const withGhost = (message: string) => host.exec.mockImplementation((file, args, ...rest) => {
+      if (args[0] === "ps" && !args.includes("-a")) return `${base(file, args, ...rest)}{"Names":"ouro-eval-1daaed8f-household"}\n`
+      if (args[0] === "inspect" && args[1] === "ouro-eval-1daaed8f-household") throw Object.assign(new Error("Command failed"), { stderr: message })
+      return base(file, args, ...rest)
+    })
+    withGhost("Error: No such object: ouro-eval-1daaed8f-household")
+    await expect(f.lifecycle.effect("freeze-resident").apply()).resolves.not.toThrow()
+    withGhost("permission denied while trying to connect to the Docker daemon socket")
+    await expect(f.lifecycle.effect("freeze-resident").apply()).rejects.toThrow(/permission denied|Command failed/u)
+  })
   it("refuses unsafe requests, changed bot identity, corrupt cursor and unknown effects", async () => {
     const f = fixture()
     expect(() => f.lifecycle.effect("arbitrary-root-command")).toThrow(/effect/u)
