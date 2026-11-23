@@ -243,10 +243,10 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   desk: {
     category: "Tasks",
-    description: "Manage the agent's desk — tasks, tracks, friction, lessons, search, and recall (routes through the desk MCP server). Ouro admins also invite people to Hosted Desk and manage their access.",
-    usage: "ouro desk <task|track|friction|lesson|search|recall|reindex|thread|invite|access|delete-account> ...",
+    description: "Manage the agent's desk — tasks, tracks, friction, lessons, search, recall and Desk's health (through the agent's built-in Desk MCP server; --desk <name> picks another desk). Ouro admins also invite people to Hosted Desk and manage their access.",
+    usage: "ouro desk <task|track|friction|lesson|search|recall|status|doctor|reindex|invite|access|delete-account> ...",
     example: "ouro desk invite --name \"Sam\"",
-    subcommands: ["task", "track", "friction", "lesson", "search", "recall", "reindex", "thread", "invite", "access", "delete-account"],
+    subcommands: ["task", "track", "friction", "lesson", "search", "recall", "status", "doctor", "reindex", "invite", "access", "delete-account"],
   },
   task: {
     category: "Tasks",
