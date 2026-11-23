@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1391",
+      "changes": [
+        "Use friends 0.1.0-alpha.30, which can carry a signed answer to an approval prompt."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1390",
       "changes": [
         "Approval prompts show a tool's declared confirm question, and a declined call answers with the stable code approval-denied (#1699)."

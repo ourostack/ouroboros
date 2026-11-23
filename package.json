@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.1390",
+  "version": "0.1.0-alpha.1391",
   "description": "Ouroboros, the agent harness: agents with durable memory that live where you talk (terminal, Teams, iMessage, mail, voice) and use real tools. Start with npx ouro.bot@latest.",
   "homepage": "https://ouroboros.bot/",
   "engines": {
@@ -65,7 +65,7 @@
   ],
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
-    "@ouro.bot/friends": "0.1.0-alpha.30",
+    "@ouro.bot/friends": "0.1.0-alpha.18",
     "@types/react": "^17.0.91",
     "@types/ws": "^8.18.1",
     "ajv": "^8.20.0",
