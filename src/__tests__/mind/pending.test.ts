@@ -355,6 +355,33 @@ describe("drainDeferredReturns", () => {
   })
 })
 
+describe("withdrawDeferredReturn", () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  it("removes only the saved copies of that message, and nothing when there is no queue", async () => {
+    const { withdrawDeferredReturn, getDeferredReturnDir } = await import("../../mind/pending")
+    const dir = getDeferredReturnDir("testagent", "friend-1")
+    const saved: Record<string, string> = {
+      "1-a.json": JSON.stringify({ from: "testagent", friendId: "friend-1", channel: "deferred", key: "return", content: "your sign-in is done", timestamp: 1 }),
+      "2-b.json": JSON.stringify({ from: "testagent", friendId: "friend-1", channel: "deferred", key: "return", content: "something else", timestamp: 2 }),
+      "3-c.json": "not json",
+      "4-d.json.processing": "{}",
+    }
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockReturnValue(Object.keys(saved) as any)
+    vi.mocked(fs.readFileSync).mockImplementation((file) => saved[path.basename(String(file))]!)
+
+    expect(withdrawDeferredReturn("testagent", "friend-1", "your sign-in is done")).toBe(1)
+    expect(fs.unlinkSync).toHaveBeenCalledTimes(1)
+    expect(fs.unlinkSync).toHaveBeenCalledWith(path.join(dir, "1-a.json"))
+
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    expect(withdrawDeferredReturn("testagent", "friend-1", "your sign-in is done")).toBe(0)
+  })
+})
+
 describe("queuePendingMessage", () => {
   beforeEach(() => {
     vi.resetModules()

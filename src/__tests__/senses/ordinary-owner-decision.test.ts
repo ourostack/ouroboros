@@ -96,7 +96,8 @@ describe("deliverOrdinaryOwnerDecision", () => {
     const route = vi.fn(async () => ({ status: "deferred" as const }))
     const d = deps(root, { ownerUsername: undefined, listFriends: async () => [friend("other"), friend("me", { externalIds: local(me) })], route })
     if (machineOwnerUsername()) {
-      expect((await deliverOrdinaryOwnerDecision(d, input)).status).toBe("sent")
+      // The route saved it for their next message, so it is saved, not sent.
+      expect((await deliverOrdinaryOwnerDecision(d, input)).status).toBe("saved")
       expect(route).toHaveBeenCalledWith("me", input.text)
     } else {
       await expect(deliverOrdinaryOwnerDecision(d, input)).rejects.toThrow("no single owner")

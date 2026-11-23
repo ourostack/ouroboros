@@ -1,9 +1,10 @@
 // Claude Code stop hook — checks the agent's pending queue and returns
 // any messages as additionalContext for injection into the next turn.
 //
-// This is how the agent can proactively communicate back to the dev tool user:
-// the agent surfaces a message to the pending queue, and the stop hook picks
-// it up and injects it as context in the Claude Code session.
+// This is how the agent answers back into a dev tool session: a held return
+// surfaced to the MCP session that asked (or a send_message to it) lands in
+// that session's pending queue, and the stop hook injects it as context. An
+// unprompted surface never lands here: it goes to a chat the person reads.
 
 import { drainPending, getPendingDir } from "../mind/pending"
 import { emitNervesEvent } from "../nerves/runtime"
