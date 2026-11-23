@@ -726,6 +726,86 @@ describe("runSuite orchestration", () => {
     } finally { learns.readback = original }
   })
 
+  /** tacitHost plus live identity files: a send may rewrite SOUL.md, and the identity methods act on that state. */
+  function identityHost(opts: { rewrite?: string | null; snapshotFails?: boolean; restoreFails?: boolean; keepFails?: boolean; restoreIgnored?: boolean } = {}) {
+    const run = tacitHost(snapshot)
+    const soul = { text: "I am a butler, and I love the work.\n", mode: 0o644 }
+    const identity: Record<string, { text: string | null; mode: number | null }> = { "ASPIRATIONS.md": { text: "a\n", mode: 0o644 }, "IDENTITY.md": { text: "i\n", mode: 0o644 }, "LORE.md": { text: "l\n", mode: 0o644 }, "SOUL.md": { ...soul } }
+    let reads = 0
+    const send = run.host.send
+    run.host.send = async (req: any) => { if (opts.rewrite !== undefined) identity["SOUL.md"] = { text: opts.rewrite, mode: opts.rewrite === null ? null : 0o644 }; return send(req) }
+    Object.assign(run.host, {
+      readIdentityPsyche: () => { reads += 1; if (opts.snapshotFails && reads === 1) throw new Error("SOUL.md is a symlink"); return structuredClone(identity) },
+      restoreIdentityPsyche: (name: string, before: { text: string | null; mode: number | null }) => {
+        if (opts.restoreFails) throw new Error("psyche disk full")
+        run.log.push(`restore-identity:${name}`)
+        if (!opts.restoreIgnored) identity[name] = { ...before }
+      },
+      keepPsycheCopy: (name: string, text: string) => { if (opts.keepFails) throw new Error("client folder gone"); run.log.push(`keep-identity:${name}:${JSON.stringify(text)}`); return `/client/${name}-before-restore.md` },
+    })
+    return { ...run, identity, soul }
+  }
+  const flat = "I am formal and flat.\n"
+
+  it("puts back an identity file a case changed before sync resumes, keeps what it said, and fails a never-excused result (0.1.0-alpha.1435)", async () => {
+    const run = identityHost({ rewrite: flat })
+    const suite = await gate.runSuite(run.host, { cases: ["psyche-change-request"], log: run.say })
+    expect(run.identity["SOUL.md"]).toEqual(run.soul)
+    expect(run.log).toContain(`keep-identity:SOUL.md:${JSON.stringify(flat)}`)
+    expect(run.log).toContain("restore-identity:SOUL.md")
+    expect(run.lines).toContain("the run changed psyche/SOUL.md; put back before sync resumed")
+    expect(suite.results.at(-1)).toEqual({ id: "psyche-identity-untouched", status: "fail", checks: [
+      { name: "the run changed no identity psyche file", ok: false, detail: "SOUL.md changed during the run" },
+      { name: "each changed identity file was put back before sync resumed", ok: true, detail: "SOUL.md before the restore is kept at /client/SOUL.md-before-restore.md" },
+    ] })
+    expect(suite.summary.failed).toContain("psyche-identity-untouched")
+    expect(gate.NEVER_EXCUSED).toContain("psyche-identity-untouched")
+  })
+
+  it("adds no result when no identity file changed", async () => {
+    const run = identityHost()
+    const suite = await gate.runSuite(run.host, { cases: ["handoff-greeting"], log: run.say })
+    expect(suite.results.some((r: { id: string }) => r.id === "psyche-identity-untouched")).toBe(false)
+    expect(run.log.some((line) => line.startsWith("restore-identity:"))).toBe(false)
+  })
+
+  it("puts back a deleted identity file without keeping a copy, and still restores when keeping a copy fails", async () => {
+    const gone = identityHost({ rewrite: null })
+    await gate.runSuite(gone.host, { cases: ["handoff-greeting"], log: gone.say })
+    expect(gone.log.some((line) => line.startsWith("keep-identity:"))).toBe(false)
+    expect(gone.identity["SOUL.md"]).toEqual(gone.soul)
+    const noKeep = identityHost({ rewrite: flat, keepFails: true })
+    const suite = await gate.runSuite(noKeep.host, { cases: ["handoff-greeting"], log: noKeep.say })
+    expect(noKeep.lines).toContain("could not keep psyche/SOUL.md before the restore: client folder gone")
+    expect(noKeep.identity["SOUL.md"]).toEqual(noKeep.soul)
+    expect(suite.results.at(-1).checks[1]).toEqual({ name: "each changed identity file was put back before sync resumed", ok: true })
+  })
+
+  it("fails when the identity files can't be read before the run, can't be put back, or still differ", async () => {
+    const unread = identityHost({ snapshotFails: true })
+    const first = await gate.runSuite(unread.host, { cases: ["handoff-greeting"], log: unread.say })
+    expect(first.results.at(-1)).toEqual({ id: "psyche-identity-untouched", status: "fail", checks: [{ name: "the identity psyche files were read before the run", ok: false, detail: "they could not be read before the run, so a change could not be undone: SOUL.md is a symlink" }] })
+    const stuck = identityHost({ rewrite: flat, restoreFails: true })
+    const second = await gate.runSuite(stuck.host, { cases: ["handoff-greeting"], log: stuck.say })
+    expect(second.results.at(-1)).toEqual({ id: "psyche-identity-untouched", status: "fail", checks: [{ name: "each changed identity file was put back before sync resumed", ok: false, detail: "the restore failed: psyche disk full" }] })
+    expect(stuck.lines).toContain("could not check or restore the identity psyche files after the run: psyche disk full")
+    const ignored = identityHost({ rewrite: flat, restoreIgnored: true })
+    const third = await gate.runSuite(ignored.host, { cases: ["handoff-greeting"], log: ignored.say })
+    expect(third.results.at(-1).checks[1]).toEqual({ name: "each changed identity file was put back before sync resumed", ok: false, detail: "SOUL.md still differ after the restore" })
+    expect(ignored.lines).toContain("the run changed psyche/SOUL.md; SOUL.md still differ")
+  })
+
+  it("reports the identity result after a run the window aborted", async () => {
+    const run = identityHost({ rewrite: flat })
+    ;(run.host as Record<string, unknown>).windowTrusted = async () => ({ ok: false, detail: "distrusted" })
+    const suite = await gate.runSuite(run.host, { cases: ["handoff-greeting"], log: run.say })
+    expect(suite.results.map((r: { id: string }) => r.id)).toEqual(["window-trusted", "tacit-restored", "replay-friend-restored"])
+    const changedEarly = identityHost()
+    ;(changedEarly.host as Record<string, unknown>).windowTrusted = async () => { changedEarly.identity["LORE.md"] = { text: "changed\n", mode: 0o644 }; return { ok: false, detail: "distrusted" } }
+    const aborted = await gate.runSuite(changedEarly.host, { cases: ["handoff-greeting"], log: changedEarly.say })
+    expect(aborted.results.map((r: { id: string }) => r.id)).toEqual(["window-trusted", "tacit-restored", "replay-friend-restored", "psyche-identity-untouched"])
+  })
+
   it("keeps no copy when TACIT is unchanged or gone at restore time, and still restores it", async () => {
     for (const learn of [undefined, null]) {
       const run = tacitHost(snapshot, { learn })
@@ -1785,6 +1865,36 @@ describe("provision and the real host", () => {
       fs.rmSync(path.join(psyche(), "TACIT.md"))
       fs.symlinkSync(path.join(bundle, "nowhere"), path.join(psyche(), "TACIT.md"))
       expect(() => host.readPsycheFile("TACIT.md")).toThrow(/symlink/)
+    })
+
+    it("reads the identity files through no link, puts one back as the Butler's user, removes one that was absent, and refuses TACIT", () => {
+      const host = provisioned()
+      expect(() => host.restoreIdentityPsyche("SOUL.md", { text: "x", mode: 0o644 })).toThrow(/does not exist/)
+      writePsyche("SOUL.md", "I am a butler.\n", 0o644)
+      const before = host.readIdentityPsyche()
+      expect(Object.keys(before)).toEqual(gate.IDENTITY_PSYCHE_FILES)
+      expect(before["SOUL.md"]).toEqual({ text: "I am a butler.\n", mode: 0o644 })
+      expect(before["LORE.md"]).toEqual({ text: null, mode: null })
+      writePsyche("SOUL.md", "formal and flat\n", 0o600)
+      writePsyche("LORE.md", "new lore\n", 0o644)
+      host.restoreIdentityPsyche("SOUL.md", before["SOUL.md"])
+      host.restoreIdentityPsyche("LORE.md", before["LORE.md"])
+      expect(host.readIdentityPsyche()).toEqual(before)
+      expect(chowns.at(-1)).toEqual([10001, 10001])
+      expect(fs.existsSync(path.join(psyche(), "LORE.md"))).toBe(false)
+      expect(() => host.restoreIdentityPsyche("TACIT.md", { text: "x", mode: 0o644 })).toThrow(/not an identity file/)
+      fs.rmSync(path.join(psyche(), "SOUL.md"))
+      fs.symlinkSync(path.join(bundle, "nowhere"), path.join(psyche(), "SOUL.md"))
+      expect(() => host.readIdentityPsyche()).toThrow(/symlink/)
+    })
+
+    it("keeps an identity file's pre-restore text in a root-owned 0600 file in the replay-client folder", () => {
+      const host = provisioned()
+      const kept = host.keepPsycheCopy("SOUL.md", "formal and flat\n")
+      expect(path.dirname(kept)).toBe(clientOf(bundle))
+      expect(path.basename(kept)).toMatch(/^soul-before-restore-\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\.md$/)
+      expect(fs.readFileSync(kept, "utf8")).toBe("formal and flat\n")
+      expect(fs.statSync(kept).mode & 0o7777).toBe(0o600)
     })
 
     describe("the temp file is checked right after it is created, before any data or chown", () => {
