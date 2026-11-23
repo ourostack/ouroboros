@@ -29,7 +29,7 @@ import { emitNervesEvent, emitNervesEventDurable } from "../nerves/runtime"
 import { renderChatInteraction, type ChatInteraction } from "../heart/chat-interaction"
 import { registerGlobalLogSink } from "../nerves"
 import { createSanctuaryInteractiveControl } from "./sanctuary-interactive-control"
-import { approvalRelayRequestFor, createApprovalRelayDoor, ownerRouteDid, type ApprovalRelayDoor } from "./telegram-approval-relay"
+import { approvalRelayRequestFor, createApprovalRelayDoor, type ApprovalRelayDoor } from "./telegram-approval-relay"
 import { loadSanctuarySabApiKey } from "./sanctuary-runtime"
 import { createSanctuarySabClient } from "./sanctuary-sab"
 import { presentSanctuaryDownloadCreditReply } from "./sanctuary-download-credit-presentation"
@@ -1005,7 +1005,14 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const choices = effect.buttons.flat().map((button) => button.text).join(", ")
     const item = ownerRouteItem(input.idempotencyKey, `${effect.text}\n\nOptions: ${choices}. The buttons are on the card in the Butler's Telegram chat.`, true)
     const approvalId = /^approval:(.+):prompt$/u.exec(input.idempotencyKey)?.[1]
-    const approvalRequest = approvalId === undefined ? undefined : approvalRelayRequestFor({ agentRoot, routeDid: () => ownerRouteDid(options.agentName, agentRoot), approvalId, transport: approvalTransport })
+    let approvalRequest: ReturnType<typeof approvalRelayRequestFor>
+    // Building the relay request never stops the card: any error builds none, and the card goes as before.
+    try {
+      approvalRequest = approvalId === undefined ? undefined : approvalRelayRequestFor({ agentRoot, routeDid: () => route.peerDid, approvalId, transport: approvalTransport })
+    } catch (error) {
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.telegram_relay_request_failed", message: "sent the approval card without a relay request after building one failed", meta: { error: String(error) } })
+      approvalRequest = undefined
+    }
     const outcome = await route(approvalRequest ? { ...item, approvalRequest } : item)
     emitNervesEvent({ component: "senses", event: "senses.telegram_owner_route_approval", message: "offered an approval card to the owner's primary agent", meta: { agentName: options.agentName, outcome: outcome.status } })
     return executeOnTelegram({

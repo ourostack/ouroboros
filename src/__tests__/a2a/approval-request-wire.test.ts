@@ -260,6 +260,20 @@ describe("sendSealedApprovalRequest", () => {
     const butler = mint()
     const slugger = mint()
     const fake = peer(slugger, butler, () => fake.sealedReply("Sure, I'll let Ari know!"))
-    await expect(sendSealedApprovalRequest({ cardUrl, peerDid: slugger.did, payload: payload(), identity: butler, sodium, fetchImpl: fake.fetchImpl })).rejects.toThrow("didn't take the approval request")
+    const error = await sendSealedApprovalRequest({ cardUrl, peerDid: slugger.did, payload: payload(), identity: butler, sodium, fetchImpl: fake.fetchImpl }).catch((e: unknown) => e as Error)
+    // Only the length of the peer's words reaches the error, and so the logs.
+    expect(error.message).toBe("the peer didn't take the approval request (it answered 24 characters)")
+    expect(error.message).not.toContain("Ari")
+  })
+
+  it("hands the caller's deadline to the card fetch and the request", async () => {
+    const butler = mint()
+    const slugger = mint()
+    const fake = peer(slugger, butler, () => fake.sealedReply(APPROVAL_REQUEST_ACCEPTED))
+    const signals: (AbortSignal | null | undefined)[] = []
+    const fetchImpl = (async (url: string, init?: RequestInit) => { signals.push(init?.signal); return fake.fetchImpl(url, init) }) as unknown as typeof fetch
+    const signal = new AbortController().signal
+    await sendSealedApprovalRequest({ cardUrl, peerDid: slugger.did, payload: payload(), identity: butler, sodium, fetchImpl, signal })
+    expect(signals).toEqual([signal, signal])
   })
 })

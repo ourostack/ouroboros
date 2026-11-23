@@ -151,7 +151,7 @@ describe("approval cards go to the primary agent over A2A first", () => {
       identityKey: "k".repeat(43), _agentRoot: bundle.agentRoot, _toolContext: {} as never,
       migrateIdentity: async () => undefined, api: fakeTelegram().api, offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }),
-      ownerRoute: async (item) => { routed.push(item); return { status: "delivered" } },
+      ownerRoute: Object.assign(async (item: OwnerRouteItem) => { routed.push(item); return { status: "delivered" as const } }, { peerDid }),
       _createApprovalRuntime: ((input: { effects: typeof effects }) => {
         effects = input.effects
         return {
@@ -171,5 +171,12 @@ describe("approval cards go to the primary agent over A2A first", () => {
     await effects.sendCard({ idempotencyKey: "approval:restart-2:prompt", chatId: "42", text: "Restart sonarr?", buttons })
     expect(routed[1]).not.toHaveProperty("approvalRequest")
     expect(approvalRelayRequest).toHaveBeenCalledTimes(1)
+
+    // Building the request fails: the card still goes, with no request.
+    fs.writeFileSync(switchFile, JSON.stringify({ schemaVersion: 1, did: peerDid, expiresAt: new Date(Date.now() + 3_600_000).toISOString(), approveTools: [], source: "synthetic test switch" }), { mode: 0o644 })
+    approvalRelayRequest.mockImplementationOnce(() => { throw new Error("store unreadable") })
+    await expect(effects.sendCard({ idempotencyKey: "approval:restart-3:prompt", chatId: "42", text: "Restart radarr?", buttons })).resolves.toEqual(expect.any(Number))
+    expect(routed).toHaveLength(3)
+    expect(routed[2]).not.toHaveProperty("approvalRequest")
   })
 })
