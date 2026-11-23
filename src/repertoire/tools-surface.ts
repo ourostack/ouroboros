@@ -63,7 +63,7 @@ export const surfaceToolDef: OpenAI.ChatCompletionFunctionTool = {
   function: {
     name: "surface",
     description:
-      "return a ready thought to a friend or active session; content carrying internal markers is refused. pass delegationId to address a held thought (see your attention queue above): it goes back to the session that asked. pass friendId for spontaneous outreach: to a person it sends now on their newest iMessage, Telegram or Teams chat active in the last 30 days, trying the next if one does not send, and never into an MCP, CLI or agent session they don't read; to an agent friend it goes to that agent's newest session. if a send fails partway it comes back unconfirmed: it may have reached them, so don't send it again. if none sends, it comes back deferred: not sent, saved for their next message, and the result says why and what else reaches them. set channel=voice only when you intentionally want a live phone call; content becomes the call reason/opening context. set channel=teams to tell a friend on Teams now (it sends at once where your Teams sense runs, otherwise waits in their Teams chat). does not end your turn.",
+      "return a ready thought to a friend or active session; content carrying internal markers is refused. pass delegationId to address a held thought (see your attention queue above): it goes back to the session that asked. pass friendId for spontaneous outreach: to a person it sends now on their newest iMessage, Telegram or Teams chat active in the last 30 days, trying the next if one does not send, and skipping MCP, CLI and agent sessions, which they don't read; to an agent friend it goes to that agent's newest session. if a send fails partway it comes back unconfirmed: it may have reached them, so don't send it again. if none sends, it comes back deferred: not sent, saved for their next message, and the result says why and what else reaches them. set channel=voice only when you intentionally want a live phone call; content becomes the call reason/opening context. set channel=teams to tell a friend on Teams now (it sends at once where your Teams sense runs, otherwise waits in their Teams chat). does not end your turn.",
     parameters: {
       type: "object",
       properties: {
@@ -468,7 +468,7 @@ export const surfaceToolDefinition: ToolDefinition = {
     const routeToFriend = (friendId: string, content: string, queueItem?: AttentionItem, hint?: SurfaceDeliveryHint): Promise<SurfaceRouteResult> =>
       routeSurfaceToFriend(agentName, friendId, content, queueItem, hint)
 
-    return handleSurface({
+    const surfaced = await handleSurface({
       content: args.content ?? "",
       delegationId: args.delegationId,
       friendId: args.friendId,
@@ -524,6 +524,8 @@ export const surfaceToolDefinition: ToolDefinition = {
         })
       },
     })
+    // A deferred surface was not sent now, so it carries the code rest checks for.
+    return surfaced.startsWith("deferred") ? withCode(surfaced, "surface-not-sent") : surfaced
   },
   summaryKeys: ["content", "delegationId", "friendId", "channel"],
   riskProfile: {

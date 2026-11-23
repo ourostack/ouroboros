@@ -126,7 +126,7 @@ describe("surface tool", () => {
       expect(result).toContain("specify who this thought is for")
     })
 
-    it("ends a deferred (not sent) result with the surface-not-sent code", async () => {
+    it("reports a deferred (not sent) result as deferred, leaving the surface-not-sent code to the tool", async () => {
       const result = await handleSurface({
         content: "heads up",
         friendId: "friend-1",
@@ -135,7 +135,7 @@ describe("surface tool", () => {
         advanceObligation: () => {},
       })
 
-      expect(result).toBe("deferred — not sent now; saved for their next message (code: surface-not-sent)")
+      expect(result).toBe("deferred — not sent now; saved for their next message")
     })
 
     it("dequeues by delegationId after successful routing", async () => {

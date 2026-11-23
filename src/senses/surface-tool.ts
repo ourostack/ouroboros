@@ -1,6 +1,5 @@
 import { dequeueAttentionItem, type AttentionItem } from "./attention-queue"
 import { emitNervesEvent } from "../nerves/runtime"
-import { withCode } from "../repertoire/tool-error-code"
 
 // ── Routing result ───────────────────────────────────────────────
 
@@ -162,6 +161,5 @@ export async function handleSurface(input: HandleSurfaceInput): Promise<string> 
 
   // Return delivery status
   const detail = result.detail ? ` — ${result.detail}` : ""
-  if (result.status === "deferred") return withCode(`deferred${detail}`, "surface-not-sent")
   return `${result.status}${detail}`
 }

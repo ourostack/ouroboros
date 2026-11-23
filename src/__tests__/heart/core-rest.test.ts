@@ -545,6 +545,7 @@ describe("rest tool in runAgent", () => {
     // Other news reaching them leaves the saved copy alone, and so does a send with no words.
     expect(surfacesReachedLater([surface(notSent, "friend-1"), surface(reached, "friend-1", "dinner is at 7")])).toEqual([])
     expect(surfacesReachedLater([surface(notSent, "friend-1", ""), surface(reached, "friend-1", "")])).toEqual([])
+    expect(surfacesReachedLater([surface(notSent, "friend-1"), { name: "send_message", args: { friendId: "friend-1" }, result: "delivered now" }])).toEqual([])
     // Only the copies saved since those words last reached them.
     expect(surfacesReachedLater([surface(notSent, "friend-1"), surface(reached, "friend-1"), surface(notSent, "friend-1"), surface(reached, "friend-1")]))
       .toEqual([{ friendId: "friend-1", content: "the news" }])
