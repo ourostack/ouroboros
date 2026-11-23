@@ -35,12 +35,7 @@ function tmpSocketPath(name: string): string {
   return path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
 }
 
-function makeDaemon(
-  socketPath: string,
-  options?: {
-    mailboxServerFactory?: () => Promise<{ stop: () => Promise<void> }>
-  },
-) {
+function makeDaemon(socketPath: string) {
   const processManager = {
     listAgentSnapshots: vi.fn(() => []),
     startAutoStartAgents: vi.fn(async () => undefined),
@@ -65,10 +60,6 @@ function makeDaemon(
     listSenseRows: vi.fn(() => []),
     listManagedPids: vi.fn(() => []),
   }
-  const mailboxServerFactory = vi.fn(async () => ({
-    origin: "http://127.0.0.1:0",
-    stop: vi.fn(async () => undefined),
-  }))
   return new OuroDaemon({
     socketPath,
     processManager,
@@ -76,18 +67,8 @@ function makeDaemon(
     healthMonitor,
     router,
     senseManager,
-    mailboxServerFactory: options?.mailboxServerFactory,
     mode: "dev",
   } as any)
-}
-
-async function waitForSocketPathState(socketPath: string, exists: boolean, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (fs.existsSync(socketPath) === exists) return
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  }
-  throw new Error(`socket path ${exists ? "did not appear" : "did not disappear"} within ${timeoutMs}ms`)
 }
 
 async function sendDaemonCommandOverRealSocket(
@@ -128,11 +109,7 @@ async function sendDaemonStopOverRealSocket(socketPath: string, timeoutMs: numbe
 describe("daemon.stop deadlock regression", () => {
   let daemons: OuroDaemon[] = []
   let socketPath: string
-  let releaseBlockedMailboxStop: (() => void) | null = null
-
   afterEach(async () => {
-    releaseBlockedMailboxStop?.()
-    releaseBlockedMailboxStop = null
     setRuntimeLogger(null)
     vi.restoreAllMocks()
     for (const daemon of daemons.reverse()) {
@@ -202,35 +179,16 @@ describe("daemon.stop deadlock regression", () => {
   it("an older daemon stop path does not unlink a replacement path entry after releasing the original socket", async () => {
     socketPath = tmpSocketPath("daemon-stop-socket-race")
 
-    let markMailboxStopBlocked: (() => void) | null = null
-    const mailboxStopBlocked = new Promise<void>((resolve) => {
-      markMailboxStopBlocked = resolve
-    })
-    const daemonA = makeDaemon(socketPath, {
-      mailboxServerFactory: async () => ({
-        stop: async () => {
-          await new Promise<void>((resolve) => {
-            releaseBlockedMailboxStop = resolve
-            markMailboxStopBlocked?.()
-          })
-        },
-      }),
-    })
+    const daemonA = makeDaemon(socketPath)
     daemons.push(daemonA)
     await daemonA.start()
 
-    const daemonAStop = daemonA.stop()
-    await mailboxStopBlocked
-    await waitForSocketPathState(socketPath, false, 2_000)
-
-    // The bug is pathname ownership, not socket protocol. Once daemon A has
-    // released the original socket path, any newer entry at the same pathname
-    // must be preserved. Using a plain file makes the race deterministic while
-    // still proving the old daemon is deleting a path it no longer owns.
-    fs.writeFileSync(socketPath, "replacement-daemon-socket", "utf-8")
-    expect(fs.existsSync(socketPath)).toBe(true)
-    const replacementStats = fs.lstatSync(socketPath)
-
+    // The bug is pathname ownership, not socket protocol. After daemon A
+    // closes its server (which releases the original path), a newer daemon
+    // may already own the pathname by the time A checks it. Writing a plain
+    // file at the moment A first looks at the path makes that race
+    // deterministic while still proving A never deletes a path it no
+    // longer owns.
     const warn = vi.fn()
     setRuntimeLogger({
       debug: vi.fn(),
@@ -238,20 +196,38 @@ describe("daemon.stop deadlock regression", () => {
       warn,
       error: vi.fn(),
     })
+    const pathExists = (targetPath: fs.PathLike): boolean => {
+      try {
+        fs.lstatSync(targetPath)
+        return true
+      } catch {
+        return false
+      }
+    }
+    let replacementStats: fs.Stats | null = null
+    vi.spyOn(fs, "existsSync").mockImplementation(((targetPath: fs.PathLike) => {
+      if (String(targetPath) === socketPath && !replacementStats) {
+        if (pathExists(socketPath)) fs.unlinkSync(socketPath)
+        fs.writeFileSync(socketPath, "replacement-daemon-socket", "utf-8")
+        replacementStats = fs.lstatSync(socketPath)
+      }
+      return pathExists(targetPath)
+    }) as typeof fs.existsSync)
 
-    releaseBlockedMailboxStop?.()
-    releaseBlockedMailboxStop = null
-    await daemonAStop
+    await daemonA.stop()
+    vi.mocked(fs.existsSync).mockRestore()
 
+    expect(replacementStats).not.toBeNull()
+    const stats = replacementStats as unknown as fs.Stats
     expect(fs.existsSync(socketPath)).toBe(true)
     expect(fs.readFileSync(socketPath, "utf-8")).toBe("replacement-daemon-socket")
     expect(warn).toHaveBeenCalledWith(expect.objectContaining({
       event: "daemon.socket_cleanup_skipped",
       meta: expect.objectContaining({
         socketPath,
-        actualDev: replacementStats.dev,
-        actualIno: replacementStats.ino,
-        actualCtimeMs: replacementStats.ctimeMs,
+        actualDev: stats.dev,
+        actualIno: stats.ino,
+        actualCtimeMs: stats.ctimeMs,
       }),
     }))
   })

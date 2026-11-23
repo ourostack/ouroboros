@@ -130,19 +130,6 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: "ouro help [<command>] [--json]",
     example: "ouro help --json",
   },
-  mailbox: {
-    category: "Agents",
-    description: "Show the agent's current mailbox overview",
-    usage: "ouro mailbox [--json]",
-    example: "ouro mailbox --json",
-  },
-  outlook: {
-    category: "Agents",
-    description: "Deprecated alias for `ouro mailbox`",
-    usage: "ouro outlook [--json]",
-    example: "ouro outlook --json",
-    hidden: true,
-  },
   move: {
     category: "Agents",
     description: "Make this machine the agent's home, the one machine that runs it. The move is recorded in the agent's synced bundle, and the old home stops running it.",

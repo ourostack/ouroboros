@@ -16,7 +16,6 @@ import { computeSessionStats } from "../../heart/session-stats"
 import { runSessionPlayback } from "../../heart/session-playback"
 import { summarizeSessionTail } from "../../heart/session-transcript"
 import { listSessionActivity } from "../../heart/session-activity"
-import { readSessionInventory, readSessionTranscript } from "../../heart/mailbox/readers/sessions"
 import { loadSession, postTurnPersist, postTurnTrim, type UsageData } from "../../mind/context"
 import { currentSessionTurnLease, readSessionTransaction, withSessionTurnLease } from "../../mind/session-transaction"
 import { estimateTokensForMessages } from "../../mind/token-estimate"
@@ -128,12 +127,6 @@ describe("D006 native history and projection preservation", () => {
       if (transcript.kind !== "ok") throw new Error("fixture transcript missing")
       expect(transcript.tailMessages.map((message) => message.id)).toEqual(["evt-000001", "evt-000002", "evt-000005", "evt-000008", "evt-000009"])
       expect(transcript.transcript).not.toContain("engine-only correction")
-      const mailbox = readSessionTranscript("fixture", "ari", "telegram", "owner", { bundlesRoot: root })!
-      expect(mailbox.messages.map((event) => event.id)).toEqual(["evt-000001", "evt-000002", "evt-000003", "evt-000004", "evt-000005", "evt-000008", "evt-000009"])
-      expect(mailbox.truncatedHistory).toBe(true)
-      expect(readSessionInventory("fixture", { bundlesRoot: root }).items[0]).toMatchObject({
-        messageCount: 7, latestUserExcerpt: "current question", latestToolCallNames: ["read_file"],
-      })
       expect(listSessionActivity({
         sessionsDir: path.join(agentRoot, "state", "sessions"), friendsDir: path.join(agentRoot, "friends"),
         agentName: "fixture", activeThresholdMs: Infinity,

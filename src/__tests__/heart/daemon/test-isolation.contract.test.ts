@@ -195,12 +195,6 @@ const OURO_DAEMON_INSTANTIATION_ALLOWLIST = new Set<string>([
   // emission is inside the daemon's own error path. Uses mode: "dev" to
   // skip update checker and a processManager that throws synthetically.
   "src/__tests__/nerves/pairing-regression.test.ts",
-  // Exercises the Mailbox HTTP server lifecycle via the injected
-  // mailboxServerFactory seam. The real factory binds port 6876 which
-  // a running production daemon holds; DI lets tests use an process-local
-  // stub and cover the try/catch/stop branches that were previously
-  // v8-ignored.
-  "src/__tests__/heart/daemon/daemon-mailbox-lifecycle.test.ts",
   // Frontend lifecycle tests inject temporary bundle/socket roots and every
   // daemon dependency; start/stop is the behavior under test.
   "src/__tests__/heart/daemon/daemon-frontend-lifecycle.test.ts",

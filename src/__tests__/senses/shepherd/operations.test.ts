@@ -7,6 +7,7 @@ import { readGuidance } from "../../../senses/shepherd/guidance"
 import { checkInStorePath, openCheckInStore, type DispatchInput } from "../../../senses/shepherd/checkin-store"
 import { readCheckInSnapshot } from "../../../senses/shepherd/recovery"
 import { readShepherdMandates } from "../../../heart/shepherd/mandates"
+import { buildShepherdSupervisionView, type ShepherdSupervisionSnapshot } from "../../../heart/shepherd/supervision"
 
 vi.mock("node:fs", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs")>()
@@ -160,6 +161,34 @@ describe("trusted local-owner operation composition", () => {
     })
     expect(deps.host).not.toHaveBeenCalled()
     expect(fs.existsSync(path.join(root, "state"))).toBe(false)
+  })
+
+  it("returns the supervision view built from a valid observation, exactly as the Shepherd projection builds it", async () => {
+    const now = Date.parse("2026-11-23T12:00:00.000Z")
+    const observation: ShepherdSupervisionSnapshot = {
+      schemaVersion: 1, agentName: "ouro", observedAt: new Date(now - 5_000).toISOString(),
+      sourceHealth: { host: "ok", guidance: "ok", mandates: "ok", returns: "ok", custody: "ok", notices: "ok" },
+      sessions: { totalCount: 1, truncated: false, items: [{
+        host: "cmux", session: "pane:1", instance: "process:123:456", label: "test terminal",
+        harness: "copilot", project: "/project", activity: "idle", observedAt: new Date(now - 5_000).toISOString(),
+        lastDecision: "done", lastAction: "let_through", lastReason: "Reported finished", lastActionAt: new Date(now - 5_000).toISOString(),
+        withheldReason: "No current mandate", authority: "absent", capability: "unsupported",
+      }] },
+      timeline: { totalCount: 1, truncated: false, items: [{ id: "return:1", host: "cmux", session: "pane:1",
+        instance: "process:123:456", at: new Date(now - 5_000).toISOString(), kind: "judgment", summary: "done" }] },
+      custody: { revision: 0, bytes: 4096, capacity: "normal", claims: { totalCount: 0, truncated: false, items: [] } },
+      sourceErrors: [],
+    }
+    const dir = path.join(root, "state", "senses", "shepherd")
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+    fs.writeFileSync(path.join(dir, "supervision-observation.json"), JSON.stringify(observation), { mode: 0o600 })
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(now)
+    try {
+      const result = await runShepherdOperation({ kind: "shepherd.status", agent: "ouro" }, deps) as { supervision: unknown }
+      expect(result.supervision).toEqual(buildShepherdSupervisionView(observation, now))
+      expect(result.supervision).toMatchObject({ freshness: { status: "fresh" }, sessions: { totalCount: 1 } })
+    } finally { vi.useRealTimers() }
   })
 
   it("grants and revokes exact mandates with resolved local-owner provenance and request retries", async () => {

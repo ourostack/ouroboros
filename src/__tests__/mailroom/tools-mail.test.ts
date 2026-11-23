@@ -1556,7 +1556,7 @@ describe("mail tools", () => {
     expect(search).toContain("1. HEY archive to work object")
     expect(search).toContain("2. Native mail and Screener")
     expect(search).toContain("3. Cross-sense reaction")
-    expect(search).toContain("4. Ouro Mailbox audit")
+    expect(search).toContain("4. Mail audit")
     expect(search).toContain("supporting diagnostics are separate evidence inside those paths")
     expect(search).toContain("not additional paths")
     expect(search).toContain("never answer a golden-path question with command names")
