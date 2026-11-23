@@ -1488,6 +1488,141 @@ describe("daemon process manager", () => {
     }
   })
 
+  it("kills what a worker that ignored SIGTERM started, so none of it outlives the worker", async () => {
+    const hung = new MockChild()
+    hung.pid = 111
+    hung.kill.mockImplementation((signal?: string) => {
+      if (signal === "SIGKILL") hung.emit("exit", null, "SIGKILL")
+      return true
+    })
+    spawn.mockReturnValue(hung)
+    now.mockReturnValue(1_000)
+    // The worker started sync's git detached (200, with ssh 201 in its group) and a helper (300) in the daemon's group.
+    const listProcesses = vi.fn(() => [
+      { pid: 100, ppid: 1, pgid: 100 },
+      { pid: 111, ppid: 100, pgid: 100 },
+      { pid: 200, ppid: 111, pgid: 200 },
+      { pid: 201, ppid: 200, pgid: 200 },
+      { pid: 300, ppid: 111, pgid: 100 },
+      { pid: 400, ppid: 1, pgid: 400 },
+    ])
+    const killProcess = vi.fn()
+    const nerves = await import("../../../nerves/runtime")
+    const events = vi.spyOn(nerves, "emitNervesEvent")
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn, stopTimeoutMs: 25, listProcesses, killProcess })
+    await manager.startAgent("slugger")
+    const stop = manager.stopAgent("slugger")
+    await Promise.resolve()
+    expect(listProcesses).not.toHaveBeenCalled()
+    timers[0]?.cb()
+    let stopped = false
+    void stop.then(() => { stopped = true })
+    await new Promise((resolve) => setImmediate(resolve))
+
+    // SIGTERM first, so a child that relays signals (sudo, to the ssh it runs) can pass it on; SIGKILL after a grace.
+    expect(hung.kill).toHaveBeenLastCalledWith("SIGKILL")
+    expect(killProcess.mock.calls).toEqual([[-200, "SIGTERM"], [300, "SIGTERM"]])
+    expect(events).toHaveBeenCalledWith(expect.objectContaining({ event: "daemon.agent_stop_reaped_children", meta: expect.objectContaining({ pid: 111, groups: 1, processes: 1 }) }))
+    // The stop is not over until the SIGKILL pass has run, so a daemon exiting or a replacement starting can't race it.
+    expect(stopped).toBe(false)
+    const grace = timers.find((timer) => timer.delay === 1_000)
+    expect(grace).toBeDefined()
+    grace!.cb()
+    await stop
+    expect(killProcess.mock.calls.slice(2)).toEqual([[-200, "SIGKILL"], [300, "SIGKILL"]])
+    // The table is read again before SIGKILL, so only what is still the worker's is signalled.
+    expect(listProcesses).toHaveBeenCalledTimes(2)
+    events.mockRestore()
+  })
+
+  it("sends the grace SIGKILL only to what is still the worker's when the table is read again", async () => {
+    const hung = new MockChild()
+    hung.pid = 111
+    hung.kill.mockImplementation((signal?: string) => {
+      if (signal === "SIGKILL") hung.emit("exit", null, "SIGKILL")
+      return true
+    })
+    spawn.mockReturnValue(hung)
+    now.mockReturnValue(1_000)
+    const before = [
+      { pid: 111, ppid: 100, pgid: 100 },
+      { pid: 200, ppid: 111, pgid: 200 },
+      { pid: 300, ppid: 111, pgid: 100 },
+    ]
+    // After SIGTERM both exited, and the system handed 300 to an unrelated process.
+    const after = [{ pid: 300, ppid: 1, pgid: 300 }]
+    const listProcesses = vi.fn().mockReturnValueOnce(before).mockReturnValueOnce(after)
+    const killProcess = vi.fn()
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn, stopTimeoutMs: 25, listProcesses, killProcess })
+    await manager.startAgent("slugger")
+    const stop = manager.stopAgent("slugger")
+    await Promise.resolve()
+    timers[0]?.cb()
+    timers.find((timer) => timer.delay === 1_000)!.cb()
+    await stop
+
+    expect(killProcess.mock.calls).toEqual([[-200, "SIGTERM"], [300, "SIGTERM"]])
+  })
+
+  it("does not signal real processes for workers a test spawned, unless told to", async () => {
+    const hung = new MockChild()
+    hung.pid = 111
+    hung.kill.mockImplementation((signal?: string) => {
+      if (signal === "SIGKILL") hung.emit("exit", null, "SIGKILL")
+      return true
+    })
+    spawn.mockReturnValue(hung)
+    now.mockReturnValue(1_000)
+    const realKill = vi.spyOn(process, "kill")
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn, stopTimeoutMs: 25, reapGraceMs: 50, listProcesses: () => [{ pid: 111, ppid: 100, pgid: 100 }, { pid: 2_000_000, ppid: 111, pgid: 100 }] })
+    await manager.startAgent("slugger")
+    const stop = manager.stopAgent("slugger")
+    await Promise.resolve()
+    timers[0]?.cb()
+    timers.find((timer) => timer.delay === 50)!.cb()
+    await stop
+    expect(realKill).not.toHaveBeenCalled()
+    realKill.mockRestore()
+  })
+
+  it("reads no process table for a worker whose pid is unknown", async () => {
+    const hung = new MockChild()
+    ;(hung as { pid?: number }).pid = undefined
+    hung.kill.mockImplementation((signal?: string) => {
+      if (signal === "SIGKILL") hung.emit("exit", null, "SIGKILL")
+      return true
+    })
+    spawn.mockReturnValue(hung)
+    now.mockReturnValue(1_000)
+    const listProcesses = vi.fn(() => [])
+    const killProcess = vi.fn()
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn, stopTimeoutMs: 25, listProcesses, killProcess })
+    await manager.startAgent("slugger")
+    const stop = manager.stopAgent("slugger")
+    await Promise.resolve()
+    timers[0]?.cb()
+    await stop
+    expect(hung.kill).toHaveBeenLastCalledWith("SIGKILL")
+    expect(listProcesses).not.toHaveBeenCalled()
+    expect(killProcess).not.toHaveBeenCalled()
+  })
+
+  it("leaves a worker's children alone when SIGKILL could not be sent to it", async () => {
+    const hung = new MockChild()
+    hung.pid = 111
+    hung.kill.mockImplementation((signal?: string) => signal !== "SIGKILL")
+    spawn.mockReturnValue(hung)
+    now.mockReturnValue(1_000)
+    const killProcess = vi.fn()
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn, stopTimeoutMs: 25, listProcesses: () => [{ pid: 111, ppid: 100, pgid: 100 }, { pid: 200, ppid: 111, pgid: 200 }], killProcess })
+    await manager.startAgent("slugger")
+    const stop = manager.stopAgent("slugger").catch((error: unknown) => error)
+    await Promise.resolve()
+    timers[0]?.cb()
+    await expect(stop).resolves.toEqual(expect.objectContaining({ message: expect.stringContaining("SIGKILL could not be sent") }))
+    expect(killProcess).not.toHaveBeenCalled()
+  })
+
   it("counts a worker that exits a moment after SIGKILL as stopped", async () => {
     const hung = new MockChild()
     hung.pid = 111
