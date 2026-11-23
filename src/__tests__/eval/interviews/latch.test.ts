@@ -136,6 +136,49 @@ describe("the guarded runtime", () => {
     expect(fresh.latch.calls()).toEqual([{ kind: "job", usage: null, credits: 0, sent: true }])
   })
 
+  it("rewrites a request with the arm's replacement list before the scan, sends the rewritten one, and gives the harness its own tool names back", async () => {
+    const { latch, ledger } = session()
+    const gate = latch.gate("job")
+    const seen: ProviderTurnRequest[] = []
+    const resets: unknown[] = []
+    const inner = runtime(async (sent) => {
+      seen.push(sent)
+      return { content: "ok", toolCalls: [{ id: "c1", name: "agent_shell", arguments: "{\"cmd\":\"ls /home/agent\"}" }], outputItems: [], usage }
+    })
+    inner.resetTurnState = (messages) => { resets.push(messages) }
+    const logged: string[] = []
+    const replacements = [{ pattern: /ouro/gi, with: "agent" }]
+    const guarded = guardedRuntime({ inner, latch, ledger, pricing, gateFor: () => gate, log: (entry) => logged.push(entry.body), replacements })
+    const own: ProviderTurnRequest = {
+      ...request("list /home/ouro"), systemPrompt: { stable: "You are Ouro.", volatile: "" },
+      activeTools: [{ type: "function", function: { name: "ouro_shell", description: "Ouro's shell" } }],
+    }
+    const result = await guarded.streamTurn(own)
+    // The model was sent only the rewritten request, and that is what was scanned, logged and reset.
+    expect(seen[0]!.messages).toEqual([{ role: "user", content: "list /home/agent" }])
+    expect(seen[0]!.systemPrompt).toEqual({ stable: "You are agent.", volatile: "" })
+    expect(seen[0]!.activeTools[0]!.function.name).toBe("agent_shell")
+    expect(resets).toEqual([[{ role: "user", content: "list /home/agent" }]])
+    expect(logged[0]).not.toMatch(/ouro/i)
+    expect(latch.voided()).toBeNull()
+    // The harness's request is its own, and the model's call comes back under the harness's tool name.
+    expect(own.messages).toEqual([{ role: "user", content: "list /home/ouro" }])
+    expect(result.toolCalls).toEqual([{ id: "c1", name: "ouro_shell", arguments: "{\"cmd\":\"ls /home/agent\"}" }])
+  })
+
+  it("still voids a session whose rewritten request leaks a brand word the list missed", async () => {
+    const { latch, ledger } = session()
+    const gate = latch.gate("job")
+    const inner = runtime()
+    const logged: Array<{ sent: boolean; body: string }> = []
+    const guarded = guardedRuntime({ inner, latch, ledger, pricing, gateFor: () => gate, log: (entry) => logged.push(entry), replacements: [{ pattern: /ouro/gi, with: "agent" }] })
+    await expect(guarded.streamTurn(request("ouro, based on Claude"))).rejects.toThrow("not sent: the request names claude")
+    expect(inner.sent).toBe(0)
+    expect(latch.voided()).toEqual(["Claude"])
+    // The log holds the rewritten body the scan read.
+    expect(logged).toEqual([{ kind: "job", sent: false, body: expect.stringContaining("agent, based on Claude") }])
+  })
+
   it("scans the system prompt, tools, deferred tools and messages", () => {
     const text = requestText({ ...request("m"), systemPrompt: "s", activeTools: [{ type: "function", function: { name: "t", parameters: {} } }], deferredTools: [] } as unknown as ProviderTurnRequest)
     expect(JSON.parse(text)).toEqual({ systemPrompt: "s", tools: [{ type: "function", function: { name: "t", parameters: {} } }], deferred: [], messages: [{ role: "user", content: "m" }] })
