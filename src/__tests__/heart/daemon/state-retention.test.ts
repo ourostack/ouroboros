@@ -5,7 +5,7 @@ import * as zlib from "zlib"
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
-import { compactLegacySessionArchives, runAgentStateRetention } from "../../../heart/daemon/state-retention"
+import { compactLegacySessionArchives, compactUnusedMailroomFileStore, mailroomStoreFromRuntimeConfig, runAgentStateRetention } from "../../../heart/daemon/state-retention"
 import { registerGlobalLogSink, type LogEvent } from "../../../nerves"
 
 const DAY = 24 * 60 * 60_000
@@ -163,5 +163,75 @@ describe("runAgentStateRetention", () => {
       capture.stop()
     }
     expect(capture.events.map((e) => e.event)).toContain("daemon.state_retention_error")
+  })
+})
+
+describe("compactUnusedMailroomFileStore", () => {
+  let dir: string
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "state-retention-mail-")) })
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }) })
+
+  function mailroom(): { root: string; oldEml: string; oldJson: string; newJson: string; registry: string } {
+    const root = path.join(dir, "mailroom")
+    const oldEml = path.join(root, "raw", "mail_old.eml")
+    const oldJson = path.join(root, "messages", "mail_old.json")
+    const newJson = path.join(root, "messages", "mail_new.json")
+    const registry = path.join(root, "registry.json")
+    writeAged(oldEml, `Subject: hello\r\n\r\n${"body line\r\n".repeat(500)}`, 190 * DAY)
+    writeAged(oldJson, JSON.stringify({ id: "mail_old", private: { html: "<p>hi</p>".repeat(500) } }), 190 * DAY)
+    writeAged(newJson, JSON.stringify({ id: "mail_new" }), 3 * DAY)
+    writeAged(registry, "{\"schemaVersion\":1}", 190 * DAY)
+    return { root, oldEml, oldJson, newJson, registry }
+  }
+
+  it("gzips the local file store's old messages when the agent's mail is hosted, and keeps its registry and recent mail", async () => {
+    const m = mailroom()
+    const emlBytes = fs.readFileSync(m.oldEml)
+    const result = await compactUnusedMailroomFileStore({ mailroomRoot: m.root, store: "hosted", now: () => NOW })
+    expect(result).toMatchObject({ store: "hosted", compacted: 2, skippedRecent: 1, failed: 0 })
+    expect(result.bytesAfter).toBeLessThan(result.bytesBefore)
+    expect(fs.existsSync(m.oldEml)).toBe(false)
+    expect(zlib.gunzipSync(fs.readFileSync(`${m.oldEml}.gz`)).equals(emlBytes)).toBe(true)
+    expect(fs.existsSync(`${m.oldJson}.gz`)).toBe(true)
+    expect(fs.existsSync(m.newJson)).toBe(true)
+    expect(fs.readFileSync(m.registry, "utf-8")).toBe("{\"schemaVersion\":1}")
+    expect(await compactUnusedMailroomFileStore({ mailroomRoot: m.root, store: "hosted", now: () => NOW })).toMatchObject({ compacted: 0, skippedRecent: 1 })
+  })
+
+  it("never touches the file store while it is the agent's mail, or when it can't tell", async () => {
+    const m = mailroom()
+    for (const store of ["local", "unknown"] as const) {
+      expect(await compactUnusedMailroomFileStore({ mailroomRoot: m.root, store, now: () => NOW }))
+        .toEqual({ store, compacted: 0, skippedRecent: 0, failed: 0, bytesBefore: 0, bytesAfter: 0 })
+    }
+    expect(fs.existsSync(m.oldEml)).toBe(true)
+    expect(fs.existsSync(m.oldJson)).toBe(true)
+    expect(await compactUnusedMailroomFileStore({ mailroomRoot: path.join(dir, "none"), store: "hosted" }))
+      .toMatchObject({ compacted: 0, failed: 0 })
+  })
+
+  it("reads where an agent's mail lives from its runtime config", () => {
+    expect(mailroomStoreFromRuntimeConfig({ ok: true, config: { mailroom: { azureAccountUrl: "https://example.blob.core.windows.net" } } })).toBe("hosted")
+    expect(mailroomStoreFromRuntimeConfig({ ok: true, config: { mailroom: { mailboxAddress: "a@ouro.bot" } } })).toBe("local")
+    expect(mailroomStoreFromRuntimeConfig({ ok: true, config: {} })).toBe("local")
+    expect(mailroomStoreFromRuntimeConfig({ ok: false })).toBe("unknown")
+  })
+
+  it("runs with the session pass for each agent and reports counts only", async () => {
+    const root = path.join(dir, "bundles")
+    writeAged(path.join(root, "slugger.ouro", "state", "mailroom", "raw", "mail_a.eml"), "Subject: a\r\n\r\nhello\r\n", 60 * DAY)
+    const capture = captureEvents()
+    try {
+      const results = await runAgentStateRetention({ bundlesRoot: root, agents: ["slugger"], now: () => NOW, mailroomStore: () => "hosted" })
+      expect(results[0].mailroom).toMatchObject({ store: "hosted", compacted: 1 })
+      // With no runtime config loaded, the default can't tell, so it leaves mail alone.
+      const unknown = await runAgentStateRetention({ bundlesRoot: root, agents: ["nobody"], now: () => NOW })
+      expect(unknown[0].mailroom.store).toBe("unknown")
+    } finally {
+      capture.stop()
+    }
+    const mail = capture.events.filter((e) => e.event === "daemon.state_retention_mailroom")
+    expect(mail[0].meta).toEqual(expect.objectContaining({ agent: "slugger", store: "hosted", compacted: 1, failed: 0 }))
+    expect(JSON.stringify(mail)).not.toContain(root)
   })
 })
