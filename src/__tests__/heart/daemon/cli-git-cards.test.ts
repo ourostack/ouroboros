@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { LIFECYCLE_COMMANDS } from "../../../heart/daemon/cli-commands/lifecycle"
+import { getCommandHelp } from "../../../heart/daemon/cli-help"
 import { usage } from "../../../heart/daemon/cli-parse"
 
 const gitCommands = Object.fromEntries(LIFECYCLE_COMMANDS.filter((c) => c.name === "git" || c.name.startsWith("git ")).map((c) => [c.name, c]))
@@ -29,6 +30,13 @@ describe("ouro git commands", () => {
   it("lists both subcommands in ouro's usage text", () => {
     expect(usage()).toContain("ouro git install [--force]")
     expect(usage()).toContain("ouro git status")
+  })
+
+  it("each has its own --help, headed by the command an installed ouro runs", () => {
+    expect(getCommandHelp("git status")).toMatch(/^ouro git status - Show which git sync and clone use/)
+    expect(getCommandHelp("git status")).toContain("Usage: ouro git status")
+    expect(getCommandHelp("git install")).toMatch(/^ouro git install - Install a portable git/)
+    expect(getCommandHelp("git install")).toContain("Usage: ouro git install [--force]")
   })
 
   it("is off the census baseline", () => {
