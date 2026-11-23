@@ -21,6 +21,8 @@ import { stewardPolicyToolDefinition } from "../../repertoire/tools-steward-poli
 import { createApprovedUnraidRestartExecutor, type ApprovedUnraidRestartOptions, type UnraidRestartAttempt } from "../../repertoire/unraid-restart"
 import { createProductionTelegramRelationshipComposition, createTelegramSenseApp, opaqueTelegramSubject, readOrCreateTelegramIdentityKey, sanctuaryTelegramApprovalEvidenceMac } from "../../senses/telegram"
 import { createTelegramApprovalRuntime as createNativeTelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
+import { approvalRelayToken } from "../../a2a/approval-relay"
+import { FileApprovalTokenStore } from "../../heart/approval-files"
 import { digestApprovalToolDefinition } from "../../heart/tool-approval"
 import { createMinimaxProviderRuntime } from "../../heart/providers/minimax"
 import { TelegramApiError, type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
@@ -656,6 +658,38 @@ describe("production-composed Telegram approval lifecycle", () => {
     })
     expect(settled?.meta.evidenceMac).toBe(sanctuaryTelegramApprovalEvidenceMac(identityKey, "telegram.callback_recovery_settled", settled!.meta))
     restarted.close()
+  })
+
+  it("denies a restart relayed from the owner's primary agent through the real stores, and it never runs", async () => {
+    const agentRoot = root()
+    const events: LogEvent[] = []
+    setRuntimeLogger(createLogger({ sinks: [(event) => events.push(event), createNdjsonFileSink(path.join(agentRoot, "telegram-audit.ndjson"))] }))
+    const restart = vi.fn()
+    const owner = await ownerFixture(agentRoot, restart)
+    const api: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async (method) => (method === "sendMessage" ? { message_id: 101 } : true)) }
+    const runtime = createTelegramApprovalRuntime({
+      agentName: "sanctuary", api, authorizedUserId: "42", authorizedChatId: "42", ...owner.runtimeOptions,
+      effects: approvalEffects(agentRoot, api, owner),
+      dependencies: { agentRoot, acceptanceMarker: () => null, runProvider: async () => ({ outcome: "settled" }) },
+    })
+    const store = openApprovalStore({ databasePath: path.join(agentRoot, "state", "approvals", "approvals.sqlite") })
+    try {
+      const suspension = await runtime.coordinator(owner).propose(proposalRequest(owner.requestContext))
+      const decisionToken = new FileApprovalTokenStore(path.join(agentRoot, "state", "approvals", "tokens.json")).get(suspension.approvalId)!
+      const routeDid = "did:key:z6MkSyntheticSluggerRoute"
+      const relay = { relayToken: approvalRelayToken({ decisionToken, approvalId: suspension.approvalId, routeDid }), routeDid, senderDid: routeDid, envelopeBindingId: "binding-1" }
+
+      await expect(runtime.relayDeny(relay)).resolves.toBe("denied")
+      expect(store.read(suspension.approvalId)).toMatchObject({
+        state: "denied",
+        relayDecision: { actor: "owner-via-relay", senderDid: routeDid, envelopeBindingId: "binding-1", decidedAt: expect.any(String) },
+      })
+      expect(restart).not.toHaveBeenCalled()
+      expect(pending(agentRoot)).toEqual([])
+      expect(events).toContainEqual(expect.objectContaining({ event: "senses.telegram_approval_relay_answered", meta: expect.objectContaining({ answer: "denied" }) }))
+      // The same answer again finds nothing waiting.
+      await expect(runtime.relayDeny(relay)).resolves.toBe("not_pending")
+    } finally { store.close(); runtime.close() }
   })
 
   it("binds a delayed approval through real durable stores, executes once, resumes, delivers, and terminalizes causally", async () => {
