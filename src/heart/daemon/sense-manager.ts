@@ -657,6 +657,18 @@ function readBlueBubblesRuntimeJson(runtimePath: string): BlueBubblesRuntimeStat
   /* v8 ignore stop */
 }
 
+/** A send's record that BlueBubbles cannot send (senses/bluebubbles/send-health.ts writes it); null when sends work or nothing is recorded. */
+function readBlueBubblesSendBlock(runtimeDir: string): { detail: string } | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(runtimeDir, "send-health.json"), "utf-8")) as { status?: unknown; detail?: unknown; since?: unknown }
+    if (parsed.status !== "blocked") return null
+    const detail = typeof parsed.detail === "string" && parsed.detail.trim() ? parsed.detail : "BlueBubbles sends are failing"
+    return { detail: typeof parsed.since === "string" ? `${detail} (failing since ${parsed.since})` : detail }
+  } catch {
+    return null
+  }
+}
+
 /** The listener's latest sign of life: its last health check, or a sync heartbeat written since. */
 function blueBubblesLatestProof(state: BlueBubblesRuntimeStateSlice): { at?: string; method?: string } {
   const checkedMs = state.lastCheckedAt ? Date.parse(state.lastCheckedAt) : Number.NaN
@@ -730,6 +742,19 @@ function readBlueBubblesRuntimeFacts(
       lastFailure: state.detail,
       failureLayer: "upstream",
       recoveryAction: "verify BlueBubbles server/app auth and local machine attachment, then retry the listener",
+    }
+  }
+
+  // The health check proves BlueBubbles answers, not that it can send: a send that macOS refused says more.
+  const sendBlock = readBlueBubblesSendBlock(path.dirname(runtimePath))
+  if (sendBlock) {
+    return {
+      runtime: "error",
+      detail: sendBlock.detail,
+      ...proofFacts,
+      lastFailure: sendBlock.detail,
+      failureLayer: "send",
+      recoveryAction: "fix what the detail names on the BlueBubbles host; sends are still tried, and the next one that goes through clears this",
     }
   }
 

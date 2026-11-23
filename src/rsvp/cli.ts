@@ -417,9 +417,9 @@ function recordField(record: Record<string, unknown>, key: string): Record<strin
 /** The agent's declared iMessage host account; an unreadable config leaves it unset, so sending fails closed. */
 export function rsvpBlueBubblesHostOptions(agent: string, agentRoot: string): BlueBubblesClientHostOptions {
   try {
-    return { agent, hostUsername: loadAgentConfig({ agentName: agent, agentRoot }).senses?.bluebubbles.hostUsername }
+    return { agent, agentRoot, hostUsername: loadAgentConfig({ agentName: agent, agentRoot }).senses?.bluebubbles.hostUsername }
   } catch {
-    return { agent, hostUsername: undefined }
+    return { agent, agentRoot, hostUsername: undefined }
   }
 }
 

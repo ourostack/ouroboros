@@ -10,6 +10,7 @@ import { describeImage } from "../../heart/attachments/understand"
 import { normalizeBlueBubblesEvent, type BlueBubblesChatRef, type BlueBubblesNormalizedEvent } from "./model"
 import { hydrateBlueBubblesAttachments, type VlmDescribeFn } from "./media"
 import { verifyBlueBubblesServerAccount, type BlueBubblesServerFacts } from "./host-account-verifier"
+import { recordBlueBubblesSendBlocked, recordBlueBubblesSendDelivered, type BlueBubblesSendPath } from "./send-health"
 
 export interface BlueBubblesSendTextParams {
   chat: BlueBubblesChatRef
@@ -178,6 +179,35 @@ async function parseJsonBody(response: Response): Promise<unknown> {
 
 function describeCaughtValue(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+export const HOST_AUTOMATION_DENIED = "host_automation_denied"
+
+/** osascript's error line when macOS has not let BlueBubbles control Messages (TCC Automation). */
+const AUTOMATION_DENIED_LINE = /^\d+:\d+: execution error: Not authorized to send Apple events to .*\(-1743\)\.?$/
+
+/**
+ * Whether a BlueBubbles send error is macOS refusing Automation. BlueBubbles echoes the whole osascript command,
+ * message body included, so only osascript's own error, its last line, is read: never the user's words.
+ */
+function isAutomationDenied(responseText: string): boolean {
+  let text = responseText
+  try {
+    const body = JSON.parse(responseText) as { error?: { message?: unknown } }
+    if (typeof body?.error?.message === "string") text = body.error.message
+  } catch {
+    // A plain-text body is read as it is.
+  }
+  const lastLine = text.trimEnd().split("\n").at(-1)!.trim()
+  return AUTOMATION_DENIED_LINE.test(lastLine)
+}
+
+function automationDeniedMessage(hostUsername: string | undefined): string {
+  const account = hostUsername ? `the "${hostUsername}" macOS account` : "the macOS account BlueBubbles runs under"
+  return "BlueBubbles could not send: macOS has not allowed BlueBubbles to control Messages "
+    + "(Not authorized to send Apple events to Messages (-1743)). Sends through AppleScript will fail until a person fixes it: "
+    + `signed in to ${account}, open System Settings → Privacy & Security → Automation → BlueBubbles → Messages and turn it on. `
+    + "Texts sent through BlueBubbles' Private API helper, while it is connected, do not need it; attachments always do."
 }
 
 function sendTransportErrorCode(error: unknown): string {
@@ -407,6 +437,8 @@ async function resolveChatGuid(
 export interface BlueBubblesClientHostOptions {
   /** The agent whose Apple ID this client acts as; defaults to the running agent. */
   agent?: string
+  /** That agent's bundle, where send health is recorded; defaults to the agent's usual bundle. */
+  agentRoot?: string
   /** The agent's declared iMessage host account; defaults to the running agent's senses.bluebubbles.hostUsername. */
   hostUsername?: string
 }
@@ -419,11 +451,15 @@ export function createBlueBubblesClient(
   // Everything that acts as the signed-in Apple ID first confirms the server
   // runs under the agent's declared macOS host account.
   // Sends recheck every time; quieter actions may reuse a recent confirmation.
+  const agentName = (): string => hostOptions.agent ?? getAgentName()
+  const declaredHostUsername = (): string | undefined => "hostUsername" in hostOptions
+    ? hostOptions.hostUsername
+    : loadAgentConfig().senses?.bluebubbles.hostUsername
+  const recordBlocked = (code: string, detail: string): void => recordBlueBubblesSendBlocked(agentName(), { code, detail }, hostOptions.agentRoot)
+  const recordDelivered = (via: BlueBubblesSendPath): void => recordBlueBubblesSendDelivered(agentName(), via, hostOptions.agentRoot)
   const assertHostAccount = (options: { fresh?: boolean } = {}): Promise<BlueBubblesServerFacts | undefined> => verifyBlueBubblesServerAccount({
-    agent: hostOptions.agent ?? getAgentName(),
-    hostUsername: "hostUsername" in hostOptions
-      ? hostOptions.hostUsername
-      : loadAgentConfig().senses?.bluebubbles.hostUsername,
+    agent: agentName(),
+    hostUsername: declaredHostUsername(),
     serverUrl: config.serverUrl,
     password: config.password,
     requestTimeoutMs: channelConfig.requestTimeoutMs,
@@ -510,15 +546,22 @@ export function createBlueBubblesClient(
       if (!response.ok) {
         const errorText = await response.text().catch(() => "")
         const reason = errorText || "unknown"
-        const errorCode = `http_${response.status}`
+        const automationDenied = isAutomationDenied(reason)
+        const errorCode = automationDenied ? HOST_AUTOMATION_DENIED : `http_${response.status}`
         emitBlueBubblesSendError({ status: response.status, errorCode, reason })
+        const message = automationDenied
+          ? automationDeniedMessage(declaredHostUsername())
+          : `BlueBubbles send failed (${response.status}): ${reason}`
+        // A health check that only proves BlueBubbles answers must not hide that it cannot send.
+        if (automationDenied) recordBlocked(errorCode, message)
         throw new BlueBubblesSendError({
-          message: `BlueBubbles send failed (${response.status}): ${reason}`,
+          message,
           httpStatus: response.status,
           errorCode,
           transportInvoked: true,
         })
       }
+      recordDelivered(body.method === "private-api" ? "private-api" : "apple-script")
 
       const rawPayload = await response.text()
       let payload: unknown = null
@@ -583,8 +626,15 @@ export function createBlueBubblesClient(
       const response = await fetch(url, { method: "POST", body: form, signal: AbortSignal.timeout(channelConfig.requestTimeoutMs + 60_000) })
       if (!response.ok) {
         const errorText = await response.text().catch(() => "")
+        if (isAutomationDenied(errorText)) {
+          const message = automationDeniedMessage(declaredHostUsername())
+          recordBlocked(HOST_AUTOMATION_DENIED, message)
+          throw new Error(message)
+        }
         throw new Error(`BlueBubbles attachment failed (${response.status}): ${errorText || "unknown"}`)
       }
+      // Attachments always go through AppleScript.
+      recordDelivered("apple-script")
     },
 
     async editMessage(params: BlueBubblesEditMessageParams): Promise<void> {
