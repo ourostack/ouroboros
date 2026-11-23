@@ -10,8 +10,5 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends tmux \
   && rm -rf /var/lib/apt/lists/*
 COPY agent-sdk /opt/agent-sdk
-# The arm's home has no brand word in its path; the arm links the mounted bundle under it.
-RUN chmod -R a+rX /opt/agent-sdk \
-  && mkdir -p /home/agent/AgentBundles \
-  && chown -R 10001:10001 /home/agent
+RUN chmod -R a+rX /opt/agent-sdk
 USER 10001:10001

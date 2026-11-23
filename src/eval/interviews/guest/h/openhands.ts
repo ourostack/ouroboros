@@ -60,7 +60,8 @@ const startPython: StartSupervisor = (specFile, options) => {
   })
   void exited.then(() => { ended = true; if (waiting) { const take = waiting; waiting = null; take(null) } })
   const next = (): Promise<string | null> => lines.length > 0 ? Promise.resolve(lines.shift()!) : ended ? Promise.resolve(null) : new Promise((resolve) => { waiting = resolve })
-  const timer = setTimeout(() => child.kill("SIGKILL"), 30 * 60_000)
+  // Inside the host's 600-second guest deadline, so a stuck supervisor ends as this arm's failure, not the guest's.
+  const timer = setTimeout(() => child.kill("SIGKILL"), 540_000)
   return {
     send: async (message) => {
       if (!ended) child.stdin.write(`${JSON.stringify(message)}\n`)
