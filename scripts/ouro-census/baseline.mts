@@ -77,6 +77,7 @@ export interface WalkerSource {
   passthrough?: readonly string[];
   approvals?: readonly string[];
   reshape?: readonly string[];
+  server?: string;
 }
 
 /**
@@ -85,13 +86,13 @@ export interface WalkerSource {
  */
 export function checkSources(sources: readonly WalkerSource[], baseSources: readonly WalkerSource[] | null): string[] {
   if (!baseSources) return [];
-  // A changed parser or kinds type, an added claim or passthrough, or a dropped approvals resolver can hide doors as
-  // surely as a removed source.
+  // A changed parser or kinds type, an added claim or passthrough, a dropped approvals resolver or a renamed server can
+  // hide doors as surely as a removed source.
   const key = (s: WalkerSource) =>
     [
       s.walker, s.module, s.source, ...(s.parser ? [s.parser] : []), ...(s.kinds ? [s.kinds] : []), ...(s.claims ?? []).map((c) => `claims ${c.entry}=${c.parser}`),
       ...(s.cards ? [`cards ${s.cards}`] : []), ...(s.passthrough ?? []).map((p) => `passthrough ${p}`), ...(s.approvals ?? []).map((a) => `approvals ${a}`),
-      ...(s.reshape ?? []).map((r) => `reshape ${r}`),
+      ...(s.reshape ?? []).map((r) => `reshape ${r}`), ...(s.server ? [`server ${s.server}`] : []),
     ].join(" ");
   const here = new Map(sources.map((s) => [key(s), s]));
   return baseSources.flatMap((s) => {

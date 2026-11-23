@@ -71,6 +71,9 @@ async function readConfig(path: string): Promise<Config> {
     if ((s.cards !== undefined && typeof s.cards !== "string") || (s.handlers !== undefined && !(Array.isArray(s.handlers) && s.handlers.every((h) => typeof h === "string")))) {
       throw new CensusFailure(`ax-census: ${path}: a source's cards must be a string and its handlers a list of paths`);
     }
+    if (s.server !== undefined && (typeof s.server !== "string" || s.server === "")) {
+      throw new CensusFailure(`ax-census: ${path}: a source's server must be the server's name under mcpServers`);
+    }
     const strings = (v: unknown) => v === undefined || (Array.isArray(v) && v.every((x) => typeof x === "string"));
     if (!strings(s.passthrough) || !strings(s.approvals) || !strings(s.reshape)) {
       throw new CensusFailure(`ax-census: ${path}: a source's passthrough, approvals and reshape must be lists of <file>#<function>`);
