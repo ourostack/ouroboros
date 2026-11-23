@@ -1,7 +1,7 @@
 /**
  * The A2A process's half of the approval relay. A verified sealed message that carries friends' signed `approvalAnswer`
  * never becomes a model turn. Once the A2A server has verified it, the raw sealed message goes to the Telegram sense
- * process over `state/approvals/relay.sock`, and that process opens it again, checks it and decides it beside the taps
+ * process over `state/approvals/relay/sock`, and that process opens it again, checks it and decides it beside the taps
  * (security review H3, L4). This file is that one-line client.
  */
 import * as net from "node:net"
@@ -10,9 +10,9 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { A2AMessage } from "./types"
 
-/** Where the Telegram sense listens for relayed answers. */
+/** Where the Telegram sense listens for relayed answers: alone in a folder only this agent's user can enter. */
 export function approvalRelaySocketPath(agentRoot: string): string {
-  return path.join(agentRoot, "state", "approvals", "relay.sock")
+  return path.join(agentRoot, "state", "approvals", "relay", "sock")
 }
 
 /** What the sender hears back. The Telegram process answers one of these; anything else reads as unavailable. */

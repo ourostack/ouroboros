@@ -67,7 +67,7 @@ export interface StartA2AServerOptions {
   path?: string
   agentRoot?: string
   turnRunner?: A2ATurnRunner
-  /** Tests: how a verified approval answer reaches the Telegram sense (default: its `relay.sock`). */
+  /** Tests: how a verified approval answer reaches the Telegram sense (default: its `relay/sock`). */
   forwardApprovalAnswer?: typeof forwardApprovalAnswer
   /** Tests: the owner route's peer DID. Default: `senses.telegram.ownerNoticesTo.did` in this agent's `agent.json`. */
   approvalRelayPeerDid?: () => string | undefined

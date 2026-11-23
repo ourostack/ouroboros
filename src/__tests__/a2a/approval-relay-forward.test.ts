@@ -48,7 +48,7 @@ type Forward = (input: { socketPath: string; message: A2AMessage }) => Promise<s
 
 /** A Butler-shaped agent whose owner route is the peer (or `routeDid`, when given; `null` reads agent.json). */
 async function setup(forward: Forward | undefined, routeFor?: (peerDid: string) => (() => string | undefined) | null) {
-  tmp = createTmpBundle({ agentName: `fwd-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` })
+  tmp = createTmpBundle({ agentName: `fwd-${Math.random().toString(36).slice(2, 8)}` })
   const agent: A2AIdentity = { ...mint(), seed: Buffer.from(sodium.randombytes_buf(32)).toString("base64url") }
   const peer = await loadOrMintA2AIdentityFile({ filePath: path.join(tmp.bundlesRoot, "peer", "identity.json"), sodium })
   const store = new FileFriendStore(`${tmp.agentRoot}/friends`)
@@ -179,7 +179,7 @@ describe("a verified approval answer at the A2A server", () => {
 
 describe("forwardApprovalAnswer", () => {
   function listen(reply: (socket: net.Socket) => void) {
-    tmp = createTmpBundle({ agentName: `cli-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` })
+    tmp = createTmpBundle({ agentName: `cli-${Math.random().toString(36).slice(2, 8)}` })
     const socketPath = approvalRelaySocketPath(tmp.agentRoot)
     fs.mkdirSync(path.dirname(socketPath), { recursive: true })
     const srv = net.createServer((socket) => socket.once("data", () => reply(socket)))
@@ -204,7 +204,7 @@ describe("forwardApprovalAnswer", () => {
   })
 
   it("reads a missing socket as unavailable", async () => {
-    tmp = createTmpBundle({ agentName: `none-${Date.now()}` })
+    tmp = createTmpBundle({ agentName: `none-${Math.random().toString(36).slice(2, 8)}` })
     await expect(forwardApprovalAnswer({ socketPath: approvalRelaySocketPath(tmp.agentRoot), message })).resolves.toBe(RELAY_UNAVAILABLE)
   })
 
