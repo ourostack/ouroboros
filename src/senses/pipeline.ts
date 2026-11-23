@@ -64,6 +64,7 @@ import { readFlightRecorderResume, recordFlightRecorderEvent } from "../arc/flig
 import { refreshContextLossSentinel } from "../heart/context-loss-sentinel"
 import { projectCareEvidence, type CareRecord } from "../arc/cares"
 import { withTurnExecutionLease } from "../heart/turn-execution-lease"
+import { beginTurnInFlight, isWatchedSense, watchTurnCallbacks } from "./turn-watch"
 import { parseLinkCode, redeemLinkCode } from "../mind/friend-link-codes"
 
 export interface FailoverState {
@@ -765,9 +766,33 @@ export function erroredTurnReply(errorMessage: string | undefined): string {
 
 export async function handleInboundTurn(input: InboundTurnInput): Promise<InboundTurnResult> {
   return withTurnExecutionLease(
-    () => handleInboundTurnExclusive(input),
+    () => handleWatchedInboundTurn(input),
     input.stopQueueWaitOnAbort ? input.signal : undefined,
   )
+}
+
+/**
+ * Records the turn while it runs, so status can show a sense whose turn has stopped moving. The caller's input keeps
+ * its identity (the turn writes back to it); only its callbacks are swapped for the watched ones, and put back after.
+ */
+async function handleWatchedInboundTurn(input: InboundTurnInput): Promise<InboundTurnResult> {
+  if (!isWatchedSense(input.channel)) return handleInboundTurnExclusive(input)
+  let agentRoot: string
+  try {
+    agentRoot = getAgentRoot()
+  } catch {
+    // No agent named in this process, so there is nowhere to record the turn. Watching must never stop a turn.
+    return handleInboundTurnExclusive(input)
+  }
+  const watch = beginTurnInFlight(agentRoot, input.channel, input.sessionKey ?? "session")
+  const callbacks = input.callbacks
+  input.callbacks = watchTurnCallbacks(callbacks, watch)
+  try {
+    return await handleInboundTurnExclusive(input)
+  } finally {
+    input.callbacks = callbacks
+    watch.finish()
+  }
 }
 
 async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<InboundTurnResult> {
