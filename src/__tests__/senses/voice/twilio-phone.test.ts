@@ -31,6 +31,7 @@ import {
   outboundCallAnsweredPrompt,
   readRecentTwilioOutboundCallJobs,
   resolveTwilioPhoneAgentRoot,
+  TwilioMediaStreamSession,
   twilioOutboundCallAmdCallbackUrl,
   twilioOutboundCallJobPath,
   twilioOutboundCallStatusCallbackUrl,
@@ -46,6 +47,7 @@ import {
 import type { VoiceTtsService, VoiceTranscriber } from "../../../senses/voice"
 import { PendingVoiceCalls, mintVoiceCallToken, newVoiceCallNonce, type VoiceCallIdentity } from "../../../senses/voice/call-auth"
 import type { VoiceRunSenseTurn } from "../../../senses/voice/turn"
+import { voiceUtterances } from "../../../senses/voice/utterances"
 
 
 const TEST_TWILIO_AUTH_TOKEN = "twilio-test-auth-token"
@@ -1880,6 +1882,11 @@ describe("Twilio phone voice bridge", () => {
       expect(acceptBody.audio?.input?.turn_detection?.create_response).toBe(false)
       await vi.waitFor(() => expect(openai.openaiSockets.length).toBe(1), { timeout: 10_000 })
       await vi.waitFor(() => expect(openai.openaiMessages.some((event) => event.type === "response.create")).toBe(true), { timeout: 10_000 })
+      // The voicemail greeting is heard as something said on the call.
+      openai.openaiSockets[0]!.send(JSON.stringify({
+        type: "conversation.item.input_audio_transcription.completed", item_id: "item-menu", transcript: "Please leave a message after the tone.",
+      }))
+      await vi.waitFor(() => expect(voiceUtterances(outputDir).get("sip-call_machine-item-menu")).not.toBeNull())
 
       const amd = await bridge.handle({
         method: "POST",
@@ -1893,6 +1900,9 @@ describe("Twilio phone voice bridge", () => {
       expect(saved.status).toBe("voicemail")
       expect(saved.answeredBy).toBe("machine_start")
       expect(saved.transportCallSid).toBe("CATWILIOMACHINE")
+      await vi.waitFor(() => expect(voiceUtterances(outputDir).outcome("sip-call_machine-item-menu")).toMatchObject({
+        outcome: "silent", detail: "a voicemail or fax machine answered the call, so it was ended",
+      }))
     } finally {
       await openai.close()
       await fs.rm(outputDir, { recursive: true, force: true })
@@ -3257,6 +3267,7 @@ describe("Twilio phone voice bridge", () => {
         }))
       await vi.waitFor(() => expect(options.runSenseTurn).toHaveBeenCalledTimes(1))
       vi.mocked(options.runSenseTurn).mockClear()
+      const end = vi.spyOn(TwilioMediaStreamSession.prototype, "end")
 
       const response = await server.bridge.handle({
         method: "POST",
@@ -3267,6 +3278,9 @@ describe("Twilio phone voice bridge", () => {
 
       expect(response.statusCode).toBe(200)
       await waitForSocketClose(socket)
+      // The bridge ends the call saying why. A Realtime session records what it heard as silent with this reason;
+      // this cascade session takes no reason.
+      expect(end).toHaveBeenCalledWith("a voicemail or fax machine answered the call, so it was ended")
       expect(options.runSenseTurn).not.toHaveBeenCalled()
       const saved = JSON.parse(await fs.readFile(twilioOutboundCallJobPath(outputDir, "out-async-machine"), "utf8")) as { status?: string; answeredBy?: string; transportCallSid?: string; events?: Array<{ status: string; answeredBy?: string }> }
       expect(saved.status).toBe("voicemail")
