@@ -99,6 +99,6 @@ it("stops before marking another session started once a job finds the host lock 
     deps.started.add("X-1")
     return { exitCode: 0 }
   })
-  expect((await run([...REMOTE, "--host-lock", "eval"])).stderr).toEqual(["interviews: the host lock was lost, so session X-1 was not started; it and every later session can still run under a new lock\n", "code: eval-error\n"])
+  expect((await run([...REMOTE, "--host-lock", "eval"])).stderr).toEqual(["interviews: the host lock was lost, so session X-1 was not started; name it and the later sessions with --session to run them under a new lock\n", "code: eval-error\n"])
   expect(lock.release).toHaveBeenCalledTimes(1)
 })

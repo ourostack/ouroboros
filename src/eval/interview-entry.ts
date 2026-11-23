@@ -129,7 +129,7 @@ function stopWhenLockLost(runCase: RunCase): { runCase: RunCase; started: Starte
     started: {
       has: (id) => started.has(id),
       add: (id) => {
-        if (lost) throw new Error(`the host lock was lost, so session ${id} was not started; it and every later session can still run under a new lock`)
+        if (lost) throw new Error(`the host lock was lost, so session ${id} was not started; name it and the later sessions with --session to run them under a new lock`)
         started.add(id)
       },
     },
