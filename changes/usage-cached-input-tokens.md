@@ -1,0 +1,1 @@
+Token usage now keeps the cached input tokens that a provider reports, as `cached_input_tokens`, from chat completions (`prompt_tokens_details.cached_tokens`) and from the Responses API (`input_tokens_details.cached_tokens`). It's left out when the provider reports none. Cached tokens are billed at a lower price, so an eval's report can now price each call exactly.
