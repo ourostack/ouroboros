@@ -54,7 +54,7 @@ export function getCodingSessionManager(): CodingSessionRouter {
 }
 
 export function resetCodingSessionManager(): void {
-  void manager?.shutdown()
+  manager?.shutdown()
   manager = null
   emitNervesEvent({
     component: "repertoire",

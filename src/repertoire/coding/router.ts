@@ -64,7 +64,20 @@ export class CodingSessionRouter implements RefreshableCodingSessionManagerApi {
   async refreshSessions(): Promise<CodingSession[]> {
     const all: CodingSession[] = []
     for (const [backend, manager] of this.entries()) {
-      const sessions = isRefreshable(manager) ? await manager.refreshSessions() : manager.listSessions()
+      let sessions: CodingSession[]
+      try {
+        sessions = isRefreshable(manager) ? await manager.refreshSessions() : manager.listSessions()
+      } catch (error) {
+        // One unreachable backend must not hide the sessions running on the others.
+        emitNervesEvent({
+          level: "warn",
+          component: "repertoire",
+          event: "repertoire.coding_backend_refresh_error",
+          message: "a coding backend could not refresh; showing its last known sessions",
+          meta: { backend, reason: error instanceof Error ? error.message : String(error) },
+        })
+        sessions = manager.listSessions()
+      }
       all.push(...sessions.map((session) => stamp(session, backend)))
     }
     return all
@@ -106,8 +119,8 @@ export class CodingSessionRouter implements RefreshableCodingSessionManagerApi {
     return total
   }
 
-  async shutdown(): Promise<void> {
-    for (const [, manager] of this.entries()) await manager.shutdown()
+  shutdown(): void {
+    for (const [, manager] of this.entries()) void manager.shutdown()
     this.managers.clear()
   }
 

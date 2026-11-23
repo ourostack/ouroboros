@@ -86,7 +86,7 @@ describe("OrcaCli commands", () => {
       launch: { outcome: { kind: "terminal", handle: "term_1" }, prompt: { outcome: "handed-to-terminal" }, receipt: { detail: "terminal per settings" } },
     }])
 
-    const launch = await cli.createWorktreeWithAgent({ repoDir: "/repo", name: "fix-it", agent: "claude", prompt: "do it" })
+    const launch = await cli.createWorktreeWithAgent({ repoDir: "/repo", repoId: "r1", name: "fix-it", agent: "claude", prompt: "do it" })
 
     expect(launch).toEqual({
       worktree: { id: "repo::/wt/new", path: "/wt/new", branch: undefined, isMainWorktree: true },
@@ -95,7 +95,7 @@ describe("OrcaCli commands", () => {
       detail: "terminal per settings",
     })
     expect(calls[0].args).toEqual([
-      "worktree", "create", "--name", "fix-it", "--no-parent", "--agent", "claude", "--surface", "terminal", "--prompt", "do it", "--json",
+      "worktree", "create", "--repo", "id:r1", "--name", "fix-it", "--no-parent", "--agent", "claude", "--surface", "terminal", "--prompt", "do it", "--json",
     ])
     expect(calls[0].options).toEqual(expect.objectContaining({ cwd: "/repo", timeout: 20 }))
   })
@@ -107,7 +107,7 @@ describe("OrcaCli commands", () => {
       { worktree, launch: { outcome: { handle: "t" }, prompt: { outcome: "unconfirmed" } } },
       { worktree, agentTerminalHandle: "legacy" },
     ])
-    const args = { repoDir: "/repo", name: "n", agent: "codex", prompt: "p" }
+    const args = { repoDir: "/repo", repoId: "r", name: "n", agent: "codex", prompt: "p" }
     expect((await cli.createWorktreeWithAgent(args)).promptDelivered).toBe(true)
     expect((await cli.createWorktreeWithAgent(args)).promptDelivered).toBe(false)
     expect((await cli.createWorktreeWithAgent(args)).promptDelivered).toBeNull()
@@ -117,9 +117,27 @@ describe("OrcaCli commands", () => {
 
   it("refuses a launch that started no terminal agent, or names no worktree", async () => {
     const { cli } = cliReplying([{ worktree, launch: { outcome: { kind: "structured" } } }, { launch: { outcome: { handle: "t" } } }])
-    const args = { repoDir: "/repo", name: "n", agent: "codex", prompt: "p" }
+    const args = { repoDir: "/repo", repoId: "r", name: "n", agent: "codex", prompt: "p" }
     await expect(cli.createWorktreeWithAgent(args)).rejects.toMatchObject({ code: "orca-no-terminal" })
     await expect(cli.createWorktreeWithAgent(args)).rejects.toMatchObject({ code: "orca-bad-reply" })
+  })
+
+  it("finds the Orca repo checked out at a folder, registering it when Orca doesn't know it", async () => {
+    const { cli, calls } = cliReplying([
+      { repos: [{ id: "other", path: "/else" }, { id: "r1", path: "/repo" }] },
+      { repos: "nope" },
+      { repo: { id: "r2", path: "/new" } },
+      { repos: [] },
+      { id: "r3" },
+      {},
+      {},
+    ])
+    expect(await cli.ensureRepo("/repo")).toBe("r1")
+    expect(calls[0].args).toEqual(["repo", "list", "--json"])
+    expect(await cli.ensureRepo("/new")).toBe("r2")
+    expect(calls[2].args).toEqual(["repo", "add", "--path", "/new", "--json"])
+    expect(await cli.ensureRepo("/new")).toBe("r3")
+    await expect(cli.ensureRepo("/new")).rejects.toMatchObject({ code: "orca-bad-reply", message: "orca repo add --path /new named no repo id" })
   })
 
   it("launches an agent in an existing worktree", async () => {

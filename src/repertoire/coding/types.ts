@@ -10,10 +10,14 @@ export type CodingBackend = NonNullable<NonNullable<AgentConfig["coding"]>["back
 
 /** Where an Orca-backed session lives in Orca, so a person can find it and tools can reach it. */
 export interface CodingOrcaPlacement {
+  /** The workdir the spawn asked for (a repo checkout, or the worktree itself). */
+  requestedWorkdir: string
   worktreeId: string
   worktreePath: string
   branch?: string
   terminalHandle: string
+  /** Orca's `<tabId>:<leafId>` for the agent's pane; it outlives terminal handles across Orca restarts. */
+  paneKey?: string
 }
 
 export interface CodingSessionOrigin {

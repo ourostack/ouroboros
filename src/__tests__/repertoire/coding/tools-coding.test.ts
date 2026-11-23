@@ -126,6 +126,32 @@ describe("coding tool contracts", () => {
     expect(defaulted).toEqual(expect.objectContaining({ id: "orca-1", reused: true }))
   })
 
+  it("coding_spawn reuses an Orca session made from the same checkout, but only on the preferred backend", async () => {
+    const live = {
+      id: "orca-1",
+      backend: "orca",
+      runner: "claude",
+      workdir: "/wt/task-1",
+      orca: { requestedWorkdir: "/repo" },
+      taskRef: "task-1",
+      status: "running",
+      lastActivityAt: "2026-11-23T00:00:00.000Z",
+    }
+    manager.listSessions.mockReturnValue([live])
+    manager.spawnSession.mockResolvedValue({ ...live, id: "coding-002", backend: "local", workdir: "/repo" })
+
+    const reused = JSON.parse(await execTool("coding_spawn", { runner: "claude", workdir: "/repo", prompt: "go", taskRef: "task-1" }))
+    expect(reused).toEqual(expect.objectContaining({ id: "orca-1", reused: true }))
+
+    ;(manager as any).preferredBackend = "local"
+    try {
+      const spawned = JSON.parse(await execTool("coding_spawn", { runner: "claude", workdir: "/repo", prompt: "go", taskRef: "task-1" }))
+      expect(spawned.id).toBe("coding-002")
+    } finally {
+      delete (manager as any).preferredBackend
+    }
+  })
+
   it("coding_spawn validates required fields", async () => {
     expect(
       await execTool("coding_spawn", {

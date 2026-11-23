@@ -21,7 +21,7 @@ export interface OrcaCodingSessionManagerOptions {
   agentName: string
   cli?: Pick<
     OrcaCli,
-    "showWorktree" | "createWorktreeWithAgent" | "launchAgent" | "listTerminals" | "listAgents" | "readTerminal" | "sendText" | "closeTerminal"
+    "showWorktree" | "ensureRepo" | "createWorktreeWithAgent" | "launchAgent" | "listTerminals" | "listAgents" | "readTerminal" | "sendText" | "closeTerminal"
   >
   stateFilePath?: string
   nowIso?: () => string
@@ -36,7 +36,14 @@ export interface OrcaCodingSessionManagerOptions {
 interface OrcaRecord {
   request: CodingSessionRequest
   session: CodingSession
+  /** Refreshes in a row that found no terminal for this session (in memory only). */
+  misses?: number
+  /** The last state Orca reported for the agent (in memory only). */
+  agentState?: string
 }
+
+/** Refreshes in a row that must miss a session's terminal before it counts as gone; one miss may be Orca restarting or asleep. */
+export const ORCA_MISSES_BEFORE_GONE = 3
 
 
 /** A session is closed once its Orca terminal is gone (killed, failed, or closed after it finished). */
@@ -64,17 +71,13 @@ export function orcaWorktreeName(taskRef: string | undefined, id: string): strin
   return slug.length > 0 ? slug : id
 }
 
-/** Orca's agent state, as a coding session status. An agent that has not reported yet is running. */
+/**
+ * Orca's agent state, as a coding session status. Orca's `done` ends a turn, not the job (an interactive
+ * agent waits in its tab for more), so it reads as waiting for input; a session completes only when its
+ * terminal closes after `done`. An agent that has not reported yet is running.
+ */
 export function statusFromOrcaAgent(state: string | undefined): CodingSessionStatus {
-  switch (state) {
-    case "blocked":
-    case "waiting":
-      return "waiting_input"
-    case "done":
-      return "completed"
-    default:
-      return "running"
-  }
+  return state === "blocked" || state === "waiting" || state === "done" ? "waiting_input" : "running"
 }
 
 function updateKindFor(status: CodingSessionStatus): CodingSessionUpdate["kind"] {
@@ -100,6 +103,7 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
   private readonly mkdirSync: (target: string, options: { recursive: true }) => unknown
   private readonly pollIntervalMs: number
   private pollTimer: ReturnType<typeof setInterval> | null = null
+  private polling = false
 
   constructor(options: OrcaCodingSessionManagerOptions) {
     this.agentName = options.agentName
@@ -126,22 +130,34 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
     }
     const prompt = buildCodingPrompt(normalized, { existsSync: this.existsSync, readFileSync: this.readFileSync })
 
-    // An Orca worktree already at workdir gets a new agent tab; anything else (a repo's main checkout,
-    // or a folder Orca doesn't manage) gets its own new Orca worktree, so parallel jobs never collide.
+    // An Orca worktree already at workdir gets a new agent tab; anything else (a repo's main checkout, or
+    // a checkout Orca doesn't know yet, which is registered with Orca first) gets its own new Orca worktree,
+    // so parallel jobs never collide.
     const existing = await this.cli.showWorktree(normalized.workdir)
-    const launch: OrcaLaunch = existing && !existing.isMainWorktree
+    const inExisting = existing !== null && !existing.isMainWorktree
+    const launch: OrcaLaunch = inExisting
       ? await this.cli.launchAgent({ worktree: existing, agent: normalized.runner, prompt })
       : await this.cli.createWorktreeWithAgent({
         repoDir: normalized.workdir,
+        repoId: await this.cli.ensureRepo(normalized.workdir),
         name: orcaWorktreeName(normalized.taskRef, id),
         agent: normalized.runner,
         prompt,
       })
 
     if (launch.promptDelivered === false) {
+      await this.cli.closeTerminal(launch.terminalHandle).catch(() => undefined)
       throw new Error(
-        `Orca opened ${normalized.runner} in ${launch.worktree.path} (terminal ${launch.terminalHandle}) but did not deliver its task prompt; close that tab and spawn again`,
+        `Orca opened ${normalized.runner} in ${launch.worktree.path} but did not deliver its task prompt, so its tab was closed; the worktree stays. Spawn again with workdir ${launch.worktree.path}`,
       )
+    }
+
+    let paneKey: string | undefined
+    try {
+      const terminal = (await this.cli.listTerminals(launch.worktree.id)).find((item) => item.handle === launch.terminalHandle)
+      paneKey = terminal?.tabId && terminal.leafId ? `${terminal.tabId}:${terminal.leafId}` : undefined
+    } catch (error) {
+      this.reportOrcaUnreachable(id, error)
     }
 
     const session: CodingSession = {
@@ -149,10 +165,12 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
       runner: normalized.runner,
       backend: "orca",
       orca: {
+        requestedWorkdir: normalized.workdir,
         worktreeId: launch.worktree.id,
         worktreePath: launch.worktree.path,
         branch: launch.worktree.branch,
         terminalHandle: launch.terminalHandle,
+        paneKey,
       },
       workdir: launch.worktree.path,
       taskRef: normalized.taskRef,
@@ -161,7 +179,9 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
       evolutionCaseId: normalized.evolutionCaseId,
       scopeFile: normalized.scopeFile,
       stateFile: normalized.stateFile,
-      checkpoint: launch.detail,
+      checkpoint: launch.promptDelivered === null
+        ? "Orca did not confirm the task prompt arrived; read coding_tail to check"
+        : launch.detail,
       status: "running",
       stdoutTail: "",
       stderrTail: "",
@@ -181,7 +201,7 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
       component: "repertoire",
       event: "repertoire.orca_coding_session_spawned",
       message: "Orca coding session spawned",
-      meta: { id, runner: session.runner, worktreePath: launch.worktree.path, created: !(existing && !existing.isMainWorktree) },
+      meta: { id, runner: session.runner, worktreePath: launch.worktree.path, created: !inExisting },
     })
     this.notify(id, { kind: "spawned", session: cloneSession(session) })
     return cloneSession(session)
@@ -265,7 +285,12 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
     try {
       await this.cli.closeTerminal(record.session.orca!.terminalHandle)
     } catch (error) {
-      return { ok: false, message: `Orca could not close ${sessionId}: ${error instanceof Error ? error.message : String(error)}` }
+      const reason = error instanceof Error ? error.message : String(error)
+      // The tab may already be gone; ask Orca before calling the kill failed.
+      record.misses = ORCA_MISSES_BEFORE_GONE - 1
+      await this.refreshWorktree(record.session.orca!.worktreeId, [record])
+      if (isClosed(record.session)) return { ok: true, message: `session ${sessionId} had already ended (${record.session.status})` }
+      return { ok: false, message: `Orca could not close ${sessionId}: ${reason}` }
     }
     record.session.status = "killed"
     record.session.endedAt = this.nowIso()
@@ -301,20 +326,23 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
     const session = record.session
     const placement = session.orca!
     let terminal = terminals.find((item) => item.handle === placement.terminalHandle)
-    if (!terminal) {
-      // Orca hands out new terminal handles when it restarts; one terminal running our runner is ours.
-      const candidates = terminals.filter((item) => item.agentIdentity === session.runner)
-      if (candidates.length === 1) {
-        terminal = candidates[0]
-        placement.terminalHandle = terminal.handle
-      }
+    if (!terminal && placement.paneKey) {
+      // Orca hands out new terminal handles when it restarts; the pane it sits in keeps its key.
+      const heldByOthers = new Set(
+        [...this.records.values()].filter((other) => other !== record).map((other) => other.session.orca!.terminalHandle),
+      )
+      terminal = terminals.find((item) => `${item.tabId}:${item.leafId}` === placement.paneKey && !heldByOthers.has(item.handle))
+      if (terminal) placement.terminalHandle = terminal.handle
     }
 
     const previous = session.status
     if (!terminal) {
+      record.misses = (record.misses ?? 0) + 1
+      if (record.misses < ORCA_MISSES_BEFORE_GONE) return
       session.endedAt = this.nowIso()
-      if (previous === "completed") {
-        session.checkpoint = "finished; its Orca terminal has since closed"
+      if (record.agentState === "done") {
+        session.status = "completed"
+        session.checkpoint = "finished; its Orca terminal has closed"
       } else {
         session.status = "failed"
         session.checkpoint = "its Orca terminal closed before the agent reported done"
@@ -329,7 +357,10 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
       }
       this.persistState()
     } else {
-      const agent = agents.find((item) => item.paneKey === `${terminal!.tabId}:${terminal!.leafId}`)
+      record.misses = 0
+      placement.paneKey = `${terminal.tabId}:${terminal.leafId}`
+      const agent = agents.find((item) => item.paneKey === placement.paneKey)
+      record.agentState = agent?.state ?? record.agentState
       session.status = statusFromOrcaAgent(agent?.state)
       if (agent?.lastAssistantMessage) session.checkpoint = clip(agent.lastAssistantMessage)
       if (terminal.lastOutputAt) session.lastActivityAt = new Date(terminal.lastOutputAt).toISOString()
@@ -354,7 +385,11 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
   private startPolling(): void {
     if (this.pollTimer) return
     this.pollTimer = setInterval(() => {
-      void this.refreshSessions()
+      if (this.polling) return
+      this.polling = true
+      void this.refreshSessions().finally(() => {
+        this.polling = false
+      })
     }, this.pollIntervalMs)
     this.pollTimer.unref?.()
   }
@@ -391,8 +426,18 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
   }
 
   private persistState(): void {
-    this.mkdirSync(path.dirname(this.stateFilePath), { recursive: true })
-    const records = [...this.records.values()].map((record) => ({ request: record.request, session: record.session }))
-    this.writeFileSync(this.stateFilePath, `${JSON.stringify({ records }, null, 2)}\n`, "utf-8")
+    try {
+      this.mkdirSync(path.dirname(this.stateFilePath), { recursive: true })
+      const records = [...this.records.values()].map((record) => ({ request: record.request, session: record.session }))
+      this.writeFileSync(this.stateFilePath, `${JSON.stringify({ records }, null, 2)}\n`, "utf-8")
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "repertoire",
+        event: "repertoire.orca_coding_state_write_error",
+        message: "could not save Orca coding sessions; they are kept in memory",
+        meta: { path: this.stateFilePath, reason: error instanceof Error ? error.message : String(error) },
+      })
+    }
   }
 }

@@ -181,10 +181,22 @@ export class OrcaCli {
     }
   }
 
+  /** The id of the Orca repo checked out at `dir`, registering it with Orca first when Orca doesn't know it yet. */
+  async ensureRepo(dir: string): Promise<string> {
+    const listed = await this.run(["repo", "list"])
+    const known = (Array.isArray(listed.repos) ? listed.repos : []).map(asRecord).find((repo) => repo.path === dir)
+    const knownId = asString(known?.id)
+    if (knownId) return knownId
+    const added = await this.run(["repo", "add", "--path", dir])
+    const addedId = asString(asRecord(added.repo).id) ?? asString(added.id)
+    if (!addedId) throw new OrcaCliError(`orca repo add --path ${dir} named no repo id`, "orca-bad-reply")
+    return addedId
+  }
+
   /** A new Orca worktree off the repo at `repoDir`, with a terminal agent already given the prompt. */
-  async createWorktreeWithAgent(input: { repoDir: string; name: string; agent: string; prompt: string }): Promise<OrcaLaunch> {
+  async createWorktreeWithAgent(input: { repoDir: string; repoId: string; name: string; agent: string; prompt: string }): Promise<OrcaLaunch> {
     const result = await this.run(
-      ["worktree", "create", "--name", input.name, "--no-parent", "--agent", input.agent, "--surface", "terminal", "--prompt", input.prompt],
+      ["worktree", "create", "--repo", `id:${input.repoId}`, "--name", input.name, "--no-parent", "--agent", input.agent, "--surface", "terminal", "--prompt", input.prompt],
       { cwd: input.repoDir, timeoutMs: this.launchTimeoutMs },
     )
     return launchFrom(result, worktreeFrom(result.worktree))

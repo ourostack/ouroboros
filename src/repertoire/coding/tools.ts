@@ -120,10 +120,12 @@ function matchesReusableCodingSession(session: CodingSession, request: CodingSes
   const evolutionCaseMatches = request.evolutionCaseId ? session.evolutionCaseId === request.evolutionCaseId : true
 
   const backendMatches = request.backend ? session.backend === request.backend : true
+  // An Orca session runs in a worktree it made from the requested checkout; match on what was asked for.
+  const workdirMatches = session.workdir === request.workdir || session.orca?.requestedWorkdir === request.workdir
   return (
     backendMatches &&
     session.runner === request.runner &&
-    session.workdir === request.workdir &&
+    workdirMatches &&
     session.taskRef === request.taskRef &&
     scopeMatches &&
     stateMatches &&
@@ -361,8 +363,11 @@ export const codingToolDefinitions: ToolDefinition[] = [
       if (stateFile) request.stateFile = stateFile
 
       const manager = getCodingSessionManager()
+      // Reuse only a session on the backend this spawn would use.
+      const preferredBackend = (manager as Partial<{ preferredBackend: CodingBackend }>).preferredBackend
+      const reuseRequest: CodingSessionRequest = { ...request, backend: request.backend ?? preferredBackend }
       const existingSessions = await listCodingSessions(manager)
-      const existingSession = findReusableCodingSession(existingSessions, request)
+      const existingSession = findReusableCodingSession(existingSessions, reuseRequest)
       if (existingSession) {
         emitNervesEvent({
           component: "repertoire",

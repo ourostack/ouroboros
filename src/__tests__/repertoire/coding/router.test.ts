@@ -108,6 +108,20 @@ describe("CodingSessionRouter", () => {
     expect(await r.refreshSession("missing")).toBeNull()
   })
 
+  it("keeps the other backends' sessions when one backend cannot refresh", async () => {
+    const local = fakeManager([session("coding-001")], true)
+    const orca = fakeManager([session("orca-1")], true)
+    ;(orca as unknown as { refreshSessions: () => Promise<never> }).refreshSessions = vi.fn(async () => {
+      throw new Error("orca down")
+    })
+    ;(local as unknown as { refreshSessions: () => Promise<never> }).refreshSessions = vi.fn(async () => {
+      throw "plain"
+    })
+    const { router: r } = router({ local, orca })
+
+    expect((await r.refreshSessions()).map((item) => [item.id, item.backend])).toEqual([["orca-1", "orca"], ["coding-001", "local"]])
+  })
+
   it("refreshes once to find a session no manager knows yet", async () => {
     const orca = fakeManager([], true)
     orca.refreshSessions = vi.fn(async () => {
@@ -162,7 +176,7 @@ describe("CodingSessionRouter", () => {
 
     expect(await r.checkStalls(5)).toBe(2)
     expect(local.checkStalls).toHaveBeenCalledWith(5)
-    await r.shutdown()
+    r.shutdown()
     expect(local.shutdown).toHaveBeenCalled()
     expect(orca.shutdown).toHaveBeenCalled()
     expect(r.listSessions()).toEqual([])

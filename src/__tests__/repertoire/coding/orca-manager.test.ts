@@ -6,6 +6,7 @@ vi.mock("../../../heart/identity", async () => {
 })
 
 import {
+  ORCA_MISSES_BEFORE_GONE,
   OrcaCodingSessionManager,
   orcaWorktreeName,
   statusFromOrcaAgent,
@@ -21,6 +22,7 @@ const terminal: OrcaTerminal = { handle: "term_1", tabId: "tab", leafId: "leaf",
 function fakeCli() {
   return {
     showWorktree: vi.fn(async (): Promise<typeof worktree | null> => null),
+    ensureRepo: vi.fn(async () => "repo-id"),
     createWorktreeWithAgent: vi.fn(async () => launch),
     launchAgent: vi.fn(async () => launch),
     listTerminals: vi.fn(async (): Promise<OrcaTerminal[]> => [terminal]),
@@ -51,6 +53,13 @@ function setup(overrides: Partial<OrcaCodingSessionManagerOptions> = {}) {
   return { manager: new OrcaCodingSessionManager(options), cli, files, options }
 }
 
+async function missTerminal(manager: OrcaCodingSessionManager, cli: ReturnType<typeof fakeCli>, times = ORCA_MISSES_BEFORE_GONE) {
+  for (let i = 0; i < times; i++) {
+    cli.listTerminals.mockResolvedValueOnce([])
+    await manager.refreshSessions()
+  }
+}
+
 const request: CodingSessionRequest = { runner: "claude", workdir: "/repo", prompt: "Fix the login bug", taskRef: "Fix Login!" }
 
 afterEach(() => {
@@ -65,12 +74,12 @@ describe("orca coding helpers", () => {
     expect(orcaWorktreeName(undefined, "orca-1")).toBe("orca-1")
   })
 
-  it("maps Orca agent states", () => {
+  it("reads Orca's done as the end of a turn, not of the job", () => {
     expect(statusFromOrcaAgent("working")).toBe("running")
     expect(statusFromOrcaAgent(undefined)).toBe("running")
     expect(statusFromOrcaAgent("blocked")).toBe("waiting_input")
     expect(statusFromOrcaAgent("waiting")).toBe("waiting_input")
-    expect(statusFromOrcaAgent("done")).toBe("completed")
+    expect(statusFromOrcaAgent("done")).toBe("waiting_input")
   })
 })
 
@@ -81,7 +90,8 @@ describe("OrcaCodingSessionManager spawn", () => {
     const session = await manager.spawnSession(request)
 
     expect(cli.showWorktree).toHaveBeenCalledWith("/repo")
-    expect(cli.createWorktreeWithAgent).toHaveBeenCalledWith(expect.objectContaining({ repoDir: "/repo", name: "fix-login", agent: "claude" }))
+    expect(cli.ensureRepo).toHaveBeenCalledWith("/repo")
+    expect(cli.createWorktreeWithAgent).toHaveBeenCalledWith(expect.objectContaining({ repoDir: "/repo", repoId: "repo-id", name: "fix-login", agent: "claude" }))
     const prompt = cli.createWorktreeWithAgent.mock.calls[0][0].prompt as string
     expect(prompt).toContain("sessionId: orca-abc12345")
     expect(prompt).toContain("parentAgent: test-agent")
@@ -92,7 +102,14 @@ describe("OrcaCodingSessionManager spawn", () => {
       workdir: "/wt/fix-login",
       status: "running",
       checkpoint: "terminal per settings",
-      orca: { worktreeId: "repo::/wt/fix-login", worktreePath: "/wt/fix-login", branch: "ari/fix-login", terminalHandle: "term_1" },
+      orca: {
+        requestedWorkdir: "/repo",
+        worktreeId: "repo::/wt/fix-login",
+        worktreePath: "/wt/fix-login",
+        branch: "ari/fix-login",
+        terminalHandle: "term_1",
+        paneKey: "tab:leaf",
+      },
     }))
     expect(JSON.parse(files.get("/state/orca-sessions.json")!).records[0].session.id).toBe("orca-abc12345")
     expect(manager.getSession("orca-abc12345")?.orca?.terminalHandle).toBe("term_1")
@@ -118,14 +135,33 @@ describe("OrcaCodingSessionManager spawn", () => {
 
     expect(cli.launchAgent).toHaveBeenCalledWith(expect.objectContaining({ worktree, agent: "codex" }))
     expect(cli.createWorktreeWithAgent).not.toHaveBeenCalled()
+    expect(cli.ensureRepo).not.toHaveBeenCalled()
   })
 
-  it("fails the spawn when Orca says the prompt was not delivered", async () => {
+  it("closes the tab and fails the spawn when Orca says the prompt was not delivered", async () => {
     const { manager, cli } = setup()
     cli.createWorktreeWithAgent.mockResolvedValueOnce({ ...launch, promptDelivered: false })
+    cli.closeTerminal.mockRejectedValueOnce(new Error("already gone"))
 
-    await expect(manager.spawnSession(request)).rejects.toThrow("did not deliver its task prompt")
+    await expect(manager.spawnSession(request)).rejects.toThrow("did not deliver its task prompt, so its tab was closed; the worktree stays. Spawn again with workdir /wt/fix-login")
+    expect(cli.closeTerminal).toHaveBeenCalledWith("term_1")
     expect(manager.listSessions()).toEqual([])
+  })
+
+  it("says so when Orca can't confirm the prompt arrived", async () => {
+    const { manager, cli } = setup()
+    cli.createWorktreeWithAgent.mockResolvedValueOnce({ ...launch, promptDelivered: null })
+    expect((await manager.spawnSession(request)).checkpoint).toBe("Orca did not confirm the task prompt arrived; read coding_tail to check")
+  })
+
+  it("spawns without a pane key when Orca can't list the terminal yet", async () => {
+    const { manager, cli } = setup()
+    cli.listTerminals.mockRejectedValueOnce(new Error("busy"))
+    expect((await manager.spawnSession(request)).orca?.paneKey).toBeUndefined()
+
+    const other = setup({ newId: () => "orca-2" })
+    other.cli.listTerminals.mockResolvedValueOnce([{ handle: "term_1" }])
+    expect((await other.manager.spawnSession(request)).orca?.paneKey).toBeUndefined()
   })
 
   it("tells subscribers it spawned", async () => {
@@ -163,7 +199,7 @@ describe("OrcaCodingSessionManager refresh", () => {
     manager.subscribe("orca-abc12345", (update) => {
       seen.push(update.kind)
     })
-    cli.listAgents.mockResolvedValueOnce([{ state: "waiting", paneKey: "tab:leaf" }])
+    cli.listAgents.mockResolvedValueOnce([{ state: "done", paneKey: "tab:leaf" }])
     await manager.refreshSessions()
     cli.listAgents.mockResolvedValueOnce([{ state: "working", paneKey: "tab:leaf", lastAssistantMessage: "  on it  " }])
     const [session] = await manager.refreshSessions()
@@ -185,27 +221,50 @@ describe("OrcaCodingSessionManager refresh", () => {
     expect(session.lastActivityAt).toBe("2026-11-23T00:00:00.000Z")
   })
 
-  it("adopts the new handle after Orca restarts and renames terminals", async () => {
+  it("finds its pane again after Orca restarts and hands out new terminal handles", async () => {
     const { manager, cli } = setup()
     await manager.spawnSession(request)
-    cli.listTerminals.mockResolvedValueOnce([{ ...terminal, handle: "term_new" }, { handle: "term_shell", agentIdentity: undefined }])
+    cli.listTerminals.mockResolvedValueOnce([{ handle: "someone_else", tabId: "tab2", leafId: "leaf", agentIdentity: "claude" }, { ...terminal, handle: "term_new" }])
 
     await manager.refreshSessions()
 
     expect(manager.getSession("orca-abc12345")?.orca?.terminalHandle).toBe("term_new")
   })
 
-  it("marks a session failed when its terminal is gone before it finished, and stops refreshing it", async () => {
+  it("never takes over a terminal another session holds, and adopts nothing without a pane key", async () => {
+    let n = 0
+    const { manager, cli } = setup({ newId: () => `orca-${++n}` })
+    cli.listTerminals.mockResolvedValueOnce([terminal])
+    await manager.spawnSession(request)
+    cli.createWorktreeWithAgent.mockResolvedValueOnce({ ...launch, terminalHandle: "term_2" })
+    cli.listTerminals.mockRejectedValueOnce(new Error("busy"))
+    await manager.spawnSession({ ...request, taskRef: "second" })
+    expect(manager.getSession("orca-2")?.orca?.paneKey).toBeUndefined()
+
+    // orca-1's handle went stale; its pane now shows term_2, which orca-2 already holds.
+    cli.listTerminals.mockResolvedValueOnce([{ ...terminal, handle: "term_2" }])
+    await manager.refreshSessions()
+
+    expect(manager.getSession("orca-1")?.orca?.terminalHandle).toBe("term_1")
+    expect(manager.getSession("orca-2")?.orca?.paneKey).toBe("tab:leaf")
+  })
+
+  it("waits for several missed refreshes before calling a session's terminal gone", async () => {
     const { manager, cli } = setup()
     await manager.spawnSession(request)
     const seen: CodingSessionUpdate[] = []
     manager.subscribe("orca-abc12345", (update) => {
       seen.push(update)
     })
-    cli.listTerminals.mockResolvedValueOnce([{ handle: "other", agentIdentity: "claude" }, { handle: "other2", agentIdentity: "claude" }])
 
-    const session = await manager.refreshSession("orca-abc12345")
+    await missTerminal(manager, cli, ORCA_MISSES_BEFORE_GONE - 1)
+    expect(manager.getSession("orca-abc12345")?.status).toBe("running")
+    await manager.refreshSessions()
+    await missTerminal(manager, cli, ORCA_MISSES_BEFORE_GONE - 1)
+    expect(manager.getSession("orca-abc12345")?.endedAt).toBeNull()
 
+    await missTerminal(manager, cli, 1)
+    const session = manager.getSession("orca-abc12345")
     expect(session).toEqual(expect.objectContaining({
       status: "failed",
       endedAt: "2026-11-23T00:00:00.000Z",
@@ -213,25 +272,26 @@ describe("OrcaCodingSessionManager refresh", () => {
     }))
     expect(session?.failure?.stderrTail).toBe("its Orca terminal closed before the agent reported done")
     expect(seen.map((update) => update.kind)).toEqual(["failed"])
-    expect(cli.readTerminal).not.toHaveBeenCalled()
 
     cli.listTerminals.mockClear()
+    cli.readTerminal.mockClear()
     await manager.refreshSessions()
     await manager.refreshSession("orca-abc12345")
     expect(cli.listTerminals).not.toHaveBeenCalled()
+    expect(cli.readTerminal).not.toHaveBeenCalled()
     manager.shutdown()
   })
 
-  it("keeps a finished session completed when its terminal later closes", async () => {
+  it("completes a session whose terminal closes after the agent reported done", async () => {
     const { manager, cli } = setup()
     await manager.spawnSession(request)
     cli.listAgents.mockResolvedValueOnce([{ state: "done", paneKey: "tab:leaf" }])
-    expect((await manager.refreshSession("orca-abc12345"))?.status).toBe("completed")
+    expect((await manager.refreshSession("orca-abc12345"))?.status).toBe("waiting_input")
 
-    cli.listTerminals.mockResolvedValueOnce([])
-    const session = await manager.refreshSession("orca-abc12345")
+    await missTerminal(manager, cli)
 
-    expect(session).toEqual(expect.objectContaining({ status: "completed", checkpoint: "finished; its Orca terminal has since closed" }))
+    const session = manager.getSession("orca-abc12345")
+    expect(session).toEqual(expect.objectContaining({ status: "completed", checkpoint: "finished; its Orca terminal has closed" }))
     expect(session?.failure).toBeNull()
   })
 
@@ -260,6 +320,7 @@ describe("OrcaCodingSessionManager refresh", () => {
     cli.showWorktree.mockResolvedValue(worktree)
     await manager.spawnSession(request)
     await manager.spawnSession({ ...request, taskRef: "second" })
+    cli.listTerminals.mockClear()
 
     await manager.refreshSessions()
 
@@ -312,7 +373,16 @@ describe("OrcaCodingSessionManager input and kill", () => {
     expect(await manager.killSession("missing")).toEqual({ ok: false, message: "session not found: missing" })
   })
 
-  it("reports Orca failing to close the terminal", async () => {
+  it("asks Orca again when closing fails, and calls a tab that is already gone ended", async () => {
+    const { manager, cli } = setup()
+    await manager.spawnSession(request)
+    cli.closeTerminal.mockRejectedValueOnce(new Error("terminal_handle_stale"))
+    cli.listTerminals.mockResolvedValueOnce([])
+
+    expect(await manager.killSession("orca-abc12345")).toEqual({ ok: true, message: "session orca-abc12345 had already ended (failed)" })
+  })
+
+  it("reports Orca failing to close a terminal that is still there", async () => {
     const { manager, cli } = setup()
     await manager.spawnSession(request)
     cli.closeTerminal.mockRejectedValueOnce(new Error("busy")).mockRejectedValueOnce("odd")
@@ -327,7 +397,7 @@ describe("OrcaCodingSessionManager input and kill", () => {
 })
 
 describe("OrcaCodingSessionManager polling and persistence", () => {
-  it("polls Orca while someone listens, and stops when the last listener leaves", async () => {
+  it("polls Orca while someone listens, one refresh at a time, and stops when the last listener leaves", async () => {
     vi.useFakeTimers()
     const { manager, cli } = setup({ pollIntervalMs: 1000 })
     await manager.spawnSession(request)
@@ -339,13 +409,42 @@ describe("OrcaCodingSessionManager polling and persistence", () => {
     cli.listAgents.mockResolvedValue([{ state: "done", paneKey: "tab:leaf" }])
 
     await vi.advanceTimersByTimeAsync(1000)
-    expect(seen).toEqual(["completed"])
+    expect(seen).toEqual(["waiting_input"])
+
+    // A refresh still running when the next tick comes is not started twice.
+    let release: (value: OrcaTerminal[]) => void = () => {}
+    cli.listTerminals.mockClear()
+    cli.listTerminals.mockImplementationOnce(() => new Promise((resolve) => {
+      release = resolve
+    }))
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(cli.listTerminals).toHaveBeenCalledTimes(1)
+    release([terminal])
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(cli.listTerminals).toHaveBeenCalledTimes(2)
 
     first()
     second()
     cli.listTerminals.mockClear()
     await vi.advanceTimersByTimeAsync(5000)
     expect(cli.listTerminals).not.toHaveBeenCalled()
+  })
+
+  it("keeps sessions in memory when its state file can't be written", async () => {
+    const { manager } = setup({
+      writeFileSync: () => {
+        throw new Error("disk full")
+      },
+    })
+    await manager.spawnSession(request)
+    const other = setup({
+      mkdirSync: () => {
+        throw "denied"
+      },
+    })
+    await other.manager.spawnSession(request)
+    expect(manager.listSessions()).toHaveLength(1)
+    expect(other.manager.listSessions()).toHaveLength(1)
   })
 
   it("restores sessions from its state file and skips malformed ones", async () => {
