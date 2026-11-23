@@ -8,6 +8,11 @@ export interface NervesEvent {
   component: string
   message: string
   meta?: Record<string, unknown>
+  /**
+   * Written whatever level the logger is set to. Only for small counts-only telemetry that must reach every
+   * process's log, such as `engine.turn_summary` (the iMessage, mail and voice senses log at warn).
+   */
+  alwaysLog?: boolean
 }
 
 let runtimeLogger: Logger | null = null
@@ -38,7 +43,9 @@ export function emitNervesEvent(event: NervesEvent): void {
   }
 
   const level = event.level ?? "info"
-  if (level === "debug") {
+  if (event.alwaysLog && typeof logger.emitDurable === "function") {
+    logger.emitDurable(level, payload)
+  } else if (level === "debug") {
     logger.debug(payload)
   } else if (level === "warn") {
     logger.warn(payload)
