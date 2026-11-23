@@ -1107,6 +1107,38 @@ describe("surface tool", () => {
       expect(fs.writeFileSync).not.toHaveBeenCalled()
     })
 
+    it("surfaceToolDefinition skips iMessage group chats and names each failed chat once", async () => {
+      mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: false })
+      mockSendTelegramAwaitFollowUp.mockResolvedValue({ status: "blocked" })
+      mockListSessionActivity.mockReturnValue([
+        session("bluebubbles", dm),
+        session("bluebubbles", "chat:any;+;group-1", 1_000),
+        session("bluebubbles", "chat:any;-;robin-2@example.test", 2_000),
+        session("telegram", "telegram_777_42", 3_000),
+      ])
+
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({ content: "heads up", friendId: "friend-1" }, { delegatedOrigins: [] } as any)
+
+      expect(result).toBe("deferred — not sent now; saved for their next message. iMessage did not send (not delivered); Telegram did not send (blocked). (code: surface-not-sent)")
+      expect(mockSendProactiveBlueBubblesMessageToSession.mock.calls.map(([params]) => params.sessionKey)).toEqual([dm, "chat:any;-;robin-2@example.test"])
+    })
+
+    it("surfaceToolDefinition sends a held thought from a private turn the same way, keyed to its obligation", async () => {
+      mockListSessionActivity.mockReturnValue([session("mcp", "mcp-session-1"), session("telegram", "telegram_777_42", 1_000)])
+
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({ content: "done thinking", delegationId: "held-1" }, {
+        delegatedOrigins: [{ id: "held-1", friendId: "friend-1", friendName: "Robin", channel: "inner", key: "dialog", delegatedContent: "think", source: "drained", timestamp: 1, obligationId: "obl-9" }],
+      } as any)
+
+      expect(result).toBe("delivered — sent to Telegram now")
+      expect(mockSendTelegramAwaitFollowUp).toHaveBeenCalledWith("test", expect.objectContaining({
+        requestId: "obl-9",
+        deliveryId: expect.stringMatching(/^surface:obl-9:/u),
+      }))
+    })
+
     it("surfaceToolDefinition delivers spontaneous outreach on the friend's Telegram now", async () => {
       mockListSessionActivity.mockReturnValue([session("telegram", "telegram_777_42")])
 
