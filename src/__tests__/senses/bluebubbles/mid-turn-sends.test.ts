@@ -38,7 +38,7 @@ const chat = {
   participantHandles: ["friend@example.test"],
 } as any
 
-async function setup(options: { sendText?: (...args: any[]) => Promise<any>; noteSend?: (spoke: any) => void; durable?: boolean } = {}) {
+async function setup(options: { sendText?: (...args: any[]) => Promise<any>; noteSend?: (spoke: any) => void; durable?: boolean; replyTo?: string } = {}) {
   const { createBlueBubblesCallbacks } = await import("../../../senses/bluebubbles")
   const { readBlueBubblesOutboundRecord } = await import("../../../senses/bluebubbles/outbound-state")
   const root = agentRoot()
@@ -50,7 +50,7 @@ async function setup(options: { sendText?: (...args: any[]) => Promise<any>; not
     markChatRead: vi.fn(async () => {}),
   }
   const noted: any[] = []
-  const replyTarget = { getReplyToMessageGuid: vi.fn(() => undefined), setSelection: vi.fn(() => "ok") }
+  const replyTarget = { getReplyToMessageGuid: vi.fn(() => options.replyTo), setSelection: vi.fn(() => "ok") }
   const callbacks = createBlueBubblesCallbacks(client as any, chat, replyTarget as any, false, () => order.push("visible"), {
     enableActivitySignals: false,
     ...(options.durable === false ? {} : {
@@ -85,6 +85,14 @@ describe("BlueBubbles mid-turn sends", () => {
     await callbacks.flushNow!()
     expect(noted).toHaveLength(2)
     expect(noted[1].outboundRecordId).not.toBe(noted[0].outboundRecordId)
+  })
+
+  it("keeps the threaded reply target on a mid-turn message's record", async () => {
+    const { callbacks, noted, read, sendText } = await setup({ replyTo: "inbound-guid-1" })
+    callbacks.onTextChunk("checking on that now")
+    await callbacks.flushNow!()
+    expect(sendText).toHaveBeenCalledWith(expect.objectContaining({ replyToMessageGuid: "inbound-guid-1" }))
+    expect(read(noted[0].outboundRecordId)?.replyToMessageGuidHash).toEqual(expect.any(String))
   })
 
   it("marks the record accepted without a message id when the transport returns none", async () => {
