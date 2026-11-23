@@ -102,15 +102,11 @@ describe("container image release gate", () => {
     expect(result.stdout).toBe(`publish=false\ndigest=${sharedDigest}\n`)
   })
 
-  it("fails closed when the digest-fetch inspection fails after the presence probe succeeds", () => {
-    const result = runGate("second-raw-error", "absent")
-    const output = `${result.stdout}${result.stderr}`
+  it("hashes the manifest from its one read, so a later failing read cannot turn a present image into an error", () => {
+    const result = runGate("second-raw-error", "present")
 
-    expect(result.status).not.toBe(0)
-    expect(output).toContain("second raw inspection failed")
-    expect(output).not.toContain("publish=true")
-    expect(output).not.toContain("publish=false")
-    expect(output).not.toContain(sharedDigest)
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe(`publish=false\ndigest=${sharedDigest}\n`)
   })
 
   it.each([

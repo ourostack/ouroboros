@@ -16,26 +16,32 @@ if [[ ! "$version_reference" =~ ^ghcr\.io/ourostack/ouroboros-butler:[0-9]+\.[0-
   exit 64
 fi
 
+# One registry read per reference: its manifest bytes are hashed here, never fetched a second time, because the
+# registry can answer a read just after a push differently from the read before it.
 inspect_reference() {
   local reference="$1"
-  local inspection
+  local raw_file
+  local error_file
+  local errors
   local status
   local digest
 
+  raw_file=$(mktemp)
+  error_file=$(mktemp)
   set +e
-  inspection=$(docker buildx imagetools inspect --raw "$reference" 2>&1)
+  docker buildx imagetools inspect --raw "$reference" >"$raw_file" 2>"$error_file"
   status=$?
   set -e
+  errors=$(cat "$error_file")
 
   if [ "$status" -eq 0 ]; then
-    set +e
-    digest=$(docker buildx imagetools inspect "$reference" --raw | sha256sum | awk '{ print "sha256:" $1 }')
-    status=$?
-    set -e
-    if [ "$status" -ne 0 ]; then
-      printf 'registry inspection failed for %s: %s\n' "$reference" "$digest" >&2
+    digest=$(sha256sum "$raw_file" | awk '{ print "sha256:" $1 }')
+    if [ ! -s "$raw_file" ]; then
+      rm -f "$raw_file" "$error_file"
+      printf 'registry inspection returned an empty manifest for %s\n' "$reference" >&2
       return 1
     fi
+    rm -f "$raw_file" "$error_file"
     if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
       printf 'registry inspection returned an invalid digest for %s: %s\n' "$reference" "$digest" >&2
       return 1
@@ -43,13 +49,14 @@ inspect_reference() {
     printf 'present\t%s\n' "$digest"
     return 0
   fi
+  rm -f "$raw_file" "$error_file"
 
-  if [ "$inspection" = "ERROR: $reference: not found" ]; then
+  if [ "$errors" = "ERROR: $reference: not found" ]; then
     printf 'absent\n'
     return 0
   fi
 
-  printf 'registry inspection failed for %s: %s\n' "$reference" "$inspection" >&2
+  printf 'registry inspection failed for %s: %s\n' "$reference" "$errors" >&2
   return 1
 }
 
