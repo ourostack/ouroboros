@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1383",
+      "changes": [
+        "A bundle can declare its own MCP server's tools in a tools.json from Ouro UI core's ouro-actions-tools (agent.json mcpServers.<name>.tools); the harness then gives those tools the declared description, parameters and Ouro AX card, with risk from the card's effect."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1382",
       "changes": [
         "`ouro up` no longer reports a healthy new daemon as \"answered once and then disappeared during startup\". One socket probe can time out (800 ms) while the new daemon is busy starting its senses; startup now calls the daemon gone only after three missed probes in a row, and never while its process is still alive."
