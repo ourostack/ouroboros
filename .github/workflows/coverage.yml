@@ -745,9 +745,9 @@ jobs:
       - publish
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.publish.outputs.release == 'true'
     runs-on: ubuntu-latest
-    # Room for the two version waits and the two latest-tag waits (20 min each at most), the tarball wait (about
-    # 21 min), the install and the smoke.
-    timeout-minutes: 110
+    # Room for the two version waits (20 min each at most), the two latest-tag waits (10 min each), the tarball
+    # wait (about 21 min), the install and the smoke.
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -771,62 +771,24 @@ jobs:
           WRAPPER_TAG="${{ needs.publish.outputs.wrapper_tag }}"
 
           # npm's public read path can lag a successful publish by minutes — observed
-          # at roughly four minutes for 0.1.0-alpha.821. For 0.1.0-alpha.1445 the exact
-          # version answered E404 for all of 601s after a publish that exited 0, then
-          # the container run's version-list poll saw it 13m46s after that publish.
-          # The cause is not established; 1200s is that measurement plus margin, not a
-          # known registry limit. A window shorter than the lag fails a release that
-          # actually succeeded, and a false failure here also fails the GitHub release.
-          PROPAGATION_DEADLINE_SECONDS=1200
+          # at roughly four minutes for 0.1.0-alpha.821. A window shorter than the lag
+          # fails a release that actually succeeded, and a false failure here also
+          # fails the GitHub release that follows.
+          PROPAGATION_DEADLINE_SECONDS=600
+
+          # The exact-version window is longer, as a mitigation budget and not a known
+          # registry limit. For 0.1.0-alpha.1445 the exact-version query answered E404 for
+          # all 601s after a publish that exited 0; a later, different read (the container
+          # run's version-list poll) saw it 13m46s after that publish. The cause is not
+          # established, and that list reading is not a measurement of when the exact query
+          # would have recovered.
+          export VERSION_DEADLINE_SECONDS=1200
 
           # Checks the exact version this run published, never the moving dist-tag:
           # the tag can lag the version by minutes (alpha.1161 was up while latest
           # still read alpha.1160), and tag lag must not red main.
-          verify_tag() {
-            package_ref="$1@$2"
-            expected="$2"
-            started=$(date +%s)
-            deadline=$((started + PROPAGATION_DEADLINE_SECONDS))
-
-            while :; do
-              # Keep npm's own error so a failure says why (E404 vs network vs auth),
-              # not just "missing".
-              npm_err=$(mktemp)
-              actual=$(npm view "$package_ref" version 2>"$npm_err" || echo "")
-              last_error=$(grep -m1 -E 'npm (error|warn)' "$npm_err" || true)
-              last_detail=$(grep -E '^npm (error|warn)' "$npm_err" | head -n 12 | cut -c1-300 || true)
-              rm -f "$npm_err"
-              if [ "$actual" = "$expected" ]; then
-                echo "${package_ref} verified at ${expected} after $(( $(date +%s) - started ))s"
-                return 0
-              fi
-
-              if [ "$(date +%s)" -ge "$deadline" ]; then
-                break
-              fi
-
-              echo "${package_ref} serves ${actual:-missing}, expected ${expected}${last_error:+ (${last_error})}; retrying after npm propagation delay"
-              sleep 15
-            done
-
-            # Say where the version is and is not visible, so a failure tells absence from a
-            # package, access or registry problem instead of only "missing".
-            echo "::group::${package_ref} diagnostics at $(date -u +%H:%M:%SZ)"
-            echo "last npm output:"; echo "${last_detail:-none}"
-            echo "registry: $(npm config get registry)"
-            if listed=$(npm view "$1" versions --json 2>&1); then
-              if printf '%s' "$listed" | grep -qF "\"${expected}\""; then echo "version list: includes ${expected}"; else echo "version list: does not include ${expected}"; fi
-            else
-              echo "version list read failed: $(printf '%s' "$listed" | head -n 3 | cut -c1-300)"
-            fi
-            echo "dist-tags: $(npm view "$1" dist-tags --json 2>&1 | tr -d '\n' | cut -c1-300)"
-            echo "::endgroup::"
-            echo "::error::${package_ref} serves ${actual:-missing}, expected ${expected} after $(( $(date +%s) - started ))s${last_error:+ (${last_error})}"
-            return 1
-          }
-
-          verify_tag "@ouro.bot/cli" "$LOCAL"
-          verify_tag "ouro.bot" "$LOCAL"
+          scripts/npm-verify-exact-version.sh "@ouro.bot/cli" "$LOCAL"
+          scripts/npm-verify-exact-version.sh "ouro.bot" "$LOCAL"
 
           # Published on latest: latest must now read this version or a later one,
           # never an older one. It can lag the version, so this waits out the same window.
