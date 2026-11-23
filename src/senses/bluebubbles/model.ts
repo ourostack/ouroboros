@@ -1,4 +1,4 @@
-import { renderChatInteraction } from "../../heart/chat-interaction"
+import { renderChatInteraction, type ChatInteraction } from "../../heart/chat-interaction"
 import OpenAI from "openai"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { renderAttachmentBlock } from "../../heart/attachments/render"
@@ -340,13 +340,21 @@ export function renderBlueBubblesReactionText(
   reaction: BlueBubblesReactionDescriptor,
   target: BlueBubblesReactionTarget,
 ): string {
-  return renderChatInteraction({
+  return renderChatInteraction(blueBubblesReactionInteraction(reaction, target))
+}
+
+/** A tapback as the shared reaction every sense speaks; BlueBubbles only maps its wire values. */
+export function blueBubblesReactionInteraction(
+  reaction: BlueBubblesReactionDescriptor,
+  target: BlueBubblesReactionTarget,
+): ChatInteraction {
+  return {
     kind: "reaction",
     label: reaction.action === "remove" ? reaction.noun ?? reaction.raw.replace(/^-/, "") : reaction.raw,
     ...(reaction.verb ? { verb: reaction.verb } : {}),
     removed: reaction.action === "remove",
     target: { ...(target.guid ? { id: `guid ${target.guid}` } : {}), ...(target.text ? { text: target.text } : {}), ...(typeof target.fromMe === "boolean" ? { fromAgent: target.fromMe } : {}) },
-  })
+  }
 }
 
 function stripPartPrefix(guid?: string): string | undefined {
