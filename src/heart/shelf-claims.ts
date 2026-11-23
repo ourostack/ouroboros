@@ -19,24 +19,19 @@ const LIBRARY_LOOKUP_TOOLS = new Set(["media_search", "sanctuary_search_media_ca
 const MIN_TITLE_LENGTH = 3
 /** The bundle's books CLI reading or changing the house book library: `./books get … --deliver`, `books library find …`. */
 const BOOKS_COMMAND = /(?:^|[\s;&|(])(?:[\w.~/-]*\/)?books\s+(?:get|deliver|library\s+(?:find|add))\b/
-/** `NAME=value` and `export NAME=value` in a command; `alias name=value`. A value is quoted or runs to a separator. */
+/** `NAME=value` and `export NAME=value` in a command. A value is quoted or runs to a separator. */
 const ASSIGNMENT = /(?:^|[\s;&|(])(?:export\s+)?([A-Za-z_]\w*)=("[^"\n]*"|'[^'\n]*'|[^\s;&|()]+)/g
-const ALIAS = /(?:^|[\s;&|(])alias\s+([A-Za-z_][\w.-]*)=("[^"\n]*"|'[^'\n]*'|[^\s;&|()]+)/g
 const VARIABLE = /"?\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))"?/g
 
 /**
- * The command with the variables and aliases it sets itself put back in place: `B=…/books; $B library find …` and
- * `alias bk=./books; bk library find …` both read as the books CLI. A variable the command does not set stays as it is.
+ * The command with each variable it set earlier put back in place, so `B=…/books; $B library find …` reads as the
+ * books CLI. A variable is resolved only from an assignment before its use; one the command never sets stays as it is.
  */
-function resolveOwnNames(command: string): string {
+function resolveOwnVariables(command: string): string {
   const unquote = (value: string): string => value.replace(/^(["'])(.*)\1$/, "$2")
-  const variables = new Map([...command.matchAll(ASSIGNMENT)].map((match) => [match[1]!, unquote(match[2]!)] as const))
-  let resolved = command.replace(VARIABLE, (whole, braced?: string, bare?: string) => variables.get((braced ?? bare)!) ?? whole)
-  for (const [, name, value] of command.matchAll(ALIAS)) {
-    const escaped = name!.replace(/[.-]/g, "\\$&")
-    resolved = resolved.replace(new RegExp(`(^|[\\s;&|(])${escaped}(?=\\s)`, "g"), `$1${unquote(value!)}`)
-  }
-  return resolved
+  const assignments = [...command.matchAll(ASSIGNMENT)].map((match) => ({ name: match[1]!, value: unquote(match[2]!), end: match.index + match[0].length }))
+  return command.replace(VARIABLE, (whole: string, braced: string | undefined, bare: string | undefined, at: number) =>
+    assignments.filter((entry) => entry.name === (braced ?? bare) && entry.end <= at).at(-1)?.value ?? whole)
 }
 /** A reply about the gate's own line ("sorry, that note was wrong"): it corrects a disclosure, so it gets none of its own. */
 const APOLOGY = /\b(?:sorry|apolog\w*|my\s+(?:mistake|bad)|ignore|disregard)\b|\bwas\s+wrong\b/i
@@ -74,7 +69,7 @@ function titlesFrom(records: readonly TurnToolRecord[]): { onShelf: Title[]; off
 /** True when a books CLI run this turn succeeded and, if it was a search, found something: the book library backs the claim. */
 function bookLibraryBacked(records: readonly TurnToolRecord[]): boolean {
   return records.some((record) => {
-    if (record.name !== "shell" || !BOOKS_COMMAND.test(resolveOwnNames(record.args.command ?? "")) || /^error:/i.test(record.result.trim())) return false
+    if (record.name !== "shell" || !BOOKS_COMMAND.test(resolveOwnVariables(record.args.command ?? "")) || /^error:/i.test(record.result.trim())) return false
     let parsed: unknown
     try { parsed = JSON.parse(record.result) } catch { return record.result.trim().length > 0 }
     if (!parsed || typeof parsed !== "object") return true

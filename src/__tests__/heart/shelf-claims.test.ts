@@ -107,25 +107,27 @@ describe("shelfClaimError", () => {
   // lookup and put "I haven't checked the library" in front of a reply that had checked.
   const ALMANAC = { ok: true, results: [{ id: 189, title: "The Harbour Almanac" }] }
   const ALMANAC_REPLY = "done, the messy copy (187) is out of the library. The Harbour Almanac (189), the clean one, is the only copy on the shelf now."
-  it("sees the books CLI run through a variable or alias the same command sets", () => {
+  it("sees the books CLI run through a variable the same command set first", () => {
     for (const command of [
       "B=/home/ouro/AgentBundles/house.ouro/books/books; $B library find \"The Harbour Almanac\"",
       "B=/home/ouro/AgentBundles/house.ouro/books/books; $B library remove 187; $B library find \"The Harbour Almanac\"",
       "B=\"/home/ouro/bundle/books/books\" && \"$B\" library find 'The Harbour Almanac'",
       "export BOOKS='/home/ouro/bundle/books/books'; ${BOOKS} library find 'The Harbour Almanac'",
-      "cd ~/bundle; alias bk=./books; bk library find 'The Harbour Almanac'",
-      "alias bk='/home/ouro/bundle/books/books'\nbk get 'The Harbour Almanac' --deliver",
     ]) {
       const tools = [shell(command, ALMANAC)]
       expect(shelfClaimError(ALMANAC_REPLY, tools), command).toBeNull()
     }
   })
 
-  it("still discloses when the variable or alias is not the books CLI, or the run did not look anything up", () => {
+  it("still discloses when the variable is not the books CLI, or the run did not look anything up", () => {
     for (const command of [
       "$B library find 'The Harbour Almanac'",
       "B=/usr/bin/calibredb; $B library find 'The Harbour Almanac'",
-      "alias bk=ls; bk library find 'The Harbour Almanac'",
+      // A shell runs from /bin/sh, where an alias set in the same command is not used: it is never a lookup.
+      "alias bk=/home/ouro/bundle/books/books; bk library find 'The Harbour Almanac'; echo searched",
+      // Set only after it is used, or reset to something else before it.
+      "B=/bin/ls; $B library find 'The Harbour Almanac'; B=/home/ouro/bundle/books/books",
+      "B=/home/ouro/bundle/books/books; B=/bin/ls; $B library find 'The Harbour Almanac'",
       "B=/home/ouro/bundle/books/books; $B library remove 187",
     ]) {
       const tools = [shell(command, ALMANAC)]
