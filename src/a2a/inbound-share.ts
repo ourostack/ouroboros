@@ -10,6 +10,7 @@ import {
 } from "@ouro.bot/friends/a2a-client"
 import {
   findFriendByDid,
+  type ApprovalAnswer,
   type FriendRecord,
   type FriendStore,
   type MissionStore,
@@ -51,7 +52,7 @@ export type InboundShareResult =
       friendsKind: string
       status: string
       /** Present for a verified `message` kind: the authenticated chat text. */
-      message?: { text: string; conversationId?: string; onBehalfOf?: "principal"; issuedAt: string }
+      message?: { text: string; conversationId?: string; onBehalfOf?: "principal"; approvalAnswer?: ApprovalAnswer; issuedAt: string }
       /** The sender's friend record, when the verified DID is a known friend. */
       friend?: FriendRecord
       /** The signed per-message id (friends' envelope binding): stable across redeliveries of the same message. */

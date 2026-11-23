@@ -1,8 +1,9 @@
+import { approvalRelaySocketPath, forwardApprovalAnswer, RELAY_REFUSED } from "./approval-relay-forward"
 import * as http from "node:http"
 import { createHash, randomUUID } from "node:crypto"
 import { ready } from "@ouro.bot/friends/a2a-client"
 import { FileFriendStore } from "@ouro.bot/friends"
-import { getAgentRoot } from "../heart/identity"
+import { getAgentRoot, loadAgentConfig } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { runSenseTurn } from "../senses/shared-turn"
 import { MAX_INBOUND_ATTEMPTS, openInboundJournal, type PendingInbound } from "../senses/inbound-journal"
@@ -66,6 +67,10 @@ export interface StartA2AServerOptions {
   path?: string
   agentRoot?: string
   turnRunner?: A2ATurnRunner
+  /** Tests: how a verified approval answer reaches the Telegram sense (default: its `relay/sock`). */
+  forwardApprovalAnswer?: typeof forwardApprovalAnswer
+  /** Tests: the owner route's peer DID. Default: `senses.telegram.ownerNoticesTo.did` in this agent's `agent.json`. */
+  approvalRelayPeerDid?: () => string | undefined
   /** The agent's self A2A cryptographic identity (did:key over an Ed25519 seed).
    * When present, the served agent card carries `card.did` and the inbound bridge
    * can unseal friends DataParts addressed to this DID. Absent in legacy/no-identity
@@ -533,6 +538,43 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
 
   // The message/send branch as one function, so a sealed message that arrives through the relay inbox runs exactly the
   // path a direct POST runs. `req` is absent for a relayed message: there are no HTTP headers to take a sender hint from.
+  /**
+   * A verified message carrying a signed `approvalAnswer`: forward it to the Telegram sense, which opens and checks it
+   * again, and send back its one-word outcome, sealed to the sender. It is never journaled and never reaches a model
+   * (review L4). Only the owner route's peer is forwarded; anyone else hears one generic `refused`. Everything that
+   * could fail is checked before forwarding, so a sender always hears whether a forwarded deny landed.
+   */
+  const answerRelayedApproval = async (
+    rpcId: A2AJsonRpcRequest["id"],
+    inbound: A2AMessage,
+    senderDid: string,
+    conversationId: string | undefined,
+    responseStyle: A2AResponseStyle,
+  ): Promise<A2AJsonRpcResponse> => {
+    // receiveShare pinned the sender before it reported the message as completed.
+    const pinned = inboundShareDeps!.pinStore.get(senderDid)!
+    let routeDid: string | undefined
+    try {
+      routeDid = (options.approvalRelayPeerDid ?? (() => loadAgentConfig({ agentName: options.agentName, agentRoot }).senses?.telegram.ownerNoticesTo?.did))()
+    } catch {
+      routeDid = undefined
+    }
+    const fromRoute = routeDid !== undefined && routeDid === senderDid
+    if (!fromRoute) emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_approval_answer_not_from_route", message: "refused an approval answer from a sender that isn't the owner route's peer", meta: { senderDid } })
+    const reply = fromRoute
+      ? await (options.forwardApprovalAnswer ?? forwardApprovalAnswer)({ socketPath: approvalRelaySocketPath(agentRoot), message: inbound })
+      : RELAY_REFUSED
+    // The signed conversation id, never the outer contextId: friends has already held it to its length limit.
+    const responseParts = sealChatMessage({
+      sodium: inboundShareDeps!.sodium, from: options.identity!, recipientDid: senderDid, recipientEd25519Pub: pinned.ed25519Pub,
+      text: reply, ...(conversationId ? { conversationId } : {}),
+    }).parts
+    const accessToken = randomUUID()
+    const task = taskFor({ taskId: randomUUID(), accessTokenHash: accessTokenHash(accessToken), contextId: inbound.contextId ?? "default", inbound, state: "TASK_STATE_COMPLETED", response: reply, responseParts })
+    taskStore.put(task, accessTokenScope(accessToken))
+    return jsonResponse(rpcId, publicTask(task, accessToken, responseStyle, true))
+  }
+
   const handleMessageSend = async (rpc: A2AJsonRpcRequest, req?: http.IncomingMessage, origin: A2AInboundOrigin = "direct"): Promise<A2AJsonRpcResponse> => {
     const responseStyle: A2AResponseStyle = rpc.method === "message/send" ? "legacy" : "latest"
     const parsedInbound = messageFromParams(rpc.params)
@@ -591,6 +633,10 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
       if (bridged.outcome === "completed") {
         verifiedPeerAgentId = bridged.verifiedDid
         verifiedPeerName = bridged.verifiedDid
+        if (bridged.message?.approvalAnswer) {
+          // An approval answer is never a turn: the Telegram sense, which owns the cards, checks and decides it.
+          return answerRelayedApproval(rpc.id, inbound, bridged.verifiedDid, bridged.message.conversationId, responseStyle)
+        }
         if (bridged.message) {
           // Authenticated chat: the signed, sealed text IS the turn.
           verifiedShareText = bridged.message.text
