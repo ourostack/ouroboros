@@ -79,12 +79,6 @@ const ALLOWED_FINDINGS: AllowedFinding[] = [
     reason: "verifies legacy internal meta markers are still stripped from outward BlueBubbles sends",
   },
   {
-    path: "packages/mailbox-ui/src/components/tabs/live-refresh.test.tsx",
-    textIncludes: ["not.toContain(\"Inner work\")", "not.toContain(\"Pending inner work queued.\")"],
-    classification: "safety-guard",
-    reason: "verifies old Mailbox UI copy stays absent from current private-runtime UI",
-  },
-  {
     path: "src/__tests__/mind/prompt.test.ts",
     textIncludes: ["not.toContain(\"channel: inner\")", "not.toContain(\"current sense: inner\")"],
     classification: "safety-guard",

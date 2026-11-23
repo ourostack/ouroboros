@@ -99,10 +99,6 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       stopAll: vi.fn(async () => undefined),
       listSenseRows: vi.fn(() => []),
     }
-    const mailboxServerFactory = vi.fn(async () => ({
-      origin: "http://127.0.0.1:0",
-      stop: vi.fn(async () => undefined),
-    }))
 
     const daemon = new OuroDaemon({
       socketPath,
@@ -112,7 +108,6 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       router,
       bundlesRoot,
       senseManager,
-      mailboxServerFactory,
       ...extra,
     } as any)
     return { daemon, processManager }
@@ -254,10 +249,6 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       stopAll: vi.fn(async () => undefined),
       listSenseRows: vi.fn(() => []),
     }
-    const mailboxServerFactory = vi.fn(async () => ({
-      origin: "http://127.0.0.1:0",
-      stop: vi.fn(async () => undefined),
-    }))
 
     const daemon = new OuroDaemon({
       socketPath,
@@ -268,7 +259,6 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       bundlesRoot,
       senseManager,
       mode: "dev",
-      mailboxServerFactory,
     } as any)
 
     await daemon.start()
@@ -329,10 +319,6 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       stopAll: vi.fn(async () => undefined),
       listSenseRows: vi.fn(() => []),
     }
-    const mailboxServerFactory = vi.fn(async () => ({
-      origin: "http://127.0.0.1:0",
-      stop: vi.fn(async () => undefined),
-    }))
 
     const daemon = new OuroDaemon({
       socketPath,
@@ -343,7 +329,6 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       bundlesRoot,
       senseManager,
       mode: "production",
-      mailboxServerFactory,
     } as any)
 
     await daemon.start()

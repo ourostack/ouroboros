@@ -6,7 +6,7 @@
  *   Only the "live" area (current streaming + spinner + input) re-renders.
  *   This avoids the screen-clearing problem that broke the previous Ink attempt.
  *
- * Design language: ouroboros brand palette from ouroboros.bot / Mailbox UI.
+ * Design language: ouroboros brand palette from ouroboros.bot.
  * ZERO business logic here — pure rendering from CliStore state.
  */
 import React, { useState, useRef, useEffect, useCallback } from "react"
@@ -18,7 +18,7 @@ import { handleKillToEnd, handleKillToStart, handleKillWordBack, handleYank, han
 import { imageRefEndingAt, imageRefStartingAt, deleteTokenBefore } from "./image-ref-navigation"
 
 // ─── Ouroboros Brand Palette (ANSI RGB) ─────────────────────────────
-// From packages/mailbox-ui/src/style.css and ouroboros.bot
+// From the ouroboros.bot brand palette
 const OURO = {
   scale: "#2f8f4e",    // primary green
   teal: "#4ec9b0",     // tool/accent teal

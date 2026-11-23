@@ -26,7 +26,7 @@ describe("sense-setup harness skill", () => {
     expect(skill).toContain("golden path 1, HEY archive to work object")
     expect(skill).toContain("golden path 2, native mail and Screener")
     expect(skill).toContain("golden path 3, cross-sense reaction")
-    expect(skill).toContain("golden path 4, Ouro Mailbox audit")
+    expect(skill).toContain("golden path 4, mail audit")
     expect(skill).toContain("mail validation question discipline: if a human asks a hypothetical")
     expect(skill).toContain("answer that hypothetical first")
     expect(skill).toContain("Do not replace the answer with current access logs")

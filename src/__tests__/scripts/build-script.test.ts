@@ -3,7 +3,7 @@ import * as path from "path"
 
 const {
   buildSteps,
-  npmExecutable,
+  parseArgs,
   runBuildCli,
 } = require(path.resolve(__dirname, "../../../scripts/build.cjs"))
 
@@ -21,7 +21,6 @@ function makeDeps(statuses: number[] = []) {
     defaultRepoRoot: repoRoot,
     execPath: "/node",
     join: path.join,
-    npmExecutable: () => "npm",
     resolve: path.resolve,
     resolveTypeScriptTsc: () => "/repo/node_modules/typescript/bin/tsc",
     spawnSync: (command: string, args: string[], options: { cwd: string; stdio: string }) => {
@@ -57,37 +56,17 @@ describe("build script", () => {
         args: ["/repo/scripts/sanctuary-health-acceptance-probe-entry-smoke.cjs"],
         options: { cwd: "/repo", stdio: "inherit" },
       },
-      {
-        command: "npm",
-        args: ["install", "--prefix", "packages/mailbox-ui", "--ignore-scripts"],
-        options: { cwd: "/repo", stdio: "inherit" },
-      },
-      {
-        command: "npm",
-        args: ["run", "build", "--prefix", "packages/mailbox-ui"],
-        options: { cwd: "/repo", stdio: "inherit" },
-      },
-      {
-        command: "/node",
-        args: ["/repo/scripts/copy-mailbox-ui.cjs"],
-        options: { cwd: "/repo", stdio: "inherit" },
-      },
     ])
     expect(stderr).toEqual([])
   })
 
-  it("stops at the first failing step instead of skipping Mailbox UI assets", () => {
-    const { calls, deps, stderr } = makeDeps([0, 0, 0, 7, 0, 0])
+  it("stops at the first failing step instead of running the rest", () => {
+    const { calls, deps, stderr } = makeDeps([0, 0, 5])
 
-    expect(runBuildCli([], deps)).toBe(7)
+    expect(runBuildCli([], deps)).toBe(5)
 
-    expect(calls.map((call) => call.args.join(" "))).toEqual([
-      "/repo/scripts/clean-dist.cjs",
-      "/repo/node_modules/typescript/bin/tsc",
-      "/repo/scripts/sanctuary-health-acceptance-probe-entry-smoke.cjs",
-      "install --prefix packages/mailbox-ui --ignore-scripts",
-    ])
-    expect(stderr.join("")).toContain("build failed during install Mailbox UI dependencies with exit code 7")
+    expect(calls).toHaveLength(3)
+    expect(stderr.join("")).toContain("build failed during smoke Sanctuary health acceptance probe entry with exit code 5")
   })
 
   it("stops when TypeScript compilation fails", () => {
@@ -99,35 +78,22 @@ describe("build script", () => {
     expect(stderr.join("")).toContain("build failed during compile TypeScript with exit code 2")
   })
 
-  it("uses npm.cmd on Windows", () => {
-    expect(npmExecutable("win32")).toBe("npm.cmd")
-    expect(npmExecutable("darwin")).toBe("npm")
-  })
-
-  it("can skip the Mailbox UI dependency install when the caller already installed it", () => {
+  it("builds the repository named as the first argument", () => {
     const { calls, deps } = makeDeps()
 
-    expect(runBuildCli(["--skip-mailbox-ui-install"], deps)).toBe(0)
+    expect(parseArgs(["/elsewhere"])).toEqual({ repoRoot: "/elsewhere" })
+    expect(runBuildCli(["/elsewhere"], deps)).toBe(0)
 
-    expect(calls.map((call) => call.args.join(" "))).toEqual([
-      "/repo/scripts/clean-dist.cjs",
-      "/repo/node_modules/typescript/bin/tsc",
-      "/repo/scripts/sanctuary-health-acceptance-probe-entry-smoke.cjs",
-      "run build --prefix packages/mailbox-ui",
-      "/repo/scripts/copy-mailbox-ui.cjs",
-    ])
+    expect(calls.map((call) => call.options.cwd)).toEqual(["/elsewhere", "/elsewhere", "/elsewhere"])
   })
 
-  it("keeps build step definitions pointed at the copied Mailbox UI assets", () => {
+  it("defines only the clean, compile and smoke steps", () => {
     const { deps } = makeDeps()
 
     expect(buildSteps("/repo", deps).map((step: { label: string }) => step.label)).toEqual([
       "clean dist",
       "compile TypeScript",
       "smoke Sanctuary health acceptance probe entry",
-      "install Mailbox UI dependencies",
-      "build Mailbox UI",
-      "copy Mailbox UI assets",
     ])
   })
 })

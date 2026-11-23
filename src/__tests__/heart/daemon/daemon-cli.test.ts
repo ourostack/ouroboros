@@ -245,10 +245,8 @@ describe("ouro CLI parsing", () => {
       kind: "daemon.logs.prune",
       agent: "Slugger",
     })
-    expect(parseOuroCommand(["mailbox"])).toEqual({ kind: "mailbox" })
-    expect(parseOuroCommand(["mailbox", "--json"])).toEqual({ kind: "mailbox", json: true })
-    expect(parseOuroCommand(["outlook"])).toEqual({ kind: "mailbox" })
-    expect(parseOuroCommand(["outlook", "--json"])).toEqual({ kind: "mailbox", json: true })
+    expect(() => parseOuroCommand(["mailbox"])).toThrow("Unknown command")
+    expect(() => parseOuroCommand(["outlook", "--json"])).toThrow("Unknown command")
     expect(parseOuroCommand(["hatch"])).toEqual({ kind: "hatch.start" })
     expect(
       parseOuroCommand([
@@ -1991,7 +1989,6 @@ describe("ouro CLI execution", () => {
             workerCount: 1,
             senseCount: 0,
             health: "ok",
-            mailboxUrl: "http://127.0.0.1:4310/mailbox",
             entryPath: "/usr/local/lib/node_modules/@ouro.bot/cli/dist/heart/daemon/daemon-entry.js",
             mode: "production",
           },
@@ -2027,50 +2024,6 @@ describe("ouro CLI execution", () => {
     expect(deps.writeStdout).toHaveBeenCalledWith(expect.stringContaining("ouroboros daemon"))
   })
 
-  it("surfaces the Mailbox URL from daemon status and can fetch JSON from the same seam", async () => {
-    const fetchImpl = vi.fn(async (target: string | URL | Request) => ({
-      ok: true,
-      status: 200,
-      json: async () => ({ productName: "Ouro Mailbox", agentCount: 1 }),
-      text: async () => JSON.stringify({ productName: "Ouro Mailbox", agentCount: 1 }, null, 2),
-    }))
-    const deps: OuroCliDeps = {
-      socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(async () => ({
-        ok: true,
-        data: {
-          overview: {
-            daemon: "running",
-            socketPath: "/tmp/ouro-test.sock",
-            version: PACKAGE_VERSION.version,
-            lastUpdated: "2026-03-08T23:50:00.000Z",
-            workerCount: 0,
-            senseCount: 0,
-            health: "ok",
-            entryPath: "/usr/local/lib/node_modules/@ouro.bot/cli/dist/heart/daemon/daemon-entry.js",
-            mode: "production",
-            mailboxUrl: "http://127.0.0.1:4310/mailbox",
-          },
-          senses: [],
-          workers: [],
-        },
-      })),
-      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
-      writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => true),
-      cleanupStaleSocket: vi.fn(),
-      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-    }
-
-    const urlResult = await runOuroCli(["mailbox"], deps)
-    expect(urlResult).toContain("http://127.0.0.1:4310/mailbox")
-
-    const jsonResult = await runOuroCli(["mailbox", "--json"], deps)
-    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:4310/mailbox/api/machine")
-    expect(jsonResult).toContain("\"productName\": \"Ouro Mailbox\"")
-  })
-
   it("renders overview defaults when daemon status omits optional overview fields", async () => {
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -2095,10 +2048,9 @@ describe("ouro CLI execution", () => {
     const result = await runOuroCli(["status"], deps)
 
     expect(result).toContain("unknown")
-    expect(result).toContain("unavailable")
     expect(result).toContain("Socket")
     expect(result).toContain("Health")
-    expect(result).toContain("Mailbox")
+    expect(result).not.toContain("Mailbox")
     // With no sync rows, the Git Sync section is omitted entirely (matches Senses/Workers)
     expect(result).not.toContain("Git Sync")
   })
@@ -2113,7 +2065,6 @@ describe("ouro CLI execution", () => {
         workerCount: 1,
         senseCount: 1,
         health: "ok",
-        mailboxUrl: "http://127.0.0.1:4310/mailbox",
         entryPath: "/usr/local/lib/node_modules/@ouro.bot/cli/dist/heart/daemon/daemon-entry.js",
         mode: "production",
       },
@@ -2432,7 +2383,6 @@ describe("ouro CLI execution", () => {
             workerCount: 1,
             senseCount: 3,
             health: "ok",
-            mailboxUrl: "http://127.0.0.1:4310/mailbox",
             entryPath: "/usr/local/lib/node_modules/@ouro.bot/cli/dist/heart/daemon/daemon-entry.js",
             mode: "production",
           },
@@ -2517,8 +2467,7 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("restarts: 0")
     expect(result).toContain("sense-probe:mcp-canary:slugger")
     expect(result).toContain("mcp canary failed: transport closed")
-    expect(result).toContain("Mailbox")
-    expect(result).toContain("http://127.0.0.1:4310/mailbox")
+    expect(result).not.toContain("Mailbox")
   })
 
   it("renders proof ages across compact duration units in sense details", async () => {

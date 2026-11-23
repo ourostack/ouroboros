@@ -165,7 +165,6 @@ describe("--no-repair flag: daemon.up handler", () => {
             daemon: "running",
             health: "warn",
             socketPath: "/tmp/ouro-test.sock",
-            mailboxUrl: "unavailable",
             version: PACKAGE_VERSION.version,
             lastUpdated: "unknown",
             repoRoot: "unknown",

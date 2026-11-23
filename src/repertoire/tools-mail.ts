@@ -528,12 +528,12 @@ async function renderEmptyMailResult(input: {
       ...(divergence ? [divergence] : []),
       ...sourceGrantStatus,
       "interpretation: this is not evidence that the human's HEY inbox is empty; Agent Mail has not yet received or imported mail visible to this agent.",
-      `agent next move: guide setup from docs/agent-mail-setup.md. If HEY mail is needed, ensure the delegated hey alias exists, first try ouro mail import-mbox --agent ${input.agentId} --owner-email <human-email> --source hey --discover so Ouro can find a browser-downloaded export in .playwright-mcp or Downloads. Only ask the human for a file path if discovery cannot find a unique MBOX, then run ouro mail import-mbox --agent ${input.agentId} --owner-email <human-email> --source hey --file <mbox-path>. Verify with mail_recent/mail_search/Ouro Mailbox.`,
+      `agent next move: guide setup from docs/agent-mail-setup.md. If HEY mail is needed, ensure the delegated hey alias exists, first try ouro mail import-mbox --agent ${input.agentId} --owner-email <human-email> --source hey --discover so Ouro can find a browser-downloaded export in .playwright-mcp or Downloads. Only ask the human for a file path if discovery cannot find a unique MBOX, then run ouro mail import-mbox --agent ${input.agentId} --owner-email <human-email> --source hey --file <mbox-path>. Verify with mail_recent and mail_search.`,
       "validation golden paths before claiming setup works:",
       "1. HEY archive to work object: import the human-provided HEY MBOX and use delegated mail to update a real work object, such as travel plans.",
       "2. Native mail and Screener: send and receive agent-native mail, confirm unknown senders enter Screener, get family authorization for allow/discard, verify sender policy, and confirm discarded mail is recoverable.",
       "3. Cross-sense reaction: use a mail-derived update or decision to trigger another configured sense, such as texting the family member on iMessage when BlueBubbles is available.",
-      "4. Ouro Mailbox audit: inspect the read-only mailbox UI for imported mail, native inbound, Screener decisions, outbound draft/send records, and mail access logs.",
+      "4. Mail audit: review imported mail, native inbound, Screener decisions, outbound draft/send records, and mail access logs through the mail tools.",
       "supporting diagnostics are separate evidence inside those paths, not additional paths; never answer a golden-path question with command names, tool names, or status checks.",
     ].join("\n")
   }

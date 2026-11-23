@@ -114,6 +114,12 @@ describe("mail outbound confirmed send", () => {
     await expect(listMailOutboundRecords(store, "slugger")).resolves.toEqual([
       expect.objectContaining({ id: draft.id, status: "sent" }),
     ])
+    await expect(store.listMailOutbound("slugger", { limit: 1 })).resolves.toEqual([
+      expect.objectContaining({ id: draft.id, status: "sent" }),
+    ])
+    await expect(store.listMailOutbound("slugger", { limit: 0 })).resolves.toEqual([
+      expect.objectContaining({ id: draft.id, status: "sent" }),
+    ])
   })
 
   it("requires an enabled native-agent policy before autonomous sending can run", async () => {
