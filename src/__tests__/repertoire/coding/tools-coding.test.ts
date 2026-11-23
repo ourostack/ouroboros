@@ -90,6 +90,42 @@ describe("coding tool contracts", () => {
     expect(invalidRunner).toContain("invalid runner")
   })
 
+  it("coding_spawn refuses an unknown backend and names the valid ones", async () => {
+    const result = await execTool("coding_spawn", {
+      runner: "claude",
+      backend: "tmux",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "do work",
+      taskRef: "task-1",
+    })
+    expect(result).toContain("invalid backend: tmux; use one of orca, local, workbench")
+    expect(manager.spawnSession).not.toHaveBeenCalled()
+  })
+
+  it("coding_spawn passes a named backend through, and reuses only a live session on that backend", async () => {
+    const live = {
+      id: "orca-1",
+      backend: "orca",
+      runner: "claude",
+      workdir: "/repo",
+      taskRef: "task-1",
+      status: "running",
+      lastActivityAt: "2026-11-23T00:00:00.000Z",
+    }
+    manager.listSessions.mockReturnValue([live])
+    manager.spawnSession.mockResolvedValue({ ...live, id: "coding-001", backend: "local" })
+
+    const spawned = JSON.parse(await execTool("coding_spawn", { runner: "claude", backend: "local", workdir: "/repo", prompt: "go", taskRef: "task-1" }))
+    expect(manager.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ backend: "local" }))
+    expect(spawned.id).toBe("coding-001")
+
+    const reused = JSON.parse(await execTool("coding_spawn", { runner: "claude", backend: "orca", workdir: "/repo", prompt: "go", taskRef: "task-1" }))
+    expect(reused).toEqual(expect.objectContaining({ id: "orca-1", reused: true }))
+
+    const defaulted = JSON.parse(await execTool("coding_spawn", { runner: "claude", workdir: "/repo", prompt: "go", taskRef: "task-1" }))
+    expect(defaulted).toEqual(expect.objectContaining({ id: "orca-1", reused: true }))
+  })
+
   it("coding_spawn validates required fields", async () => {
     expect(
       await execTool("coding_spawn", {

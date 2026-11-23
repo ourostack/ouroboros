@@ -9,7 +9,8 @@ import { advanceObligation, createObligation, findPendingObligationForOrigin } f
 import { consumeEvolutionBudget, evaluateEvolutionAction, type EvolutionActionDecision } from "../../arc/evolution"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getCodingCompletionScrutiny } from "../../mind/scrutiny"
-import type { CodingActionResult, CodingRunner, CodingSession, CodingSessionManagerApi, CodingSessionRequest, RefreshableCodingSessionManagerApi } from "./types"
+import { CODING_BACKENDS } from "./router"
+import type { CodingActionResult, CodingBackend, CodingRunner, CodingSession, CodingSessionManagerApi, CodingSessionRequest, RefreshableCodingSessionManagerApi } from "./types"
 
 const RUNNERS: CodingRunner[] = ["claude", "codex"]
 
@@ -23,6 +24,10 @@ function requireArg(args: Record<string, string>, key: string): string | null {
 
 function parseRunner(value: string): CodingRunner | null {
   return RUNNERS.includes(value as CodingRunner) ? (value as CodingRunner) : null
+}
+
+function parseBackend(value: string): CodingBackend | null {
+  return CODING_BACKENDS.includes(value as CodingBackend) ? (value as CodingBackend) : null
 }
 
 function optionalArg(args: Record<string, string>, key: string): string | undefined {
@@ -114,7 +119,9 @@ function matchesReusableCodingSession(session: CodingSession, request: CodingSes
   const stateMatches = request.stateFile ? session.stateFile === request.stateFile : true
   const evolutionCaseMatches = request.evolutionCaseId ? session.evolutionCaseId === request.evolutionCaseId : true
 
+  const backendMatches = request.backend ? session.backend === request.backend : true
   return (
+    backendMatches &&
     session.runner === request.runner &&
     session.workdir === request.workdir &&
     session.taskRef === request.taskRef &&
@@ -224,12 +231,13 @@ const codingSpawnTool: OpenAI.ChatCompletionTool = {
   type: "function",
   function: {
     name: "coding_spawn",
-    description: "Spawn a claude or codex coding session in a separate process with its own context. Give it a COMPLETE, SELF-CONTAINED task description -- it cannot see this conversation or what you've tried. Include what to do, why, which files are involved, what 'done' looks like, and any required verification steps or tests so it can prove the work is done. Never delegate understanding -- don't write 'based on the conversation, fix the bug'; write the specific file paths, line numbers, and what to change.",
+    description: "Start a claude or codex coding agent with its own context. This is the one way to start a coding agent: by default it opens in Orca (its own worktree and terminal tab that a person can watch; a workdir that is already an Orca worktree gets a new tab there), and coding_status, coding_tail, coding_send_input and coding_kill drive it wherever it runs. Set backend only to override the agent's preferred one (agent.json coding.backend, default orca): local runs it headless as a child process, workbench hands it to Ouro Workbench. Give it a COMPLETE, SELF-CONTAINED task description -- it cannot see this conversation or what you've tried. Include what to do, why, which files are involved, what 'done' looks like, and any required verification steps or tests so it can prove the work is done. Never delegate understanding -- don't write 'based on the conversation, fix the bug'; write the specific file paths, line numbers, and what to change.",
     parameters: {
       type: "object",
       properties: {
         runner: { type: "string", enum: ["claude", "codex"] },
-        workdir: { type: "string" },
+        backend: { type: "string", enum: [...CODING_BACKENDS], description: "Where it runs; omit for the agent's preferred backend (orca unless agent.json coding.backend says otherwise)." },
+        workdir: { type: "string", description: "A repo checkout (Orca makes a new worktree from it) or an existing Orca worktree (the agent opens there)." },
         prompt: { type: "string" },
         taskRef: { type: "string" },
         scopeFile: { type: "string" },
@@ -274,7 +282,7 @@ const codingSendInputTool: OpenAI.ChatCompletionTool = {
   type: "function",
   function: {
     name: "coding_send_input",
-    description: "send stdin text to an existing coding session",
+    description: "Send text to an existing coding session, as if typed and submitted (its Orca terminal, or its process's stdin).",
     parameters: {
       type: "object",
       properties: {
@@ -290,7 +298,7 @@ const codingKillTool: OpenAI.ChatCompletionTool = {
   type: "function",
   function: {
     name: "coding_kill",
-    description: "terminate an existing coding session",
+    description: "Stop an existing coding session. For an Orca session this closes its terminal tab; its worktree and commits stay.",
     parameters: {
       type: "object",
       properties: {
@@ -325,6 +333,12 @@ export const codingToolDefinitions: ToolDefinition[] = [
         workdir,
         prompt,
         taskRef,
+      }
+      const rawBackend = optionalArg(args, "backend")
+      if (rawBackend) {
+        const backend = parseBackend(rawBackend)
+        if (!backend) return withCode(`invalid backend: ${rawBackend}; use one of ${CODING_BACKENDS.join(", ")}`, "invalid-backend")
+        request.backend = backend
       }
       const evolutionCaseId = optionalArg(args, "evolutionCaseId")
       if (evolutionCaseId) request.evolutionCaseId = evolutionCaseId
@@ -417,15 +431,16 @@ export const codingToolDefinitions: ToolDefinition[] = [
       }
       return JSON.stringify(session)
     },
-    summaryKeys: ["runner", "workdir", "taskRef"],
+    summaryKeys: ["runner", "backend", "workdir", "taskRef"],
     riskProfile: {
       mutates: ["durable_state_write", "external_side_effect"] as const,
       risk: "high",
-      reason: "spawns a separate coding process and may create obligations",
+      reason: "starts a separate coding agent (an Orca worktree and terminal by default) and may create obligations",
     },
-    ax: { id: "tool:coding_spawn", group: "turn-coding", when: "Pick this to hand a whole coding job to a separate claude or codex worker; for one quick command, shell is enough.", effect: "write", errors: [
+    ax: { id: "tool:coding_spawn", group: "turn-coding", when: "Pick this to hand a whole coding job to a separate claude or codex worker (in Orca by default); never start one with the orca CLI through shell. For one quick command, shell is enough.", effect: "write", errors: [
       { code: "missing-argument", means: "runner, workdir, prompt or taskRef is missing or blank; the message names which.", fix: "Call coding_spawn again with all four filled in, the prompt complete enough to work from alone." },
       { code: "invalid-runner", means: "runner is something other than claude or codex.", fix: "Set runner to claude or codex and spawn again." },
+      { code: "invalid-backend", means: "backend is something other than orca, local or workbench.", fix: "Omit backend to use the preferred one, or set it to orca, local or workbench." },
       { code: "orientation-hold", means: "This turn is on a correction hold, so new coding work waits.", fix: "Call orientation_get, settle what the person meant, then spawn if the job is still right." },
     ] },
   },

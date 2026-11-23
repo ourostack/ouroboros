@@ -1,4 +1,20 @@
+import type { AgentConfig } from "../../heart/identity"
+
 export type CodingRunner = "claude" | "codex"
+
+/**
+ * Where a coding session runs. `orca` opens it in an Orca worktree and terminal a person can watch;
+ * `local` runs the runner as a headless child process; `workbench` hands it to Ouro Workbench.
+ */
+export type CodingBackend = NonNullable<NonNullable<AgentConfig["coding"]>["backend"]>
+
+/** Where an Orca-backed session lives in Orca, so a person can find it and tools can reach it. */
+export interface CodingOrcaPlacement {
+  worktreeId: string
+  worktreePath: string
+  branch?: string
+  terminalHandle: string
+}
 
 export interface CodingSessionOrigin {
   friendId: string
@@ -17,6 +33,7 @@ export type CodingSessionStatus =
 
 export interface CodingSessionRequest {
   runner: CodingRunner
+  backend?: CodingBackend
   workdir: string
   prompt: string
   taskRef?: string
@@ -59,6 +76,8 @@ export interface CodingIdentityPacket {
 export interface CodingSession {
   id: string
   runner: CodingRunner
+  backend?: CodingBackend
+  orca?: CodingOrcaPlacement
   workdir: string
   taskRef?: string
   originSession?: CodingSessionOrigin
