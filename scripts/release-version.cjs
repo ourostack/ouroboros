@@ -298,7 +298,11 @@ function npmRegistry(execFileSyncImpl = execFileSync, options = {}) {
             break
           } catch (failure) {
             const said = [failure.stderr, failure.stdout, failure.message].filter(Boolean).join("\n")
-            if (!/\bETARGET\b/.test(said) || attempt >= attempts) {
+            // npm lists a version before it serves its tarball: ETARGET, or a 404 on that exact tarball's URL
+            // (the same two answers release-smoke waits out). Any other failure is not lag.
+            const tarball = `/${PACKAGE}/-/${PACKAGE.split("/").pop()}-${version}.tgz`
+            const lagging = /\bETARGET\b/.test(said) || (/\bE404\b/.test(said) && said.includes(tarball))
+            if (!lagging || attempt >= attempts) {
               throw new Error(`could not download ${PACKAGE}@${version} from npm after ${attempt} attempt${attempt === 1 ? "" : "s"}: ${said.trim()}`)
             }
             sleep(30_000)

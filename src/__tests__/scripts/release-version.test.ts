@@ -736,6 +736,21 @@ describe("npmRegistry", { timeout: 30_000 }, () => {
     expect(() => npmRegistry(broken, { sleep: () => {} }).changelog("0.1.0-alpha.12")).toThrow("has no versions array")
     const never = (command: string) => { if (command === "npm") throw failure("npm error code ETARGET"); return "" }
     expect(() => npmRegistry(never, { sleep: () => {}, attempts: 2 }).changelog("0.1.0-alpha.12")).toThrow("after 2 attempts")
+    const tarball404 = (version: string) => `npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/@ouro.bot/cli/-/cli-${version}.tgz`
+    let served404 = 0
+    const lagged404 = (command: string) => {
+      if (command === "npm") {
+        served404 += 1
+        if (served404 === 1) throw failure(tarball404("0.1.0-alpha.12"))
+        return JSON.stringify([{ filename: "x.tgz" }])
+      }
+      return JSON.stringify({ versions: [] })
+    }
+    const slept404: number[] = []
+    expect(npmRegistry(lagged404, { sleep: (ms: number) => slept404.push(ms) }).changelog("0.1.0-alpha.12")).toEqual([])
+    expect(slept404).toEqual([30_000])
+    const otherTarball = () => { throw failure(tarball404("0.1.0-alpha.99")) }
+    expect(() => npmRegistry(otherTarball, { sleep: () => { throw new Error("must not wait") } }).changelog("0.1.0-alpha.12")).toThrow("after 1 attempt")
     const gone = () => { throw failure("npm error code E404") }
     expect(() => npmRegistry(gone, { sleep: () => {} }).changelog("0.1.0-alpha.12")).toThrow("could not download @ouro.bot/cli@0.1.0-alpha.12")
   })
