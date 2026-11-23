@@ -1,0 +1,166 @@
+import { describe, expect, it } from "vitest"
+import type { ProviderRuntime } from "../../heart/core"
+import { createBudgetLedger, meteredRuntime } from "../../eval/budget"
+
+const usage = (input: number, output: number) => ({ input_tokens: input, output_tokens: output, reasoning_tokens: 0, total_tokens: input + output })
+const pricing = { premiumPerCall: 2, creditsPerMillionInput: 400, creditsPerMillionOutput: 2000 }
+
+describe("budget ledger", () => {
+  it("refuses a hold whose worst case would pass a cap, before anything is spent", () => {
+    const ledger = createBudgetLedger({ premium: 100, credits: 50 })
+    expect(ledger.reserve("a", { calls: 24, perCall: { premium: 5, credits: 1 }, pricing })).toMatchObject({ refused: expect.stringContaining("premium") })
+    expect(ledger.reserve("b", { calls: 10, perCall: { premium: 2, credits: 6 }, pricing })).toMatchObject({ refused: expect.stringContaining("credits") })
+    expect(ledger.totals()).toMatchObject({ spent: { premium: 0, credits: 0 }, held: { premium: 0, credits: 0 }, calls: 0 })
+  })
+
+  it("holds a session's worst case, so a second consumer cannot take what the first may still need", () => {
+    const ledger = createBudgetLedger({ premium: 60 })
+    const first = ledger.reserve("first", { calls: 24, perCall: { premium: 2, credits: 0 }, pricing })
+    expect("refused" in first).toBe(false)
+    expect(ledger.reserve("second", { calls: 24, perCall: { premium: 2, credits: 0 }, pricing })).toMatchObject({ refused: expect.any(String) })
+    if ("refused" in first) throw new Error("unreachable")
+    first.take()
+    first.settle(usage(1000, 10))
+    expect(first.release()).toMatchObject({ premium: 2 })
+    expect(ledger.totals().held).toEqual({ premium: 0, credits: 0 })
+    expect("refused" in ledger.reserve("second", { calls: 24, perCall: { premium: 2, credits: 0 }, pricing })).toBe(false)
+  })
+
+  it("charges every call its premium requests when it is taken, and its credits from the usage it reports", () => {
+    const ledger = createBudgetLedger({ premium: 300, credits: 2500 })
+    const hold = ledger.reserve("run", { calls: 3, perCall: { premium: 2, credits: 20 }, pricing })
+    if ("refused" in hold) throw new Error(hold.refused)
+    expect(hold.take()).toBe(true)
+    expect(ledger.totals().spent.premium).toBe(2)
+    hold.settle(usage(25_000, 800))
+    // 25,000 × 400 / 1M + 800 × 2000 / 1M = 10 + 1.6
+    expect(hold.spent()).toEqual({ premium: 2, credits: 11.6 })
+    expect(ledger.totals()).toMatchObject({ calls: 1, held: { premium: 4, credits: 40 } })
+  })
+
+  it("counts a call with no usage report as billed at its reserved worst case", () => {
+    const ledger = createBudgetLedger({ credits: 100 })
+    const hold = ledger.reserve("run", { calls: 2, perCall: { premium: 0, credits: 30 }, pricing })
+    if ("refused" in hold) throw new Error(hold.refused)
+    hold.take()
+    hold.settle(undefined)
+    expect(hold.spent().credits).toBe(30)
+  })
+
+  it("refuses the call past the hold's calls, and every call once stopped", () => {
+    const ledger = createBudgetLedger({})
+    const hold = ledger.reserve("run", { calls: 1, perCall: { premium: 1, credits: 0 }, pricing })
+    if ("refused" in hold) throw new Error(hold.refused)
+    expect(hold.take()).toBe(true)
+    expect(hold.take()).toBe(false)
+    const other = ledger.reserve("other", { calls: 5, perCall: { premium: 1, credits: 0 }, pricing })
+    if ("refused" in other) throw new Error(other.refused)
+    ledger.stop("provider said 429")
+    expect(other.take()).toBe(false)
+    expect(ledger.stopped()).toBe("provider said 429")
+    expect(ledger.reserve("later", { calls: 1, perCall: { premium: 1, credits: 0 }, pricing })).toEqual({ refused: "stopped: provider said 429" })
+  })
+
+  it("stops once what was really spent passes a cap, and keeps the first reason", () => {
+    const ledger = createBudgetLedger({ credits: 20 })
+    const hold = ledger.reserve("run", { calls: 4, perCall: { premium: 0, credits: 5 }, pricing })
+    if ("refused" in hold) throw new Error(hold.refused)
+    hold.take()
+    hold.settle(usage(100_000, 0)) // 40 credits, far past the estimate
+    expect(ledger.stopped()).toMatch(/credits cap 20 passed/)
+    ledger.stop("later reason")
+    expect(ledger.stopped()).toMatch(/credits cap 20 passed/)
+    expect(hold.take()).toBe(false)
+    expect(hold.release()).toEqual({ premium: 0, credits: 40 })
+  })
+
+  it("rejects a negative or non-finite cap or worst case", () => {
+    expect(() => createBudgetLedger({ premium: -1 })).toThrow(/premium cap/)
+    const ledger = createBudgetLedger({})
+    expect(() => ledger.reserve("x", { calls: 0, perCall: { premium: 1, credits: 0 }, pricing })).toThrow(/at least 1 call/)
+    expect(() => ledger.reserve("x", { calls: 1, perCall: { premium: Number.NaN, credits: 0 }, pricing })).toThrow(/per-call/)
+  })
+})
+
+function runtime(streamTurn: ProviderRuntime["streamTurn"]): ProviderRuntime {
+  return {
+    id: "github-copilot", model: "m", client: null, capabilities: new Set(), streamTurn,
+    appendToolOutput: () => undefined, resetTurnState: () => undefined, ping: async () => undefined,
+    classifyError: (error) => ((error as { status?: number }).status === 402 ? "usage-limit" : "unknown"),
+  }
+}
+
+describe("hold limits", () => {
+  it("refuses the call that could pass the hold's own credit reservation, and says it was cut short", () => {
+    const ledger = createBudgetLedger({ credits: 100 })
+    // 4 calls at 1 credit each reserved; the first call really costs 2.6 credits (1,000 in, 1,100 out).
+    const hold = ledger.reserve("a", { calls: 4, perCall: { premium: 0, credits: 1 }, pricing })
+    if ("refused" in hold) throw new Error("unreachable")
+    expect(hold.cutShort()).toBe(false)
+    expect(hold.take()).toBe(true)
+    hold.settle(usage(1000, 1100))
+    expect(hold.take()).toBe(true)
+    hold.settle(usage(100, 0))
+    // 2.64 spent; one more call at the 1-credit estimate would reach 3.64, still within 4.
+    expect(hold.take()).toBe(true)
+    hold.settle(usage(1000, 0))
+    // 3.04 spent; another would reach 4.04.
+    expect(hold.take()).toBe(false)
+    expect(hold.cutShort()).toBe(true)
+    expect(hold.maxCall()).toBe(2.6)
+    expect(hold.release()).toEqual({ premium: 0, credits: 3.04 })
+  })
+
+  it("reports no single-call cost before a call settles, and is not cut short by running out of calls", () => {
+    const ledger = createBudgetLedger({})
+    const hold = ledger.reserve("a", { calls: 1, perCall: { premium: 1, credits: 0 }, pricing })
+    if ("refused" in hold) throw new Error("unreachable")
+    expect(hold.maxCall()).toBe(0)
+    expect(hold.take()).toBe(true)
+    expect(hold.take()).toBe(false)
+    expect(hold.cutShort()).toBe(false)
+  })
+})
+
+describe("metered runtime", () => {
+  const request = { messages: [], activeTools: [], callbacks: {} } as never
+
+  it("settles each call's usage on its hold", async () => {
+    const ledger = createBudgetLedger({})
+    const hold = ledger.reserve("run", { calls: 2, perCall: { premium: 1, credits: 9 }, pricing })
+    if ("refused" in hold) throw new Error(hold.refused)
+    const metered = meteredRuntime(runtime(async () => ({ content: "", toolCalls: [], outputItems: [], usage: usage(1_000_000, 0) })), hold, ledger)
+    hold.take()
+    await metered.streamTurn(request)
+    expect(hold.spent()).toEqual({ premium: 1, credits: 400 })
+    expect(metered.model).toBe("m")
+    expect(metered.classifyError(new Error("x"))).toBe("unknown")
+  })
+
+  it("bills a failed call, and stops the ledger on a 402 or 429", async () => {
+    const ledger = createBudgetLedger({})
+    const hold = ledger.reserve("run", { calls: 3, perCall: { premium: 1, credits: 9 }, pricing })
+    if ("refused" in hold) throw new Error(hold.refused)
+    const fail = (status: number) => meteredRuntime(runtime(async () => { throw Object.assign(new Error(`HTTP ${status}`), { status }) }), hold, ledger)
+    hold.take()
+    await expect(fail(500).streamTurn(request)).rejects.toThrow("HTTP 500")
+    expect(ledger.stopped()).toBeUndefined()
+    hold.take()
+    await expect(fail(429).streamTurn(request)).rejects.toThrow("HTTP 429")
+    expect(ledger.stopped()).toMatch(/429/)
+    expect(hold.spent()).toEqual({ premium: 2, credits: 18 })
+  })
+
+  it("stops on a usage-limit classification without a status, and on a thrown non-error", async () => {
+    const ledger = createBudgetLedger({})
+    const hold = ledger.reserve("run", { calls: 2, perCall: { premium: 1, credits: 0 }, pricing })
+    if ("refused" in hold) throw new Error(hold.refused)
+    const inner = runtime(async () => { throw "boom" })
+    await expect(meteredRuntime(inner, hold, ledger).streamTurn(request)).rejects.toThrow("boom")
+    expect(ledger.stopped()).toBeUndefined()
+    const limited = runtime(async () => { throw new Error("out of credit") })
+    limited.classifyError = () => "usage-limit"
+    await expect(meteredRuntime(limited, hold, ledger).streamTurn(request)).rejects.toThrow("out of credit")
+    expect(ledger.stopped()).toMatch(/usage-limit/)
+  })
+})
