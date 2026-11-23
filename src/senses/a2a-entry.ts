@@ -36,6 +36,7 @@ Promise.all([
   import("@ouro.bot/friends/a2a-client"),
   import("../a2a/escalation-wiring"),
   import("../a2a/relay-config-vault"),
+  import("./sense-shutdown"),
 ])
   .then(async ([
     { startA2AServer },
@@ -45,6 +46,7 @@ Promise.all([
     { ready },
     { escalationOptionsFor, sendOwnerNoticeViaTelegram },
     { relayConfigFrom, vaultRelayConfigStore },
+    { installSenseShutdown },
   ]) => {
     const os = await import("node:os")
     // Wait for the daemon to deliver the machine-local runtime config (carrying the
@@ -82,7 +84,7 @@ Promise.all([
     const relaySettings = relayConfigFrom(machineConfig)
     const rawPort = argValue("--port")
     const port = rawPort ? Number.parseInt(rawPort, 10) : undefined
-    await startA2AServer({
+    const handle = await startA2AServer({
       agentName,
       identity,
       // The Butler accepts delegated commands from explicitly granted peers; each
@@ -109,6 +111,9 @@ Promise.all([
       ...(argValue("--base-url") ? { baseUrl: argValue("--base-url") } : {}),
       ...(argValue("--path") ? { path: argValue("--path") } : {}),
     })
+    // Bounded shutdown: in-flight turns stop (a relayed message stays pending for the next process) and the
+    // process exits within the grace period even if one of them does not.
+    installSenseShutdown({ sense: "a2a", stop: () => handle.close() })
   })
   .catch((error) => {
     emitNervesEvent({
