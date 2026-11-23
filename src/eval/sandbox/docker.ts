@@ -38,6 +38,7 @@ import type { Case, Observation, TraceCall } from "../domain/case"
 import { createStreamChannel, serveProxyRuntime, type GuestOutcome } from "../transport/provider-proxy"
 import { recordModelTraffic } from "../transport/telegram-turn"
 import { DECLARED_GAPS } from "./declared-gaps"
+import { agentImageOf, type SandboxImages } from "./images"
 import { projectBundle } from "./projection"
 import { assembleObservation, createdSince, readHouseholdState, SNAPSHOT_LIMITS, snapshotFiles, type GuestTurn, type HouseholdState } from "./readback"
 
@@ -51,7 +52,7 @@ export const EVAL_LABEL = "ouro.eval=1"
 export const BUTLER_CONTAINERS = "^/?ouro-butler(-staging|-rollback)?$"
 /** A lock on a Butler's host that its lifecycle (upgrade and rollback) honours while an eval run holds it. */
 export type HostLock = { held(): Promise<boolean> }
-export type SandboxImages = { agent: string; household: string }
+export type { SandboxImages } from "./images"
 export const LIBGEN_MIRRORS = ["libgen.li", "libgen.bz", "libgen.gl", "libgen.la", "libgen.vg"]
 export const POCKETBOOK_ADDRESS = "pocketbook@example.invalid"
 const ALIASES = ["calibre-web", "smtp", ...LIBGEN_MIRRORS]
@@ -131,7 +132,7 @@ export type SandboxInput = {
    * Another guest than the real Telegram turn: the blind interviews' neutral loop, with the turn file it reads. Its
    * answer may have several user turns; the first is the job, scored as any run, and the rest come back as `followUps`.
    */
-  guest?: { entry: InterviewGuestEntry; turn: unknown }
+  guest?: { entry: InterviewGuestEntry; turn: unknown; image?: string }
   /** Lets the run share a host with the live Butler; without it, such a host is refused. */
   hostLock?: HostLock
 }
@@ -250,7 +251,8 @@ export function splitTurns(observation: Observation, turns: GuestTurns | undefin
 
 export async function runSandboxed(input: SandboxInput): Promise<Observation & { gaps: string[]; followUps?: FollowUp[]; grade?: unknown }> {
   const docker = input.docker ?? dockerCli()
-  const images = input.images ?? { agent: SANDBOX_IMAGE, household: HOUSEHOLD_IMAGE }
+  const images: SandboxImages = input.images ?? { agent: SANDBOX_IMAGE, household: HOUSEHOLD_IMAGE }
+  const agentImage = agentImageOf(images, input.guest?.image)
   const runId = `${EVAL_RUN_PREFIX}${crypto.randomBytes(4).toString("hex")}`
   const runLabels = ["--label", EVAL_LABEL, "--label", `ouro.eval.run=${runId}`]
   const last = input.case.prefix.at(-1)
@@ -328,7 +330,7 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
       "--tmpfs", "/tmp:rw,mode=1777,size=256m", "--tmpfs", "/home/ouro:rw,uid=10001,gid=10001,mode=0700,size=256m", "--env", "HOME=/home/ouro",
       "-v", `${bundle}:${BUNDLE}:ro`, ...WRITABLE.flatMap((entry) => ["-v", `${path.join(bundle, entry)}:${BUNDLE}/${entry}`]),
       "-v", `${tls}/ca.pem:/etc/ssl/certs/ca-certificates.crt:ro`, "-v", `${turnFile}:/eval/turn.json:ro`,
-      images.agent, "node", ...(input.guest ? [`/opt/ouro/dist/eval/${input.guest.entry}`] : ["/opt/ouro/dist/eval/guest-entry.js", "--agent", "sanctuary"]),
+      agentImage, "node", ...(input.guest ? [`/opt/ouro/dist/eval/${input.guest.entry}`] : ["/opt/ouro/dist/eval/guest-entry.js", "--agent", "sanctuary"]),
     ])
     const hostCalls: TraceCall[] = []
     const recorded = recordModelTraffic(input.host, hostCalls)
