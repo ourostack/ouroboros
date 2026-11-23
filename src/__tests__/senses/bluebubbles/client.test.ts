@@ -101,6 +101,31 @@ describe("BlueBubbles client", () => {
     })
   })
 
+  it("sends every message through the Private API helper when the server reports it connected, so Messages' AppleScript permission isn't needed", async () => {
+    const verifier = await import("../../../senses/bluebubbles/host-account-verifier")
+    vi.mocked(verifier.verifyBlueBubblesServerAccount).mockResolvedValueOnce({ privateApiReady: true })
+    global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: { guid: "sent-guid" } }), { status: 200 })) as typeof fetch
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient({ serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" }, { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 })
+    await client.sendText({ chat: dmChat, text: "hello from ouro" })
+    const request = JSON.parse((global.fetch as any).mock.calls[0][1].body)
+    expect(request).toMatchObject({ chatGuid: "any;-;owner@example.test", message: "hello from ouro", method: "private-api" })
+    expect(request).not.toHaveProperty("selectedMessageGuid")
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_send_start", meta: expect.objectContaining({ method: "private-api" }) }))
+  })
+
+  it("leaves the send method to the server when its Private API helper isn't connected", async () => {
+    const verifier = await import("../../../senses/bluebubbles/host-account-verifier")
+    vi.mocked(verifier.verifyBlueBubblesServerAccount).mockResolvedValueOnce({ privateApiReady: false })
+    global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: { guid: "sent-guid" } }), { status: 200 })) as typeof fetch
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient({ serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" }, { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 })
+    await client.sendText({ chat: dmChat, text: "hello from ouro" })
+    const request = JSON.parse((global.fetch as any).mock.calls[0][1].body)
+    expect(request).not.toHaveProperty("method")
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_send_start", meta: expect.objectContaining({ method: "server-default" }) }))
+  })
+
   it("does not follow an HTTP redirect across the exact send boundary", async () => {
     let redirectedRequests = 0
     const server = createServer((request, response) => {

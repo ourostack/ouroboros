@@ -586,7 +586,7 @@ const defaultDeps: RuntimeDeps = {
     password: getBlueBubblesConfig().password,
     requestTimeoutMs: getBlueBubblesChannelConfig().requestTimeoutMs,
     fresh: true,
-  }),
+  }).then(() => undefined),
 }
 
 const BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS = 30_000
