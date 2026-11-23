@@ -1,0 +1,1 @@
+- The npm publish step now prints npm's own output (stdout and stderr, each bounded to its first 20 lines of 300 characters) when `npm publish` exits 0. That output was previously discarded, which left a gap in the evidence when a published version was not seen by later reads. This records evidence only; it is not a fix for any cause.
