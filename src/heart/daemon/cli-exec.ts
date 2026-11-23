@@ -77,6 +77,7 @@ import {
 import { getDefaultModelForProvider, getProviderModelMismatchMessage, resolveModelForProviderSelection } from "../provider-models"
 import { getOuroCliHome, buildChangelogCommand, compareCliVersions } from "../versioning/ouro-version-manager"
 import type { VersionIntent } from "../versioning/version-intent"
+import { isTarballNotServedYet } from "../versioning/self-update"
 import { CLI_UPDATE_CHECK_TIMEOUT_MS, type CheckForUpdateResult } from "../versioning/update-checker"
 import { syncNow } from "../sync"
 import type { SyncConfig } from "../config"
@@ -345,6 +346,12 @@ function isRsvpCliCommand(command: OuroCliCommand): command is RsvpCliCommand {
 
 function summarizeCliUpdateCheckStatus(error: string, timedOut = false): string {
   const normalized = error.trim().toLowerCase()
+  if (normalized.startsWith("could not install ")) {
+    const firstLine = error.trim().split("\n")[0]
+    return isTarballNotServedYet(error)
+      ? `skipped; ${firstLine.replace(/:.*$/, "")}: npm lists it but is not serving it yet, so the next run tries again`
+      : `skipped; ${firstLine.slice(0, 160)}`
+  }
   if (timedOut || normalized.includes("timed out") || normalized.includes("abort")) {
     return "skipped; registry did not answer"
   }
@@ -8444,7 +8451,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
             })
           }
           if (needsActivation) {
-            await deps.installCliVersion!(targetVersion)
+            try {
+              await deps.installCliVersion!(targetVersion)
+            } catch (installError) {
+              const said = installError instanceof Error ? installError.message : String(installError)
+              throw new Error(`could not install ${targetVersion}: ${said}`)
+            }
             const validation = deps.validateCliVersionForActivation?.(targetVersion)
             if (validation && !validation.ok) {
               throw new Error(`refusing to activate ${targetVersion}: ${validation.message}`)
