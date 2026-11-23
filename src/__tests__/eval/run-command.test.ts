@@ -95,6 +95,16 @@ describe("parseEvalArgs", () => {
     expect(() => parseEvalArgs([...required, "--runs", "2", "--budget-credits", "-1"])).toThrow(/--budget-credits must be a number of at least 0/)
     expect(parseEvalArgs([...required, "--runs", "1"])).toMatchObject({ runs: 1, caseIds: [], harnessRef: "unknown" })
   })
+
+  it("reads the sandbox's own image tags, so a run's images on a shared Docker host carry its own names", () => {
+    const required = ["--cases", "c", "--bundle", "b", "--bundle-ref", "r", "--target", "t", "--budget-premium", "1", "--credentials-agent", "a", "--output", "o", "--runs", "1"]
+    expect(parseEvalArgs([...required, "--sandbox-images", "ouro-eval-c17-sandbox:local,ouro-eval-c17-household:local"]))
+      .toMatchObject({ sandboxImages: { agent: "ouro-eval-c17-sandbox:local", household: "ouro-eval-c17-household:local" } })
+    expect(() => parseEvalArgs([...required, "--sandbox-images", "only-one:local"])).toThrow(/--sandbox-images must be <agent image>,<household image>/)
+    expect(() => parseEvalArgs([...required, "--sandbox-images", "a:local,"])).toThrow(/--sandbox-images must be/)
+    expect(() => parseEvalArgs([...required, "--sandbox-images", "x:local, x:local"])).toThrow(/--sandbox-images must be/)
+    expect(parseEvalArgs([...required, "--sandbox-images", "a:local, h:local"])).toMatchObject({ sandboxImages: { agent: "a:local", household: "h:local" } })
+  })
 })
 
 describe("runEvalCommand", () => {

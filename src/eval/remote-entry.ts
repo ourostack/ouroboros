@@ -20,7 +20,7 @@ void serveRemoteJob({
       ...(job.workRoot ? { workRoot: job.workRoot } : {}),
       ...(job.guest ? { guest: job.guest } : {}),
       ...(job.images ? { images: job.images } : {}),
-      ...(job.oracleBooks ? { oracle: dockerOracle({ docker, image: HOUSEHOLD_IMAGE, booksLib: job.oracleBooks }) } : {}),
+      ...(job.oracleBooks ? { oracle: dockerOracle({ docker, image: job.images?.household ?? HOUSEHOLD_IMAGE, booksLib: job.oracleBooks }) } : {}),
     })
   },
 }).then((outcome) => process.exit(outcome.ok ? 0 : 1)).catch((error: unknown) => {

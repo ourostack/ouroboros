@@ -2,7 +2,10 @@
  * `npm run eval -- <flags>` (see `run-command.ts` for the flags and the refusals): runs eval cases on one model target
  * and writes the private report. With `--sandbox-ssh <host>:<folder>` the sandbox runs on that Docker host, whose
  * harness checkout is synced to `<folder>/harness`; `--bundle`, `--seed-bundle` and `--oracle-books` are then paths
- * on that host. Model calls and credentials stay on this machine.
+ * on that host. `--sandbox-images <agent>,<household>` names the image tags to run (on that host, when remote), built
+ * beforehand with `docker build --file deploy/eval/Dockerfile --target agent|household --tag <tag> .`; the remote
+ * checkout must be synced and built from this version for the books oracle to use them too. Model calls and
+ * credentials stay on this machine.
  */
 import fs from "node:fs"
 import path from "node:path"
@@ -27,14 +30,16 @@ function runCaseFor(args: EvalArgs): RunCase {
       paths: {
         bundleDir: args.bundle, seedBundleDir: args.seedBundle ?? `${root}/harness/deploy/unraid/sanctuary.ouro`, workRoot: `${root}/work`,
         ...(args.oracleBooks ? { oracleBooks: args.oracleBooks } : {}),
+        ...(args.sandboxImages ? { images: args.sandboxImages } : {}),
       },
     })
   }
   const docker = dockerCli()
-  const oracle = args.oracleBooks ? dockerOracle({ docker, image: HOUSEHOLD_IMAGE, booksLib: args.oracleBooks }) : undefined
+  const oracle = args.oracleBooks ? dockerOracle({ docker, image: args.sandboxImages?.household ?? HOUSEHOLD_IMAGE, booksLib: args.oracleBooks }) : undefined
   return ({ case: c, host, budget }) => runSandboxed({
     case: c, bundleDir: args.bundle, seedBundleDir: args.seedBundle ?? path.join(REPO, "deploy/unraid/sanctuary.ouro"), host, budget, docker,
     ...(oracle ? { oracle } : {}),
+    ...(args.sandboxImages ? { images: args.sandboxImages } : {}),
   })
 }
 
