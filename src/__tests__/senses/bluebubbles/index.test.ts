@@ -3857,6 +3857,8 @@ describe("BlueBubbles sense runtime", () => {
       password: "secret-token",
       requestTimeoutMs: 30000,
       fresh: true,
+      // A webhook can't be asked again, so a server too busy to answer server info doesn't lose it.
+      recentConfirmationGraceMs: 600_000,
     })
   })
 
@@ -14772,6 +14774,58 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
     expect(await sendWith(sendError(503, true))).toEqual({ delivered: false, reason: "send_error", delivery: { state: "unknown" } })
     expect(await sendWith(sendError(400, true))).toEqual({ delivered: false, reason: "send_error" })
     expect(await sendWith(sendError(null, false))).toEqual({ delivered: false, reason: "send_error" })
+  })
+
+  it("records a proactive send that timed out as sent once it shows up in the chat, so the agent doesn't send it again", async () => {
+    const friendStore = { get: vi.fn().mockResolvedValue(makeFriend()), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn(), hasAnyFriends: vi.fn(), listAll: vi.fn() }
+    const { BlueBubblesSendError } = await import("../../../senses/bluebubbles/client")
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const chat = { chatGuid: "any;-;alice@icloud.com", chatIdentifier: "alice@icloud.com", isGroup: false, sessionKey: "chat:any;-;alice@icloud.com", sendTarget: { kind: "chat_guid", value: "any;-;alice@icloud.com" } }
+    const sentLater = (text: string, fromMe = true) => ({ kind: "message", fromMe, text, timestamp: Date.now() + 60_000, messageGuid: "arrived-guid", chat })
+    const listRecentMessages = vi.fn()
+      .mockResolvedValueOnce([sentLater("surface this now", false), sentLater("something else")])
+      .mockRejectedValueOnce(new Error("BlueBubbles busy"))
+      .mockResolvedValueOnce([sentLater("  surface   this now ")])
+    const waitMs = vi.fn(async () => undefined)
+    outbound.record.mockClear()
+    mocks.sendText.mockReset().mockRejectedValue(new BlueBubblesSendError({ message: "timed out", httpStatus: null, errorCode: "timeout", transportInvoked: true }))
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({ friendId: "friend-uuid-1", sessionKey: "chat:any;-;alice@icloud.com", text: "surface this now" }, {
+      createClient: () => ({ sendText: mocks.sendText, editMessage: mocks.editMessage, setTyping: mocks.setTyping, markChatRead: mocks.markChatRead, checkHealth: mocks.checkHealth, repairEvent: mocks.repairEvent, getMessageText: mocks.getMessageText, listRecentMessages }),
+      createFriendStore: () => friendStore as any,
+      waitMs,
+    })
+    expect(result).toEqual({ delivered: false, reason: "send_error", delivery: { state: "unknown" } })
+    await vi.waitFor(() => expect(outbound.record).toHaveBeenCalledWith(expect.objectContaining({ content: "surface this now", channel: "bluebubbles" })))
+    expect(listRecentMessages).toHaveBeenCalledTimes(3)
+    expect(listRecentMessages).toHaveBeenCalledWith({ chatGuid: "any;-;alice@icloud.com", limit: 25 })
+    expect(waitMs).toHaveBeenCalledWith(30_000)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_proactive_send_arrived", meta: expect.objectContaining({ messageGuid: "arrived-guid", checks: 3 }) }))
+  })
+
+  it("says so when a proactive send that timed out never shows up in the chat, and looks only where it can", async () => {
+    const friendStore = { get: vi.fn().mockResolvedValue(makeFriend()), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn(), hasAnyFriends: vi.fn(), listAll: vi.fn() }
+    const { BlueBubblesSendError } = await import("../../../senses/bluebubbles/client")
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const listRecentMessages = vi.fn().mockResolvedValue([])
+    const client = { sendText: mocks.sendText, editMessage: mocks.editMessage, setTyping: mocks.setTyping, markChatRead: mocks.markChatRead, checkHealth: mocks.checkHealth, repairEvent: mocks.repairEvent, getMessageText: mocks.getMessageText }
+    outbound.record.mockClear()
+    mocks.sendText.mockReset().mockRejectedValue(new BlueBubblesSendError({ message: "timed out", httpStatus: null, errorCode: "timeout", transportInvoked: true }))
+    await bluebubbles.sendProactiveBlueBubblesMessageToSession({ friendId: "friend-uuid-1", sessionKey: "chat:any;-;alice@icloud.com", text: "surface this now" }, {
+      createClient: () => ({ ...client, listRecentMessages }), createFriendStore: () => friendStore as any, waitMs: async () => undefined,
+    })
+    await vi.waitFor(() => expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_proactive_send_not_seen", meta: expect.objectContaining({ checks: 10 }) })))
+    expect(listRecentMessages).toHaveBeenCalledTimes(10)
+    expect(outbound.record).not.toHaveBeenCalled()
+
+    // A client that can't list a chat's messages, or a chat with no GUID, isn't looked in.
+    const waitMs = vi.fn(async () => undefined)
+    await bluebubbles.sendProactiveBlueBubblesMessageToSession({ friendId: "friend-uuid-1", sessionKey: "chat:any;-;alice@icloud.com", text: "surface this now" }, {
+      createClient: () => client, createFriendStore: () => friendStore as any, waitMs,
+    })
+    await bluebubbles.sendProactiveBlueBubblesMessageToSession({ friendId: "friend-uuid-1", sessionKey: "alice@icloud.com", text: "surface this now" }, {
+      createClient: () => ({ ...client, listRecentMessages }), createFriendStore: () => friendStore as any, waitMs,
+    })
+    expect(waitMs).not.toHaveBeenCalled()
   })
 
   it("stringifies non-Error proactive BlueBubbles send failures", async () => {
