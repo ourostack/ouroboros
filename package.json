@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.1394",
+  "version": "0.1.0-alpha.1400",
   "description": "Ouroboros, the agent harness: agents with durable memory that live where you talk (terminal, Teams, iMessage, mail, voice) and use real tools. Start with npx ouro.bot@latest.",
   "homepage": "https://ouroboros.bot/",
   "engines": {
@@ -53,6 +53,7 @@
     "prepack": "npm run build && npm run package:verify-assets",
     "butler:ship": "node scripts/butler-ship.mjs",
     "release:bump": "node scripts/release-bump.cjs",
+    "release:drop-bump": "node scripts/release-drop-bump.cjs",
     "release:preflight": "node scripts/release-preflight.cjs",
     "release:trust:check": "node scripts/npm-trusted-publishers.cjs check",
     "release:trust:repair-plan": "node scripts/npm-trusted-publishers.cjs repair-plan",

@@ -103,6 +103,8 @@ export interface OffTurnTeamsSend {
   origin: OutboundOrigin
   intent?: "generic_outreach" | "explicit_cross_chat"
   authorizingSession?: { friendId: string; channel: string; key: string; trustLevel?: string }
+  /** Ask Teams to say whether a failed send went out (`delivery.state`). */
+  captureReceipt?: boolean
 }
 
 export interface OffTurnTeamsSendDeps extends Omit<OffTurnTeamsDeps, "friendId"> {
@@ -194,6 +196,7 @@ export async function sendTeamsOffTurn(request: OffTurnTeamsSend, deps: OffTurnT
     text: request.text,
     intent: request.intent ?? "generic_outreach",
     ...(request.authorizingSession ? { authorizingSession: request.authorizingSession } : {}),
+    ...(request.captureReceipt ? { captureReceipt: true } : {}),
     deliveryId: `off-turn:${repeatKey}`,
     origin: request.origin,
   }, { botApi })

@@ -160,6 +160,32 @@ export function drainDeferredReturns(agentName: string, friendId: string): Pendi
   return messages
 }
 
+/**
+ * Removes the saved copies of one message from a friend's deferred returns, for when the same turn
+ * reached them another way after it was saved. Returns how many it removed.
+ */
+export function withdrawDeferredReturn(agentName: string, friendId: string, content: string): number {
+  const queueDir = getDeferredReturnDir(agentName, friendId)
+  if (!fs.existsSync(queueDir)) return 0
+  const saved = capStructuredRecordString(content)
+  let removed = 0
+  for (const file of fs.readdirSync(queueDir).filter((name) => name.endsWith(".json"))) {
+    const filePath = path.join(queueDir, file)
+    try {
+      if ((JSON.parse(fs.readFileSync(filePath, "utf-8")) as PendingMessage).content !== saved) continue
+      fs.unlinkSync(filePath)
+      removed += 1
+    } catch { /* unreadable or already drained: leave it */ }
+  }
+  emitNervesEvent({
+    event: "mind.deferred_return_withdrawn",
+    component: "mind",
+    message: "saved friend return withdrawn because the turn reached them another way",
+    meta: { friendId, queueDir, removed },
+  })
+  return removed
+}
+
 export function drainPending(pendingDir: string): PendingMessage[] {
   if (!fs.existsSync(pendingDir)) return []
   const { messages, recovered } = drainQueue(pendingDir)

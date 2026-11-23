@@ -123,16 +123,21 @@ function validateSanctuaryBundleMeta(value) {
   return value
 }
 
-function bumpReleaseVersion(input) {
+const VERSION_FILES = CHANGED_FILES.filter((file) => file !== "changelog.json")
+
+// Reads and checks every release file except changelog.json for `version`, and returns the function that writes them,
+// so a caller can check its own files too before anything is written.
+function prepareReleaseVersion(input) {
   const root = path.resolve(input.root ?? process.cwd())
   const version = input.version
-  const changes = assertValidInput({ version, changes: input.changes ?? [] })
+  if (!semver.valid(version)) {
+    throw new Error("release version must be valid semver")
+  }
 
   const packageJsonPath = path.join(root, "package.json")
   const packageLockPath = path.join(root, "package-lock.json")
   const shrinkwrapPath = path.join(root, "npm-shrinkwrap.json")
   const wrapperPackageJsonPath = path.join(root, "packages/ouro.bot/package.json")
-  const changelogPath = path.join(root, "changelog.json")
   const sanctuaryTemplatePath = path.join(root, "deploy/unraid/sanctuary.xml")
   const sanctuaryBundleMetaPath = path.join(root, "deploy/unraid/sanctuary.ouro/bundle-meta.json")
 
@@ -140,7 +145,6 @@ function bumpReleaseVersion(input) {
   const packageLock = readJson(packageLockPath)
   const shrinkwrap = readJson(shrinkwrapPath)
   const wrapperPackageJson = readJson(wrapperPackageJsonPath)
-  const changelog = readJson(changelogPath)
   const sanctuaryTemplate = updateSanctuaryRepository(fs.readFileSync(sanctuaryTemplatePath, "utf8"), version)
   const sanctuaryBundleMeta = validateSanctuaryBundleMeta(readJson(sanctuaryBundleMetaPath))
 
@@ -157,15 +161,35 @@ function bumpReleaseVersion(input) {
   shrinkwrap.packages[""].version = version
   wrapperPackageJson.version = version
   sanctuaryBundleMeta.runtimeVersion = version
+
+  return () => {
+    writeJson(packageJsonPath, packageJson)
+    writeJson(packageLockPath, packageLock)
+    writeJson(shrinkwrapPath, shrinkwrap)
+    writeJson(wrapperPackageJsonPath, wrapperPackageJson)
+    fs.writeFileSync(sanctuaryTemplatePath, sanctuaryTemplate)
+    writeJson(sanctuaryBundleMetaPath, sanctuaryBundleMeta)
+    return { version, changedFiles: [...VERSION_FILES] }
+  }
+}
+
+// Writes `version` into every release file except changelog.json, checking each before writing any.
+function writeReleaseVersion(input) {
+  return prepareReleaseVersion(input)()
+}
+
+function bumpReleaseVersion(input) {
+  const root = path.resolve(input.root ?? process.cwd())
+  const version = input.version
+  const changes = assertValidInput({ version, changes: input.changes ?? [] })
+
+  const changelogPath = path.join(root, "changelog.json")
+  const changelog = readJson(changelogPath)
+  const commitVersion = prepareReleaseVersion({ root, version })
   updateChangelog(changelog, version, changes, input.replace === true)
 
-  writeJson(packageJsonPath, packageJson)
-  writeJson(packageLockPath, packageLock)
-  writeJson(shrinkwrapPath, shrinkwrap)
-  writeJson(wrapperPackageJsonPath, wrapperPackageJson)
+  commitVersion()
   writeJson(changelogPath, changelog)
-  fs.writeFileSync(sanctuaryTemplatePath, sanctuaryTemplate)
-  writeJson(sanctuaryBundleMetaPath, sanctuaryBundleMeta)
 
   return {
     version,
@@ -188,6 +212,12 @@ if (require.main === module) {
 }
 
 module.exports = {
+  CHANGED_FILES,
+  VERSION_FILES,
   bumpReleaseVersion,
   parseArgs,
+  prepareReleaseVersion,
+  readJson,
+  writeJson,
+  writeReleaseVersion,
 }

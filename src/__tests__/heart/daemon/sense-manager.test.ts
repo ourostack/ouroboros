@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
@@ -1530,10 +1530,11 @@ describe("daemon sense manager", () => {
     })
 
     const probes = manager.listHealthProbes()
-    // No probes registered for BB sense — process supervision catches dead
-    // processes, and `pendingRecoveryCount` / `lastRecoveredAt` in the BB
-    // sense runtime state surface "alive but hung" to the agent's prompt.
-    expect(probes).toHaveLength(0)
+    // No HTTP probe for the BB sense: process supervision catches dead
+    // processes. The one probe reads the listener's proof file and never
+    // calls into the listener, so a busy listener is never killed for it.
+    expect(probes.map((probe) => probe.name)).toEqual(["bluebubbles-proof:slugger"])
+    expect(await probes[0]!.check()).toEqual({ ok: true })
   })
 
   it("skips BlueBubbles health probes when this machine is not attached", async () => {
@@ -2249,6 +2250,76 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "shepherd", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "app-sessions", status: "disabled", detail: "not enabled in agent.json" }),
     ])
+  })
+
+  it.each([
+    ["blocked", "error"],
+    ["blocked without a detail", "error"],
+    ["ok", "running"],
+    ["blocked while the upstream is down", "error"],
+  ] as const)("shows BlueBubbles as an error while its sends are recorded as blocked, though the upstream answers (send health %s)", async (sendStatus, rowStatus) => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: true, hostUsername: os.userInfo().username },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      bluebubbles: { serverUrl: "http://localhost:1234", password: "pw" },
+      bluebubblesChannel: { port: 18888, webhookPath: "/hooks/bb" },
+    })
+    const runtimeDir = path.join(bundlesRoot, "slugger.ouro", "state", "senses", "bluebubbles")
+    fs.mkdirSync(runtimeDir, { recursive: true })
+    const upstreamDown = sendStatus === "blocked while the upstream is down"
+    fs.writeFileSync(path.join(runtimeDir, "runtime.json"), JSON.stringify({
+      upstreamStatus: upstreamDown ? "error" : "ok", detail: upstreamDown ? "connect ECONNREFUSED" : "upstream reachable", lastCheckedAt: new Date().toISOString(), pendingRecoveryCount: 0,
+    }))
+    const sentDetail = "BlueBubbles could not send: macOS has not allowed BlueBubbles to control Messages"
+    let blockedDetail = "BlueBubbles sends are failing"
+    if (sendStatus === "blocked without a detail") {
+      fs.writeFileSync(path.join(runtimeDir, "send-health.json"), JSON.stringify({ status: "blocked", code: "host_automation_denied" }))
+    } else {
+      // Written by the sense's own recorder, so the path and shape the daemon reads are the ones a send writes.
+      const { recordBlueBubblesSendBlocked, recordBlueBubblesSendDelivered } = await import("../../../senses/bluebubbles/send-health")
+      const agentRoot = path.join(bundlesRoot, "slugger.ouro")
+      recordBlueBubblesSendBlocked("slugger", { code: "host_automation_denied", detail: sentDetail }, agentRoot, () => Date.parse("2026-11-23T03:47:23.000Z"))
+      if (sendStatus === "ok") recordBlueBubblesSendDelivered("slugger", "apple-script", agentRoot)
+      blockedDetail = `${sentDetail} (failing since 2026-11-23T03:47:23.000Z)`
+    }
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [{ name: "slugger:bluebubbles", status: "running" }],
+      },
+    })
+
+    const row = manager.listSenseRows().find((entry) => entry.sense === "bluebubbles")
+    expect(row).toMatchObject({ status: rowStatus })
+    if (upstreamDown) {
+      // An unreachable BlueBubbles is the more basic failure, and explains failing sends.
+      expect(row).toMatchObject({ detail: "connect ECONNREFUSED", failureLayer: "upstream" })
+    } else if (sendStatus !== "ok") {
+      expect(row).toMatchObject({
+        detail: blockedDetail,
+        lastFailure: blockedDetail,
+        failureLayer: "send",
+        recoveryAction: "fix what the detail names on the BlueBubbles host; sends are still tried, and the next one that goes through clears this",
+      })
+    } else {
+      expect(row).toMatchObject({ detail: ":18888 /hooks/bb" })
+      expect(row?.failureLayer).toBeUndefined()
+    }
   })
 
   it("marks BlueBubbles unhealthy when fresh healthy runtime state has no running listener snapshot", async () => {
@@ -4224,5 +4295,177 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "shepherd", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "app-sessions", status: "disabled", detail: "not enabled in agent.json" }),
     ])
+  })
+})
+
+describe("a BlueBubbles listener whose proof stops updating", () => {
+  beforeEach(() => {
+    for (const mocked of ["fs", "os", "../../../nerves/runtime", "../../../heart/runtime-credentials", "../../../heart/daemon/process-manager"]) vi.doUnmock(mocked)
+    vi.resetModules()
+  })
+
+  const MINUTE = 60_000
+
+  // The probe times a proof on the daemon's own clock, the one Node's timers run on, so `clock` stands for it here.
+  async function proofWatch(options: { status?: string } = {}) {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-stale-proof-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: { cli: { enabled: true }, bluebubbles: { enabled: true, hostUsername: os.userInfo().username } },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      bluebubbles: { serverUrl: "http://localhost:1234", password: "pw" },
+      bluebubblesChannel: { port: 18888, webhookPath: "/hooks/bb" },
+    })
+    const runtimeDir = path.join(bundlesRoot, "slugger.ouro", "state", "senses", "bluebubbles")
+    const runtimePath = path.join(runtimeDir, "runtime.json")
+    const writeProof = (fields: { checkedAgoMs?: number; heartbeatAgoMs?: number } | string): void => {
+      fs.mkdirSync(runtimeDir, { recursive: true })
+      fs.writeFileSync(runtimePath, typeof fields === "string" ? fields : JSON.stringify({
+        upstreamStatus: "ok",
+        detail: "upstream reachable",
+        ...(fields.checkedAgoMs === undefined ? {} : { lastCheckedAt: new Date(Date.now() - fields.checkedAgoMs).toISOString() }),
+        ...(fields.heartbeatAgoMs === undefined ? {} : { lastHeartbeatAt: new Date(Date.now() - fields.heartbeatAgoMs).toISOString() }),
+        proofMethod: "bluebubbles.checkHealth",
+        pendingRecoveryCount: 0,
+      }))
+    }
+    const listener = { status: options.status ?? "running", pid: 4242, startedAt: new Date(Date.now() - 60 * MINUTE).toISOString() as string | null }
+    const clock = { now: 1_000_000 }
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      monotonicNow: () => clock.now,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [{ name: "slugger:bluebubbles", ...listener }],
+      },
+    })
+    const probe = manager.listHealthProbes().find((candidate) => candidate.name === "bluebubbles-proof:slugger")!
+    const checkAt = async (minutes: number) => {
+      clock.now = 1_000_000 + minutes * MINUTE
+      return probe.check()
+    }
+    return { manager, probe, writeProof, listener, checkAt, runtimePath }
+  }
+
+  it("reports a running listener with a stale proof as an error, with the proof's age", async () => {
+    const { manager, writeProof } = await proofWatch()
+    writeProof({ checkedAgoMs: 20 * MINUTE })
+    const row = manager.listSenseRows().find((candidate) => candidate.sense === "bluebubbles")
+    expect(row).toEqual(expect.objectContaining({
+      status: "error",
+      lastFailure: "BlueBubbles proof is stale",
+      failureLayer: "proof_freshness",
+      proofMethod: "bluebubbles.checkHealth",
+      lastProofAt: expect.any(String),
+      proofAgeMs: expect.any(Number),
+    }))
+    expect(row!.proofAgeMs!).toBeGreaterThanOrEqual(20 * MINUTE)
+  })
+
+  it("names the health check as the proof while it is fresh, though every write stamps a later heartbeat", async () => {
+    const { manager, writeProof } = await proofWatch()
+    writeProof({ checkedAgoMs: 20_000, heartbeatAgoMs: 1_000 })
+    const row = manager.listSenseRows().find((candidate) => candidate.sense === "bluebubbles")
+    expect(row).toEqual(expect.objectContaining({ status: "running", proofMethod: "bluebubbles.checkHealth" }))
+    expect(row!.proofAgeMs!).toBeLessThan(20_000)
+  })
+
+  it("reports a listener as running while a slow sync keeps its heartbeat fresh", async () => {
+    const { manager, writeProof } = await proofWatch()
+    writeProof({ checkedAgoMs: 4 * MINUTE, heartbeatAgoMs: 10_000 })
+    const row = manager.listSenseRows().find((candidate) => candidate.sense === "bluebubbles")
+    expect(row).toEqual(expect.objectContaining({ status: "running", proofMethod: "bluebubbles.syncHeartbeat" }))
+    expect(row!.proofAgeMs!).toBeLessThan(90_000)
+  })
+
+  it("restarts a listener once this daemon has watched its proof stay unchanged for ten minutes, and says why", async () => {
+    const emitted = vi.fn()
+    vi.resetModules()
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: emitted }))
+    const { probe, writeProof, checkAt } = await proofWatch()
+    expect(probe.managedName).toBe("slugger:bluebubbles")
+    writeProof({ checkedAgoMs: 30_000 })
+    expect(await checkAt(0)).toEqual({ ok: true })
+    expect(await checkAt(9)).toEqual({ ok: true })
+    const outcome = await checkAt(10)
+    expect(outcome.ok).toBe(false)
+    expect(outcome.detail).toBe("BlueBubbles proof has not changed in 10m; restarting the listener")
+    expect(emitted).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "daemon.bluebubbles_stale_proof_restart",
+      meta: expect.objectContaining({ agent: "slugger", stalledMs: 10 * MINUTE, lastProofAt: expect.any(String), restarts: 1, nextRestartAfterMs: 20 * MINUTE }),
+    }))
+    vi.doUnmock("../../../nerves/runtime")
+    vi.resetModules()
+  })
+
+  it("leaves a listener alone after the Mac wakes, however old its proof reads by the wall clock", async () => {
+    const { writeProof, checkAt } = await proofWatch()
+    // Timers stop while the Mac sleeps, so the listener has not had its turn to write since waking.
+    writeProof({ checkedAgoMs: 5 * 60 * MINUTE })
+    expect(await checkAt(0)).toEqual({ ok: true })
+    expect(await checkAt(1)).toEqual({ ok: true })
+  })
+
+  it("waits twice as long after each restart that brings no fresh proof, and starts over once one comes", async () => {
+    const { writeProof, checkAt, listener } = await proofWatch()
+    writeProof({ checkedAgoMs: 30_000 })
+    await checkAt(0)
+    expect((await checkAt(10)).ok).toBe(false)
+    // The restarted listener cannot write its proof either (a full disk, say).
+    listener.pid = 4343
+    listener.startedAt = new Date().toISOString()
+    expect(await checkAt(11)).toEqual({ ok: true })
+    expect(await checkAt(30)).toEqual({ ok: true })
+    expect(await checkAt(31)).toEqual(expect.objectContaining({ ok: false }))
+    // A restart that is refused leaves the same process; the probe still waits out the longer threshold.
+    expect(await checkAt(70)).toEqual({ ok: true })
+    expect(await checkAt(71)).toEqual(expect.objectContaining({ ok: false }))
+    writeProof({ checkedAgoMs: 0 })
+    expect(await checkAt(72)).toEqual({ ok: true })
+    expect(await checkAt(81)).toEqual({ ok: true })
+    expect(await checkAt(82)).toEqual(expect.objectContaining({ ok: false }))
+  })
+
+  it("does not count a runtime.json it cannot parse, which may be mid-write, as a missing proof", async () => {
+    const { writeProof, checkAt, runtimePath } = await proofWatch()
+    writeProof({ checkedAgoMs: 30_000 })
+    const whole = fs.readFileSync(runtimePath, "utf-8")
+    expect(await checkAt(0)).toEqual({ ok: true })
+    writeProof(whole.slice(0, 40))
+    expect(await checkAt(10)).toEqual({ ok: true })
+    // Reading it whole again, the proof is the one watched since minute 0.
+    writeProof(whole)
+    expect((await checkAt(10.5)).ok).toBe(false)
+  })
+
+  it("restarts a listener that writes no proof at all for ten minutes", async () => {
+    const { checkAt } = await proofWatch()
+    expect(await checkAt(0)).toEqual({ ok: true })
+    const outcome = await checkAt(10)
+    expect(outcome.ok).toBe(false)
+    expect(outcome.detail).toBe("the BlueBubbles listener has written no BlueBubbles proof in 10m; restarting it")
+  })
+
+  it("watches a listener whose pid and start time are unknown", async () => {
+    const { checkAt, listener, writeProof } = await proofWatch()
+    ;(listener as { pid: number | null }).pid = null
+    listener.startedAt = null
+    writeProof({ checkedAgoMs: 30_000 })
+    expect(await checkAt(0)).toEqual({ ok: true })
+    expect((await checkAt(10)).ok).toBe(false)
+  })
+
+  it("leaves a listener that is not running to the process manager", async () => {
+    const { checkAt } = await proofWatch({ status: "crashed" })
+    expect(await checkAt(0)).toEqual({ ok: true })
+    expect(await checkAt(60)).toEqual({ ok: true })
   })
 })

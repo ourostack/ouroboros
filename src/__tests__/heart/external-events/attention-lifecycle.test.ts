@@ -938,6 +938,17 @@ describe("external event attention lifecycle", () => {
     expect(commit({ status: "covered", effectKey: "external-event:other" }).disposition?.ownerMessage).toEqual({ status: "covered", effectKey: "external-event:other" })
   })
 
+  it("keeps an owner message saved for the owner's next message", () => {
+    const eventRoot = root()
+    const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "owner-message-saved" }, { root: eventRoot })
+    const claim = claimExternalEvent(first.recordPath, { owner: "worker", expectedVersion: first.version, expectedGeneration: 1 })
+    const committed = commitExternalEventDisposition(first.recordPath, {
+      owner: "worker", expectedVersion: claim.version, expectedGeneration: 1,
+      disposition: { classifiedRevision: first.observationRevision, classification: "needs_attention", stewardPolicy: { kind: "none" }, decision: "ask", reason: "No chat sent it now.", nextWake: { kind: "on_change" }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [], ownerMessage: { status: "saved", effectKey: "ordinary-owner:abc" } },
+    })
+    expect(committed.disposition?.ownerMessage).toEqual({ status: "saved", effectKey: "ordinary-owner:abc" })
+  })
+
   it("rejects invalid claims, owners, retry policies, and await combinations", () => {
     const eventRoot = root()
     const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "validation" }, { root: eventRoot })

@@ -78,7 +78,7 @@ export interface DaemonSenseManagerOptions {
     resetAgentFailureState?(agent: string): void
     stopAll(): Promise<void>
     stopAgent?(agent: string): Promise<void>
-    listAgentSnapshots(): Array<{ name: string; status: string; pid?: number | null }>
+    listAgentSnapshots(): Array<{ name: string; status: string; pid?: number | null; startedAt?: string | null }>
   }
   /**
    * Whether this machine runs a shared sense under the agent's presence
@@ -88,6 +88,8 @@ export interface DaemonSenseManagerOptions {
   presenceOwner?: (agent: string, sense: string) => { owns: boolean; owner: string | null; ownerName?: string; waiting?: boolean } | null
   /** Whether presence is still on for this machine; defaults to `~/.ouro-cli/presence.json`. */
   presenceFlagOn?: () => boolean
+  /** The clock Node's timers run on, in ms; it stops while the machine sleeps. Defaults to `performance.now`. */
+  monotonicNow?: () => number
 }
 
 interface SenseConfigFacts {
@@ -127,6 +129,14 @@ const DEFAULT_TEAMS_PORT = 3978
 const DEFAULT_BLUEBUBBLES_PORT = 18790
 const DEFAULT_BLUEBUBBLES_WEBHOOK_PATH = "/bluebubbles-webhook"
 const BLUEBUBBLES_RUNTIME_FRESHNESS_WINDOW_MS = 90_000
+/**
+ * The listener's 30 s sync loop refreshes its proof on every tick, even while a slow pass runs, and a pass that
+ * hangs is abandoned after two minutes without progress. So a proof this daemon has watched stay unchanged this long means the loop
+ * itself has stopped. Busy turns never hold it back.
+ */
+export const BLUEBUBBLES_STALE_PROOF_RESTART_MS = 10 * 60_000
+/** Each restart that brings no fresh proof doubles the wait before the next, up to this many doublings. */
+const BLUEBUBBLES_STALE_PROOF_MAX_DOUBLINGS = 3
 const SENSE_CONFIG_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000] as const
 const WORKBENCH_RUNTIME_INJECTION_DETAIL = "runtime-injected by Workbench app; no agent.json entry required"
 const WORKBENCH_STALE_BUNDLE_DETAIL = "stale agent.json Workbench entry; run 'ouro connect workbench' to clean it and use runtime injection"
@@ -586,9 +596,13 @@ interface BlueBubblesRuntimeStateSlice {
   upstreamStatus: "unknown" | "ok" | "error"
   detail: string
   lastCheckedAt?: string
+  /** Written on every listener write and on sync ticks a running pass skips. */
+  lastHeartbeatAt?: string
   proofMethod?: string
   pendingRecoveryCount: number
   failedRecoveryCount: number
+  /** The file was there but could not be parsed; it may be mid-write. */
+  unreadable?: boolean
   oldestPendingRecoveryAt?: string
   oldestPendingRecoveryAgeMs?: number
   activeTurnCount?: number
@@ -610,6 +624,7 @@ function readBlueBubblesRuntimeJson(runtimePath: string): BlueBubblesRuntimeStat
         ? parsed.detail
         : "startup health probe pending",
       lastCheckedAt: typeof parsed.lastCheckedAt === "string" ? parsed.lastCheckedAt : undefined,
+      lastHeartbeatAt: typeof parsed.lastHeartbeatAt === "string" ? parsed.lastHeartbeatAt : undefined,
       proofMethod: typeof parsed.proofMethod === "string" && parsed.proofMethod.trim()
         ? parsed.proofMethod
         : undefined,
@@ -637,9 +652,30 @@ function readBlueBubblesRuntimeJson(runtimePath: string): BlueBubblesRuntimeStat
     /* v8 ignore stop */
   /* v8 ignore start -- defensive: catch for missing/corrupt BB runtime state file @preserve */
   } catch {
-    return { upstreamStatus: "unknown", detail: "startup health probe pending", pendingRecoveryCount: 0, failedRecoveryCount: 0 }
+    return { upstreamStatus: "unknown", detail: "startup health probe pending", pendingRecoveryCount: 0, failedRecoveryCount: 0, unreadable: true }
   }
   /* v8 ignore stop */
+}
+
+/** A send's record that BlueBubbles cannot send (senses/bluebubbles/send-health.ts writes it); null when sends work or nothing is recorded. */
+function readBlueBubblesSendBlock(runtimeDir: string): { detail: string } | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(runtimeDir, "send-health.json"), "utf-8")) as { status?: unknown; detail?: unknown; since?: unknown }
+    if (parsed.status !== "blocked") return null
+    const detail = typeof parsed.detail === "string" && parsed.detail.trim() ? parsed.detail : "BlueBubbles sends are failing"
+    return { detail: typeof parsed.since === "string" ? `${detail} (failing since ${parsed.since})` : detail }
+  } catch {
+    return null
+  }
+}
+
+/** The listener's latest sign of life: its last health check, or a sync heartbeat written since. */
+function blueBubblesLatestProof(state: BlueBubblesRuntimeStateSlice): { at?: string; method?: string } {
+  const checkedMs = state.lastCheckedAt ? Date.parse(state.lastCheckedAt) : Number.NaN
+  const heartbeatMs = state.lastHeartbeatAt ? Date.parse(state.lastHeartbeatAt) : Number.NaN
+  if (!Number.isFinite(heartbeatMs) || checkedMs >= heartbeatMs) return { at: state.lastCheckedAt, method: state.proofMethod }
+  // Every write stamps a heartbeat a moment after its check, so the heartbeat is named the proof only once the check is old.
+  return { at: state.lastHeartbeatAt, method: blueBubblesRuntimeStateIsFresh(state.lastCheckedAt) ? state.proofMethod : "bluebubbles.syncHeartbeat" }
 }
 
 function readBlueBubblesRuntimeFacts(
@@ -654,11 +690,12 @@ function readBlueBubblesRuntimeFacts(
   }
 
   const state = readBlueBubblesRuntimeJson(runtimePath)
-  const checkedAtMs = state.lastCheckedAt ? Date.parse(state.lastCheckedAt) : Number.NaN
+  const proof = blueBubblesLatestProof(state)
+  const proofAtMs = proof.at ? Date.parse(proof.at) : Number.NaN
   const proofFacts = {
-    proofMethod: state.proofMethod ?? "bluebubbles.checkHealth",
-    lastProofAt: state.lastCheckedAt,
-    proofAgeMs: Number.isFinite(checkedAtMs) ? Math.max(0, Date.now() - checkedAtMs) : undefined,
+    proofMethod: proof.method ?? "bluebubbles.checkHealth",
+    lastProofAt: proof.at,
+    proofAgeMs: Number.isFinite(proofAtMs) ? Math.max(0, Date.now() - proofAtMs) : undefined,
     pendingRecoveryCount: state.pendingRecoveryCount,
     failedRecoveryCount: state.failedRecoveryCount,
     oldestPendingRecoveryAt: state.oldestPendingRecoveryAt,
@@ -668,11 +705,21 @@ function readBlueBubblesRuntimeFacts(
     oldestActiveTurnStartedAt: state.oldestActiveTurnStartedAt,
     oldestActiveTurnAgeMs: state.oldestActiveTurnAgeMs,
   }
-  if (!blueBubblesRuntimeStateIsFresh(state.lastCheckedAt)) {
+  if (!blueBubblesRuntimeStateIsFresh(proof.at)) {
+    // A running listener that has stopped proving itself is not healthy, whatever its process state says.
+    if (proof.at && snapshot?.runtime === "running") {
+      return {
+        runtime: "error",
+        ...proofFacts,
+        lastFailure: "BlueBubbles proof is stale",
+        failureLayer: "proof_freshness",
+        recoveryAction: `the daemon restarts the BlueBubbles listener once its proof has not changed for ${Math.round(BLUEBUBBLES_STALE_PROOF_RESTART_MS / 60_000)}m`,
+      }
+    }
     return {
       runtime: snapshot?.runtime,
-      lastFailure: state.lastCheckedAt ? "BlueBubbles proof is stale" : undefined,
-      failureLayer: state.lastCheckedAt ? "proof_freshness" : undefined,
+      lastFailure: proof.at ? "BlueBubbles proof is stale" : undefined,
+      failureLayer: proof.at ? "proof_freshness" : undefined,
     }
   }
 
@@ -695,6 +742,19 @@ function readBlueBubblesRuntimeFacts(
       lastFailure: state.detail,
       failureLayer: "upstream",
       recoveryAction: "verify BlueBubbles server/app auth and local machine attachment, then retry the listener",
+    }
+  }
+
+  // The health check proves BlueBubbles answers, not that it can send: a send that macOS refused says more.
+  const sendBlock = readBlueBubblesSendBlock(path.dirname(runtimePath))
+  if (sendBlock) {
+    return {
+      runtime: "error",
+      detail: sendBlock.detail,
+      ...proofFacts,
+      lastFailure: sendBlock.detail,
+      failureLayer: "send",
+      recoveryAction: "fix what the detail names on the BlueBubbles host; sends are still tried, and the next one that goes through clears this",
     }
   }
 
@@ -749,10 +809,15 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
   private readonly presenceFlagOn: () => boolean
   /** Shared senses skipped because another machine owns them; started here when ownership arrives. */
   private readonly notOwnerSkipped = new Set<string>()
+  private readonly monotonicNow: () => number
+  /** Per agent: the listener process and proof last seen, since when (monotonic), and restarts that brought no new proof. */
+  private readonly blueBubblesProofWatch = new Map<string, { process: string; proofAt: string | null; sinceMs: number; restarts: number }>()
 
   constructor(options: DaemonSenseManagerOptions) {
     const bundlesRoot = options.bundlesRoot ?? path.join(os.homedir(), "AgentBundles")
     this.bundlesRoot = bundlesRoot
+    /* v8 ignore next -- production default; tests inject the clock @preserve */
+    this.monotonicNow = options.monotonicNow ?? (() => performance.now())
     /* v8 ignore start -- production default reads the real roster and machine identity; tests inject presenceOwner @preserve */
     this.presenceOwner = options.presenceOwner ?? ((agent, sense) => {
       if (!isSharedSense(sense)) return null
@@ -1129,8 +1194,66 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       // something else triggers a tight respawn cycle for any reason, the
       // guard fires and refuses further restarts after N attempts in M
       // minutes, so we can never re-enter the 2026-05-11 spiral.
+      //
+      // What we do watch is the listener's own proof. Its sync loop rewrites
+      // runtime.json every 30 s on a timer that turns never block, so a proof
+      // ten minutes old means that loop has stopped, not that it is busy. The
+      // probe only reads the file; it never calls into the listener.
+      probes.push(this.blueBubblesProofProbe(agent))
     }
     return probes
+  }
+
+  private blueBubblesProofProbe(agent: string): SenseProbe {
+    const managedName = `${agent}:bluebubbles`
+    return {
+      name: `bluebubbles-proof:${agent}`,
+      managedName,
+      check: async () => {
+        const snapshot = this.processManager.listAgentSnapshots().find((row) => row.name === managedName)
+        if (snapshot?.status !== "running") return { ok: true }
+        const runtimePath = path.join(this.bundlesRoot, `${agent}.ouro`, "state", "senses", "bluebubbles", "runtime.json")
+        const state = fs.existsSync(runtimePath) ? readBlueBubblesRuntimeJson(runtimePath) : null
+        // A file caught mid-write says nothing either way.
+        if (state?.unreadable) return { ok: true }
+        const proofAt = (state && blueBubblesLatestProof(state).at) ?? null
+        const processKey = `${snapshot.pid ?? ""}:${snapshot.startedAt ?? ""}`
+        // Timed on this daemon's own clock, which stops while the machine sleeps just as the listener's timers do,
+        // so waking from sleep or a wall-clock correction never makes a proof look stale.
+        const now = this.monotonicNow()
+        const watch = this.blueBubblesProofWatch.get(agent)
+        if (!watch || watch.process !== processKey || watch.proofAt !== proofAt) {
+          const restarts = watch && watch.proofAt === proofAt ? watch.restarts : 0
+          this.blueBubblesProofWatch.set(agent, { process: processKey, proofAt, sinceMs: now, restarts })
+          return { ok: true }
+        }
+        const stalledMs = now - watch.sinceMs
+        if (stalledMs < BLUEBUBBLES_STALE_PROOF_RESTART_MS * 2 ** Math.min(watch.restarts, BLUEBUBBLES_STALE_PROOF_MAX_DOUBLINGS)) return { ok: true }
+        // If the restart brings no new proof either, wait longer before the next one.
+        watch.restarts += 1
+        watch.sinceMs = now
+        const stalledMinutes = Math.round(stalledMs / 60_000)
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.bluebubbles_stale_proof_restart",
+          message: "restarting a BlueBubbles listener whose proof stopped updating",
+          meta: {
+            agent,
+            stalledMs,
+            lastProofAt: proofAt,
+            restarts: watch.restarts,
+            nextRestartAfterMs: BLUEBUBBLES_STALE_PROOF_RESTART_MS * 2 ** Math.min(watch.restarts, BLUEBUBBLES_STALE_PROOF_MAX_DOUBLINGS),
+          },
+        })
+        return {
+          ok: false,
+          detail: proofAt === null
+            ? `the BlueBubbles listener has written no BlueBubbles proof in ${stalledMinutes}m; restarting it`
+            : `BlueBubbles proof has not changed in ${stalledMinutes}m; restarting the listener`,
+        }
+      },
+    }
   }
 
   async restartSense(managedName: string): Promise<void> {

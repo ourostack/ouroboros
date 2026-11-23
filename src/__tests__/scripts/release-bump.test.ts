@@ -6,6 +6,7 @@ import * as path from "path"
 const {
   bumpReleaseVersion,
   parseArgs,
+  writeReleaseVersion,
 } = require(path.resolve(__dirname, "../../../scripts/release-bump.cjs"))
 
 function writeJson(filePath: string, value: unknown): void {
@@ -139,6 +140,32 @@ describe("release-bump helper", () => {
       })
       expect(fs.readFileSync(path.join(root, "deploy/unraid/sanctuary.xml"), "utf8")).toBe(templateAfterFirstRun)
       expect(fs.readFileSync(path.join(root, "deploy/unraid/sanctuary.ouro/bundle-meta.json"), "utf8")).toBe(bundleMetaAfterFirstRun)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("writes a version into every release file but the changelog, for the release job", () => {
+    const root = makeReleaseRoot()
+    try {
+      const changelogBefore = fs.readFileSync(path.join(root, "changelog.json"), "utf8")
+      expect(writeReleaseVersion({ root, version: "0.1.0-alpha.600" })).toEqual({
+        version: "0.1.0-alpha.600",
+        changedFiles: [
+          "package.json",
+          "package-lock.json",
+          "npm-shrinkwrap.json",
+          "packages/ouro.bot/package.json",
+          "deploy/unraid/sanctuary.xml",
+          "deploy/unraid/sanctuary.ouro/bundle-meta.json",
+        ],
+      })
+      expect(readJson(path.join(root, "package.json")).version).toBe("0.1.0-alpha.600")
+      expect(readJson(path.join(root, "npm-shrinkwrap.json")).packages[""].version).toBe("0.1.0-alpha.600")
+      expect(readJson(path.join(root, "packages/ouro.bot/package.json")).version).toBe("0.1.0-alpha.600")
+      expect(readJson(path.join(root, "deploy/unraid/sanctuary.ouro/bundle-meta.json")).runtimeVersion).toBe("0.1.0-alpha.600")
+      expect(fs.readFileSync(path.join(root, "changelog.json"), "utf8")).toBe(changelogBefore)
+      expect(() => writeReleaseVersion({ root, version: "nope" })).toThrow("release version must be valid semver")
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }

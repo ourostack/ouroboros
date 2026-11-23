@@ -3857,6 +3857,8 @@ describe("BlueBubbles sense runtime", () => {
       password: "secret-token",
       requestTimeoutMs: 30000,
       fresh: true,
+      // A webhook can't be asked again, so a server too busy to answer server info doesn't lose it.
+      recentConfirmationGraceMs: 600_000,
     })
   })
 
@@ -6698,6 +6700,219 @@ describe("BlueBubbles sense runtime", () => {
     closableServer.close()
   })
 
+  it("logs a failed runtime sync at warn, retries it with backoff, and logs the recovery", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.listRecentMessages.mockResolvedValue([])
+    mocks.checkHealth
+      .mockRejectedValueOnce(new Error("Cannot reach BlueBubbles"))
+      .mockRejectedValueOnce(new Error("Cannot reach BlueBubbles"))
+      .mockResolvedValue(undefined)
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+    const { readBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_runtime_sync_failed",
+      meta: expect.objectContaining({ reason: "Cannot reach BlueBubbles", probePassed: false }),
+    }))
+    expect(readBlueBubblesRuntimeState("testagent").upstreamStatus).toBe("error")
+
+    // Retries come sooner than the 30 s interval: 5 s, then 10 s.
+    await vi.advanceTimersByTimeAsync(4_999)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(3)
+    await flushAsyncWork()
+
+    expect(readBlueBubblesRuntimeState("testagent").upstreamStatus).toBe("ok")
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_upstream_recovered",
+      meta: expect.objectContaining({ previousDetail: "Cannot reach BlueBubbles" }),
+    }))
+    // Once it has recovered, syncs go back to the 30 s interval, which next fires at 30 s.
+    await vi.advanceTimersByTimeAsync(14_999)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(4)
+    closableServer.close()
+  })
+
+  it("stops retrying early once backoff reaches the 30 s interval, and lets the interval retry", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.checkHealth.mockRejectedValue(new Error("Cannot reach BlueBubbles"))
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    // Failures at 0 s, 5 s and 15 s; the interval at 30 s replaces the retry due at 35 s.
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(4)
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(4)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(5)
+    // The probe logs each failure itself; the sync adds one line when the streak starts, not one per retry.
+    expect(mocks.emitNervesEvent.mock.calls.filter(([event]) => event.event === "senses.bluebubbles_runtime_sync_failed")).toHaveLength(1)
+    closableServer.close()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("logs a runtime sync that fails after its probe passed, which used to be silent", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const createClient = vi.fn()
+      .mockReturnValueOnce({})
+      .mockReturnValueOnce({ checkHealth: mocks.checkHealth, listRecentMessages: mocks.listRecentMessages })
+      .mockImplementationOnce(() => { throw new Error("catch-up client failed") })
+      .mockReturnValue({ checkHealth: mocks.checkHealth, listRecentMessages: mocks.listRecentMessages })
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp({ createClient } as any)
+    await flushAsyncWork()
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_runtime_sync_failed",
+      meta: expect.objectContaining({ reason: "catch-up client failed", probePassed: true }),
+    }))
+    closableServer.close()
+  })
+
+  it("abandons a runtime sync that never finishes, so later syncs still prove the listener is alive", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.listRecentMessages.mockResolvedValue([])
+    const stuckHealth = createDeferred<void>()
+    mocks.checkHealth.mockReturnValueOnce(stuckHealth.promise).mockResolvedValue(undefined)
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+    const { readBlueBubblesRuntimeState, writeBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
+    const earlierProof = new Date(Date.now() - 60_000).toISOString()
+    writeBlueBubblesRuntimeState("testagent", { upstreamStatus: "ok", detail: "upstream reachable", lastCheckedAt: earlierProof, pendingRecoveryCount: 0 })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+
+    // Under two minutes without progress, a slow sync keeps its slot, and each tick it skips still says the listener is alive.
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(readBlueBubblesRuntimeState("testagent")).toEqual(expect.objectContaining({ lastCheckedAt: earlierProof, lastHeartbeatAt: new Date(Date.now()).toISOString() }))
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(1)
+    expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_runtime_sync_timeout" }))
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_runtime_sync_timeout",
+      meta: expect.objectContaining({ runningMs: 120_000, idleMs: 120_000 }),
+    }))
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(2)
+    await flushAsyncWork()
+    const provedAt = new Date(Date.now()).toISOString()
+    expect(readBlueBubblesRuntimeState("testagent")).toEqual(expect.objectContaining({ upstreamStatus: "ok", lastCheckedAt: provedAt }))
+
+    // The abandoned sync finishing late stops at once and changes nothing.
+    stuckHealth.resolve()
+    await flushAsyncWork()
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(2)
+    expect(readBlueBubblesRuntimeState("testagent")).toEqual(expect.objectContaining({ upstreamStatus: "ok", lastCheckedAt: provedAt }))
+    closableServer.close()
+  })
+
+  it("starts the next catch-up where the last finished one ended when a sync is abandoned partway through", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const startedAt = Date.now()
+    const stuckPage = createDeferred<never[]>()
+    mocks.checkHealth.mockResolvedValue(undefined)
+    // Syncs at 0 s to 300 s finish; the one at 330 s hangs in catch-up and is abandoned two minutes later, at 450 s.
+    mocks.listRecentMessages.mockImplementation(() => Date.now() - startedAt === 330_000 ? stuckPage.promise : Promise.resolve([]))
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    await vi.advanceTimersByTimeAsync(450_000)
+    await flushAsyncWork()
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_runtime_sync_timeout" }))
+    const starts = mocks.emitNervesEvent.mock.calls.map(([event]) => event).filter((event) => event.event === "senses.bluebubbles_catchup_start")
+    // 90 s before the end of the last finished catch-up (300 s), not before the abandoned one's start (330 s).
+    expect(starts.at(-1)!.meta.since).toBe(new Date(startedAt + 300_000 - 90_000).toISOString())
+    closableServer.close()
+  })
+
+  it("lets a slow catch-up that keeps making progress finish, however long it takes", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.checkHealth.mockResolvedValue(undefined)
+    // A backlog of full pages from a server that takes 25 s for each: 20 pages, over eight minutes in all.
+    const fullPage = Array.from({ length: 50 }, (_, index) => ({ kind: "read", messageGuid: `read-${index}` }))
+    mocks.listRecentMessages.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(fullPage), 25_000)))
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+    const { readBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await vi.advanceTimersByTimeAsync(500_000)
+    await flushAsyncWork()
+
+    expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_runtime_sync_timeout" }))
+    expect(mocks.listRecentMessages).toHaveBeenCalledTimes(20)
+    expect(readBlueBubblesRuntimeState("testagent").catchUpThrough).toBeDefined()
+    closableServer.close()
+  })
+
+  it("logs a setup failure even while the previous sync had already failed", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const { writeBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
+    writeBlueBubblesRuntimeState("testagent", { upstreamStatus: "error", detail: "Cannot reach BlueBubbles", lastCheckedAt: new Date().toISOString(), pendingRecoveryCount: 0 })
+    const createClient = vi.fn()
+      .mockReturnValueOnce({})
+      .mockImplementationOnce(() => { throw new Error("client setup failed") })
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp({ createClient } as any)
+    await flushAsyncWork()
+
+    // A failed probe logs itself; a setup failure does not, so it is never folded into the streak.
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_runtime_sync_failed",
+      meta: { reason: "client setup failed", probePassed: false },
+    }))
+    closableServer.close()
+  })
+
   it("reports runtime sync setup failures and releases the single-flight slot", async () => {
     vi.useFakeTimers()
     const closableServer = createClosableServer()
@@ -6710,18 +6925,25 @@ describe("BlueBubbles sense runtime", () => {
         listRecentMessages: mocks.listRecentMessages,
       })
 
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const { readBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
     const bluebubbles = await import("../../../senses/bluebubbles")
     bluebubbles.startBlueBubblesApp({ createClient } as any)
     await flushAsyncWork()
 
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       level: "warn",
-      event: "senses.bluebubbles_recovery_error",
-      meta: { reason: "runtime sync setup failed" },
+      event: "senses.bluebubbles_runtime_sync_failed",
+      meta: { reason: "runtime sync setup failed", probePassed: false },
     }))
+    // A setup failure is a failed sync like any other: it writes an error proof, so the daemon never takes the
+    // listener for stuck and restarts it over a fault a restart cannot fix.
+    expect(readBlueBubblesRuntimeState("testagent")).toEqual(expect.objectContaining({ upstreamStatus: "error", detail: "runtime sync setup failed" }))
+    // The failed sync is retried after 5 s, then the 30 s interval runs one more. Each sync creates two clients.
     await vi.advanceTimersByTimeAsync(30_000)
-    expect(createClient).toHaveBeenCalledTimes(4)
-    expect(mocks.checkHealth).toHaveBeenCalledTimes(1)
+    expect(createClient).toHaveBeenCalledTimes(6)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(2)
     closableServer.close()
   })
 
@@ -6739,29 +6961,36 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       level: "warn",
-      event: "senses.bluebubbles_recovery_error",
-      meta: { reason: "runtime sync string failure" },
+      event: "senses.bluebubbles_runtime_sync_failed",
+      meta: { reason: "runtime sync string failure", probePassed: false },
     }))
     closableServer.close()
   })
 
-  it("suppresses a non-Error runtime sync setup failure after server close", async () => {
+  it("suppresses a non-Error runtime sync failure that lands after server close", async () => {
     vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
     const closableServer = createClosableServer()
     mocks.createServer.mockReturnValue(closableServer.server as any)
+    const lateFailure = createDeferred<void>()
     const createClient = vi.fn()
       .mockReturnValueOnce({})
-      .mockImplementationOnce(() => { throw new Error("closed runtime sync setup failure") })
+      .mockReturnValueOnce({ checkHealth: () => lateFailure.promise, listRecentMessages: mocks.listRecentMessages })
+    const { getBlueBubblesRuntimeStatePath } = await import("../../../senses/bluebubbles/runtime-state")
 
     const bluebubbles = await import("../../../senses/bluebubbles")
     bluebubbles.startBlueBubblesApp({ createClient } as any)
     closableServer.close()
+    lateFailure.reject("closed runtime sync failure")
     await flushAsyncWork()
 
     expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({
-      event: "senses.bluebubbles_recovery_error",
-      meta: { reason: "closed runtime sync setup failure" },
+      event: "senses.bluebubbles_runtime_sync_failed",
+      meta: expect.objectContaining({ reason: "closed runtime sync failure" }),
     }))
+    expect(fs.existsSync(getBlueBubblesRuntimeStatePath("testagent"))).toBe(false)
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it("does not rearm recovery when startup sync completes after server close", async () => {
@@ -14506,6 +14735,97 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
     })
 
     expect(result).toEqual({ delivered: false, reason: "send_error" })
+  })
+
+  it("says a proactive BlueBubbles send may have gone out only when the server got it and did not refuse it", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend()),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const { BlueBubblesSendError } = await import("../../../senses/bluebubbles/client")
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const sendWith = async (error: unknown) => {
+      mocks.sendText.mockReset().mockRejectedValue(error)
+      return bluebubbles.sendProactiveBlueBubblesMessageToSession({
+        friendId: "friend-uuid-1",
+        sessionKey: "chat:any;-;alice@icloud.com",
+        text: "surface this now",
+      }, {
+        createClient: () => ({
+          sendText: mocks.sendText,
+          editMessage: mocks.editMessage,
+          setTyping: mocks.setTyping,
+          markChatRead: mocks.markChatRead,
+          checkHealth: mocks.checkHealth,
+          repairEvent: mocks.repairEvent,
+          getMessageText: mocks.getMessageText,
+        }),
+        createFriendStore: () => friendStore as any,
+      })
+    }
+    const sendError = (httpStatus: number | null, transportInvoked: boolean) =>
+      new BlueBubblesSendError({ message: "send failed", httpStatus, errorCode: httpStatus ? `http_${httpStatus}` : "timeout", transportInvoked })
+
+    expect(await sendWith(sendError(null, true))).toEqual({ delivered: false, reason: "send_error", delivery: { state: "unknown" } })
+    expect(await sendWith(sendError(503, true))).toEqual({ delivered: false, reason: "send_error", delivery: { state: "unknown" } })
+    expect(await sendWith(sendError(400, true))).toEqual({ delivered: false, reason: "send_error" })
+    expect(await sendWith(sendError(null, false))).toEqual({ delivered: false, reason: "send_error" })
+  })
+
+  it("records a proactive send that timed out as sent once it shows up in the chat, so the agent doesn't send it again", async () => {
+    const friendStore = { get: vi.fn().mockResolvedValue(makeFriend()), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn(), hasAnyFriends: vi.fn(), listAll: vi.fn() }
+    const { BlueBubblesSendError } = await import("../../../senses/bluebubbles/client")
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const chat = { chatGuid: "any;-;alice@icloud.com", chatIdentifier: "alice@icloud.com", isGroup: false, sessionKey: "chat:any;-;alice@icloud.com", sendTarget: { kind: "chat_guid", value: "any;-;alice@icloud.com" } }
+    const sentLater = (text: string, fromMe = true) => ({ kind: "message", fromMe, text, timestamp: Date.now() + 60_000, messageGuid: "arrived-guid", chat })
+    const listRecentMessages = vi.fn()
+      .mockResolvedValueOnce([sentLater("surface this now", false), sentLater("something else")])
+      .mockRejectedValueOnce(new Error("BlueBubbles busy"))
+      .mockResolvedValueOnce([sentLater("  surface   this now ")])
+    const waitMs = vi.fn(async () => undefined)
+    outbound.record.mockClear()
+    mocks.sendText.mockReset().mockRejectedValue(new BlueBubblesSendError({ message: "timed out", httpStatus: null, errorCode: "timeout", transportInvoked: true }))
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({ friendId: "friend-uuid-1", sessionKey: "chat:any;-;alice@icloud.com", text: "surface this now" }, {
+      createClient: () => ({ sendText: mocks.sendText, editMessage: mocks.editMessage, setTyping: mocks.setTyping, markChatRead: mocks.markChatRead, checkHealth: mocks.checkHealth, repairEvent: mocks.repairEvent, getMessageText: mocks.getMessageText, listRecentMessages }),
+      createFriendStore: () => friendStore as any,
+      waitMs,
+    })
+    expect(result).toEqual({ delivered: false, reason: "send_error", delivery: { state: "unknown" } })
+    await vi.waitFor(() => expect(outbound.record).toHaveBeenCalledWith(expect.objectContaining({ content: "surface this now", channel: "bluebubbles" })))
+    expect(listRecentMessages).toHaveBeenCalledTimes(3)
+    expect(listRecentMessages).toHaveBeenCalledWith({ chatGuid: "any;-;alice@icloud.com", limit: 25 })
+    expect(waitMs).toHaveBeenCalledWith(30_000)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_proactive_send_arrived", meta: expect.objectContaining({ messageGuid: "arrived-guid", checks: 3 }) }))
+  })
+
+  it("says so when a proactive send that timed out never shows up in the chat, and looks only where it can", async () => {
+    const friendStore = { get: vi.fn().mockResolvedValue(makeFriend()), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn(), hasAnyFriends: vi.fn(), listAll: vi.fn() }
+    const { BlueBubblesSendError } = await import("../../../senses/bluebubbles/client")
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const listRecentMessages = vi.fn().mockResolvedValue([])
+    const client = { sendText: mocks.sendText, editMessage: mocks.editMessage, setTyping: mocks.setTyping, markChatRead: mocks.markChatRead, checkHealth: mocks.checkHealth, repairEvent: mocks.repairEvent, getMessageText: mocks.getMessageText }
+    outbound.record.mockClear()
+    mocks.sendText.mockReset().mockRejectedValue(new BlueBubblesSendError({ message: "timed out", httpStatus: null, errorCode: "timeout", transportInvoked: true }))
+    await bluebubbles.sendProactiveBlueBubblesMessageToSession({ friendId: "friend-uuid-1", sessionKey: "chat:any;-;alice@icloud.com", text: "surface this now" }, {
+      createClient: () => ({ ...client, listRecentMessages }), createFriendStore: () => friendStore as any, waitMs: async () => undefined,
+    })
+    await vi.waitFor(() => expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_proactive_send_not_seen", meta: expect.objectContaining({ checks: 10 }) })))
+    expect(listRecentMessages).toHaveBeenCalledTimes(10)
+    expect(outbound.record).not.toHaveBeenCalled()
+
+    // A client that can't list a chat's messages, or a chat with no GUID, isn't looked in.
+    const waitMs = vi.fn(async () => undefined)
+    await bluebubbles.sendProactiveBlueBubblesMessageToSession({ friendId: "friend-uuid-1", sessionKey: "chat:any;-;alice@icloud.com", text: "surface this now" }, {
+      createClient: () => client, createFriendStore: () => friendStore as any, waitMs,
+    })
+    await bluebubbles.sendProactiveBlueBubblesMessageToSession({ friendId: "friend-uuid-1", sessionKey: "alice@icloud.com", text: "surface this now" }, {
+      createClient: () => ({ ...client, listRecentMessages }), createFriendStore: () => friendStore as any, waitMs,
+    })
+    expect(waitMs).not.toHaveBeenCalled()
   })
 
   it("stringifies non-Error proactive BlueBubbles send failures", async () => {

@@ -77,6 +77,30 @@ export async function findReleaseCommitByPackage(commits, version, readVersion, 
   return oldest
 }
 
+export const NPM_PACKAGE = "@ouro.bot/cli"
+const COMMIT_SHA = /^[0-9a-f]{40}$/
+
+/**
+ * Since versions are set when a change lands on main, no commit subject or package.json names a release. npm records
+ * the commit each version was published from (gitHead), and the GitHub release job tags it v<version>; ask those first.
+ */
+export async function findReleaseCommitByRegistry(deps, version) {
+  if (deps.npm) {
+    const r = await deps.npm(["view", `${NPM_PACKAGE}@${version}`, "gitHead"])
+    const sha = r.code === 0 ? r.stdout.trim() : ""
+    if (COMMIT_SHA.test(sha)) return { sha, from: "npm's gitHead" }
+  }
+  const readObject = async (endpoint) => {
+    const r = await deps.gh(["api", `repos/${REPO}/${endpoint}`])
+    if (r.code !== 0) return undefined
+    try { return JSON.parse(r.stdout)?.object } catch { return undefined }
+  }
+  let object = await readObject(`git/ref/tags/v${version}`)
+  if (object?.type === "tag") object = await readObject(`git/tags/${object.sha}`)
+  if (object?.type === "commit" && COMMIT_SHA.test(String(object.sha))) return { sha: object.sha, from: `tag v${version}` }
+  return undefined
+}
+
 export const PUSH_RUN_GRACE_MS = 10 * 60_000
 
 export function commitDate(commits, sha) {
@@ -209,7 +233,8 @@ export async function ship(opts, deps, timing = {}) {
 
   say("1. resolve the release commit")
   const commits = JSON.parse(must(await deps.gh(["api", `repos/${REPO}/commits?sha=main&per_page=100`]), "listing main commits"))
-  let sha = findReleaseCommit(commits, version)
+  const registered = await findReleaseCommitByRegistry(deps, version)
+  let sha = registered?.sha ?? findReleaseCommit(commits, version)
   if (!sha) {
     deps.log(`  no subject names ${version}; reading package.json at the latest main commits`)
     const unreadable = []
@@ -221,19 +246,20 @@ export async function ship(opts, deps, timing = {}) {
     if (unreadable.length > 0) deps.log(`  WARN package.json could not be read at ${unreadable.join(", ")}${sha ? `; chose ${sha} without them, so check it is the release merge` : ""}`)
   }
   if (!sha) throw new ShipError(`no commit on main names ${version} in its subject (looked at the latest 100); is the release merged?`)
-  const mergedAt = commitDate(commits, sha)
-  deps.log(`  ok   ${version} is ${sha}`)
+  let mergedAt = commitDate(commits, sha)
+  if (mergedAt === undefined) {
+    const r = await deps.gh(["api", `repos/${REPO}/commits/${sha}`])
+    try { mergedAt = commitDate([JSON.parse(r.stdout)], sha) } catch { mergedAt = undefined }
+  }
+  deps.log(`  ok   ${version} is ${sha}${registered ? ` (${registered.from})` : ""}`)
   const cutover = await deps.ssh(host, CUTOVER_PROBE)
   const cutoverState = /^@@CUTOVER:([01])$/m.exec(cutover.stdout)
   if (cutover.code !== 0 || !cutoverState) throw new ShipError(`could not check ${CUTOVER_MARKER} on the host (exit ${cutover.code})`)
   const unfinished = [...cutover.stdout.matchAll(/^@@CUTOVER-UNFINISHED:(.+)$/gm)].map((m) => m[1])
   if (unfinished.length > 0) throw new ShipError(`${unfinished.join(" and ")} exists on the host, so a bundle sync cutover is still applying or its rollback did not finish. Let it finish (or run sanctuary-sync-cutover.sh --rollback again) until that file is gone, then ship ${version}.`)
   if (cutoverState[1] === "1") {
-    const body = must(await deps.gh(["api", "-H", "Accept: application/vnd.github.raw", `repos/${REPO}/contents/package.json?ref=${sha}`]), `reading package.json at ${sha}`)
-    let releaseVersion
-    try { releaseVersion = JSON.parse(body).version } catch { releaseVersion = undefined }
-    if (typeof releaseVersion !== "string" || !semver.valid(releaseVersion)) throw new ShipError(`could not read a version from package.json at ${sha}, so cannot tell whether ${version} carries bundle sync`)
-    if (!semver.gte(releaseVersion, BUNDLE_SYNC_FIRST_RELEASE)) throw new ShipError(`${version} has no git in its image, and this host's bundle has already moved to bundle sync (${CUTOVER_MARKER}). First run sanctuary-sync-cutover.sh --rollback on the host, then ship ${version}.`)
+    // The version being shipped, not package.json: on main that keeps the last version set by hand.
+    if (!semver.gte(version, BUNDLE_SYNC_FIRST_RELEASE)) throw new ShipError(`${version} has no git in its image, and this host's bundle has already moved to bundle sync (${CUTOVER_MARKER}). First run sanctuary-sync-cutover.sh --rollback on the host, then ship ${version}.`)
     deps.log(`  ok   ${version} carries bundle sync, which this host's bundle uses`)
   }
 

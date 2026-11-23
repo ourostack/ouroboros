@@ -1,60 +1,107 @@
 name: publish-container
 
-# Builds each architecture on its own native runner at the same moment npm publishes, then joins the two
-# images under the version and commit tags. Emulating arm64 took 20 to 30 minutes; a native runner takes
-# a few. The commit on main is the tree the pull request's required checks passed (main requires branches
-# to be up to date), and this run does not wait for the run that tests it again.
+# Builds each architecture on its own native runner once npm has published a version from this push's commit, then
+# joins the two images under that version and the commit tag. Emulating arm64 took 20 to 30 minutes; a native runner
+# takes a few. The image takes the version npm published from this very commit, so the package and the image never
+# carry different numbers, and writes the release files under that version with the changelog npm published for it
+# (scripts/release-version.cjs).
 on:
   push:
     branches:
       - main
   workflow_dispatch:
 
-concurrency:
-  group: container-publish-${{ github.repository }}
-  cancel-in-progress: false
-  # Every merge keeps its own run, so a busy hour never drops a version's image.
-  queue: max
+# bash -eo pipefail, so a step that pipes a command into tee or grep fails when the command does (GitHub's default
+# shell has no pipefail: a failing release preflight piped into tee passed).
+defaults:
+  run:
+    shell: bash
 
 env:
   IMAGE: ghcr.io/ourostack/ouroboros-butler
 
 jobs:
-  # A merge that does not bump the version publishes nothing: its image tag would already exist.
+  # A push that releases nothing (docs, tests, workflows) publishes nothing: its version came from an
+  # earlier push, whose image already carries that tag.
   plan:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
     steps:
-      - name: Checkout the commit and its parent
+      - name: Checkout the commit with main's history
         uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 2
+          fetch-depth: 0
 
-      - name: Decide whether this commit releases a version
+      # A push publishes when any commit it brought releases something (a rebase merge's last commit may not), under
+      # the version npm's publish job works out from the same push. A manual run rebuilds main's head only when npm
+      # published main's version from that very commit, so an image never carries code npm did not ship under its tag.
+      - name: Decide whether this push releases a version
         id: plan
+        env:
+          BEFORE: ${{ github.event.before }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
-            echo "release=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          before=$(git show HEAD^:package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
-          after=$(node -p "require('./package.json').version")
-          if [ "$before" = "$after" ]; then
-            echo "Version $after is unchanged, so this commit publishes no image." | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "release=false" >> "$GITHUB_OUTPUT"
+            if [ "$GITHUB_REF" != refs/heads/main ]; then
+              echo "::error::A manual run rebuilds main's image only; run it on main, not $GITHUB_REF."
+              exit 1
+            fi
+            PLAN=$(node scripts/release-version.cjs dispatch)
           else
-            echo "release=true" >> "$GITHUB_OUTPUT"
+            PLAN=$(node scripts/release-version.cjs push "$BEFORE")
+          fi
+          printf '%s\n' "$PLAN" | tee -a "$GITHUB_OUTPUT"
+          if printf '%s\n' "$PLAN" | grep -qx 'release=false'; then
+            echo "This push releases nothing, so it publishes no image." | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
+  # Waits for coverage.yml's publish job to put a version on npm from this commit (its coverage gate and publish
+  # usually take 10 to 20 minutes; a queue of earlier releases can add more), and hands that version to the build. A
+  # manual run passes at once, since its plan already checked npm published HEAD's version from HEAD. No concurrency
+  # group: a run whose npm publish failed waits out its own timeout without holding up later images.
+  npm-release:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.npm.outputs.version }}
+    steps:
+      - name: Checkout the commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Wait for npm to publish a version from this commit
+        id: npm
+        env:
+          RELEASE_WAIT_SECONDS: 5400
+        run: node scripts/release-version.cjs wait-published | tee -a "$GITHUB_OUTPUT"
+
+  # Every merge keeps its own build and tag, one at a time per architecture, so a busy hour never drops a version's
+  # image.
   build:
     name: build (${{ matrix.arch }})
-    needs: plan
+    needs:
+      - plan
+      - npm-release
     if: needs.plan.outputs.release == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    concurrency:
+      group: container-publish-build-${{ matrix.arch }}-${{ github.repository }}
+      cancel-in-progress: false
+      queue: max
     strategy:
       fail-fast: true
       matrix:
@@ -69,10 +116,11 @@ jobs:
       contents: read
       packages: write
     steps:
-      - name: Checkout the commit
+      - name: Checkout the commit with main's history
         uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -82,7 +130,8 @@ jobs:
 
       - name: Resolve immutable image references
         run: |
-          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          PACKAGE_VERSION="${{ needs.npm-release.outputs.version }}"
+          test -n "$PACKAGE_VERSION"
           {
             echo "PACKAGE_VERSION=$PACKAGE_VERSION"
             echo "VERSION_IMAGE=$IMAGE:$PACKAGE_VERSION"
@@ -106,10 +155,15 @@ jobs:
           test "$PUBLISH" = "true" || test "$PUBLISH" = "false"
           echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
 
+      # The image carries package.json, changelog.json and the Sanctuary deploy files, so they are written into this
+      # checkout before the build, under the version npm published from this commit and with the changelog.json that
+      # npm published for it, so the package, the image and the GitHub release all carry the same changelog.
       - name: Build release assets
         if: steps.release-gate.outputs.publish == 'true'
         run: |
           npm ci
+          test "$(node scripts/release-version.cjs apply --version "$PACKAGE_VERSION" --npm-changelog)" = "$PACKAGE_VERSION"
+          node scripts/changelog-gate.cjs
           npm run build
 
       # Pushed by digest, with no tag: the join job below tags both architectures together, so nothing
@@ -200,10 +254,15 @@ jobs:
   publish:
     needs:
       - plan
+      - npm-release
       - build
     if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    concurrency:
+      group: container-publish-tag-${{ github.repository }}
+      cancel-in-progress: false
+      queue: max
     permissions:
       contents: read
       packages: write
@@ -215,7 +274,8 @@ jobs:
 
       - name: Resolve immutable image references
         run: |
-          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          PACKAGE_VERSION="${{ needs.npm-release.outputs.version }}"
+          test -n "$PACKAGE_VERSION"
           {
             echo "PACKAGE_VERSION=$PACKAGE_VERSION"
             echo "VERSION_IMAGE=$IMAGE:$PACKAGE_VERSION"
@@ -258,7 +318,7 @@ jobs:
         if: steps.release-gate.outputs.publish == 'true'
         id: exact-references
         run: |
-          GATE_OUTPUT=$(scripts/container-image-release-gate.sh "$VERSION_IMAGE" "$SHA_IMAGE")
+          GATE_OUTPUT=$(scripts/container-post-push-verify.sh "$VERSION_IMAGE" "$SHA_IMAGE" 6 10)
           printf '%s\n' "$GATE_OUTPUT"
           test "$(printf '%s\n' "$GATE_OUTPUT" | awk -F= '$1 == "publish" { print $2 }')" = "false"
           DIGEST=$(printf '%s\n' "$GATE_OUTPUT" | awk -F= '$1 == "digest" { print $2 }')

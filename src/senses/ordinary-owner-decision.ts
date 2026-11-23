@@ -8,9 +8,10 @@ import type { ExternalEventOwnerMessage } from "../heart/external-events/router"
 /**
  * The owner message of an ordinary agent's external-event ask or report. An
  * ordinary agent (no Sanctuary relationship registry) has no dedicated owner
- * channel, so the message goes the way surface sends it: to the owner's
- * freshest session through the agent's own senses, or as a deferred return
- * they see on their next contact. One message speaks for its whole batch.
+ * channel, so the message goes the way surface sends it: now on the owner's
+ * own chat through the agent's own senses, or, when none sends, saved as a
+ * deferred return they see on their next contact (status "saved", never
+ * "sent"). One message speaks for its whole batch.
  */
 
 export interface OrdinaryOwnerDecisionInput {
@@ -25,13 +26,13 @@ export interface OrdinaryOwnerDecisionDeps {
   agentName: string
   agentRoot: string
   listFriends: () => Promise<FriendRecord[]>
-  route: (friendId: string, content: string) => Promise<{ status: "delivered" | "queued" | "deferred" | "failed"; detail?: string }>
+  route: (friendId: string, content: string) => Promise<{ status: "delivered" | "forwarded" | "unconfirmed" | "queued" | "deferred" | "failed"; detail?: string }>
   ownerUsername?: string | null
 }
 
 interface LedgerEntry {
   effectKey: string
-  role: "sent" | "covered"
+  role: "sent" | "saved" | "covered"
 }
 
 function ledgerPath(agentRoot: string): string {
@@ -72,7 +73,7 @@ export function resolveOrdinaryOwner(friends: FriendRecord[], ownerUsername: str
 export async function deliverOrdinaryOwnerDecision(deps: OrdinaryOwnerDecisionDeps, input: OrdinaryOwnerDecisionInput): Promise<ExternalEventOwnerMessage> {
   const ledger = readLedger(deps.agentRoot)
   const existing = ledger[eventKey(input)]
-  if (existing) return { status: existing.role === "covered" ? "covered" : "already_sent", effectKey: existing.effectKey }
+  if (existing) return { status: existing.role === "covered" ? "covered" : existing.role === "saved" ? "saved" : "already_sent", effectKey: existing.effectKey }
 
   const owner = resolveOrdinaryOwner(await deps.listFriends(), deps.ownerUsername === undefined ? machineOwnerUsername() : deps.ownerUsername)
   if (!owner) throw new Error("this agent has no single owner to tell: no active family friend is this machine's user, and it has more or fewer than one family friend")
@@ -80,7 +81,8 @@ export async function deliverOrdinaryOwnerDecision(deps: OrdinaryOwnerDecisionDe
   const routed = await deps.route(owner.id, input.text)
   if (routed.status === "failed") throw new Error(`the owner message could not be delivered${routed.detail ? `: ${routed.detail}` : ""}`)
 
-  ledger[eventKey(input)] = { effectKey, role: "sent" }
+  const role = routed.status === "deferred" ? "saved" : "sent"
+  ledger[eventKey(input)] = { effectKey, role }
   for (const related of input.relatedEvents) ledger[eventKey(related)] ??= { effectKey, role: "covered" }
   writeLedger(deps.agentRoot, ledger)
   emitNervesEvent({
@@ -89,5 +91,5 @@ export async function deliverOrdinaryOwnerDecision(deps: OrdinaryOwnerDecisionDe
     message: "external-event owner message sent through the agent's own senses",
     meta: { agentName: deps.agentName, source: input.source, eventId: input.eventId, ownerId: owner.id, route: routed.status, related: input.relatedEvents.length },
   })
-  return { status: "sent", effectKey }
+  return { status: role, effectKey }
 }

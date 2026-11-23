@@ -210,8 +210,8 @@ describe("an ordinary agent takes external events", () => {
 
     expect(response, response.error).toMatchObject({ ok: true })
     const record = f.event()
-    expect(record).toMatchObject({ executionState: "handled", disposition: { decision: "report", ownerMessage: { status: "sent" } } })
-    // With no live session for the owner, it waits as a deferred return they see on their next contact.
+    // With no live session for the owner, it is saved as a deferred return they see on their next contact, and recorded as saved, not sent.
+    expect(record).toMatchObject({ executionState: "handled", disposition: { decision: "report", ownerMessage: { status: "saved" } } })
     const { getDeferredReturnDir } = await import("../../mind/pending")
     const deferredDir = getDeferredReturnDir("plainagent", ownerId)
     const queued = fs.readdirSync(deferredDir).map((name) => JSON.parse(fs.readFileSync(path.join(deferredDir, name), "utf8")))

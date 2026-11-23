@@ -870,7 +870,7 @@ Effective-spec audit helper:
       timeout -s KILL 20 /usr/bin/php -r '
         [$expectedImage, $outputPath] = array_slice($argv, 1);
         $expectedPath = "/boot/config/plugins/dockerMan/templates-user/my-ouro-butler.xml";
-        $expectedUrl = "https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml";
+        $expectedUrls = ["https://github.com/ourostack/ouroboros/releases/latest/download/sanctuary.xml", "https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml"];
         $expectedIcon = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png";
         $communityAppsEntryPath = "/usr/local/emhttp/plugins/community.applications/include/exec.php";
         $communityAppsHelperPath = "/usr/local/emhttp/plugins/community.applications/include/previous_apps_helpers.php";
@@ -906,7 +906,7 @@ Effective-spec audit helper:
         $resolved = $templates->getUserTemplate("ouro-butler");
         if ($resolved !== $expectedPath) exit(5);
         $xml = @simplexml_load_file($resolved);
-        if (!$xml || (string)$xml->Name !== "ouro-butler" || (string)$xml->Repository !== $expectedImage || (string)$xml->TemplateURL !== $expectedUrl || (string)$xml->Icon !== $expectedIcon || trim((string)$xml->WebUI) !== "") exit(6);
+        if (!$xml || (string)$xml->Name !== "ouro-butler" || (string)$xml->Repository !== $expectedImage || !in_array((string)$xml->TemplateURL, $expectedUrls, true) || (string)$xml->Icon !== $expectedIcon || trim((string)$xml->WebUI) !== "") exit(6);
         $containers = $client->getDockerContainers();
         $matches = array_values(array_filter($containers, fn($container) => $container["Name"] === "ouro-butler"));
         if (count($matches) !== 1) exit(7);
@@ -923,7 +923,7 @@ Effective-spec audit helper:
           $helperUpdateCount = 0;
           $helperRows = PreviousAppsHelpers::collectDockerApplications(true, "true", "docker", $containers, $helperUpdateCount, [], [], [], []);
           if (!is_array($helperRows)) exit(9);
-          $helperMatches = array_values(array_filter($helperRows, fn($row) => is_array($row) && ($row["InstallPath"] ?? null) === $expectedPath && ($row["Name"] ?? null) === "ouro-butler" && ($row["Repository"] ?? null) === $expectedImage && ($row["TemplateURL"] ?? null) === $expectedUrl && ($row["Icon"] ?? null) === $expectedIcon));
+          $helperMatches = array_values(array_filter($helperRows, fn($row) => is_array($row) && ($row["InstallPath"] ?? null) === $expectedPath && ($row["Name"] ?? null) === "ouro-butler" && ($row["Repository"] ?? null) === $expectedImage && in_array($row["TemplateURL"] ?? null, $expectedUrls, true) && ($row["Icon"] ?? null) === $expectedIcon));
           if (count($helperMatches) !== 1) exit(9);
           $communityAppsStateModel = "previous-apps-helper-v1";
           $communityAppsImplementationPath = $communityAppsHelperPath;

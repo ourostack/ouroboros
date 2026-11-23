@@ -42,6 +42,7 @@ export function validateToolCallBatchAtProductionBoundary(calls: ToolCallBoundar
   })
 }
 import { trimMessages } from "../mind/context";
+import { withdrawDeferredReturn } from "../mind/pending";
 import {
   applyPromptBudget,
   assessRequiredPromptEvidenceBudget,
@@ -732,6 +733,59 @@ function stripThinkBlocksForViolationCheck(input: string): string {
     out = out.slice(0, open) + out.slice(close + "</think>".length)
   }
   return out.trim()
+}
+
+/** Who a send was for: its friendId, or for a surface addressed only by delegationId, that held thought. */
+const surfaceFriendKey = (record: TurnToolRecord): string => {
+  const friendId = (record.args.friendId ?? "").trim().toLowerCase()
+  return friendId || (record.args.delegationId ? `delegation:${record.args.delegationId.trim()}` : "")
+}
+const isUnsentSurface = (record: TurnToolRecord): boolean =>
+  record.name === "surface" && /\(code: surface-not-sent\)$/u.test(record.result)
+/** A surface or send_message that reached the friend now, or may have (unconfirmed). */
+const reachedSurfaceFriend = (record: TurnToolRecord): boolean =>
+  (record.name === "surface" && /^(?:delivered|forwarded|unconfirmed)\b/u.test(record.result))
+  || (record.name === "send_message" && /^delivered now$/mu.test(record.result) && !/\(code: [a-z0-9-]+\)$/u.test(record.result))
+
+/**
+ * This turn's newest surface result that came back not sent (it ends with the surface-not-sent code), among the
+ * friends no later surface or send_message reached. Rest uses it to say once that the person was not told.
+ */
+export function unsentSurfaceResult(records: TurnToolRecord[]): string | null {
+  const unsent = new Map<string, string>()
+  for (const record of records) {
+    const friend = surfaceFriendKey(record)
+    if (isUnsentSurface(record)) {
+      unsent.delete(friend)
+      unsent.set(friend, record.result)
+    } else if (reachedSurfaceFriend(record)) {
+      unsent.delete(friend)
+    }
+  }
+  return [...unsent.values()].at(-1) ?? null
+}
+
+const sameWords = (left: string | undefined, right: string | undefined): boolean => {
+  const words = (text: string | undefined): string => (text ?? "").trim().replace(/\s+/gu, " ").toLowerCase()
+  return words(left) !== "" && words(left) === words(right)
+}
+
+/**
+ * When the newest record reached a friend with the same words as surfaces to that friend saved earlier this turn,
+ * those saved copies are now redundant. Different words leave the saved copy alone, since that news has not reached
+ * them. A surface addressed only by delegationId names no friend and is left alone.
+ */
+export function surfacesReachedLater(records: TurnToolRecord[]): Array<{ friendId: string; content: string }> {
+  const latest = records.at(-1)
+  if (!latest || !reachedSurfaceFriend(latest) || !latest.args.friendId?.trim()) return []
+  const said = latest.args.content
+  let saved: Array<{ friendId: string; content: string }> = []
+  for (const record of records.slice(0, -1)) {
+    if (surfaceFriendKey(record) !== surfaceFriendKey(latest)) continue
+    if (isUnsentSurface(record) && sameWords(record.args.content, said)) saved.push({ friendId: record.args.friendId!.trim(), content: record.args.content! })
+    else if (reachedSurfaceFriend(record) && sameWords(record.args.content, said)) saved = []
+  }
+  return saved
 }
 
 function hasFreshPendingWork(options?: RunAgentOptions): boolean {
@@ -1718,6 +1772,9 @@ export async function runAgent(
   // which doesn't update mid-turn. The agent only needs to be told once;
   // after that, repeated rest attempts mean they've acknowledged.
   let freshWorkGateFired = false;
+  // Once-per-turn flag for the unsent-surface rest gate: the agent is told once
+  // that a person it meant to tell was not reached; a second rest is its answer.
+  let surfaceNotSentGateFired = false;
   // Counter for no-tool-call violations. MiniMax reasoning models occasionally
   // emit only a <think>...</think> block and stop, without any tool call — even
   // when tool_choice is set to "required". Private-return requests also need
@@ -2817,6 +2874,21 @@ export async function runAgent(
             continue;
           }
 
+          const unsentSurface = !wrappingUp && !surfaceNotSentGateFired ? unsentSurfaceResult(turnToolRecords) : null;
+          if (unsentSurface) {
+            surfaceNotSentGateFired = true;
+            callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs, toolSelection), false);
+            rejectToolBatch(msg, [FLOW_TOOL_REFUSALS.restSurfaceNotSent(unsentSurface)]);
+            emitNervesEvent({
+              level: "info",
+              component: "engine",
+              event: "engine.surface_not_sent_gate_fired",
+              message: "rest deferred once because a surface this turn was not sent; agent has been notified",
+              meta: {},
+            });
+            continue;
+          }
+
           callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs, toolSelection), true);
           pushGenerated(msg);
           const ack = "(resting)";
@@ -3266,6 +3338,9 @@ export async function runAgent(
           }
           if (invoked && requiredToolCallNames.includes(tc.name) && !options?.requiredToolCalls?.requireSuccessfulResults) dispatchedRequiredToolCalls.add(tc.name);
           turnToolRecords.push({ name: tc.name, args, result: toolResult });
+          for (const saved of surfacesReachedLater(turnToolRecords)) {
+            try { withdrawDeferredReturn(getAgentName(), saved.friendId, saved.content) } catch { /* a stale saved copy only repeats the news */ }
+          }
           const modelResult = shieldDelegatedBanner(fitToolOutputForModel(tc.name, rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger)));
           pushGenerated({ role: "tool", tool_call_id: tc.id, content: modelResult });
           providerRuntime.appendToolOutput(tc.id, modelResult);
