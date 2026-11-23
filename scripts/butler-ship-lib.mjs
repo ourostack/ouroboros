@@ -20,7 +20,8 @@ export const CASE_NAME = /^[a-z0-9][a-z0-9-]*$/
 
 // Eval sandboxes (ouro-eval-*) start and stop containers on the host. The upgrade's root lifecycle scans the running
 // containers, and the 1435 ship's upgrade and rollback both failed when one stopped mid-scan, leaving the Butler down.
-export const EVAL_CONTAINERS_PROBE = "docker ps --filter name=^ouro-eval- --format '{{.Names}}'"
+// Current eval runs label everything they create ouro.eval=1 (and are named eval-sandbox-*); older ones were named ouro-eval-*.
+export const EVAL_CONTAINERS_PROBE = "docker ps --filter label=ouro.eval=1 --format '{{.Names}}' && docker ps --filter name=^ouro-eval- --format '{{.Names}}'"
 
 /** Refuses to go on while eval containers run on the host; nothing has changed yet when it throws. */
 export async function assertNoEvalContainers(host, deps, when) {
