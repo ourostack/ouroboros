@@ -55,10 +55,11 @@ function splitChangelog(baseChangelog, headChangelog) {
   return { lines, kept }
 }
 
-function freeNotePath(root, slug) {
+// A name neither this branch nor the base has, so merging main never collides with another change's note.
+function freeNotePath(root, slug, baseNotes) {
   for (let suffix = 1; ; suffix += 1) {
     const candidate = `changes/${slug}${suffix === 1 ? "" : `-${suffix}`}.md`
-    if (!fs.existsSync(path.join(root, candidate))) return candidate
+    if (!fs.existsSync(path.join(root, candidate)) && !baseNotes.has(candidate)) return candidate
   }
 }
 
@@ -91,7 +92,8 @@ function dropBump(options, deps) {
     return 0
   }
 
-  const notePath = lines.length > 0 ? freeNotePath(root, slugify(branch)) : null
+  const baseNotes = new Set(git("-c", "core.quotePath=false", "ls-tree", "-r", "--name-only", options.baseRef, "--", "changes/").split("\n").filter(Boolean))
+  const notePath = lines.length > 0 ? freeNotePath(root, slugify(branch), baseNotes) : null
   const writeVersion = prepareReleaseVersion({ root, version: baseVersion })
   writeVersion()
   fs.writeFileSync(path.join(root, "changelog.json"), changelogText)

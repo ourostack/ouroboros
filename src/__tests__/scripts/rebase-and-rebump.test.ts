@@ -140,6 +140,22 @@ describe("scripts/release-drop-bump.cjs", { timeout: 30_000 }, () => {
     expect(JSON.parse(read(work, "package.json")).version).toBe(BASE)
   })
 
+  it("skips a note name main already has, even before main is merged in", () => {
+    const { work } = makeRepos()
+    branchWithOldStyleBump(work)
+    git(work, "checkout", "-q", "main")
+    write(work, "changes/feature-thing.md", "Someone else's note on main.\n")
+    git(work, "add", "-A")
+    git(work, "commit", "-q", "-m", "a note on main with the same name")
+    git(work, "push", "-q", "origin", "main")
+    git(work, "checkout", "-q", "feature/thing")
+
+    run(work, ["node", "scripts/release-drop-bump.cjs", "--no-merge"])
+
+    expect(fs.existsSync(path.join(work, "changes/feature-thing.md"))).toBe(false)
+    expect(read(work, "changes/feature-thing-2.md")).toContain("Mine, the second line.")
+  })
+
   it("keeps the branch's fix to an older changelog entry and moves only its new entry into the note", () => {
     const { work } = makeRepos()
     git(work, "checkout", "-q", "-b", "fix/typo")
