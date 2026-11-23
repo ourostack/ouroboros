@@ -21,6 +21,7 @@ import { holdHostLock, HOST_LOCK_TTL_S, HOST_LOCK_WAIT_S, type HeldHostLock } fr
 import { remoteRunCase, sshNode, sshStart, type RunCase } from "./sandbox/remote"
 import { resolveTarget } from "./targets"
 import { parseInterviewArgs, runInterviews, X_KIT } from "./interviews/runner"
+import { U_KIT } from "./interviews/u/kit"
 
 const REPO = path.resolve(__dirname, "../..")
 
@@ -142,7 +143,7 @@ async function interviews(args: ReturnType<typeof parseInterviewArgs>, deps: { r
     loadCases,
     resolveTarget: (spec, creds) => resolveTarget(spec, creds),
     runCase: deps.runCase,
-    kits: { X: X_KIT },
+    kits: { X: X_KIT, U: U_KIT },
     outputExists: (file) => fs.existsSync(file),
     writeReport: writePrivateReport,
     openLog: openPrivateLog,
