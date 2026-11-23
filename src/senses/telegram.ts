@@ -29,7 +29,7 @@ import { emitNervesEvent, emitNervesEventDurable } from "../nerves/runtime"
 import { renderChatInteraction, type ChatInteraction } from "../heart/chat-interaction"
 import { registerGlobalLogSink } from "../nerves"
 import { createSanctuaryInteractiveControl } from "./sanctuary-interactive-control"
-import { createApprovalRelayDoor, type ApprovalRelayDoor } from "./telegram-approval-relay"
+import { approvalRelayRequestFor, createApprovalRelayDoor, ownerRouteDid, type ApprovalRelayDoor } from "./telegram-approval-relay"
 import { loadSanctuarySabApiKey } from "./sanctuary-runtime"
 import { createSanctuarySabClient } from "./sanctuary-sab"
 import { presentSanctuaryDownloadCreditReply } from "./sanctuary-download-credit-presentation"
@@ -1003,7 +1003,10 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     }
     const effect = input.effect
     const choices = effect.buttons.flat().map((button) => button.text).join(", ")
-    const outcome = await route(ownerRouteItem(input.idempotencyKey, `${effect.text}\n\nOptions: ${choices}. The buttons are on the card in the Butler's Telegram chat.`, true))
+    const item = ownerRouteItem(input.idempotencyKey, `${effect.text}\n\nOptions: ${choices}. The buttons are on the card in the Butler's Telegram chat.`, true)
+    const approvalId = /^approval:(.+):prompt$/u.exec(input.idempotencyKey)?.[1]
+    const approvalRequest = approvalId === undefined ? undefined : approvalRelayRequestFor({ agentRoot, routeDid: () => ownerRouteDid(options.agentName, agentRoot), approvalId, transport: approvalTransport })
+    const outcome = await route(approvalRequest ? { ...item, approvalRequest } : item)
     emitNervesEvent({ component: "senses", event: "senses.telegram_owner_route_approval", message: "offered an approval card to the owner's primary agent", meta: { agentName: options.agentName, outcome: outcome.status } })
     return executeOnTelegram({
       ...input,

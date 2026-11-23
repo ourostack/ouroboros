@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 
-import { cardDid, fetchA2AAgentCard, sendSealedA2AChat } from "../a2a/client"
+import type { ApprovalRequestPayload } from "../a2a/approval-request-wire"
+import { cardDid, fetchA2AAgentCard, sendSealedA2AChat, sendSealedApprovalRequest } from "../a2a/client"
 import { loadSelfA2AIdentity } from "../a2a/identity"
 import { loadAgentConfig } from "../heart/identity"
 import type { DidKeyIdentity } from "@ouro.bot/friends/a2a-client"
@@ -21,6 +22,11 @@ export interface OwnerRouteItem {
   urgency: OwnerRouteUrgency
   /** One per condition, so a re-fire updates the peer's item instead of adding one. */
   dedupeKey: string
+  /**
+   * With the approval relay on, the request the peer's harness takes instead of the text: it is sent sealed in its own
+   * part, and no text goes with it, so the token, code and action line never reach the peer's model.
+   */
+  approvalRequest?: ApprovalRequestPayload
 }
 
 export type OwnerRouteOutcome = { status: "delivered" } | { status: "unreachable"; detail: string }
@@ -90,9 +96,11 @@ export function createA2AOwnerRoute(options: {
   loadIdentity: () => Promise<DidKeyIdentity>
   fetchCard?: typeof fetchA2AAgentCard
   send?: typeof sendSealedA2AChat
+  sendRequest?: typeof sendSealedApprovalRequest
 }): OwnerRoute {
   const fetchCard = options.fetchCard ?? fetchA2AAgentCard
   const send = options.send ?? sendSealedA2AChat
+  const sendRequest = options.sendRequest ?? sendSealedApprovalRequest
   /** null when the card at the address serves the pinned DID; otherwise why not. */
   const pinned = async (): Promise<string | null> => {
     const served = cardDid(await fetchCard(options.cardUrl))
@@ -112,8 +120,12 @@ export function createA2AOwnerRoute(options: {
     try {
       const detail = await pinned()
       if (detail) return { status: "unreachable", detail }
-      await send({ cardUrl: options.cardUrl, text: formatOwnerRouteMessage(item), identity: await options.loadIdentity() })
-      emitNervesEvent({ component: "senses", event: "senses.telegram_owner_route_delivered", message: "sent a self-started Butler message to the owner's primary agent", meta: { urgency: item.urgency, dedupeKey: item.dedupeKey } })
+      if (item.approvalRequest) {
+        await sendRequest({ cardUrl: options.cardUrl, peerDid: options.did, payload: item.approvalRequest, identity: await options.loadIdentity() })
+      } else {
+        await send({ cardUrl: options.cardUrl, text: formatOwnerRouteMessage(item), identity: await options.loadIdentity() })
+      }
+      emitNervesEvent({ component: "senses", event: "senses.telegram_owner_route_delivered", message: "sent a self-started Butler message to the owner's primary agent", meta: { urgency: item.urgency, dedupeKey: item.dedupeKey, relayed: item.approvalRequest !== undefined } })
       return { status: "delivered" }
     } catch (error) {
       emitNervesEvent({ level: "warn", component: "senses", event: "senses.telegram_owner_route_unreachable", message: "the owner's primary agent could not be reached", meta: { urgency: item.urgency, dedupeKey: item.dedupeKey, error: reason(error) } })

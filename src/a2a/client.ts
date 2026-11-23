@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { parseDidKey, ready, verifyCardDidBinding, type DidKeyIdentity, type SeenLedgerLike, type Sodium } from "@ouro.bot/friends/a2a-client"
 import { emitNervesEvent } from "../nerves/runtime"
+import { APPROVAL_REQUEST_ACCEPTED, sealApprovalRequest, type ApprovalRequestPayload } from "./approval-request-wire"
 import { openChatMessage, sealChatMessage } from "./sealed-chat"
 import type { A2AAgentCard, A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage, A2ATask } from "./types"
 
@@ -326,4 +327,46 @@ export async function sendSealedA2AChat(input: {
   if (!opened.ok) throw replyRefusedError("chat", opened.reason)
   emitNervesEvent({ component: "channels", event: "channel.a2a_chat_send_end", message: "received sealed A2A chat reply", meta: { endpointUrl, peerDid, taskId: task.id } })
   return { text: opened.text, conversationId, taskId: task.id, peerDid, peerName: card.name }
+}
+
+/**
+ * Hand one approval request to the owner route's peer (the approval relay, design v3 step 1). The request is a single
+ * sealed `approval_request` part with no text, so no model reads it on the way. The peer's harness answers with a sealed
+ * `APPROVAL_REQUEST_ACCEPTED`; any other answer throws, so the caller treats the peer as unreachable and Ari gets the
+ * card with a sound.
+ */
+export async function sendSealedApprovalRequest(input: {
+  cardUrl: string
+  /** The route's pinned DID: the request is sealed to it, and a card serving another DID is refused. */
+  peerDid: string
+  payload: ApprovalRequestPayload
+  identity: DidKeyIdentity
+  sodium?: Sodium
+  fetchImpl?: typeof fetch
+}): Promise<void> {
+  const fetchImpl = input.fetchImpl ?? fetch
+  const sodium = input.sodium ?? await ready()
+  const card = await fetchA2AAgentCard(input.cardUrl, fetchImpl)
+  const served = cardDid(card)
+  const parsed = served === input.peerDid ? parseDidKey(served) : null
+  if (!parsed || !verifyCardDidBinding({ card: { did: input.peerDid, url: input.cardUrl }, did: input.peerDid, didDoc: null })) {
+    throw new Error(`A2A card ${input.cardUrl} doesn't serve the pinned ${input.peerDid}`)
+  }
+  const endpointUrl = endpointForCard(card)!
+  const sealed = sealApprovalRequest({ sodium, from: input.identity, recipientDid: input.peerDid, recipientEd25519Pub: parsed.ed25519Pub, payload: input.payload })
+  const request: A2AJsonRpcRequest = {
+    jsonrpc: "2.0",
+    id: randomUUID(),
+    method: "SendMessage",
+    params: { message: { kind: "message", role: "ROLE_USER", messageId: randomUUID(), contextId: randomUUID(), parts: sealed.parts } },
+  }
+  emitNervesEvent({ component: "channels", event: "channel.a2a_approval_request_send_start", message: "handing an approval request to the owner route's peer", meta: { endpointUrl, peerDid: input.peerDid } })
+  const rpc = await postJsonRpc(endpointUrl, request, fetchImpl)
+  if ("error" in rpc) throw new A2ARpcError(rpc.error)
+  const replyMessage = (rpc.result as A2ATask)?.status?.message as A2AMessage | undefined
+  if (!replyMessage) throw new Error("A2A approval request returned no reply message")
+  const opened = await openChatMessage({ sodium, self: input.identity, message: replyMessage, senderDid: input.peerDid, senderEd25519Pub: parsed.ed25519Pub })
+  if (!opened.ok) throw replyRefusedError("approval request", opened.reason)
+  if (opened.text !== APPROVAL_REQUEST_ACCEPTED) throw new Error(`the peer didn't take the approval request: ${opened.text.slice(0, 80)}`)
+  emitNervesEvent({ component: "channels", event: "channel.a2a_approval_request_send_end", message: "the owner route's peer took the approval request", meta: { endpointUrl, peerDid: input.peerDid } })
 }
