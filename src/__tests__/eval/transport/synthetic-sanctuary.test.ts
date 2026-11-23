@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { unraidToolDefinitions } from "../../../repertoire/tools-unraid"
 import { createSyntheticSanctuary } from "../../../eval/transport/synthetic-sanctuary"
+import { STOPPED_ON_PURPOSE_NOTE } from "../../../repertoire/sanctuary-container-policy"
 
 async function call(name: string, args: Record<string, unknown> = {}) {
   const definition = unraidToolDefinitions.find((tool) => tool.tool.function.name === name)!
@@ -17,10 +18,22 @@ describe("synthetic Sanctuary for the eval turn", () => {
     expect(result.ok).toBe(true)
   })
 
-  it("lists the containers through the production mapping", async () => {
+  it("lists the containers through the production mapping and the production annotation", async () => {
     const result = await call("unraid_list_containers")
     expect(result.data!.containers.map((container: { name: string; state: string }) => `${container.name}:${container.state}`)).toEqual([
-      "calibre:exited", "jellyfin:running", "sabnzbd:running", "unmanic:running",
+      "calibre:exited", "calibre-web:running", "jellyfin:running", "sabnzbd:running", "unmanic:running",
+    ])
+    const byName = Object.fromEntries(result.data!.containers.map((container: { name: string }) => [container.name, container]))
+    // As on the household: the calibre desktop app is kept stopped on purpose, and Books is calibre-web.
+    expect(byName.calibre).toMatchObject({ desired: "stopped", note: STOPPED_ON_PURPOSE_NOTE })
+    expect(byName["calibre-web"]).toMatchObject({ serves: "Books" })
+  })
+
+  it("checks the services the way production names them: by house endpoint, with Books on calibre-web", async () => {
+    const result = await call("unraid_check_services")
+    expect(result.data!.services).toEqual([
+      { name: "books", container: "calibre-web", url: expect.stringMatching(/^https:\/\//), ok: true, status: 200 },
+      { name: "jellyfin", url: expect.stringMatching(/^https:\/\//), ok: true, status: 200 },
     ])
   })
 

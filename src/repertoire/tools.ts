@@ -593,6 +593,8 @@ export async function executeTool(
     } as ToolContext
     : authorizedContext
 
+  // An MCP tool runs its own owner, argument and connection checks inside its handler; it says when the call goes out.
+  if (!def.mcpBinding) toolContext?.beforeHandler?.()
   try {
     const result = await (executor ? executor(name, args, toolContext) : def.handler(args, toolContext));
     emitNervesEvent({

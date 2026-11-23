@@ -74,7 +74,7 @@ vi.mock("../../heart/config", () => ({
 vi.mock("../../mind/context", () => ({
   loadSession: (...args: any[]) => mockLoadSession(...args),
   postTurnTrim: (...args: any[]) => mockPostTurnTrim(...args),
-  deferPostTurnPersist: (...args: any[]) => mockDeferPostTurnPersist(...args),
+  deferPostTurnPersistOrThrow: (...args: any[]) => mockDeferPostTurnPersist(...args),
 }))
 
 vi.mock("../../heart/identity", () => ({
@@ -84,6 +84,7 @@ vi.mock("../../heart/identity", () => ({
 
 vi.mock("../../mind/pending", () => ({
   drainPending: (...args: any[]) => mockDrainPending(...args),
+  claimPending: () => ({ messages: [], settle: () => undefined, release: () => undefined }),
   getPendingDir: (...args: any[]) => mockGetPendingDir(...args),
   getPrivateRuntimePendingDir: (...args: any[]) => mockGetPrivateRuntimePendingDir(...args),
   queuePendingMessageOnce: (...args: any[]) => mockQueuePendingMessageOnce(...args),
@@ -1679,10 +1680,24 @@ describe("private runtime", () => {
 
     const input = mockHandleInboundTurn.mock.calls[0][0]
     expect(typeof input.drainPending).toBe("function")
+    // Private-runtime notices are claimed, so a turn that dies does not lose them.
+    expect(typeof input.claimPending).toBe("function")
     expect(typeof input.runAgent).toBe("function")
     expect(typeof input.postTurn).toBe("function")
     expect(typeof input.accumulateFriendTokens).toBe("function")
     expect(typeof input.enforceTrustGate).toBe("function")
+  })
+
+  it("lets a failed session persist reject postTurn, so claimed notices go back instead of being settled", async () => {
+    await runApprovedPrivateRuntimeTurn({
+      reason: "boot",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-06T12:00:00.000Z"),
+    })
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    mockDeferPostTurnPersist.mockRejectedValueOnce(new Error("disk full"))
+
+    await expect(input.postTurn([{ role: "user", content: "hello" }], "/tmp/self-dialog.json")).rejects.toThrow("disk full")
   })
 
   it("passes toolChoiceRequired: true in runAgentOptions", async () => {

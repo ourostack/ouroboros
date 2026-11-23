@@ -147,12 +147,16 @@ describe("pipeline integration — full UX/AX scenarios", () => {
         checkpointDigest: "e".repeat(64),
         suspendedSessionRevision: "f".repeat(64),
       }
+      const claim = { messages: [], settle: vi.fn(), release: vi.fn() }
       const input = makeIntegrationInput({
         runAgent: vi.fn().mockResolvedValue({ outcome: "suspended", suspension }),
+        claimPending: vi.fn().mockReturnValue(claim),
       })
 
       const result = await handleInboundTurn(input)
 
+      // The suspension checkpoint holds the turn, so its claimed pending messages are done with.
+      expect(claim.settle).toHaveBeenCalledTimes(1)
       expect(result.turnOutcome).toBe("suspended")
       expect((result as any).suspension).toEqual(suspension)
       expect(input.postTurn).not.toHaveBeenCalled()
