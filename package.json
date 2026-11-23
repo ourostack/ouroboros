@@ -39,6 +39,7 @@
     "test": "vitest run",
     "test:integration": "npm run build && vitest run --config vitest.integration.config.ts",
     "eval": "npm run build && node dist/eval/run-entry.js",
+    "eval:watch": "npm run build && node dist/eval/watch-entry.js",
     "interviews": "npm run build && node dist/eval/interview-entry.js",
     "test:eval-sandbox": "npm run build && vitest run --config vitest.eval.config.ts",
     "test:e2e:package": "npm run build && node scripts/package-e2e.cjs",

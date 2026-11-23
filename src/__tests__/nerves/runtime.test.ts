@@ -9,6 +9,21 @@ describe("observability/runtime", () => {
     vi.restoreAllMocks()
   })
 
+  it("writes an alwaysLog event even when the logger's level would drop it", () => {
+    const entries: LogEvent[] = []
+    setRuntimeLogger(createLogger({ level: "warn", sinks: [(entry) => entries.push(entry)] }))
+    emitNervesEvent({ event: "runtime.dropped", component: "observability", message: "info event" })
+    emitNervesEvent({ event: "runtime.kept", component: "observability", message: "info event", alwaysLog: true })
+    expect(entries.map((entry) => [entry.event, entry.level])).toEqual([["runtime.kept", "info"]])
+  })
+
+  it("falls back to the level method for an alwaysLog event when the logger has no forced path", () => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    setRuntimeLogger(logger as any)
+    emitNervesEvent({ event: "runtime.kept", component: "observability", message: "info event", alwaysLog: true })
+    expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({ event: "runtime.kept" }))
+  })
+
   it("routes events to the level-specific runtime logger methods", () => {
     const logger = {
       debug: vi.fn(),
