@@ -75,7 +75,7 @@ export const U_FIDELITY: Readonly<Record<string, string[]>> = {
     "every arm is the same project template with the kit installed under @kit/ui, and the same five tools; a tool's path is relative to the project, reads may follow node_modules into the kit's packages, and writes never reach node_modules; read_file gives at most 60,000 characters a call, with an offset to read on",
     "the type-check and the axe scan use the checking tools' own compiler settings and rules, not files the model can change; axe runs the WCAG 2.x A and AA rules on the first render in jsdom, where no kit's stylesheet is loaded",
     "the job and its debrief run in one conversation with the arm's tools; finish ends a turn with its summary as the reply; the run is graded once the conversation has ended, so a debrief call can still change the project, as X scores its household after the debrief",
-    "the grade is taken in the container and the host reads it back as the guest reported it; the model's component runs only in a page realm with no Node access, so it can't read the hidden test or write the grade",
+    "the grade is taken in the container and the host reads it back as the guest reported it; the model's component runs only in a separate process under Node's permission model that can't read the hidden test or write files, and its result counts only with a signature made under a key the page never sees; a component written to subvert the test inside its own page could still change what the test sees, and transcripts are kept",
     "the system prompt is the Butler's persona and the label line, as in every U and X arm",
   ],
 }

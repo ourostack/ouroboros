@@ -64,7 +64,7 @@ describe("the U arms", () => {
   it("offers the same five tools in every arm, under neutral template names, and refuses an unknown arm", () => {
     expect(U_ARMS).toEqual(["ouro", "shadcn", "mui"])
     expect(U_TOOLS.map((tool) => tool.name)).toEqual(["read_file", "write_file", "list_files", "run_checks", "finish"])
-    for (const arm of U_ARMS) expect(buildUArm(arm, { paths, exec }).tools).toBe(U_TOOLS)
+    for (const arm of U_ARMS) expect(buildUArm(arm, { paths: { ...paths, project: path.join(root, arm) }, exec }).tools).toBe(U_TOOLS)
     expect(Object.values(KIT_SLOTS).join(" ")).not.toMatch(/ouro|shadcn|mui/i)
     expect(() => buildUArm("codex", { paths, exec })).toThrow("no U arm codex")
     expect(U_PATHS).toEqual({ kits: "/opt/u-kits", tools: "/opt/u-tools", project: "/tmp/work" })
@@ -72,10 +72,10 @@ describe("the U arms", () => {
     expect(typeof ARM_BUILDERS.U).toBe("function")
   })
 
-  it("copies the arm's template into the project and links its node_modules, replacing an earlier project", async () => {
-    fs.mkdirSync(path.join(paths.project, "old"), { recursive: true })
+  it("copies the arm's template into a new or empty project and links its node_modules, and refuses one in use", async () => {
+    fs.mkdirSync(paths.project, { recursive: true })
     const arm = buildUArm("shadcn", { paths, exec })
-    expect(fs.existsSync(path.join(paths.project, "old"))).toBe(false)
+    expect(() => buildUArm("shadcn", { paths, exec })).toThrow("the project folder is not empty")
     expect(fs.lstatSync(path.join(paths.project, "node_modules")).isSymbolicLink()).toBe(true)
     expect((await call(arm, "read_file", { path: "package.json" })).text).toBe(`{"name":"app-${KIT_SLOTS.shadcn}"}`)
     expect((await call(arm, "read_file", { path: "node_modules/@kit/ui/index.d.ts" })).text).toContain(KIT_SLOTS.shadcn)

@@ -11,9 +11,10 @@
  * ends the job. The grade, once the conversation has ended, runs the same checks and the hidden test.
  *
  * The trust boundary: the checking tools run as the guest's user, from a folder the file tools refuse. The type-check
- * never runs the model's code. The axe scan and the hidden test bundle the component for the browser (no Node
- * built-in resolves) and run it only inside a page whose realm has no `process`, `require` or file system, so the
- * model's code can neither read the tools nor write the grader's output (deploy/eval/u/tools).
+ * never runs the model's code. The axe scan and the hidden test bundle the component for the browser and run it in
+ * jsdom in a separate process under Node's permission model, which can read neither the tools' own files nor any
+ * project and can write nothing; its result counts only when signed with a key the page never sees
+ * (deploy/eval/u/tools).
  */
 import { execFile } from "node:child_process"
 import fs from "node:fs"
@@ -95,11 +96,14 @@ const parse = (args: string): Record<string, unknown> | null => {
 
 const fail = (text: string): ToolAnswer => ({ text, isError: true })
 
-/** Copies the arm's template into the project, all but `node_modules`, which is linked. */
+/**
+ * Copies the arm's template into the project, all but `node_modules`, which is linked. Each conversation runs in a
+ * fresh container, so the project folder is new; one that already holds anything is refused, never cleared.
+ */
 export function makeProject(slot: string, paths: UPaths): void {
   const template = path.join(paths.kits, slot)
   if (!fs.existsSync(template)) throw new Error(`no project template ${slot} in the image`)
-  fs.rmSync(paths.project, { recursive: true, force: true })
+  if (fs.existsSync(paths.project) && fs.readdirSync(paths.project).length > 0) throw new Error("the project folder is not empty")
   fs.mkdirSync(paths.project, { recursive: true })
   for (const name of fs.readdirSync(template)) {
     if (name === "node_modules") fs.symlinkSync(path.join(template, "node_modules"), path.join(paths.project, "node_modules"))
