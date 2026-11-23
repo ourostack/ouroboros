@@ -6,6 +6,7 @@
  * A scheduler should run `nice -n 19 node dist/eval/watch-entry.js` on a built tree: the npm script builds first.
  */
 import os from "node:os"
+import { emitNervesEvent } from "../nerves/runtime"
 import { lowerPriority, watchCli } from "./watch/cli"
 
 lowerPriority()
@@ -16,4 +17,5 @@ const code = watchCli(process.argv.slice(2), {
 })
 // stderr's last line names the failure for a script: 2 bad arguments, 1 a run that was refused or failed.
 if (code !== 0) process.stderr.write(`code: ${code === 2 ? "usage" : "watch-failed"}\n`)
+emitNervesEvent({ component: "eval", event: "eval.watch_entry_exit", message: "Watch's command finished", meta: { code } })
 process.exitCode = code
