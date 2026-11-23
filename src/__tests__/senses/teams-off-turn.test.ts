@@ -217,6 +217,14 @@ describe("sendTeamsOffTurn", () => {
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ intent: "explicit_cross_chat", authorizingSession }), { botApi: bot })
   })
 
+  it("asks Teams for a delivery receipt only when the caller wants one", async () => {
+    const send = vi.fn().mockResolvedValue({ delivered: false, reason: "send_error", delivery: { state: "not_sent" } })
+    expect(await sendTeamsOffTurn({ ...request, captureReceipt: true }, { agentRoot, send })).toEqual({ delivered: false, reason: "send_error", delivery: { state: "not_sent" } })
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ captureReceipt: true }), { botApi: bot })
+    await sendTeamsOffTurn({ ...request, text: "no receipt" }, { agentRoot, send })
+    expect(send.mock.calls.at(-1)![0]).not.toHaveProperty("captureReceipt")
+  })
+
   it("does not send the same text twice inside the window, and does after it", async () => {
     await sendTeamsOffTurn(request, { agentRoot, now: () => 1_000 })
     expect(await sendTeamsOffTurn(request, { agentRoot, now: () => 1_000 + OFF_TURN_REPEAT_WINDOW_MS - 1 })).toEqual({ delivered: true })

@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1397",
+      "changes": [
+        "When an agent tells a person something unprompted, surface now texts them on their own iMessage, Telegram or Teams chat, or says plainly it was not sent and saves it for their next message; it never queues it into an MCP or CLI session they don't read."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1396",
       "changes": [
         "A BlueBubbles listener that stops proving itself now reads as an error and is restarted, timed on the daemon's own clock so sleep never triggers it, and slow syncs, failed syncs and recoveries are logged."

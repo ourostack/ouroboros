@@ -580,7 +580,7 @@ describe("habit-session helpers", () => {
       permissionEnvelope: envelope,
       toolPolicy: policy,
       producedRefs: [{ kind: "surface", locator: "state/pending/ari/cli/main" }],
-      surfaceAttempts: [{ recipient: "ari", channel: "cli", reason: "status", result: "queued", routeKind: "family" }],
+      surfaceAttempts: [{ recipient: "ari", channel: "cli", reason: "status", result: "delivered", routeKind: "family" }],
       errors: [],
     })
 
@@ -1004,7 +1004,7 @@ describe("habit-session helpers", () => {
     expect(completeHabitRun({
       ...base,
       runId: "run-surfaced-from-attempt",
-      surfaceAttempts: [{ recipient: "ari", channel: "cli", reason: "status", result: "queued" }],
+      surfaceAttempts: [{ recipient: "ari", channel: "cli", reason: "status", result: "delivered" }],
     }).outcome).toBe("surfaced")
     expect(readHabitRunReceipt(agentRoot, "run-surfaced-from-attempt")?.producedRefs)
       .toEqual([{ kind: "surface", locator: "surface/ari/cli" }])
@@ -1023,6 +1023,17 @@ describe("habit-session helpers", () => {
         { recipient: "ari", channel: "cli", reason: "blocked", result: "unavailable" },
       ],
     }).outcome).toBe("blocked")
+    // Queued and deferred sends wait for the person's next message: nobody was told yet, and nothing was refused.
+    const waiting = completeHabitRun({
+      ...base,
+      runId: "run-waiting",
+      surfaceAttempts: [
+        { recipient: "ari", channel: "cli", reason: "status", result: "queued" },
+        { recipient: "ari", channel: "surface", reason: "answer", result: "deferred" },
+      ],
+    })
+    expect(waiting.outcome).toBe("no_change")
+    expect(readHabitRunReceipt(agentRoot, "run-waiting")).toMatchObject({ producedRefs: [], summarySnapshot: { summary: "Habit heartbeat finished with no_change." } })
   })
 
   it("returns null for no receipts and skips malformed receipts when runtime state is missing", async () => {

@@ -602,8 +602,7 @@ function defaultSummarySnapshot(input: BuildHabitRunReceiptInput): HabitRunSumma
       nextLikelyStep: null,
     }
   }
-  const surfaced = (input.surfaceAttempts ?? []).find((attempt) =>
-    attempt.result !== "blocked" && attempt.result !== "failed" && attempt.result !== "unavailable")
+  const surfaced = (input.surfaceAttempts ?? []).find(successfulSurfaceAttempt)
   if (surfaced) {
     return {
       summary: `Habit ${input.habit.name} surfaced via ${surfaced.recipient}/${surfaced.channel}.`,
@@ -661,10 +660,18 @@ export function buildHabitRunReceipt(input: BuildHabitRunReceiptInput): HabitRun
   return receipt
 }
 
+/** A refused send: it will not reach them. */
+function refusedSurfaceAttempt(attempt: HabitSurfaceAttempt): boolean {
+  return attempt.result === "blocked"
+    || attempt.result === "failed"
+    || attempt.result === "unavailable"
+}
+
+/** A send that reached the person now. Queued and deferred ones wait for their next message, so they have not surfaced yet. */
 function successfulSurfaceAttempt(attempt: HabitSurfaceAttempt): boolean {
-  return attempt.result !== "blocked"
-    && attempt.result !== "failed"
-    && attempt.result !== "unavailable"
+  return !refusedSurfaceAttempt(attempt)
+    && attempt.result !== "queued"
+    && attempt.result !== "deferred"
 }
 
 function surfaceRefsFromAttempts(attempts: HabitSurfaceAttempt[]): FlightRecorderProducedRef[] {
@@ -686,7 +693,7 @@ function habitOutcomeForCompletion(input: CompleteHabitRunInput): { outcome: Hab
   if (producedRefs.some((ref) => ref.kind === "desk_record")) return { outcome: "wrote_record", producedRefs }
   if (producedRefs.some((ref) => ref.kind === "desk_task")) return { outcome: "updated_desk", producedRefs }
   if (producedRefs.some((ref) => ref.kind === "arc" || ref.kind === "claim")) return { outcome: "wrote_arc", producedRefs }
-  if (attempts.length > 0 && attempts.every((attempt) => !successfulSurfaceAttempt(attempt))) {
+  if (attempts.length > 0 && attempts.every(refusedSurfaceAttempt)) {
     return { outcome: "blocked", producedRefs }
   }
   return { outcome: "no_change", producedRefs }

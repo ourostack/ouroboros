@@ -552,6 +552,8 @@ export interface ProactiveBlueBubblesSessionSendParams {
 export interface ProactiveBlueBubblesSessionSendResult {
   delivered: boolean
   reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "group_blocked" | "internal_content_blocked" | "blocked_meta_content" | "host_account_refused"
+  /** On send_error, present when the server got the send and did not refuse it, so it may have gone out. */
+  delivery?: { state: "unknown" }
 }
 
 const defaultDeps: RuntimeDeps = {
@@ -4793,7 +4795,9 @@ export async function sendProactiveBlueBubblesMessageToSession(
         reason: error instanceof Error ? error.message : String(error),
       },
     })
-    return { delivered: false, reason: "send_error" }
+    const refused = error instanceof BlueBubblesSendError && error.httpStatus !== null && error.httpStatus >= 400 && error.httpStatus < 500 && error.httpStatus !== 408 && error.httpStatus !== 409
+    const mayHaveGoneOut = error instanceof BlueBubblesSendError && error.transportInvoked && !refused
+    return { delivered: false, reason: "send_error", ...(mayHaveGoneOut ? { delivery: { state: "unknown" as const } } : {}) }
   }
 }
 
