@@ -52,16 +52,35 @@ describe("Anthropic deferred tool loading", () => {
     expect((converted[3]!.content as Array<Record<string, unknown>>)[0]!.content).toBe(formatLoadedDoors([tool("gone")]))
   })
 
-  it("keeps a skill note beside the tool_reference blocks, so the referenced doors don't swallow it", () => {
+  it("sends a skill note as text after the tool_result, so the referenced doors don't swallow it", () => {
     const note = "skill shelf-keeping documents this, in \"Removing\" (load_skill shelf-keeping for the whole skill):\n`shelf library remove <id>`"
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: "assistant", content: null, tool_calls: [call("c1", "find_tools")] },
       { role: "tool", tool_call_id: "c1", content: formatFindToolsReply([tool("mail_send")], note) },
     ]
     const converted = toAnthropicMessages(messages, { toolReferences: new Set(["mail_send"]) }).messages
-    expect((converted[1]!.content as Array<Record<string, unknown>>)[0]!.content).toEqual([
-      { type: "tool_reference", tool_name: "mail_send" }, { type: "text", text: `skills that document this job:\n${note}` },
-    ])
+    // tool_result blocks lead a user message; a text block may follow them. The references stay the result's content.
+    expect(converted[1]).toEqual({ role: "user", content: [
+      { type: "tool_result", tool_use_id: "c1", content: [{ type: "tool_reference", tool_name: "mail_send" }] },
+      { type: "text", text: `skills that document this job:\n${note}` },
+    ] })
+  })
+
+  it("holds a skill note until a run of parallel tool results ends, so text never sits between them", () => {
+    const note = "skill shelf-keeping documents this, in \"Removing\" (load_skill shelf-keeping for the whole skill):\nremove it"
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "assistant", content: null, tool_calls: [call("c1", "find_tools"), call("c2", "shell")] },
+      { role: "tool", tool_call_id: "c1", content: formatFindToolsReply([tool("mail_send")], note) },
+      { role: "tool", tool_call_id: "c2", content: "ok" },
+      { role: "user", content: "next" },
+    ]
+    const converted = toAnthropicMessages(messages, { toolReferences: new Set(["mail_send"]) }).messages
+    expect(converted[1]).toEqual({ role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: [{ type: "tool_reference", tool_name: "mail_send" }] }] })
+    expect(converted[2]).toEqual({ role: "user", content: [
+      { type: "tool_result", tool_use_id: "c2", content: "ok" },
+      { type: "text", text: `skills that document this job:\n${note}` },
+    ] })
+    expect(converted[3]).toMatchObject({ role: "user" })
   })
 
   it("keeps find_tools results as text without the option, as every other provider reads them", () => {

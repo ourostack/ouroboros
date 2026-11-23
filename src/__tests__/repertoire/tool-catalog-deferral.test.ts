@@ -92,10 +92,19 @@ describe("catalog deferral", () => {
     expect(loadedDoorNames(both)).toEqual(["mail_send"])
     expect(findToolsNote(both)).toBe(`skills that document this job:\n${note}`)
     const alone = formatFindToolsReply([], note)
-    expect(alone).toBe(`no held-back tool matched.\n\nskills that document this job:\n${note}`)
+    expect(alone).toBe(`no held-back tool matched (try other words, or select:name1,name2 with a name from the find_tools list).\n\nskills that document this job:\n${note}`)
     expect(loadedDoorNames(alone)).toEqual([])
     expect(findToolsNote(alone)).toBe("")
     expect(findToolsNote(formatLoadedDoors([tool("mail_send", "a\n\nb")]))).toBe("")
+  })
+
+  it("never reads a list line in a skill note as a loaded door", () => {
+    const reply = formatFindToolsReply([tool("mail_send")], "skill x documents this, in \"Y\" (load_skill x for the whole skill):\n- held_door(arg) example line")
+    expect(loadedDoorNames(reply)).toEqual(["mail_send"])
+    expect(namesLoadedInHistory([
+      { role: "assistant", content: null, tool_calls: [{ id: "f", type: "function", function: { name: "find_tools", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "f", content: reply },
+    ], new Set(["mail_send", "held_door"]))).toEqual(["mail_send"])
   })
 
   it("counts the skills a search found", () => {

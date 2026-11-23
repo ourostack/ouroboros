@@ -135,8 +135,17 @@ export function toAnthropicMessages(
   const systemParts: string[] = [];
   const converted: Array<Record<string, unknown>> = [];
   const findToolsCallIds = new Set<string>();
+  // Skill notes from find_tools results whose doors went as references. Text may follow tool_result blocks but not
+  // sit between them, so the notes wait until the run of tool results ends and then follow the last one.
+  let pendingNotes: string[] = [];
+  const flushNotes = () => {
+    if (pendingNotes.length === 0) return;
+    (converted[converted.length - 1]!.content as Array<Record<string, unknown>>).push({ type: "text", text: pendingNotes.join("\n\n") });
+    pendingNotes = [];
+  };
 
   for (const msg of messages) {
+    if (msg.role !== "tool") flushNotes();
     if (msg.role === "system") {
       const text = toAnthropicTextContent((msg as OpenAI.ChatCompletionSystemMessageParam).content).trim();
       if (text) systemParts.push(text);
@@ -202,18 +211,15 @@ export function toAnthropicMessages(
           {
             type: "tool_result",
             tool_use_id: tool.tool_call_id,
-            // A skill note after the doors is text the model needs; it rides beside the references, not in their place.
-            content: references.length > 0
-              ? [
-                  ...references.map((name) => ({ type: "tool_reference" as const, tool_name: name })),
-                  ...(findToolsNote(text) ? [{ type: "text" as const, text: findToolsNote(text) }] : []),
-                ]
-              : text,
+            content: references.length > 0 ? references.map((name) => ({ type: "tool_reference" as const, tool_name: name })) : text,
           },
         ],
       });
+      // A skill note after the doors is text the model needs; the references would otherwise replace it.
+      if (references.length > 0 && findToolsNote(text)) pendingNotes.push(findToolsNote(text));
     }
   }
+  flushNotes();
 
   return { system: systemParts.length > 0 ? systemParts.join("\n\n") : undefined, messages: converted };
 }

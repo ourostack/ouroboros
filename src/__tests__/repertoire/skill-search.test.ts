@@ -26,7 +26,7 @@ vi.mock("../../nerves/runtime", async (original) => {
   }
 })
 
-import { formatSkillHits, searchSkills, skillSections } from "../../repertoire/skill-search"
+import { findToolsSkillNote, formatSkillHits, searchSkills, skillSections } from "../../repertoire/skill-search"
 
 // Synthetic skills shaped like a bundle's: a CLI run through shell, one section per job.
 const SHELF = [
@@ -125,6 +125,35 @@ describe("skill search", () => {
     expect(searchSkills("watering")[0]?.skill).toBe("garden")
   })
 
+  it("finds nothing in the harness's own skills for searches that aren't about them", () => {
+    roots.repo = path.resolve(__dirname, "../../..")
+    for (const query of ["check media server optimization", "download a file", "restart the media container", "search the media catalog", "resume the download queue", "remove book from library"]) {
+      expect({ query, hits: searchSkills(query).filter((hit) => hit.path.startsWith(path.join(roots.repo, "skills"))).map((hit) => `${hit.skill}#${hit.heading}`) }).toEqual({ query, hits: [] })
+    }
+    expect(searchSkills("remove book from library")[0]?.skill).toBe("shelf-keeping")
+  })
+
+  it("counts only the section's own words toward a match, and needs one in its heading or its skill's description", () => {
+    // Both words are in the skill's description, but no single section says either.
+    fs.writeFileSync(path.join(roots.repo, "skills", "harbour.md"), "---\ndescription: Use this when the ferry timetable changes.\n---\n# Harbour\n\n## Tides\n\nRead the tide table.")
+    expect(searchSkills("ferry timetable")).toEqual([])
+    expect(searchSkills("ferry tide")).toEqual([])
+    expect(searchSkills("ferry tide table")[0]?.heading).toBe("Tides")
+    // Two body words with nothing in the heading or description: a passing mention, not the section's subject.
+    fs.writeFileSync(path.join(roots.repo, "skills", "harbour.md"), "# Harbour\n\n## Tides\n\nCheck the server first.")
+    expect(searchSkills("check media server")).toEqual([])
+  })
+
+  it("gives skill text only to a turn that could read the skill anyway", () => {
+    expect(findToolsSkillNote("remove book from library", new Set(["shell", "find_tools"]))).toEqual({ hits: 0, note: "" })
+    expect(events.some((entry) => entry.event === "repertoire.skill_search")).toBe(false)
+    const withLoad = findToolsSkillNote("remove book from library", new Set(["load_skill", "read_file"]))
+    expect(withLoad.hits).toBe(1)
+    expect(withLoad.note).toContain("load_skill shelf-keeping")
+    const withRead = findToolsSkillNote("remove book from library", new Set(["read_file"]))
+    expect(withRead.note).toContain(`read_file ${path.join(roots.agent, "skills", "shelf-keeping.md")}`)
+  })
+
   it("reports what it searched as counts, never the query", () => {
     searchSkills("remove book from library")
     const event = events.find((entry) => entry.event === "repertoire.skill_search")
@@ -145,10 +174,13 @@ describe("skill search", () => {
     expect(hits.map((hit) => [hit.skill, hit.heading])).toEqual([["roses", "Pruning roses"]])
   })
 
-  it("ranks two skills that answer the same words by how strongly they do", () => {
-    fs.writeFileSync(path.join(roots.repo, "skills", "pier.md"), "# Pier\n\n## Pier lamps\n\nThe lamps on the pier.")
+  it("returns a second skill only when it answers about as strongly as the first", () => {
+    fs.writeFileSync(path.join(roots.repo, "skills", "pier.md"), "# Pier\n\n## Pier lamps\n\nKeep them lit.")
     fs.writeFileSync(path.join(roots.repo, "skills", "lamps.md"), "# Lamps\n\nUse this when a pier lamp is out.\n\n## Pier lamps\n\nChange the pier lamps.")
-    expect(searchSkills("pier lamps").map((hit) => hit.skill)).toEqual(["lamps", "pier"])
+    // lamps scores higher (its description says both words too), and pier is under 80% of it.
+    expect(searchSkills("pier lamps").map((hit) => hit.skill)).toEqual(["lamps"])
+    fs.writeFileSync(path.join(roots.repo, "skills", "pier.md"), "# Pier\n\nUse this when a pier lamp is out.\n\n## Pier lamps\n\nThe lamps on the pier.")
+    expect(searchSkills("pier lamps").map((hit) => hit.skill).sort()).toEqual(["lamps", "pier"])
   })
 
   it("formats hits with the section's own words, clipped, and how to open the whole skill", () => {
@@ -166,6 +198,9 @@ describe("skill search", () => {
     expect(formatSkillHits([], { loadSkill: true })).toBe("")
     const long = formatSkillHits([{ skill: "big", path: "/big.md", heading: "Big", text: "x".repeat(5000), runs: "y".repeat(500) }], { loadSkill: true })
     expect(long.length).toBeLessThan(1400)
+    // Two hits share the same budget as one, so a reply never carries more than about 1,400 characters of skill text.
+    const two = formatSkillHits([1, 2].map((n) => ({ skill: `big${n}`, path: "/big.md", heading: "Big", text: "x".repeat(5000), runs: "y".repeat(500) })), { loadSkill: true })
+    expect(two.length).toBeLessThan(1500)
     expect(long).toContain("…")
     expect(formatSkillHits([{ skill: "plain", path: "/p.md", heading: "Plain", text: "do it" }], { loadSkill: true })).not.toContain("run as")
   })

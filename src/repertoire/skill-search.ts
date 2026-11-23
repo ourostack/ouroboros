@@ -20,7 +20,8 @@ export interface SkillSection {
 }
 
 const MAX_SKILLS = 2
-const MAX_SECTION_CHARS = 900
+/** The skill text one reply may carry, shared across its hits, so two hits cost no more than one. */
+const MAX_NOTE_CHARS = 900
 const MAX_RUNS_CHARS = 200
 
 /** Words that name the same job, so "delete the book" finds a section that says "remove". */
@@ -67,18 +68,19 @@ interface Scored { readonly section: SkillSection; readonly covered: number; rea
 function scoreSection(terms: readonly string[], section: SkillSection, about: ReadonlySet<string>): Scored {
   const heading = new Set(searchWords(section.heading))
   const body = new Set(searchWords(section.text))
-  let covered = 0
   let own = 0
+  let anchored = false
   let score = 0
   for (const term of terms) {
     const inSection = (heading.has(term) ? 3 : 0) + (body.has(term) ? 1 : 0)
-    const termScore = inSection + (about.has(term) ? 2 : 0)
     if (inSection > 0) own += 1
-    if (termScore > 0) covered += 1
-    score += termScore
+    if (heading.has(term) || about.has(term)) anchored = true
+    score += inSection + (about.has(term) ? 2 : 0)
   }
-  // A section that matches nothing itself is only its skill's description; it can't be the answer.
-  return { section, covered: own > 0 ? covered : 0, score }
+  // Only the section's own words count toward a match, so a skill's name or description alone can't make one. And
+  // the match needs an anchor in the section's heading or the skill's description: common words that a body happens
+  // to use ("check", "server") are not what the section is about.
+  return { section, covered: anchored ? own : 0, score }
 }
 
 /** The skill sections that cover a query, best first. `select:` queries name doors, so they find no skill. */
@@ -108,8 +110,8 @@ export function searchSkills(query: string): SkillSection[] {
     if (top) best.push({ ...top, covered: Math.max(...scored.map((entry) => entry.covered)) })
   }
   best.sort((a, b) => b.covered - a.covered || b.score - a.score)
-  // A second skill comes back only when it answers as much of the query and nearly as strongly.
-  const hits = best.filter((entry) => entry.covered === best[0]!.covered && entry.score * 2 >= best[0]!.score)
+  // A second skill comes back only when it answers as much of the query and nearly as strongly (80%).
+  const hits = best.filter((entry) => entry.covered === best[0]!.covered && entry.score * 5 >= best[0]!.score * 4)
     .slice(0, MAX_SKILLS).map((entry) => entry.section)
   emitNervesEvent({
     component: "repertoire", event: "repertoire.skill_search", message: "find_tools searched the skills",
@@ -118,15 +120,26 @@ export function searchSkills(query: string): SkillSection[] {
   return hits
 }
 
+/**
+ * The skill note for a `find_tools` reply on a turn that offers `tools`. Skill text goes only to a turn that could
+ * read the skill anyway (through `load_skill` or `read_file`), so a friend's or guest's turn gets none.
+ */
+export function findToolsSkillNote(query: string, tools: ReadonlySet<string>): { hits: number; note: string } {
+  if (!tools.has("load_skill") && !tools.has("read_file")) return { hits: 0, note: "" }
+  const hits = searchSkills(query)
+  return { hits: hits.length, note: formatSkillHits(hits, { loadSkill: tools.has("load_skill") }) }
+}
+
 function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text
 }
 
 /** The hits as `find_tools` shows them: the section's own words and how to open the whole skill. */
 export function formatSkillHits(hits: readonly SkillSection[], offered: { loadSkill: boolean }): string {
+  const each = Math.floor(MAX_NOTE_CHARS / Math.max(hits.length, 1))
   return hits.map((hit) => {
     const open = offered.loadSkill ? `load_skill ${hit.skill}` : `read_file ${hit.path}`
     const runs = hit.runs ? `\nits commands run as: ${clip(hit.runs, MAX_RUNS_CHARS)}` : ""
-    return `skill ${hit.skill} documents this, in "${hit.heading}" (${open} for the whole skill):\n${clip(hit.text, MAX_SECTION_CHARS)}${runs}`
+    return `skill ${hit.skill} documents this, in "${hit.heading}" (${open} for the whole skill):\n${clip(hit.text, each)}${runs}`
   }).join("\n\n")
 }

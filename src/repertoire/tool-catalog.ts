@@ -155,7 +155,7 @@ const SKILL_NOTE_HEADER = "skills that document this job:"
 export function formatFindToolsReply(loaded: readonly OpenAI.ChatCompletionFunctionTool[], skillNote: string): string {
   if (!skillNote) return formatLoadedDoors(loaded)
   const note = `${SKILL_NOTE_HEADER}\n${skillNote}`
-  return loaded.length === 0 ? `no held-back tool matched.\n\n${note}` : `${formatLoadedDoors(loaded)}\n\n${note}`
+  return loaded.length === 0 ? `no held-back tool matched (try other words, or select:name1,name2 with a name from the find_tools list).\n\n${note}` : `${formatLoadedDoors(loaded)}\n\n${note}`
 }
 
 /** The skill note a `find_tools` reply carries after its loaded doors, header included, or "" when it has none. */
@@ -168,7 +168,8 @@ export function findToolsNote(reply: string): string {
 /** The door names a `find_tools` reply loaded, read back from its text so the reply itself stays the record. */
 export function loadedDoorNames(reply: string): string[] {
   if (!reply.startsWith(LOADED_HEADER)) return []
-  return reply.split("\n").slice(1).flatMap((line) => /^- ([A-Za-z0-9_-]+)\(/.exec(line)?.[1] ?? [])
+  // The skill note is quoted skill text; a list line in it is never a loaded door.
+  return reply.split(`\n\n${SKILL_NOTE_HEADER}\n`)[0]!.split("\n").slice(1).flatMap((line) => /^- ([A-Za-z0-9_-]+)\(/.exec(line)?.[1] ?? [])
 }
 
 export interface CatalogPartition {

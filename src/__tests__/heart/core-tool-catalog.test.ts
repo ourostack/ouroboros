@@ -239,7 +239,7 @@ describe("the tool catalog in runAgent", () => {
     expect(toolNames(2)).toContain("coding_spawn")
     // No held-back door answers this one at all; the skill still does.
     const skillOnly = messages.find((message) => message.tool_call_id === "f3").content as string
-    expect(skillOnly.startsWith("no held-back tool matched.")).toBe(true)
+    expect(skillOnly.startsWith("no held-back tool matched (")).toBe(true)
     expect(skillOnly).toContain("skill shelf-keeping documents this")
   })
 
