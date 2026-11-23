@@ -1,0 +1,1 @@
+Slow or timed-out sanctuary lifecycle replays now write their phase timings to the test log even when the usual 4.5-second report could not run. Test diagnostics only; no timeouts or assertions changed.
