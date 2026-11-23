@@ -3,7 +3,10 @@
  * from the pre-registration's Appendix B on one model target, writes the private report and the private request log
  * (both opened `wx`, mode 0600, under a 0700 folder) and prints a counts-only summary. With `--sandbox-ssh
  * <host>:<folder>` the sandbox runs on that Docker host, whose harness checkout is synced to `<folder>/harness`;
- * `--bundle` and `--seed-bundle` are then paths on that host. Model calls and credentials stay on this machine.
+ * `--bundle` and `--seed-bundle` are then paths on that host. `--host-lock <holder>` holds that host's lock
+ * (deploy/unraid/ouro-host-lock.mjs) for the whole command, as `run-entry` does, so the Butler's upgrade and rollback
+ * wait for it and the sandbox runs on the Butler's host only while it does. Model calls and credentials stay on this
+ * machine.
  */
 import fs from "node:fs"
 import os from "node:os"
@@ -12,7 +15,8 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { loadCases } from "./self-test"
 import { writePrivateReport } from "./report"
 import { dockerCli, runSandboxed, type SandboxImages } from "./sandbox/docker"
-import { remoteRunCase, sshStart, type RunCase } from "./sandbox/remote"
+import { holdHostLock, HOST_LOCK_TTL_S, HOST_LOCK_WAIT_S, type HeldHostLock } from "./sandbox/host-lock"
+import { remoteRunCase, sshNode, sshStart, type RunCase } from "./sandbox/remote"
 import { resolveTarget } from "./targets"
 import { parseInterviewArgs, runInterviews, X_KIT } from "./interviews/runner"
 
@@ -24,15 +28,22 @@ function take(argv: string[], flag: string): { value: string | undefined; rest: 
   return { value: argv[at + 1], rest: [...argv.slice(0, at), ...argv.slice(at + 2)] }
 }
 
-function runCaseFor(sandboxSsh: string | undefined, bundle: string, seedBundle: string | undefined, images: SandboxImages | undefined): RunCase {
+function sshTarget(spec: string): { host: string; root: string } {
+  const split = spec.indexOf(":")
+  if (split < 1) throw new Error("--sandbox-ssh must be <host>:<folder>")
+  return { host: spec.slice(0, split), root: spec.slice(split + 1) }
+}
+
+function runCaseFor(sandboxSsh: string | undefined, bundle: string, seedBundle: string | undefined, images: SandboxImages | undefined, hostLockToken: string | undefined): RunCase {
   if (sandboxSsh) {
-    const split = sandboxSsh.indexOf(":")
-    if (split < 1) throw new Error("--sandbox-ssh must be <host>:<folder>")
-    const host = sandboxSsh.slice(0, split)
-    const root = sandboxSsh.slice(split + 1)
+    const { host, root } = sshTarget(sandboxSsh)
     return remoteRunCase({
       start: sshStart(host, `${root}/harness/dist/eval/remote-entry.js`),
-      paths: { bundleDir: bundle, seedBundleDir: seedBundle ?? `${root}/harness/deploy/unraid/sanctuary.ouro`, workRoot: `${root}/work`, ...(images ? { images } : {}) },
+      paths: {
+        bundleDir: bundle, seedBundleDir: seedBundle ?? `${root}/harness/deploy/unraid/sanctuary.ouro`, workRoot: `${root}/work`,
+        ...(images ? { images } : {}),
+        ...(hostLockToken ? { hostLockToken } : {}),
+      },
     })
   }
   const docker = dockerCli()
@@ -71,16 +82,31 @@ async function main(): Promise<number> {
   const seed = take(bundle.rest, "--seed-bundle")
   // `--images <agent>,<household>`: image tags of this run's own, so a run never uses images another checkout built.
   const tags = take(seed.rest, "--images")
+  const hostLock = take(tags.rest, "--host-lock")
   if (!bundle.value) throw new Error("--bundle is required")
+  if (hostLock.value && !ssh.value) throw new Error("--host-lock needs --sandbox-ssh")
   const [agent, household] = tags.value?.split(",") ?? []
   if (tags.value && !(agent && household)) throw new Error("--images must be <agent image>,<household image>")
   const images = agent && household ? { agent, household } : undefined
-  const args = parseInterviewArgs(tags.rest)
+  const args = parseInterviewArgs(hostLock.rest)
+  let lock: HeldHostLock | undefined
+  if (hostLock.value && ssh.value) {
+    const { host, root } = sshTarget(ssh.value)
+    lock = await holdHostLock(sshNode(host, [`${root}/harness/deploy/unraid/ouro-host-lock.mjs`, "hold", "--holder", hostLock.value, "--ttl", String(HOST_LOCK_TTL_S), "--wait", String(HOST_LOCK_WAIT_S)]))
+  }
+  try {
+    return await interviews(args, runCaseFor(ssh.value, bundle.value, seed.value, images, lock?.token))
+  } finally {
+    await lock?.release()
+  }
+}
+
+async function interviews(args: ReturnType<typeof parseInterviewArgs>, runCase: RunCase): Promise<number> {
   const { exitCode } = await runInterviews(args, {
     readText: (file) => fs.readFileSync(file, "utf8"),
     loadCases,
     resolveTarget: (spec, creds) => resolveTarget(spec, creds),
-    runCase: runCaseFor(ssh.value, bundle.value, seed.value, images),
+    runCase,
     kits: { X: X_KIT },
     outputExists: (file) => fs.existsSync(file),
     writeReport: writePrivateReport,

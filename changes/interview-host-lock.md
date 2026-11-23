@@ -1,0 +1,1 @@
+The interviews command takes `--host-lock <holder>`, as the eval's run command does. It holds the remote Docker host's lock for the whole command and sends its token with every job, so a Butler upgrade on that host waits for the interviews to finish, and the interviews wait for an upgrade in progress. It refuses `--host-lock` without `--sandbox-ssh`.
