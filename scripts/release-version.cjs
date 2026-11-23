@@ -240,7 +240,18 @@ function npmRegistry(execFileSyncImpl = execFileSync, { attempts = 20, intervalM
   return {
     versions,
     gitHeads,
-    gitHead: (version) => gitHeads().get(version) ?? (npm("view", `${PACKAGE}@${version}`, "gitHead").trim() || undefined),
+    // A version npm does not have yet (E404) has no gitHead, so a wait can keep polling for it.
+    gitHead: (version) => {
+      const known = gitHeads().get(version)
+      if (known) return known
+      try {
+        return npm("view", `${PACKAGE}@${version}`, "gitHead").trim() || undefined
+      } catch (failure) {
+        const said = `${failure.stderr ?? ""}${failure.message ?? ""}`
+        if (/\bE404\b/.test(said)) return undefined
+        throw new Error(`could not read ${PACKAGE}@${version}'s gitHead from npm: ${said.trim()}`)
+      }
+    },
     changelog: (version) => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "release-version-"))
       try {

@@ -540,6 +540,17 @@ describe("npmRegistry", { timeout: 30_000 }, () => {
     expect(npmRegistry((command: string, args: string[]) => (args.includes("versions") ? '"0.1.0-alpha.1"' : "")).versions()).toEqual(["0.1.0-alpha.1"])
   })
 
+  it("reads a version npm does not have yet as no gitHead, so a wait can poll it, and stops on any other failure", () => {
+    const missing = (command: string, args: string[]) => {
+      if (args.includes("versions")) return '["0.1.0-alpha.10"]'
+      if (args[1] === "@ouro.bot/cli@0.1.0-alpha.11") throw failure("npm error code E404\nnpm error 404 No match found for version 0.1.0-alpha.11")
+      if (args[1] === "@ouro.bot/cli@0.1.0-alpha.12") throw failure("npm error code ENOTFOUND")
+      return ""
+    }
+    expect(npmRegistry(missing).gitHead("0.1.0-alpha.11")).toBeUndefined()
+    expect(() => npmRegistry(missing).gitHead("0.1.0-alpha.12")).toThrow("ENOTFOUND")
+  })
+
   it("reads the changelog a version's tarball carries, waiting out ETARGET while npm cannot serve it yet", () => {
     const work = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-release-registry-"))
     const file = tarball(work, { versions: [{ version: "0.1.0-alpha.11", changes: ["A."] }] })
