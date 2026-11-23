@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1376",
       "changes": [
-        "Every in-turn tool carries an Ouro AX card, a call's outcome is typed, and an unknown tool names the real tools it could mean; the Ouro AX X-ray now checks the in-turn tools in CI."
+        "iMessage: a reply whose send timed out but arrived is recorded within a recovery pass instead of after 10 minutes, so status stops reporting it as not caught up."
       ]
     },
     {
