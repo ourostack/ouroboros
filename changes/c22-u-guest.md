@@ -1,0 +1,3 @@
+Blind interviews: product U's arms and kit. The guest builds one of three U arms (`ouro`, `shadcn`, `mui`). Each arm is the same project template with only the component kit under `@kit/ui` changing, and has the five registered tools: `read_file`, `write_file`, `list_files`, `run_checks` and `finish`. `finish` ends the job's turn. Once the conversation ends, the arm grades the run with the image's grader, which lives outside the project.
+
+The host's `U_KIT` runs the registered `remove-copy-card` job with the user message word for word. It passes a run only when all of these hold: the type-check passes, axe finds no violations, and the hidden test's three checks pass. It records U's fidelity notes. The image itself (templates, tools, hidden test) comes in a later change.

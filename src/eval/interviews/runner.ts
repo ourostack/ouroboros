@@ -25,8 +25,10 @@ import { runFinalConversation, type FinalResult } from "./final"
 import { buildArm, X_ARMS } from "./guest/arms"
 import type { BooksCore } from "./guest/books-core"
 import { messageOf } from "./guest/loop"
+import { U_ARMS } from "./guest/u/arms"
 import { argvOf, commandLine } from "./guest/operations"
 import { createInterviewLatch, guardedRuntime, SESSION_CALLS, type CallRecord, type ConversationKind, type Gate, type SessionLatch } from "./latch"
+import type { Replacement } from "./rewrite"
 import { debriefQuestion, IDENTIFY_QUESTION, labelLine, ratingOf, type Note, type Product } from "./protocol"
 
 /** What is recorded about each arm before any session: where it differs from the product it stands for. */
@@ -70,6 +72,11 @@ export type ProductKit = {
   grade?(run: SandboxRun, c: Case): Verdict
   /** The product's fidelity notes, per `<product>:<arm>` key, added to the report's `fidelity`. */
   fidelity?: Readonly<Record<string, string[]>>
+  /**
+   * The arm's committed replacement list (section 3), applied to every request of its job and debrief before the host's
+   * brand scan. The final conversation is the runner's own text and is not rewritten.
+   */
+  replacements?(arm: string): readonly Replacement[] | undefined
 }
 
 /** What a call the interface refused, before any books operation ran, is written as for scoring, in every arm. */
@@ -246,8 +253,8 @@ async function runSession(input: {
     ouroFirst: false, voidedBy: null, calls: [], spent: ZERO,
   }
   const c = caseOf(input.kit, input.cases, session)!
-  const guard = (gateFor: (request: ProviderTurnRequest) => Gate): ProviderRuntime => guardedRuntime({
-    inner: input.target.runtime, latch, ledger: input.ledger, pricing: input.pricing, gateFor,
+  const guard = (gateFor: (request: ProviderTurnRequest) => Gate, replacements?: readonly Replacement[]): ProviderRuntime => guardedRuntime({
+    inner: input.target.runtime, latch, ledger: input.ledger, pricing: input.pricing, gateFor, ...(replacements ? { replacements } : {}),
     log: (entry) => input.log(JSON.stringify({ session: session.id, preregistrationVersion: input.version, ...entry })),
   })
   const end = (status: SessionStatus, why: string): void => {
@@ -258,7 +265,8 @@ async function runSession(input: {
     const debrief = debriefQuestion(session.product, arm.label)
     const job = latch.gate("job")
     const debriefGate = latch.gate("debrief")
-    const host = guard((request) => request.messages.some((m) => m.role === "user" && m.content === debrief) ? debriefGate : job)
+    // The gate reads the runner's own request, so the debrief is told apart before the arm's list rewrites it.
+    const host = guard((request) => request.messages.some((m) => m.role === "user" && m.content === debrief) ? debriefGate : job, input.kit.replacements?.(arm.arm))
     let obs: SandboxRun
     try {
       obs = await input.runCase({ case: c, host, budget: { take: () => true }, guest: input.kit.guest({ session, arm, case: c, debrief }) })
@@ -409,8 +417,8 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
   return { exitCode: stopped ? 2 : 0, records }
 }
 
-/** Every X arm, for the parser's check. */
-export const KNOWN_ARMS: Readonly<Record<Product, readonly string[]>> = { H: [], U: [], X: X_ARMS }
+/** Every X and U arm, for the parser's check. */
+export const KNOWN_ARMS: Readonly<Record<Product, readonly string[]>> = { H: [], U: U_ARMS, X: X_ARMS }
 
 const STRING_FLAGS = { "--preregistration": "preregistration", "--cases": "cases", "--target": "target", "--credentials-agent": "credentialsAgent", "--output": "output", "--request-log": "requestLog", "--harness-ref": "harnessRef", "--copilot-account": "copilotAccount" } as const
 const NUMBER_FLAGS = { "--budget-premium": "budgetPremium", "--budget-credits": "budgetCredits", "--price-in": "priceIn", "--price-out": "priceOut", "--reserve-credits-per-call": "reserveCreditsPerCall", "--premium-multiplier": "premiumMultiplier" } as const
