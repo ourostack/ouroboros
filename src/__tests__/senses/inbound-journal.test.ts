@@ -3,6 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import { MAX_INBOUND_ATTEMPTS, openInboundJournal, readInboundOutcome } from "../../senses/inbound-journal"
+import { turnSpoke } from "../../senses/turn-attempts"
 
 const roots: string[] = []
 function agentRoot(): string {
@@ -78,6 +79,20 @@ describe("the shared inbound journal", () => {
     journal.markSpoke("message-1")
     journal.markSpoke("missing")
     expect(openInboundJournal(root, "test-sense").get("message-1")?.spoke).toBe(true)
+  })
+
+  it("keeps what went out and when, so the next process can say what the person already has", () => {
+    const root = agentRoot()
+    const journal = openInboundJournal<{ text: string }>(root, "test-sense")
+    journal.record("message-1", { text: "hello" })
+    journal.markSpoke("message-1", turnSpoke("tool:send_message", "the build is out", null, Date.parse("2026-11-22T10:00:00.000Z")))
+    journal.markSpoke("message-1", turnSpoke("tool:surface", "ready"))
+    const entry = openInboundJournal(root, "test-sense").get("message-1")
+    expect(entry?.spoke).toBe(true)
+    expect(entry?.spokeRecords).toEqual([
+      expect.objectContaining({ kind: "tool:send_message", sentAt: "2026-11-22T10:00:00.000Z", textLength: 16 }),
+      expect.objectContaining({ kind: "tool:surface" }),
+    ])
   })
 
   it("lists pending inbounds oldest first and reports the oldest one's age", () => {

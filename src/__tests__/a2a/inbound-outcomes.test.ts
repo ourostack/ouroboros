@@ -324,6 +324,17 @@ describe("A2A inbound outcomes", () => {
     expect(openInboundJournal(tmp.agentRoot, "a2a").pending()).toEqual([expect.objectContaining({ id: "first", attempts: 1 })])
   })
 
+  it("does not run a pending message again when its journal says only that part of the reply went out", async () => {
+    const tmp = bundle("a2a-outcome-spoke-legacy")
+    journalRelayed(tmp.agentRoot, "spoke-without-records")
+    openInboundJournal(tmp.agentRoot, "a2a").markSpoke("spoke-without-records")
+    const turns: A2ATurnRunnerInput[] = []
+    const server = await start({ agentName: tmp.agentName, agentRoot: tmp.agentRoot, port: 0, turnRunner: async (input) => { turns.push(input); return { response: "again" } } })
+    await server.replayed
+    expect(turns).toEqual([])
+    expect(readInboundOutcome(tmp.agentRoot, "a2a", "spoke-without-records")).toMatchObject({ outcome: "failed", detail: expect.stringContaining("after a message went out") })
+  })
+
   it("does not run a delegated command again after a restart, and records why", async () => {
     const tmp = bundle("a2a-outcome-replay-delegated")
     journalRelayed(tmp.agentRoot, "delegated", { verifiedChat: { did: "did:key:z6Mkpeer", friendId: "friend-1", onBehalfOf: "principal", issuedAt: "2026-11-22T00:00:00.000Z" } })
@@ -666,6 +677,56 @@ describe("A2A relayed inbound outcomes", () => {
     await last.replayed
     expect(turns).toEqual([])
     expect(readInboundOutcome(setup.peerBundle.agentRoot, "a2a", inboundId!)).toMatchObject({ outcome: "failed", attempts: 3, detail: expect.stringContaining("3 attempts") })
+  }, 30_000)
+
+  it("does not replay a relayed message whose crashed turn already messaged someone, and records what went out", async () => {
+    const setup = await relayedPeer("a2a-outcome-relay-spoke-crash")
+    const registering = await setup.startPeer(async () => ({ response: "unused" }))
+    await registering.relay!.ready
+    await registering.close()
+    await setup.queue()
+
+    // The turn sends Ari a message through a tool, then the process dies before the turn ends.
+    const crashed = await setup.startPeer((input) => {
+      input.onOutwardSend?.({ kind: "tool:send_message", sentAt: "2026-11-22T10:00:00.000Z", outboundRecordId: null, textHash: "sha256:abc", textLength: 16 })
+      return new Promise(() => undefined)
+    })
+    closers.push(() => crashed.close())
+    await vi.waitFor(() => expect(openInboundJournal(setup.peerBundle.agentRoot, "a2a").pending().map((entry) => entry.spoke)).toEqual([true]))
+    const [pending] = openInboundJournal(setup.peerBundle.agentRoot, "a2a").pending()
+    expect(pending!.spokeRecords).toEqual([expect.objectContaining({ kind: "tool:send_message", sentAt: "2026-11-22T10:00:00.000Z" })])
+    crashed.relay!.stop()
+
+    const turns: A2ATurnRunnerInput[] = []
+    const next = await setup.startPeer(async (input) => { turns.push(input); return { response: "again" } })
+    closers.push(() => next.close())
+    await next.replayed
+    // Running it again would send that message a second time.
+    expect(turns).toEqual([])
+    expect(readInboundOutcome(setup.peerBundle.agentRoot, "a2a", pending!.id)).toMatchObject({
+      outcome: "failed",
+      attempts: 1,
+      detail: expect.stringContaining("tool:send_message at 2026-11-22T10:00:00.000Z"),
+    })
+  }, 30_000)
+
+  it("records a relayed message as failed, not pending, when shutdown stops a turn that already messaged someone", async () => {
+    const setup = await relayedPeer("a2a-outcome-relay-spoke-shutdown")
+    const registering = await setup.startPeer(async () => ({ response: "unused" }))
+    await registering.relay!.ready
+    await registering.close()
+    await setup.queue()
+
+    const held = heldTurn()
+    const server = await setup.startPeer(async (input) => {
+      input.onOutwardSend?.({ kind: "tool:surface", sentAt: "2026-11-22T10:00:00.000Z", outboundRecordId: null, textHash: null, textLength: null })
+      return held.runner(input)
+    })
+    await held.started
+    const [inboundId] = pendingIds(setup.peerBundle.agentRoot)
+    await server.close()
+    expect(pendingIds(setup.peerBundle.agentRoot)).toEqual([])
+    expect(readInboundOutcome(setup.peerBundle.agentRoot, "a2a", inboundId!)).toMatchObject({ outcome: "failed", detail: expect.stringContaining("tool:surface") })
   }, 30_000)
 
   it("leaves a relayed message pending, untried, when it arrives while the server is shutting down", async () => {

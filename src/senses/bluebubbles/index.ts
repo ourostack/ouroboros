@@ -109,6 +109,7 @@ import {
 } from "./active-turns"
 import { enforceTrustGate } from "../trust-gate"
 import { handleInboundTurn, type FailoverState } from "../pipeline"
+import { openTurnAttempts, turnSpoke, turnSpokeForTool, type TurnAttemptStore, type TurnSpoke } from "../turn-attempts"
 import { writeSenseContextPacket } from "../context-packet-ledger"
 import { buildBlueBubblesContextPacket } from "./context-packet"
 import {
@@ -165,9 +166,6 @@ type BlueBubblesSemanticHandlingAcquisition =
   | { status: "handled_by_owner" }
 
 const activeSemanticHandlingSlots = new Map<string, BlueBubblesSemanticHandlingSlot>()
-// Turns that timed out without a reply, per capture, in this process. Each one
-// stays pending for replay until it reaches the delivery attempt cap.
-const unfinishedTurnAttempts = new Map<string, number>()
 const semanticObservationGenerations = new Map<string, BlueBubblesSemanticObservationGeneration>()
 const BLUEBUBBLES_VISIBLE_OUTBOUND_STATUSES = new Set<BlueBubblesOutboundRecord["status"]>([
   "accepted",
@@ -321,7 +319,29 @@ function completeBlueBubblesSemanticObservation(
 ): void {
   clearPending(generation.reservation)
   semanticObservationGenerations.delete(keyHash)
-  unfinishedTurnAttempts.delete(keyHash)
+  clearBlueBubblesTurnAttempts(keyHash)
+}
+
+/** Each capture's turn attempts and sends, kept on disk so a restart neither resets the count nor repeats a send. */
+function blueBubblesTurnAttempts(): TurnAttemptStore {
+  return openTurnAttempts(getAgentRoot(), "bluebubbles")
+}
+
+function clearBlueBubblesTurnAttempts(keyHash: string): void {
+  try {
+    blueBubblesTurnAttempts().clear(keyHash)
+  /* v8 ignore start -- removing a file with force fails only on a broken folder; the capture already has its outcome @preserve */
+  } catch (error) {
+    // A leftover record is harmless: the capture has its outcome, so it is never handled again.
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_turn_attempts_clear_failed",
+      message: "could not clear a bluebubbles capture's turn attempts after its outcome",
+      meta: { keyHash, reason: error instanceof Error ? error.message : String(error) },
+    })
+  }
+  /* v8 ignore stop */
 }
 
 async function acquireBlueBubblesSemanticHandlingSlot(
@@ -641,6 +661,8 @@ interface CapturedBlueBubblesHandleOptions extends BlueBubblesHandleOptions {
    * turn's cleanup, so a process that exits during cleanup does not replay it.
    */
   publishSpokenTurnEnded: (reason: "turn_timeout" | "shutdown") => void
+  /** This turn's attempt for its capture, counted on disk; it keeps each attempt's sends apart. */
+  turnAttempt: number
   /** The turn answers a reaction, so the agent may choose to stay silent. */
   isReactionSignal?: boolean
 }
@@ -1215,7 +1237,14 @@ export function createBlueBubblesCallbacks(
       agentRoot: string
       idempotencyKey: string
       attachment: BlueBubblesAttachmentIdentityInput
+      /** Gives each mid-turn message its own outbound record, keyed under this prefix. */
+      speakIdempotencyKeyPrefix?: string
     }
+    /**
+     * Note a send before it can reach anyone: a mid-turn message, or a tool that messages a person. It writes to
+     * disk, so a turn cut off by a crash is not replayed into sending it again.
+     */
+    noteSend?: (spoke: TurnSpoke) => void
   } = {},
 ): BlueBubblesCallbacks {
   let textBuffer = ""
@@ -1244,6 +1273,44 @@ export function createBlueBubblesCallbacks(
   // check catches near-duplicates from the same turn.
   const sentOutwardTextNorms = new Set<string>()
   const sentOutwardTokenSets: Array<Set<string>> = []
+  let midTurnSpeakCount = 0
+
+  /** Reserve a mid-turn message's own outbound record, so the send leaves a `bbout_*` record like the final reply. */
+  function reserveMidTurnSpeak(text: string, replyToMessageGuid: string | undefined): BlueBubblesOutboundRecord | null | "duplicate" {
+    const durableOutbound = options.durableOutbound
+    if (!durableOutbound?.speakIdempotencyKeyPrefix) return null
+    midTurnSpeakCount += 1
+    const idempotencyKey = `${durableOutbound.speakIdempotencyKeyPrefix}:speak-${midTurnSpeakCount}`
+    const reservation = reserveBlueBubblesOutbound({
+      agentRoot: durableOutbound.agentRoot,
+      idempotencyKey,
+      chat,
+      attachment: durableOutbound.attachment,
+      text,
+      tempGuid: `ouro-speak-${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 32)}`,
+      ...(replyToMessageGuid ? { replyToMessageGuid } : {}),
+    })
+    /* v8 ignore next -- each attempt has its own key prefix and counter, so a key is never reserved twice @preserve */
+    if (reservation.status !== "reserved") return "duplicate"
+    return reservation.record
+  }
+
+  function recordMidTurnSpeakState(record: BlueBubblesOutboundRecord | null, update: (recordId: string, at: string) => void): void {
+    if (!record) return
+    try {
+      update(record.recordId, new Date().toISOString())
+    /* v8 ignore start -- the send is already noted in the turn's attempts; a failed status write loses only the status @preserve */
+    } catch (stateError) {
+      emitNervesEvent({
+        level: "error",
+        component: "senses",
+        event: "senses.bluebubbles_outbound_state_error",
+        message: "failed to record a bluebubbles mid-turn message's transport state",
+        meta: { recordId: record.recordId, reason: String(stateError) },
+      })
+    }
+    /* v8 ignore stop */
+  }
 
   async function canRunOutbound(): Promise<boolean> {
     if (outboundClosed) return false
@@ -1411,6 +1478,21 @@ export function createBlueBubblesCallbacks(
       // text, while preserving native read/typing signals and nerves telemetry
       // for debugging.
       if (options.enableActivitySignals !== false && !typingActive && name !== "observe" && name !== "speak") startTypingNow()
+      const toolSend = turnSpokeForTool(name, _args)
+      if (toolSend && options.noteSend) {
+        try {
+          options.noteSend(toolSend)
+        } catch (error) {
+          // The tool runs whatever this callback does; say loudly that a replay could repeat it.
+          emitNervesEvent({
+            level: "error",
+            component: "senses",
+            event: "senses.bluebubbles_turn_send_note_failed",
+            message: "could not record a person-messaging tool call before it ran",
+            meta: { name, reason: error instanceof Error ? error.message : String(error) },
+          })
+        }
+      }
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_tool_start",
@@ -1470,15 +1552,41 @@ export function createBlueBubblesCallbacks(
         return
       }
       if (!await canRunOutbound()) return
+      const replyToMessageGuid = replyTarget.getReplyToMessageGuid()
+      const speakRecord = reserveMidTurnSpeak(trimmed, replyToMessageGuid)
+      /* v8 ignore next 4 -- see reserveMidTurnSpeak: a fresh key is never already reserved @preserve */
+      if (speakRecord === "duplicate") {
+        emitDuplicateOutwardSuppressed("flushNow", trimmed.length)
+        return
+      }
+      // Written to disk first: if this throws, nothing was sent and the speak call fails.
+      options.noteSend?.(turnSpoke("speak", trimmed, speakRecord?.recordId ?? null))
       // Count the message as seen once it is handed to the transport: a send
       // still in flight, or one that timed out, may reach the friend anyway, and
       // a turn that ends now must not be replayed into repeating it.
       recordVisibleActivity()
-      await client.sendText({
-        chat,
-        text: trimmed,
-        replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
-      })
+      let speakResponse: Awaited<ReturnType<BlueBubblesClient["sendText"]>>
+      try {
+        speakResponse = await client.sendText({
+          chat,
+          text: trimmed,
+          replyToMessageGuid,
+        })
+      } catch (error) {
+        recordMidTurnSpeakState(speakRecord, (recordId, failedAt) => markBlueBubblesOutboundFailed({
+          agentRoot: options.durableOutbound!.agentRoot,
+          recordId,
+          failedAt,
+          reason: error instanceof Error ? error.message : String(error),
+        }))
+        throw error
+      }
+      recordMidTurnSpeakState(speakRecord, (recordId, acceptedAt) => markBlueBubblesOutboundAccepted({
+        agentRoot: options.durableOutbound!.agentRoot,
+        recordId,
+        acceptedAt,
+        ...(speakResponse?.messageGuid ? { messageGuid: speakResponse.messageGuid } : {}),
+      }))
       // Note: do NOT call client.setTyping(chat, false) here — the agent is
       // still mid-turn, so the typing indicator stays ACTIVE.
       emitNervesEvent({
@@ -2302,6 +2410,14 @@ async function handleBlueBubblesNormalizedEvent(
             serverUrl: outboundRuntimeConfig.serverUrl,
             accountId: outboundRuntimeConfig.accountId,
           },
+          speakIdempotencyKeyPrefix: `${blueBubblesInboundReplyIdempotencyKey(
+            options.currentIngressEvidence.captureKeyHash,
+          )}:attempt-${options.turnAttempt}`,
+        },
+        noteSend: (spoke) => {
+          // Set first: a tool runs even if the write below fails, and this process must still not replay it.
+          spokeBeforeFinalTransport = true
+          blueBubblesTurnAttempts().noteSpoke(options.currentIngressEvidence.captureKeyHash, spoke)
         },
       },
     )
@@ -3482,7 +3598,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
         latestTurnCapability,
       )
 
-      const capturedOptions: CapturedBlueBubblesHandleOptions = {
+      const capturedOptions: Omit<CapturedBlueBubblesHandleOptions, "turnAttempt"> = {
         ...options,
         latestTurnCapability,
         currentIngressEvidence: Object.freeze({
@@ -3516,16 +3632,59 @@ async function handleCapturedBlueBubblesSemanticEvent(
         }
       }
       if (failedReplyVisible) return completeVisibleFailedReply()
-      result = await handleBlueBubblesNormalizedEvent(canonicalEvent, resolvedDeps, source, capturedOptions)
+      // Attempts and sends are on disk, so a process that died mid-turn neither resets the count nor repeats a send.
+      const turnAttempts = blueBubblesTurnAttempts()
+      const earlier = turnAttempts.get(identity.keyHash)
+      if (earlier && earlier.spoke.length > 0) {
+        // An earlier process's turn sent part of its reply and never ended. Running it again would send that twice.
+        emitNervesEvent({
+          level: "error",
+          component: "senses",
+          event: "senses.bluebubbles_turn_abandoned",
+          message: "did not replay a bluebubbles turn that sent part of its reply before its process stopped",
+          meta: {
+            messageGuid: captured.normalized.messageGuid,
+            reason: "restart",
+            attempts: earlier.attempts,
+            spokeBeforeEnd: true,
+            sends: earlier.spoke.map((spoke) => ({ kind: spoke.kind, sentAt: spoke.sentAt, outboundRecordId: spoke.outboundRecordId })),
+          },
+        })
+        publishSpokenTurnEnded("restart")
+        return { handled: true, notifiedAgent: false, kind: captured.normalized.kind, reason: "already_processed", spokeBeforeEnd: true }
+      }
+      if (earlier && earlier.attempts >= BLUEBUBBLES_REPLY_DELIVERY_MAX_ATTEMPTS) {
+        // Every attempt so far ended with its process: stop, rather than restart into it forever.
+        emitNervesEvent({
+          level: "error",
+          component: "senses",
+          event: "senses.bluebubbles_turn_abandoned",
+          message: "gave up replaying a bluebubbles turn whose process kept stopping before it ended",
+          meta: { messageGuid: captured.normalized.messageGuid, reason: "restart", attempts: earlier.attempts, spokeBeforeEnd: false },
+        })
+        publishTerminalReceipt("message_observed", "turn_retries_exhausted")
+        semanticHandlingCompleted = true
+        return { handled: true, notifiedAgent: false, kind: captured.normalized.kind, reason: "turn_timeout" }
+      }
+      const turnAttempt = turnAttempts.beginAttempt(identity.keyHash)
+      try {
+        result = await handleBlueBubblesNormalizedEvent(canonicalEvent, resolvedDeps, source, { ...capturedOptions, turnAttempt })
+      } catch (error) {
+        // A clean shutdown is not the turn failing, so it gives its attempt back; only crashes and failures use them up.
+        if (options.lifecycleSignal?.aborted) turnAttempts.refundAttempt(identity.keyHash)
+        throw error
+      }
       // A budget or storm-breaker block defers the message; it was never seen.
       // Leave it pending so a later recovery pass retries it once the block lifts.
-      if (result.reason === "autonomy_budget_blocked") return result
+      if (result.reason === "autonomy_budget_blocked") {
+        turnAttempts.refundAttempt(identity.keyHash)
+        return result
+      }
       if (result.reason === "turn_timeout" || result.reason === "delivery_admission_timeout" || result.reason === "shutdown") {
         // The turn ended without a reply or a chosen silence. Leave it pending so
         // recovery replays it, unless the friend already saw part of it or it
         // keeps failing; then record a visible failure instead.
-        const attempts = (unfinishedTurnAttempts.get(identity.keyHash) ?? 0) + 1
-        unfinishedTurnAttempts.set(identity.keyHash, attempts)
+        const attempts = turnAttempt
         if (!result.spokeBeforeEnd && attempts < BLUEBUBBLES_REPLY_DELIVERY_MAX_ATTEMPTS) return result
         emitNervesEvent({
           level: "error",
