@@ -23,6 +23,8 @@ const state = vi.hoisted(() => ({
   processActivity: undefined as ((body: unknown) => Promise<unknown>) | undefined,
   sdkAcceptances: [] as Array<{ activityId: string; conversationId: string; outgoingId: string }>,
   sdkLostAck: false,
+  /** How long a fixture SDK send takes, so sends nothing waits on are still in flight when the turn returns. */
+  sdkSendDelayMs: 0,
   sdkRealTransport: false,
   sdkTransportLostAckOnce: false,
   sdkTypingRejectAt: 0,
@@ -65,6 +67,7 @@ vi.mock("@microsoft/teams.apps", async original => {
         }),
         send: async (value: unknown, ref: { activityId: string; conversation: { id: string } }) => {
           if ((value as { type?: string }).type === "typing") return { id: "fixture-typing" }
+          if (state.sdkSendDelayMs) await new Promise(resolve => setTimeout(resolve, state.sdkSendDelayMs))
           const outgoingId = `sdk-accepted-${state.sdkAcceptances.length + 1}`
           state.sdkAcceptances.push({ activityId: ref.activityId, conversationId: ref.conversation.id, outgoingId })
           if (state.sdkLostAck) throw new Error("fixture lost acknowledgement after acceptance")
@@ -186,6 +189,7 @@ beforeEach(async () => {
   state.requestEvents = []
   state.sdkAcceptances = []
   state.sdkLostAck = false
+  state.sdkSendDelayMs = 0
   state.sdkRealTransport = false
   state.sdkTransportLostAckOnce = false
   state.sdkTypingRejectAt = 0
@@ -1124,8 +1128,29 @@ describe("Teams messages whose turn never finished", () => {
     expect(outcomeFiles()).toEqual([expect.objectContaining({ outcome: "silent" })])
   })
 
+  it("waits for a reply still in flight before recording the outcome", async () => {
+    state.sdkSendDelayMs = 50
+    state.run.mockImplementationOnce(async () => ({ outcome: "settled" }))
+    await state.processActivity!(sdkActivity("Say nothing; the fallback reply is slow."))
+    expect(outcomeFiles()).toEqual([expect.objectContaining({ outcome: "answered" })])
+  })
+
+  it("answers a replayed message that only starts with a slash", async () => {
+    const body = sdkActivity("/Users/ari/report.pdf what is in this?")
+    const id = await leaveUnfinishedTurn(body)
+    state.run.mockImplementationOnce(async (messages, callbacks: ChannelCallbacks) => {
+      messages.push({ role: "assistant", content: "A report." })
+      callbacks.onTextChunk("A report.")
+      return { outcome: "settled" }
+    })
+    await restart()
+    await vi.waitFor(() => expect(readInboundOutcome(state.root, "teams", id)).toMatchObject({ outcome: "answered" }))
+    expect(state.run).toHaveBeenCalledTimes(1)
+  })
+
   it("records a turn whose only reply Teams never confirmed as failed", async () => {
     state.sdkLostAck = true
+    state.sdkSendDelayMs = 50
     state.run.mockImplementationOnce(async () => ({ outcome: "settled" }))
     await state.processActivity!(sdkActivity("Say nothing, and the fallback send fails."))
     expect(outcomeFiles()).toEqual([expect.objectContaining({ outcome: "failed", detail: "Teams confirmed no reply; failed sends: 1" })])

@@ -882,7 +882,8 @@ type TeamsInboundActivity = Partial<Pick<IMessageActivity, "id" | "text" | "repl
 interface AdmittedTeamsTurn {
   activity: TeamsInboundActivity
   api: TeamsApiClient
-  signin: (options: { connectionName: string }) => Promise<string | undefined>
+  /** The live activity's sign-in; a replay has none, since it has no activity to send a card from. */
+  signin?: (options: { connectionName: string }) => Promise<string | undefined>
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   send: (activity: any) => Promise<unknown>
   text: string
@@ -972,6 +973,12 @@ function createTeamsCommandRegistry() {
   const registry = createCommandRegistry()
   registerDefaultCommands(registry)
   return registry
+}
+
+/** Whether a message is a command Teams handles itself, such as /new, rather than text that starts with "/". */
+function isTeamsCommand(text: string): boolean {
+  const parsed = parseSlashCommand(text)
+  return parsed !== null && createTeamsCommandRegistry().get(parsed.command) !== undefined
 }
 
 /* v8 ignore start -- superseding follow-up slash command handler; tested via startTeamsApp integration tests @preserve */
@@ -1484,7 +1491,11 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
           throw error
         }
       }
-      const ctxSend = (t: string) => noted(t, () => ctx.send({ type: "message", text: t, replyToId: activity.replyToId, entities: aiLabelEntities() as Entity[], channelData: { feedbackLoopEnabled: true } }))
+      const ctxSend = (t: string) => {
+        const sending = noted(t, () => ctx.send({ type: "message", text: t, replyToId: activity.replyToId, entities: aiLabelEntities() as Entity[], channelData: { feedbackLoopEnabled: true } }))
+        inbound.track(sending)
+        return sending
+      }
       const notedStream: TeamsStream = {
         // The SDK stream queues an emit and returns at once, so the hand-off is what is counted.
         emit: (value) => {
@@ -1496,7 +1507,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
         close: () => stream.close(),
       }
       await handleTeamsMessage(syntheticText, notedStream, convId, teamsContext, ctxSend, isReactionSignal ? { isReactionSignal: true, suppressEmptyStreamMessage: true } : {})
-      inbound.finish()
+      await inbound.finish()
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       settleFailedTeamsTurn(inbound, msg)
@@ -1562,9 +1573,14 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
     requestContext: Parameters<typeof reportTeamsRequest>[2],
     inbound: () => TeamsTurnInbound,
   ): { sendText: (text: string) => Promise<void>; stream: TeamsStream } => {
-    const sendText = async (text: string) => {
+    const sendText = (text: string): Promise<void> => {
       // Noted before it reaches Teams, so a replay after a crash never sends it again.
       inbound().noteSpoke(turnSpoke("speak", text))
+      const sending = deliverText(text)
+      inbound().track(sending)
+      return sending
+    }
+    const deliverText = async (text: string) => {
       try {
         const receipt = await send({ type: "message", text, replyToId: inboundActivityId, entities: aiLabelEntities() as Entity[], channelData: { feedbackLoopEnabled: true } })
         inbound().noteSent(true)
@@ -1648,10 +1664,11 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
         ...(oauthUnavailable ? { oauthUnavailable } : {}),
         signin: async (cn: string) => {
           // Already known not to start: don't send the person another card that can't appear.
-          if (oauthSigninUnavailableReason(cn)) return undefined
+          if (oauthSigninUnavailableReason(cn) || !signin) return undefined
+          // A sign-in can send the person a card, so it counts as having spoken. Noted outside the try: a failed
+          // write is not a failed sign-in.
+          inbound.noteSpoke(turnSpoke("signin", null))
           try {
-            // A sign-in can send the person a card, so it counts as having spoken.
-            inbound.noteSpoke(turnSpoke("signin", null))
             const result = await signin({ connectionName: cn })
             emitNervesEvent({ level: "info", event: "channel.signin_result", component: "channels", message: `signin(${cn}): ${result ? "token received" : "no token"}`, meta: { connectionName: cn, hasToken: !!result } })
             return result
@@ -1685,7 +1702,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
         getBotToken: async () => (await app.tokenManager.getBotToken())?.toString(),
       })
       const status = await handleTeamsMessage(inboundText, stream, convId, teamsContext, sendText, turn.replay ? { quietWhenBusy: true } : undefined)
-      if (status !== "busy") inbound.finish()
+      if (status !== "busy") await inbound.finish()
       else if (turn.replay) {
         // Another live process is running a turn here; this message waits for a later start, its try given back.
         teamsInboundJournal().refundAttempt(inboundId!)
@@ -1792,7 +1809,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
         if (dispatchResult.handled && dispatchResult.result) {
           if (dispatchResult.result.action === "response") {
             await stream.emit(dispatchResult.result.message || "")
-            turnInbound.finish()
+            await turnInbound.finish()
             return
           }
           if (dispatchResult.result.action === "new") {
@@ -1809,7 +1826,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
             const commandContext = await commandResolver.resolve()
             deleteSession(sessionPath(commandContext.friend.id, "teams", convId))
             await stream.emit("session cleared")
-            turnInbound.finish()
+            await turnInbound.finish()
             if (_turnCoordinator.isTurnActive(turnKey)) {
               _turnCoordinator.enqueueFollowUp(turnKey, {
                 conversationId: convId,
@@ -1850,7 +1867,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       const journal = teamsInboundJournal()
       for (const entry of journal.pending()) {
         if (entry.payload.label !== label) continue
-        const decision = teamsReplayDecision(entry)
+        const decision = teamsReplayDecision(entry, isTeamsCommand)
         if (decision.action === "fail") {
           journal.settle(entry.id, "failed", decision.detail)
           emitNervesEvent({ level: "warn", component: "senses", event: "senses.teams_inbound_not_replayed",
@@ -1882,7 +1899,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
         await coordinateTeamsTurn(convId, payload.text, {
           aadObjectId: payload.aadObjectId, userId: payload.userId, tenantId: payload.tenantId, replyToId: payload.replyToId, inboundId: entry.id,
         }, () => runAdmittedTeamsMessage({
-          activity, api: app.api, signin: async () => undefined, send, text: payload.text, convId, userId: payload.userId,
+          activity, api: app.api, send, text: payload.text, convId, userId: payload.userId,
           channelId: payload.channelId as ChannelID, sendText, stream, requestContext, inbound, inboundId: entry.id, replay: true,
         }))
       }

@@ -1,5 +1,4 @@
 import { emitNervesEvent } from "../nerves/runtime"
-import { parseSlashCommand } from "./commands"
 import { MAX_INBOUND_ATTEMPTS, openInboundJournal, type InboundJournal, type InboundOutcome, type PendingInbound } from "./inbound-journal"
 import { describeTurnSpokes, outwardSendTracker, type TurnSpoke } from "./turn-attempts"
 
@@ -34,9 +33,10 @@ export function openTeamsInboundJournal(agentRoot: string): InboundJournal<Teams
 /** What the next process does with a message whose turn never recorded an outcome. */
 export type TeamsReplayDecision = { action: "replay" } | { action: "fail"; detail: string }
 
-export function teamsReplayDecision(entry: PendingInbound<TeamsInboundPayload>): TeamsReplayDecision {
+/** `isCommand` says whether the text is a command Teams handles, such as /new, rather than an ordinary message. */
+export function teamsReplayDecision(entry: PendingInbound<TeamsInboundPayload>, isCommand: (text: string) => boolean): TeamsReplayDecision {
   // A replay runs as an ordinary turn, so a command such as /new would act long after it was sent.
-  if (parseSlashCommand(entry.payload.text)) {
+  if (isCommand(entry.payload.text)) {
     return { action: "fail", detail: "a command is not run again after a restart" }
   }
   if (entry.spoke) {
@@ -58,6 +58,8 @@ export interface TeamsTurnInbound {
   noteSpoke(spoke: TurnSpoke): void
   /** Count a reply send once Teams confirmed it or the send failed, so the outcome says whether a reply reached Teams. */
   noteSent(accepted: boolean): void
+  /** A reply send still in flight; `finish` waits for it, since some sends are made without waiting. */
+  track(send: Promise<unknown>): void
   /** Notes a tool that messages a person, just before its handler runs. */
   tools: ReturnType<typeof outwardSendTracker>
   /** Take in a later message the running turn answered as steering, counting this turn as one of its tries. */
@@ -65,9 +67,9 @@ export interface TeamsTurnInbound {
   settle(outcome: InboundOutcome, detail?: string): void
   /**
    * Settle a turn that returned: answered when Teams confirmed a reply, failed when every reply send failed,
-   * and silent when the turn sent nothing.
+   * and silent when the turn sent nothing. Waits for sends still in flight first.
    */
-  finish(): void
+  finish(): Promise<void>
 }
 
 /** `journal` is opened only once there is an entry to write, so a turn with none never touches the disk. */
@@ -75,6 +77,7 @@ export function teamsTurnInbound(journal: () => InboundJournal<TeamsInboundPaylo
   const ids = id ? [id] : []
   let accepted = 0
   let rejected = 0
+  const inFlight: Array<Promise<unknown>> = []
   const noteSpoke = (spoke: TurnSpoke): void => {
     for (const inboundId of ids) journal().markSpoke(inboundId, spoke)
   }
@@ -96,13 +99,17 @@ export function teamsTurnInbound(journal: () => InboundJournal<TeamsInboundPaylo
       if (ok) accepted += 1
       else rejected += 1
     },
+    track(send) {
+      inFlight.push(send.catch(() => undefined))
+    },
     tools: outwardSendTracker(noteSpoke),
     absorb(absorbed) {
       ids.push(absorbed)
       journal().beginAttempt(absorbed)
     },
     settle,
-    finish() {
+    async finish() {
+      await Promise.all(inFlight)
       if (accepted > 0) settle("answered")
       else if (rejected > 0) settle("failed", `Teams confirmed no reply; failed sends: ${rejected}`)
       else settle("silent")
