@@ -274,8 +274,8 @@ describe("package asset validation", () => {
     expect(JSON.stringify(policy)).not.toContain('"issuer":"ari"')
   })
 
-  it("declares stale nested Mailbox UI dist as disallowed", () => {
-    expect(DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES).toContain("dist/mailbox-ui/dist/")
+  it("declares the removed Mailbox UI output as disallowed", () => {
+    expect(DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES).toContain("dist/mailbox-ui/")
     expect(DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES).toContain("dist/outlook-ui/")
   })
 
@@ -304,9 +304,11 @@ describe("package asset validation", () => {
       "RepairGuide.ouro/",
       "SerpentGuide.ouro/",
       "skills/",
+      "vendor/desk/",
     ])
     expect(PACKAGE_PAYLOAD_FILE_PATHS).toEqual([
       "changelog.json",
+      "desk.lock.json",
       "npm-shrinkwrap.json",
       "package.json",
     ])
@@ -315,8 +317,7 @@ describe("package asset validation", () => {
   it("passes when required assets are present and no stale paths exist", () => {
     const root = makeRoot()
     writeRequiredAssets(root)
-    writeFile(root, "dist/mailbox-ui/index.html")
-    writeFile(root, "dist/mailbox-ui/assets/index.js")
+    writeFile(root, "dist/current.js")
 
     const result = validatePackageAssets(root)
 
@@ -380,6 +381,7 @@ describe("package asset validation", () => {
   it("fails with clear disallowed-path messages when stale Mailbox UI output is present", () => {
     const root = makeRoot()
     writeRequiredAssets(root)
+    writeFile(root, "dist/mailbox-ui/index.html")
     writeFile(root, "dist/mailbox-ui/dist/index.html")
     writeFile(root, "dist/mailbox-ui/dist/assets/old.js")
 
@@ -389,6 +391,7 @@ describe("package asset validation", () => {
     expect(result.disallowed).toEqual([
       "dist/mailbox-ui/dist/assets/old.js",
       "dist/mailbox-ui/dist/index.html",
+      "dist/mailbox-ui/index.html",
     ])
     expect(result.message).toContain("disallowed package assets")
     expect(result.message).toContain("dist/mailbox-ui/dist/index.html")

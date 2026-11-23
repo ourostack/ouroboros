@@ -18,6 +18,8 @@
     "RepairGuide.ouro/",
     "skills/",
     "assets/",
+    "vendor/desk/",
+    "desk.lock.json",
     "deploy/unraid/",
     "npm-shrinkwrap.json",
     "changelog.json"
@@ -46,11 +48,10 @@
     "test:e2e:self-update": "node scripts/self-update-package-e2e.cjs",
     "test:e2e:ouro-bot-package": "node scripts/ouro-bot-package-e2e.cjs",
     "test:e2e:real-smoke": "npm run build && node scripts/nightly-real-smoke.cjs",
-    "typecheck:mailbox-ui": "tsc --noEmit -p packages/mailbox-ui/tsconfig.json",
-    "test:mailbox-ui": "npm test --prefix packages/mailbox-ui",
     "test:coverage:vitest": "vitest run --coverage",
     "test:coverage": "node scripts/run-coverage-gate.cjs",
     "build": "node scripts/build.cjs",
+    "desk:update": "node scripts/desk-vendor.cjs --update",
     "lint": "eslint src/",
     "package:verify-assets": "node scripts/package-assets.cjs",
     "prepack": "npm run build && npm run package:verify-assets",
@@ -62,7 +63,7 @@
     "release:trust:repair-plan": "node scripts/npm-trusted-publishers.cjs repair-plan",
     "release:trust:repair": "node scripts/npm-trusted-publishers.cjs repair",
     "release:smoke": "node scripts/release-smoke.cjs",
-    "audit:nerves": "npm run build -- --skip-mailbox-ui-install && node dist/nerves/coverage/cli-main.js"
+    "audit:nerves": "npm run build && node dist/nerves/coverage/cli-main.js"
   },
   "bundleDependencies": [
     "@ouro.bot/friends"

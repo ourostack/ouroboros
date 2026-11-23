@@ -143,7 +143,7 @@ jobs:
           retention-days: 3
           overwrite: true
 
-  # Lint, the changelog gate and the mailbox-ui checks, beside the shards instead
+  # Lint and the changelog gate, beside the shards instead
   # of after them. The `coverage` check needs this job and fails when it failed,
   # so all of it still gates; it just no longer adds to the time after the shards.
   static-checks:
@@ -164,7 +164,7 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      - name: Lint, changelog gate and mailbox-ui checks
+      - name: Lint and changelog gate
         run: node .github/scripts/coverage-gate-sharded.cjs static
 
   # The required `coverage` check and the gate itself: the shards' merged

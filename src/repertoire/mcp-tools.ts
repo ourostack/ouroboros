@@ -79,10 +79,10 @@ function mcpToolCard(server: string, tool: McpToolInfo, surfacedName: string, re
  *  - Builtin servers (agent.json `mcpServers`) — legacy `{server}_{tool}`
  *    shape (e.g., `browser_navigate`), with double-prefix avoidance when
  *    the tool already starts with the server name.
- *  - Plugin servers (from `<plugin>/.mcp.json`, W6 Unit 9) — Anthropic public
- *    convention `mcp__{server}__{tool}` (e.g., `mcp__desk__task_create`).
- *    This matches Claude Code's external naming and the on-prompt promise
- *    in `desk-section.ts` (`mcp__desk__*`).
+ *  - Desk servers (built in, `desk-mcp.ts`) and plugin servers (from
+ *    `<plugin>/.mcp.json`) — Anthropic public convention
+ *    `mcp__{server}__{tool}` (e.g., `mcp__desk__task_create`), matching
+ *    Claude Code's external naming and the desk section's promise.
  *
  * The handler carries the exact frozen binding to the manager's client fence.
  */
@@ -106,15 +106,19 @@ export function mcpToolsAsDefinitions(view: McpTurnView): ToolDefinition[] {
         // The served schema, which the manager checks the binding against; the declaration changes only what the model reads.
         schemaDigest: digestJson(served),
       })
-      // A read-only hint is trusted only from the agent's own bundle (agent.json mcpServers),
+      // A read-only hint is trusted only from the agent's own bundle (agent.json mcpServers) and the built-in Desk,
       // so an orientation hold still lets the agent inspect through those tools.
-      const trustedReadOnly = entry.source === "builtin" && tool.annotations?.readOnlyHint === true
+      const trustedReadOnly = (entry.source === "builtin" || entry.source === "desk") && tool.annotations?.readOnlyHint === true
       return [{
         tool: schema,
         ax: declared ? { ...declared.ax, id: `tool:${served.function.name}` as const } : mcpToolCard(entry.server, tool, served.function.name, trustedReadOnly),
         riskProfile: declared ? declaredRiskProfile(declared.ax.effect) : trustedReadOnly
           ? { mutates: "none" as const, risk: "low" as const, reason: "read-only tool from the agent's own MCP server" }
-          : {
+          : entry.source === "desk" ? {
+            mutates: "durable_state_write" as const,
+            risk: "high" as const,
+            reason: "changes a desk through Desk, which commits and pushes the change",
+          } : {
             mutates: "external_side_effect" as const,
             risk: "high" as const,
             reason: "MCP tools may mutate external systems",

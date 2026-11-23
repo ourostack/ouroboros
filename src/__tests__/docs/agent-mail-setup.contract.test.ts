@@ -69,7 +69,7 @@ describe("agent mail setup documentation contract", () => {
     expect(guide).toContain("Delegated human mail requires family trust")
   })
 
-  it("documents Screener recovery, human-only external actions, and Mailbox audit expectations", () => {
+  it("documents Screener recovery, human-only external actions, and mail audit expectations", () => {
     const guide = readGuide()
 
     expect(guide).toContain("mail_status")
@@ -80,7 +80,8 @@ describe("agent mail setup documentation contract", () => {
     expect(guide).toContain("Verify the current `ouro.bot` DNS/MX state")
     expect(guide).toContain("HEY browser export")
     expect(guide).toContain("confirmation=CONFIRM_SEND")
-    expect(guide).toContain("Ouro Mailbox should feel like logging into the agent's mailbox")
+    expect(guide).toContain("Audit the whole story with the mail tools")
+    expect(guide).not.toContain("Ouro Mailbox")
     expect(guide).toContain("mail_access_log")
     expect(guide).toContain("warning: skipped N malformed file-backed mail access log line(s)")
     expect(guide).toContain("N mail message(s) could not be decrypted")

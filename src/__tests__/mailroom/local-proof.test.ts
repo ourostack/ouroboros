@@ -3,7 +3,6 @@ import * as net from "node:net"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { readMailView } from "../../heart/mailbox/readers/mail"
 import { resetIdentity, setAgentName } from "../../heart/identity"
 import { cacheRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../heart/runtime-credentials"
 import { provisionMailboxRegistry, type MailroomRegistry } from "../../mailroom/core"
@@ -136,7 +135,7 @@ afterEach(() => {
 })
 
 describe("Agent Mail local proof", () => {
-  it("proves import, SMTP ingress, Screener, tools, confirmed send, sense attention, and Mailbox in one isolated Slugger mailbox", async () => {
+  it("proves import, SMTP ingress, Screener, tools, confirmed send, sense attention, and the mail audit in one isolated Slugger mailbox", async () => {
     setAgentName("slugger")
     const root = tempDir()
     const storePath = path.join(root, "mailroom")
@@ -366,15 +365,12 @@ describe("Agent Mail local proof", () => {
     expect(sent).toContain("Mail sent:")
     expect(fs.readFileSync(sinkPath, "utf-8")).toContain("Travel proof")
 
-    const view = await readMailView("slugger")
-    expect(view.status).toBe("ready")
-    if (view.status !== "ready") throw new Error("mail view was not ready")
-    expect(view.folders.map((folder) => folder.id)).toEqual(expect.arrayContaining(["imbox", "screener", "discarded", "quarantine", "draft", "sent"]))
-    expect(view.screener).toEqual([])
-    expect(view.outbound).toEqual(expect.arrayContaining([expect.objectContaining({ status: "sent", subject: "Travel proof" })]))
-    expect(view.messages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ subject: "Follow-up proof", placement: "imbox", provenance: expect.objectContaining({ compartmentKind: "native" }) }),
-      expect.objectContaining({ subject: "Flight to London confirmed", provenance: expect.objectContaining({ compartmentKind: "delegated", ownerEmail: "owner@example.test" }) }),
-    ]))
+    const imbox = await tool("mail_recent").handler({ placement: "imbox", scope: "native", reason: "audit native inbound" }, familyContext())
+    expect(imbox).toContain("Follow-up proof")
+    const delegated = await tool("mail_recent").handler({ scope: "delegated", source: "hey", reason: "audit delegated import" }, familyContext())
+    expect(delegated).toContain("Flight to London confirmed")
+    expect(await tool("mail_screener").handler({ reason: "audit screener is clear" }, familyContext())).not.toContain("new.sender@example.com")
+    const accessLog = await tool("mail_access_log").handler({}, familyContext())
+    expect(accessLog).toContain("audit native inbound")
   })
 })

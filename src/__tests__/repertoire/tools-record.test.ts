@@ -202,19 +202,19 @@ describe("record tools: note and consult_notes", () => {
   it("note writes canonical markdown with minimal frontmatter and returns the file path", async () => {
     const handler = await handlerFor("note")
     const result = await handler({
-      content: "Remember the mailbox UI should show envelope-only transcripts.",
+      content: "Remember the session view should show envelope-only transcripts.",
       tags: ["mailbox", "archive-removal"],
     } as never, selfContext()) as NoteHandlerResult
 
     const savedPath = typeof result === "string" ? result : result.path
     expect(typeof result).toBe("string")
-    expect(savedPath).toBe(path.join(agentRoot, "desk", "_record", "notes", "2026-05-14-remember-the-mailbox-ui-should-show-enve.md"))
+    expect(savedPath).toBe(path.join(agentRoot, "desk", "_record", "notes", "2026-05-14-remember-the-session-view-should-show-en.md"))
 
     const saved = parseNoteFile(fs.readFileSync(savedPath!, "utf8"))
     expect(Object.keys(saved.frontmatter).sort()).toEqual(["created_at", "tags"])
     expect(saved.frontmatter.created_at).toBe("2026-05-14T17:42:13.000Z")
     expect(saved.frontmatter.tags).toEqual(["mailbox", "archive-removal"])
-    expect(saved.body).toBe("Remember the mailbox UI should show envelope-only transcripts.\n")
+    expect(saved.body).toBe("Remember the session view should show envelope-only transcripts.\n")
   })
 
   it("note records a habit produced ref for the canonical Desk record note", async () => {
