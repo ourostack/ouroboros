@@ -53,11 +53,19 @@ export const FIDELITY: Readonly<Record<string, string[]>> = {
   ],
 }
 
+export type Verdict = { passed: boolean; reason: string | null; checks: Array<{ name: string; ok: boolean; detail: string }> }
+
 export type ProductKit = {
   /** The guest the sandbox runs for one arm's job and debrief. */
   guest(input: { session: Session; arm: LabelledArm; case: Case; debrief: string }): GuestChoice
   /** The observation as the case's assertions read it. */
   canonical(arm: string, obs: Observation): Observation
+  /** The product's own job by its Appendix B name, when it is not a case in `--cases`; the cases folder otherwise. */
+  job?(id: string): Case | undefined
+  /** The product's own verdict on a run, in place of the case's assertions; a refused call still fails the job. */
+  grade?(run: SandboxRun, c: Case): Verdict
+  /** The product's fidelity notes, per `<product>:<arm>` key, added to the report's `fidelity`. */
+  fidelity?: Readonly<Record<string, string[]>>
 }
 
 /** What a call the interface refused, before any books operation ran, is written as for scoring, in every arm. */
@@ -171,11 +179,12 @@ const named = (hits: string[]): string => [...new Set(hits.map((hit) => hit.toLo
 const providerFailure = (outcome: string): boolean => /^(provider-error|sandbox-error|trace-mismatch)/.test(outcome)
 
 function armRecord(input: { arm: LabelledArm; c: Case; obs: SandboxRun; kit: ProductKit; job: Gate; debrief: Gate }): ArmRecord {
-  const { gaps: _gaps, followUps, ...raw } = input.obs
+  const { gaps: _gaps, followUps, grade: _grade, ...raw } = input.obs
   const observation = input.kit.canonical(input.arm.arm, raw)
-  const graded = evaluate(input.c, observation)
+  const own = input.kit.grade?.(input.obs, input.c)
+  const graded = own ?? evaluate(input.c, observation)
   const refused = input.job.refused()
-  const verdict = refused ? { passed: false, reason: `refused: ${refused}` } : gradeRun(observation, graded)
+  const verdict = refused ? { passed: false, reason: `refused: ${refused}` } : own ? { passed: own.passed, reason: own.reason } : gradeRun(observation, graded)
   const debrief = followUps?.[0]
   const note = debrief && debrief.outcome === "settled" ? debrief.finalReply : ""
   return {
@@ -183,6 +192,11 @@ function armRecord(input: { arm: LabelledArm; c: Case; obs: SandboxRun; kit: Pro
     debriefOutcome: debrief?.outcome ?? null, debriefToolCalls: debrief?.toolCalls ?? 0,
     jobCalls: input.job.calls(), debriefCalls: input.debrief.calls(), observation,
   }
+}
+
+/** A session's job: the product's own, or the case of that name in `--cases`. */
+function caseOf(kit: ProductKit, cases: Map<string, Case>, session: Session): Case | undefined {
+  return kit.job?.(session.job) ?? cases.get(session.job)
 }
 
 /** Runs one session. Returns its record; `stop` when the study must stop (402, 429 or a cap). */
@@ -204,7 +218,7 @@ async function runSession(input: {
     labels: Object.fromEntries(session.arms.map((arm) => [arm.label, arm.arm])), status: "complete", ended: null, arms: [], final: null,
     ouroFirst: false, voidedBy: null, calls: [], spent: ZERO,
   }
-  const c = input.cases.get(session.job)!
+  const c = caseOf(input.kit, input.cases, session)!
   const guard = (gateFor: (request: ProviderTurnRequest) => Gate): ProviderRuntime => guardedRuntime({
     inner: input.target.runtime, latch, ledger: input.ledger, pricing: input.pricing, gateFor,
     log: (entry) => input.log(JSON.stringify({ session: session.id, preregistrationVersion: input.version, ...entry })),
@@ -294,7 +308,7 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
   const missingKit = chosen.find((session) => !deps.kits[session.product])
   if (missingKit) throw new Error(`session ${missingKit.id} is product ${missingKit.product}, which has no runner kit yet`)
   const cases = new Map(deps.loadCases(args.cases).map((c) => [c.id, c]))
-  const missingCase = chosen.find((session) => !cases.has(session.job))
+  const missingCase = chosen.find((session) => !caseOf(deps.kits[session.product]!, cases, session))
   if (missingCase) throw new Error(`session ${missingCase.id} needs case ${missingCase.job}, which is not in ${args.cases}`)
   for (const file of [args.output, args.requestLog]) if (deps.outputExists(file)) throw new Error(`${file} already exists; name a new file`)
   if (args.budgetCredits !== undefined && (args.priceIn === undefined || args.priceOut === undefined || args.reserveCreditsPerCall === undefined)) {
@@ -325,7 +339,7 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
     deps.writeReport(args.output, {
       schemaVersion: 1, kind: "blind-interviews", preregistrationVersion: version, target: args.target, harnessRef: args.harnessRef, reduced: args.reduced, account: target.account,
       premiumMultiplier: target.unitCost, multiplierSource: target.multiplierSource, caps: totals.caps, spent: totals.spent, calls: totals.calls, stopped, quota: { before, after: after ?? before },
-      fidelity: FIDELITY, pricing, sessions: records,
+      fidelity: Object.assign({}, FIDELITY, ...Object.values(deps.kits).map((kit) => kit?.fidelity ?? {})) as Record<string, string[]>, pricing, sessions: records,
     })
   }
   let after: Awaited<ReturnType<ResolvedTarget["quota"]>> | null = null
