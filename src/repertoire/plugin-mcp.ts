@@ -12,6 +12,10 @@ import { getPluginDir, getPluginsRoot } from "./plugins"
 /**
  * Plugin MCP discovery (W6 Unit 9 of the desk-as-universal-substrate plan).
  *
+ * Desk itself is no longer a plugin here: it is built into every agent
+ * (`desk-mcp.ts`), and its server names (`desk`, `desk-<name>`) are reserved,
+ * so a plugin that declares one is left out with a warning.
+ *
  * Each enabled plugin can declare stdio MCP servers in `<plugin-root>/.mcp.json`
  * using the Anthropic/Claude-Code-public-spec shape:
  *

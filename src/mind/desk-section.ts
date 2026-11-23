@@ -1,6 +1,8 @@
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { getAgentRoot } from "../heart/identity";
+import { agentDesks, type AgentDesk } from "../repertoire/desk-mcp";
 import { emitNervesEvent } from "../nerves/runtime";
 import { resolveDeskRecordPaths } from "./record-paths";
 
@@ -17,13 +19,29 @@ import { resolveDeskRecordPaths } from "./record-paths";
 
 const STATIC_BODY = `## my desk
 
-i have a desk at \`desk/\`: durable work that persists across sessions. tracks group related work; each task is a folder with a \`task.md\` of plain Markdown, in my bundle's Git repository, so i commit what i change. friction notes and lessons live there too, and finished tasks stay browsable. i read and edit the files directly and search them with \`grep\`.
+i have a desk at \`desk/\`: durable work that persists across sessions. it is a Desk, the same kind my operator's coding agents (Claude Code, Codex, Copilot) work on, and Desk is built into me. tracks group related work; each task is a folder with a \`task.md\` card; friction notes and lessons live there too, and finished tasks stay browsable.
+
+**i change a desk only through Desk's tools**, \`mcp__desk__*\` for my own: \`task_create\`, \`task_update\` (progress, status, next step, log), \`task_archive\`, \`track_create\`, \`friction_add\`, \`lesson_add\`, \`note\`, and \`desk_save\` for any other file. \`desk_search\` and \`desk_recall\` find things, \`desk_status\` and \`desk_doctor\` say how the desk is and what to fix, and \`desk_skill\` reads Desk's own how-to skills. the tools commit and push each change themselves, so i never hand-edit desk files or commit them with git: a hand edit skips Desk's checks, and a shared desk refuses commits Desk didn't make. reading the files directly is fine. \`desk/_record/\` is my diary and notes, which my diary and note tools keep; it is not part of Desk.
 
 **the reflex.** when something spans more than this turn, i'd forget it by tomorrow, or the operator will ask about it later, i put it on the desk before i start: a project, a recurring task (\`cadence\`), a one-time reminder (\`scheduledAt\`), a multi-step investigation, a friction note, a lesson.
 
-**what doesn't belong:** a single-turn answer, debugging that resolves in the same exchange, scratch thinking, live continuity, claims and obligations (those are Arc), habit definitions (those stay in habits/), or a separate scratch workspace (the maintained record belongs under desk/_record).
+**what doesn't belong:** a single-turn answer, debugging that resolves in the same exchange, scratch thinking, live continuity, claims and obligations (those are Arc), habit definitions (those stay in habits/), or a separate scratch workspace.
 
 **states.** \`drafting\` → \`processing\` → \`validating\` → \`done\`; \`collaborating\` when i'm waiting on a human or peer agent, \`paused\` when the operator set it down, \`blocked\` when something outside is in the way, \`cancelled\` when we stopped wanting it. external trackers (ADO work items, GitHub issues) are linked from a task, not replaced by one.`;
+
+/** The other desks this agent looks after, each with its own Desk server, or nothing when there are none. */
+export function otherDesksBlock(desks: readonly AgentDesk[], home = os.homedir()): string {
+  const others = desks.filter((desk) => desk.name !== null);
+  if (others.length === 0) return "";
+  const shown = (root: string) => (root.startsWith(home + path.sep) ? `~${root.slice(home.length)}` : root);
+  const lines = ["### other desks i look after", "each has its own Desk server and the same tools; the same rule holds: only through the tools."];
+  for (const desk of others) {
+    lines.push(desk.present
+      ? `- ${desk.name}, at ${shown(desk.root)}: \`mcp__${desk.server}__*\``
+      : `- ${desk.name}: not on this machine (expected at ${shown(desk.root)}), so its tools are off here`);
+  }
+  return lines.join("\n");
+}
 
 const TERMINAL_TASK_STATUSES = new Set(["done", "cancelled"]);
 const TERMINAL_TRACK_STATUSES = new Set(["closed"]);
@@ -127,23 +145,13 @@ function listSubdirs(parent: string): string[] {
   /* v8 ignore stop @preserve */
 }
 
-function readTrack(deskRoot: string, slug: string): TrackRecord | null {
+/** A track folder, which `listSubdirs` has already found. */
+function readTrack(deskRoot: string, slug: string): TrackRecord {
   const trackDir = path.join(deskRoot, slug);
-  try {
-    const stat = fs.statSync(trackDir);
-    if (!stat.isDirectory()) return null;
-    /* v8 ignore start -- defensive statSync catch on stale featured slug @preserve */
-  } catch {
-    return null;
-  }
-  /* v8 ignore stop @preserve */
   const { status } = readTrackFile(trackDir);
-  const taskSlugs = listSubdirs(trackDir);
-  const tasks: TaskRecord[] = [];
-  for (const taskSlug of taskSlugs) {
-    const task = readTaskFile(path.join(trackDir, taskSlug));
-    if (task) tasks.push(task);
-  }
+  const tasks = listSubdirs(trackDir)
+    .map((taskSlug) => readTaskFile(path.join(trackDir, taskSlug)))
+    .filter((task): task is TaskRecord => task !== null);
   return { slug, status, tasks };
 }
 
@@ -219,12 +227,7 @@ function sortOldestUpdatedFirst(tasks: TaskRecord[]): TaskRecord[] {
 }
 
 function renderCurrently(deskRoot: string, now: Date = new Date()): string {
-  const trackSlugs = listSubdirs(deskRoot);
-  const tracks: TrackRecord[] = [];
-  for (const slug of trackSlugs) {
-    const track = readTrack(deskRoot, slug);
-    if (track) tracks.push(track);
-  }
+  const tracks = listSubdirs(deskRoot).map((slug) => readTrack(deskRoot, slug));
 
   if (tracks.length === 0) {
     return "### currently\nthe desk is quiet today — no tracks yet. a good time to lay something down.";
@@ -288,15 +291,7 @@ function countRecordNotes(agentRoot: string): number {
 
 export function deskRecordOrientationSection(agentRoot = getAgentRoot(), now: Date = new Date()): string {
   const deskRoot = path.join(agentRoot, "desk");
-  const tracks = (() => {
-    try {
-      return listSubdirs(deskRoot)
-        .map((slug) => readTrack(deskRoot, slug))
-        .filter((track): track is TrackRecord => Boolean(track));
-    } catch {
-      return [];
-    }
-  })();
+  const tracks = listSubdirs(deskRoot).map((slug) => readTrack(deskRoot, slug));
   const activeTracks = tracks.filter((track) => !TERMINAL_TRACK_STATUSES.has(track.status));
   const openTaskCount = tracks.reduce((sum, track) => sum + nonTerminalTasks(track).length, 0);
   const lines = ["## Desk orientation"];
@@ -313,17 +308,16 @@ export function deskRecordOrientationSection(agentRoot = getAgentRoot(), now: Da
 // Public entry — every-turn synchronous read
 // ──────────────────────────────────────────────────────────────────────────────
 
-export function deskSection(now: Date = new Date()): string {
+export function deskSection(now: Date = new Date(), desks: readonly AgentDesk[] = agentDesks()): string {
   emitNervesEvent({
     event: "prompt.desk_section_assembled",
     component: "mind",
     message: "assembling ## my desk section",
-    meta: { operation: "deskSection" },
+    meta: { operation: "deskSection", otherDesks: desks.length - 1 },
   });
   const deskRoot = readDeskRoot();
-  if (!deskRoot) {
-    return `${STATIC_BODY}\n\n### currently\nthe desk is quiet today — no tracks yet. a good time to lay something down.`;
-  }
-  const currently = renderCurrently(deskRoot, now);
-  return `${STATIC_BODY}\n\n${currently}`;
+  const currently = deskRoot
+    ? renderCurrently(deskRoot, now)
+    : "### currently\nthe desk is quiet today — no tracks yet. a good time to lay something down.";
+  return [STATIC_BODY, currently, otherDesksBlock(desks)].filter(Boolean).join("\n\n");
 }

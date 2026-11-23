@@ -304,9 +304,11 @@ describe("package asset validation", () => {
       "RepairGuide.ouro/",
       "SerpentGuide.ouro/",
       "skills/",
+      "vendor/desk/",
     ])
     expect(PACKAGE_PAYLOAD_FILE_PATHS).toEqual([
       "changelog.json",
+      "desk.lock.json",
       "npm-shrinkwrap.json",
       "package.json",
     ])

@@ -5,13 +5,14 @@ import { loadAgentConfig, type McpServerConfig } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getCredentialStore } from "./credential-access"
 import { listPluginMcpServers, pluginMcpServerToConfig } from "./plugin-mcp"
+import { listDeskMcpServers } from "./desk-mcp"
 import { digestJson, freezeToolValue } from "./tool-arguments"
 import { McpCallRejectedError, mcpToolSchema } from "./mcp-tools"
 import { loadDeclaredTools, type DeclaredTools } from "./mcp-declared-tools"
 
 export type McpOwner = Readonly<{ agentName: string; agentRoot: string }>
 export type RuntimeMcpServers = Record<string, McpServerConfig>
-type McpSource = "builtin" | "plugin" | "runtime"
+type McpSource = "builtin" | "plugin" | "runtime" | "desk"
 type ToolResult = Awaited<ReturnType<McpClient["callTool"]>>
 
 interface DesiredServer {
@@ -90,19 +91,37 @@ function serverKey(owner: McpOwner, name: string): string {
   return JSON.stringify([owner.agentName, owner.agentRoot, name])
 }
 
+/** Desk's servers are built in, so their names are taken: another server declared under one is left out, and said so. */
+function reservedName(desired: Map<string, DesiredServer>, name: string, declaredBy: string): boolean {
+  if (desired.get(name)?.source !== "desk") return false
+  emitNervesEvent({
+    level: "warn", event: "mcp.server_name_reserved", component: "repertoire",
+    message: `${declaredBy} declares MCP server "${name}", which is the built-in Desk's; it is left out`,
+    meta: { server: name, declaredBy },
+  })
+  return true
+}
+
 function buildMergedServerConfig(owner: McpOwner, runtimeServers?: RuntimeMcpServers): Map<string, DesiredServer> {
   const config = loadAgentConfig(owner)
   const desired = new Map<string, DesiredServer>()
+  for (const [name, server] of Object.entries(listDeskMcpServers(owner, config))) {
+    // Desk's servers are the Desk plugin's, run from the package, so their tools take the plugin's names.
+    desired.set(name, { config: server, source: "desk", pluginId: "desk" })
+  }
   for (const plugin of listPluginMcpServers(undefined, owner)) {
+    if (reservedName(desired, plugin.serverName, `plugin ${plugin.pluginId}`)) continue
     if (desired.has(plugin.serverName)) throw new McpCallRejectedError(`MCP server name collision: ${plugin.serverName}`)
     desired.set(plugin.serverName, {
       config: pluginMcpServerToConfig(plugin), source: "plugin", pluginId: plugin.pluginId,
     })
   }
   for (const [name, server] of Object.entries(config.mcpServers ?? {})) {
+    if (reservedName(desired, name, "agent.json mcpServers")) continue
     desired.set(name, { config: server, source: "builtin" })
   }
   for (const [name, server] of Object.entries(runtimeServers ?? {})) {
+    if (reservedName(desired, name, "a runtime server")) continue
     desired.set(name, { config: server, source: "runtime" })
   }
   return desired

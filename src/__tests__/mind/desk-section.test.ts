@@ -5,11 +5,14 @@ import * as path from "path"
 
 const mockGetAgentRoot = vi.fn<[], string>()
 
+const mockLoadAgentConfig = vi.fn(() => ({}))
+
 vi.mock("../../heart/identity", () => ({
   getAgentRoot: () => mockGetAgentRoot(),
+  loadAgentConfig: () => mockLoadAgentConfig(),
 }))
 
-import { deskSection, formatRelative } from "../../mind/desk-section"
+import { deskRecordOrientationSection, deskSection, formatRelative, otherDesksBlock } from "../../mind/desk-section"
 
 const NOW = new Date("2026-05-22T12:00:00Z")
 
@@ -71,7 +74,25 @@ describe("deskSection", () => {
     expect(result).toContain("debugging that resolves in the same exchange")
     expect(result).toContain("live continuity, claims and obligations")
     expect(result).toContain("habit definitions")
-    expect(result).toContain("maintained record belongs under desk/_record")
+    expect(result).toContain("`desk/_record/` is my diary and notes")
+  })
+
+  it("points at Desk's tools and never at hand edits", () => {
+    const result = deskSection(NOW)
+    expect(result).toContain("**i change a desk only through Desk's tools**, `mcp__desk__*` for my own")
+    expect(result).toContain("i never hand-edit desk files or commit them with git")
+    expect(result).not.toContain("grep")
+    expect(result).not.toContain("### other desks")
+  })
+
+  it("lists the other desks agent.json names, on this machine or not", () => {
+    const shared = path.join(tmpDir, "team-desk")
+    fs.mkdirSync(shared)
+    mockLoadAgentConfig.mockReturnValueOnce({ desks: { team: shared, gone: path.join(tmpDir, "nowhere") } })
+    const result = deskSection(NOW)
+    expect(result).toContain("### other desks i look after")
+    expect(result).toContain(`- team, at ${shared}: \`mcp__desk-team__*\``)
+    expect(result).toContain(`- gone: not on this machine (expected at ${path.join(tmpDir, "nowhere")}), so its tools are off here`)
   })
 
   it("returns empty-desk stub when no <bundle>/desk/ dir exists", () => {
@@ -247,10 +268,7 @@ describe("deskSection — coverage-gate edge cases", () => {
     vi.clearAllMocks()
   })
 
-  it("readTrack returns null when a featured slug names a path that isn't a directory", () => {
-    // Create the desk root with a real track + a stray file (not a dir)
-    // matching a slug, then list both in featured.md so pickFeatured probes
-    // the file-not-dir case at least once before falling to the real track.
+  it("passes over a featured slug that names a stray file rather than a track", () => {
     fs.mkdirSync(path.join(tmpDir, "desk"), { recursive: true })
     fs.writeFileSync(path.join(tmpDir, "desk", "not-a-real-track"), "stray")
     writeTrack(path.join(tmpDir, "desk"), "harness-care", "active")
@@ -304,20 +322,29 @@ describe("deskSection — coverage-gate edge cases", () => {
     expect(result).toMatch(/bad-date-a|bad-date-b|good-date/)
   })
 
-  it("renderCurrently skips track when readTrack returns null", () => {
-    fs.mkdirSync(path.join(tmpDir, "desk"), { recursive: true })
-    // Create a file (not a dir) at a slug path; listSubdirs picks it up as a name
-    // but readTrack returns null because statSync says it's not a dir
-    // (note: listSubdirs filters dirs only, so this won't surface — switch approach)
-    // Instead: create a directory with NO track.md inside; readTrack returns a track
-    // anyway (defaults to active) so this doesn't hit the null branch.
-    // True null path: when listSubdirs returns a slug that doesn't exist at all
-    // by the time readTrack runs — race condition. Hard to trigger in test.
-    // Skip this edge case; v8 ignore is the right tool here.
-    fs.mkdirSync(path.join(tmpDir, "desk", "harness-care"), { recursive: true })
-    writeTrack(path.join(tmpDir, "desk"), "harness-care", "active")
+  it("reads loose frontmatter: no closing fence, blank and odd lines, empty values, no status, bad dates", () => {
+    const deskRoot = path.join(tmpDir, "desk")
+    const track = path.join(deskRoot, "loose")
+    fs.mkdirSync(track, { recursive: true })
+    fs.writeFileSync(path.join(track, "track.md"), "---\n\nnot a pair\nstatus:\n---\n")
+    const task = (slug: string, body: string) => {
+      fs.mkdirSync(path.join(track, slug))
+      fs.writeFileSync(path.join(track, slug, "task.md"), body)
+    }
+    task("a-unfenced", "---\nstatus: processing\n")
+    task("b-plain", "# no frontmatter\n")
+    task("c-bad-date", "---\nstatus: processing\nupdated: someday\n---\n")
+    task("d-bad-date", "---\nstatus: processing\nupdated: never\n---\n")
+    task("e-dated", "---\nstatus: processing\nupdated: 2026-05-22T09:00:00Z\n---\n")
     const result = deskSection(NOW)
-    expect(result).toContain("harness-care")
+    expect(result).toContain("nearest the front of the desk: loose   (status: active)")
+    expect(result).toContain("tasks still open: 5")
+    expect(result.indexOf("e-dated")).toBeLessThan(result.indexOf("a-unfenced"))
+  })
+
+  it("treats a desk path that is a file as no desk", () => {
+    fs.writeFileSync(path.join(tmpDir, "desk"), "not a folder")
+    expect(deskSection(NOW)).toContain("the desk is quiet today")
   })
 
   it("parseScalar handles single-quoted and double-quoted YAML values", () => {
@@ -347,5 +374,37 @@ describe("deskSection — coverage-gate edge cases", () => {
     const result = deskSection(NOW)
     expect(result).toContain("real-task")
     expect(result).not.toContain("no-task-md-here")
+  })
+})
+
+describe("otherDesksBlock", () => {
+  it("is empty with only the agent's own desk, and shows home-relative folders with ~", () => {
+    expect(otherDesksBlock([{ server: "desk", name: null, root: "/b/desk", present: true }])).toBe("")
+    expect(otherDesksBlock([{ server: "desk-ari", name: "ari", root: "/home/a/desk", present: true }], "/home/a"))
+      .toContain("- ari, at ~/desk: `mcp__desk-ari__*`")
+  })
+})
+
+describe("deskRecordOrientationSection", () => {
+  let root: string
+  beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), "desk-orientation-")) })
+  afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
+
+  it("counts nothing for a bundle with no desk", () => {
+    expect(deskRecordOrientationSection(root, NOW)).toBe("## Desk orientation\nactive tracks: 0\nopen tasks: 0\ndiary facts: 0\nrecord notes: 0")
+  })
+
+  it("counts tracks, open tasks, diary facts and record notes, then shows what is current", () => {
+    const deskRoot = path.join(root, "desk")
+    writeTask(writeTrack(deskRoot, "harness-care"), "fix-thing")
+    writeTrack(deskRoot, "old", "closed")
+    fs.mkdirSync(path.join(deskRoot, "_record", "diary"), { recursive: true })
+    fs.writeFileSync(path.join(deskRoot, "_record", "diary", "facts.jsonl"), "{}\n\n{}\n")
+    fs.mkdirSync(path.join(deskRoot, "_record", "notes"), { recursive: true })
+    for (const name of ["a.md", ".hidden.md", "b.txt"]) fs.writeFileSync(path.join(deskRoot, "_record", "notes", name), "x")
+    fs.mkdirSync(path.join(deskRoot, "_record", "notes", "dir.md"))
+    const result = deskRecordOrientationSection(root, NOW)
+    expect(result).toContain("active tracks: 1\nopen tasks: 1\ndiary facts: 2\nrecord notes: 1")
+    expect(result).toContain("nearest the front of the desk: harness-care")
   })
 })
