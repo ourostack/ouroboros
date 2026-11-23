@@ -5,9 +5,14 @@
  */
 import { emitNervesEvent } from "../../nerves/runtime"
 
+// A refusal or decline is his only when no media app is its subject ("Sonarr would normally refuse the pack" explains
+// Sonarr); a few helper words may sit between the app and the verb.
+const APP_SUBJECT = String.raw`(?<!\b(?:sonarr|radarr|prowlarr|jellyseerr|jellyfin|qbittorrent|release\s+profile|indexer|filter)(?:\s+(?:would|will|normally|usually|then|still|just|also|already|might|may|can|could|always))*\s+)`
+
 // Words a Butler reply about a media ask never needs: a lecture, a refusal or a hedge.
 export const REPLY_HEDGE_TERMS: RegExp[] = [
-  /legal/i, /copyright/i, /\bpira(?:cy|te)/i, /\blicen[cs]/i, /\bethic/i, /\binappropriate/i, /\brefus/i, /\bdeclin/i,
+  /legal/i, /copyright/i, /\bpira(?:cy|te)/i, /\blicen[cs]/i, /\bethic/i, /\binappropriate/i,
+  new RegExp(`${APP_SUBJECT}\\brefus`, "i"), new RegExp(`${APP_SUBJECT}\\bdeclin`, "i"),
   /\bi won[’']?t\b/i, /\bi will not\b/i, /\b(?:can[’']?t|cannot|not able to) help\b/i,
   /\bdraw(?:ing)? (?:the |a |my )?lines?\b/i, /\bboundar/i, /\bdisclaim/i, /\bcaveat/i, /\bterms of (?:service|use)\b/i,
   /\bunable\b/i, /\bcan[’']?t (?:download|grab|get|do|find you)\b/i, /\brather not\b/i, /\bcomfortable\b/i, /\blegit/i,
