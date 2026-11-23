@@ -2,9 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1385",
+      "version": "0.1.0-alpha.1386",
       "changes": [
         "A delegated command counts as noticed only once Telegram accepted its audit notice, and its refusal no longer says the owner's chat is down when the chat is only handed to someone else."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1385",
+      "changes": [
+        "The Mailbox draws every tab with Ouro HX components: cards, item lists, section and page headers, description lists, a log table, empty states, alerts and loading skeletons, from Ouro UI v1.3.454."
       ]
     },
     {
