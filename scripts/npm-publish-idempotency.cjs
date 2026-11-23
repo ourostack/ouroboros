@@ -114,7 +114,7 @@ function waitForStagedVersion(spec, npm, { attempts, intervalMs, sleep }) {
   return lookupPublishedVersion(spec, npm) !== null;
 }
 
-// Keeps the start and the end: npm prints the registry's answer (tag, provenance, "being processed") last.
+// Keeps the start and the end: npm prints its closing lines (tag, provenance, "being processed") last.
 function boundedStream(text) {
   const lines = String(text ?? "").split("\n").filter((line) => line.trim().length > 0).map((line) => line.slice(0, 300));
   if (lines.length === 0) return "(no output)";
