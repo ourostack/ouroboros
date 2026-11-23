@@ -87,9 +87,10 @@ describe("package metadata", () => {
     const verifyJob = workflow.slice(start, workflow.indexOf("  github-release:", start))
     const waits = (verifyJob.match(/^          (verify_tag|if \[ "\$(CLI|WRAPPER)_TAG" = latest \]; then verify_latest_not_behind) /gmu) ?? []).length
     expect(waits).toBe(4)
-    expect(verifyJob).toContain("PROPAGATION_DEADLINE_SECONDS=600")
-    // Four 10-minute waits, the tarball wait (about 21 minutes), install and smoke.
-    expect(Number(/timeout-minutes: (\d+)/u.exec(verifyJob)?.[1])).toBeGreaterThanOrEqual(4 * 10 + 21 + 5)
+    expect(verifyJob).toContain("PROPAGATION_DEADLINE_SECONDS=1200")
+    // Four 20-minute waits, the tarball wait (about 21 minutes), install and smoke.
+    expect(verifyJob).toContain("version list: includes")
+    expect(Number(/timeout-minutes: (\d+)/u.exec(verifyJob)?.[1])).toBeGreaterThanOrEqual(4 * 20 + 21 + 5)
   })
 
   it("gates publish on both packed artifact E2E suites", () => {
