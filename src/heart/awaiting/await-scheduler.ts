@@ -50,6 +50,16 @@ export const AWAIT_CRON_LABEL_PREFIX_MARKER = "await"
 
 type AwaitWithRuntime = AwaitFile & Partial<AwaitRuntimeState>
 
+/** setTimeout's longest delay; a wake further off is re-armed by the next reconcile. */
+const MAX_TIMER_MS = 2_147_483_647
+
+/** Epoch ms of an await's wake_at, or null when it has none or it can't be read. */
+function wakeAtMs(a: AwaitFile): number | null {
+  if (!a.wake_at) return null
+  const ms = Date.parse(a.wake_at)
+  return Number.isFinite(ms) ? ms : null
+}
+
 /** An await that ships with the package: it has no filer, friend, conversation or request behind it (the same test the private runtime uses for "no relationship"). */
 function isSystemAwait(a: AwaitFile): boolean {
   return !a.request_id && !a.filed_for_friend_id && !a.filed_from_key && (!a.filed_from || a.filed_from === "unknown")
@@ -71,6 +81,7 @@ export class AwaitScheduler {
   private timerFallbacks: Map<string, ReturnType<typeof setTimeout>> = new Map()
   private degradedAwaitNames: Map<string, string> = new Map()
   private periodicTimer: ReturnType<typeof setTimeout> | null = null
+  private wakeTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(options: AwaitSchedulerOptions) {
     this.agent = options.agent
@@ -100,10 +111,13 @@ export class AwaitScheduler {
     const awaits = this.scanAwaits()
     this.expireOverdueByMaxAge(awaits)
     const remaining = awaits.filter((a) => a.status === "pending" && !this.isExpiredByMaxAge(a))
-    const jobs = this.buildJobs(remaining)
+    // An await with a wake_at still ahead is neither scheduled nor fired: it waits for that time.
+    const due = remaining.filter((a) => !this.waitsForWakeAt(a))
+    const jobs = this.buildJobs(due)
     this.osCronManager.sync(jobs)
     this.verifyCronAndCreateFallbacks(jobs)
-    this.fireOverdueAwaits(remaining)
+    this.fireOverdueAwaits(due)
+    this.armWakeTimer(remaining)
   }
 
   reconcile(): void {
@@ -118,10 +132,13 @@ export class AwaitScheduler {
     const awaits = this.scanAwaits()
     this.expireOverdueByMaxAge(awaits)
     const remaining = awaits.filter((a) => a.status === "pending" && !this.isExpiredByMaxAge(a))
-    const jobs = this.buildJobs(remaining)
+    // An await with a wake_at still ahead is neither scheduled nor fired: it waits for that time.
+    const due = remaining.filter((a) => !this.waitsForWakeAt(a))
+    const jobs = this.buildJobs(due)
     this.osCronManager.sync(jobs)
     this.verifyCronAndCreateFallbacks(jobs)
-    this.fireOverdueAwaits(remaining)
+    this.fireOverdueAwaits(due)
+    this.armWakeTimer(remaining)
   }
 
   stop(): void {
@@ -134,6 +151,7 @@ export class AwaitScheduler {
 
     this.stopPeriodicReconciliation()
     this.clearAllTimerFallbacks()
+    this.clearWakeTimer()
     this.osCronManager.removeAll()
   }
 
@@ -212,8 +230,52 @@ export class AwaitScheduler {
     }, intervalMs)
   }
 
+  private waitsForWakeAt(a: AwaitFile): boolean {
+    const wake = wakeAtMs(a)
+    return wake !== null && wake > this.deps.now()
+  }
+
+  /** One timer, at the nearest wake_at still ahead, that reconciles so that await is scheduled and fires on time. */
+  private armWakeTimer(awaits: AwaitWithRuntime[]): void {
+    this.clearWakeTimer()
+    const nowMs = this.deps.now()
+    const next = Math.min(...awaits.map((a) => wakeAtMs(a) ?? Infinity).filter((ms) => ms > nowMs))
+    if (!Number.isFinite(next)) return
+    const delay = Math.min(next - nowMs, MAX_TIMER_MS)
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.await_wake_timer_armed",
+      message: "await scheduler waiting for the next wake_at",
+      meta: { agent: this.agent, delayMs: delay },
+    })
+    this.wakeTimer = setTimeout(() => {
+      this.wakeTimer = null
+      this.reconcile()
+    }, delay)
+  }
+
+  private clearWakeTimer(): void {
+    if (this.wakeTimer !== null) {
+      clearTimeout(this.wakeTimer)
+      this.wakeTimer = null
+    }
+  }
+
   private fireOverdueAwaits(awaits: AwaitWithRuntime[]): void {
     for (const a of awaits) {
+      // A wake_at that has passed fires once, at once, unless the await was checked since; then the cadence takes over.
+      const wake = wakeAtMs(a)
+      const lastCheckedAt = a.last_checked ? Date.parse(a.last_checked) : Number.NaN
+      if (wake !== null && !(lastCheckedAt >= wake)) {
+        emitNervesEvent({
+          component: "daemon",
+          event: "daemon.await_fire",
+          message: "firing await at its wake_at",
+          meta: { awaitName: a.name, agent: this.agent, wakeAt: a.wake_at },
+        })
+        this.onAwaitFire(a.name)
+        continue
+      }
       if (!a.cadence) continue
       const cadenceMs = parseCadenceToMs(a.cadence)
       if (cadenceMs === null) continue

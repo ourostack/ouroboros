@@ -565,6 +565,66 @@ describe("AwaitScheduler", () => {
     })
   })
 
+  describe("wake_at", () => {
+    const T0 = Date.parse("2026-11-23T10:00:00.000Z")
+    afterEach(() => { vi.useRealTimers() })
+    const start = (awaitFile: Record<string, unknown>) => {
+      vi.useFakeTimers({ now: T0 })
+      deps = makeDeps({ readdir: vi.fn(() => ["x.md"]), readFile: vi.fn(() => "content"), now: () => Date.now() })
+      mockParseAwaitFile.mockImplementation(() => makePending(awaitFile))
+      const scheduler = new AwaitScheduler({ agent: "slugger", awaitsDir: "/x", osCronManager: cronManager, onAwaitFire, onAwaitExpire, deps })
+      scheduler.start()
+      return scheduler
+    }
+    const syncedJobs = (call: number) => (cronManager.sync as ReturnType<typeof vi.fn>).mock.calls[call]![0] as ScheduledTaskJob[]
+
+    it("neither schedules nor fires an await before its wake_at, then fires it once that time comes", () => {
+      start({ wake_at: "2026-11-23T11:00:00.000Z", last_checked: null })
+      expect(syncedJobs(0)).toEqual([])
+      expect(onAwaitFire).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(60 * 60 * 1000 - 1)
+      expect(onAwaitFire).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(1)
+      expect(onAwaitFire).toHaveBeenCalledTimes(1)
+      expect(onAwaitFire).toHaveBeenCalledWith("hey_export")
+      expect(syncedJobs(1).map((job) => job.taskId)).toEqual(["await.hey_export"])
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "daemon.await_wake_timer_armed", meta: expect.objectContaining({ delayMs: 60 * 60 * 1000 }) }))
+    })
+
+    it("fires at once an await whose wake_at has passed and that wasn't checked since, even a managed one", () => {
+      start({ wake_at: "2026-11-23T09:00:00.000Z", last_checked: "2026-11-23T08:59:00.000Z", filed_from: null, filed_for_friend_id: null, created_at: "2026-11-23T09:59:00.000Z", cadence: null })
+      expect(onAwaitFire).toHaveBeenCalledTimes(1)
+    })
+
+    it("leaves an await checked since its wake_at to its cadence", () => {
+      start({ wake_at: "2026-11-23T09:00:00.000Z", last_checked: "2026-11-23T09:58:00.000Z" })
+      expect(onAwaitFire).not.toHaveBeenCalled()
+      expect(syncedJobs(0)).toHaveLength(1)
+    })
+
+    it("treats a wake_at it can't read as none", () => {
+      start({ wake_at: "soon", last_checked: "2026-11-23T09:58:00.000Z" })
+      expect(onAwaitFire).not.toHaveBeenCalled()
+      expect(syncedJobs(0)).toHaveLength(1)
+    })
+
+    it("waits at most setTimeout's longest delay and reconciles then", () => {
+      const scheduler = start({ wake_at: "2027-06-01T00:00:00.000Z" })
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "daemon.await_wake_timer_armed", meta: expect.objectContaining({ delayMs: 2_147_483_647 }) }))
+      vi.advanceTimersByTime(2_147_483_647)
+      expect(onAwaitFire).not.toHaveBeenCalled()
+      expect(cronManager.sync).toHaveBeenCalledTimes(2)
+      scheduler.stop()
+    })
+
+    it("stops waiting when the scheduler stops", () => {
+      const scheduler = start({ wake_at: "2026-11-23T11:00:00.000Z" })
+      scheduler.stop()
+      vi.advanceTimersByTime(2 * 60 * 60 * 1000)
+      expect(onAwaitFire).not.toHaveBeenCalled()
+    })
+  })
+
   describe("stop()", () => {
     it("calls osCronManager.removeAll and stops periodic", () => {
       const scheduler = new AwaitScheduler({
