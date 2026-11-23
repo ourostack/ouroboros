@@ -4,7 +4,7 @@ import * as path from "path"
 import { sessionPath } from "../heart/config"
 import { runAgent, type ChannelCallbacks, type CompletionMetadata, type RunAgentOutcome } from "../heart/core"
 import { getAgentName, getAgentRoot, type AgentProvider } from "../heart/identity"
-import { loadSession, postTurnTrim, deferPostTurnPersist, type UsageData } from "../mind/context"
+import { loadSession, postTurnTrim, deferPostTurnPersistOrThrow, type UsageData } from "../mind/context"
 import { buildSystem, flattenSystemPrompt, loadPsycheAt } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { getToolsForChannel } from "../repertoire/tools"
@@ -17,6 +17,7 @@ import { renderRelationshipPreferences } from "../repertoire/relationship-author
 import { appendRunLedgerRecordNonFatal, createRunLedgerRecord, usageMetadataFromUsageData } from "../heart/run-ledger"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
 import {
+  claimPending,
   drainPending,
   getPrivateRuntimePendingDir,
   getDeferredReturnDir,
@@ -1644,10 +1645,13 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
     friendStore: createNoOpFriendStore(),
     enforceTrustGate,
     drainPending,
+    // Mail, app-session and other notices stay on disk until the turn that read them is persisted.
+    claimPending,
     runAgent,
     postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
       const prepared = postTurnTrim(turnMessages, usage, hooks)
-      return deferPostTurnPersist(sessionPathArg, prepared, usage, state)
+      // A failed persist must reject, so the claimed notices go back instead of being settled as handled.
+      return deferPostTurnPersistOrThrow(sessionPathArg, prepared, usage, state)
     },
     accumulateFriendTokens,
     signal: options?.signal,

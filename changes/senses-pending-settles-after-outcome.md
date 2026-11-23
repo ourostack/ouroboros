@@ -1,0 +1,1 @@
+- Mail, app-session and other notices for the agent's own inner turn are no longer lost when that turn fails, is aborted, or its process dies. They stay on disk until the turn acts on them or its session is saved, then replay. A notice that fails three turns is set aside as `.json.failed`.

@@ -293,7 +293,7 @@ describe("execTool", () => {
     )
 
     expect(result).toBe("created")
-    expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ ...MCP_OWNER, server: "calendar", rawName: "create_event" }), { title: "external write allowed by this narrow policy" }, MCP_OWNER)
+    expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ ...MCP_OWNER, server: "calendar", rawName: "create_event" }), { title: "external write allowed by this narrow policy" }, MCP_OWNER, undefined)
   })
 
   it("obvious mutation tool definitions declare high-risk correction-hold metadata", async () => {

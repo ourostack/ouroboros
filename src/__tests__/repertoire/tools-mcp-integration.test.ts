@@ -139,7 +139,7 @@ describe("execTool with MCP tools", () => {
     expect(result).toBe("ok")
     expect(mgr.manager.callTool).toHaveBeenCalledWith(
       expect.objectContaining({ ...MCP_OWNER, server: "browser", rawName: "navigate" }),
-      { url: "https://example.com" }, MCP_OWNER,
+      { url: "https://example.com" }, MCP_OWNER, undefined,
     )
   })
 

@@ -175,13 +175,17 @@ describe("speak interception in runAgent", () => {
     mockCreate.mockReturnValueOnce(makeStream(speakChunk("got it, kicking off")))
     mockCreate.mockReturnValueOnce(makeStream(settleChunks("done")))
 
-    const callbacks = makeCallbacks()
+    const callbacks = makeCallbacks({ onToolDispatch: vi.fn() })
     const messages: any[] = [{ role: "user", content: "do a thing" }]
     const result = await runAgent(messages, callbacks, "cli", undefined, {
       toolContext: { signin: async () => undefined },
     })
 
     expect(result.outcome).toBe("settled")
+    // Speaking reaches the friend, so the turn has acted; told before the message goes out.
+    expect(callbacks.onToolDispatch).toHaveBeenCalledOnce()
+    expect(callbacks.onToolDispatch).toHaveBeenCalledWith("speak")
+    expect(vi.mocked(callbacks.onToolDispatch!).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(callbacks.flushNow!).mock.invocationCallOrder[0]!)
 
     // onTextChunk: speak first, then settle answer
     const textChunkCalls = (callbacks.onTextChunk as any).mock.calls.map((c: any[]) => c[0])
@@ -284,12 +288,13 @@ describe("speak interception in runAgent", () => {
     mockCreate.mockReturnValueOnce(makeStream(speakChunk("")))
     mockCreate.mockReturnValueOnce(makeStream(settleChunks("done")))
 
-    const callbacks = makeCallbacks()
+    const callbacks = makeCallbacks({ onToolDispatch: vi.fn() })
     const messages: any[] = [{ role: "user", content: "x" }]
     await runAgent(messages, callbacks, "cli", undefined, {
       toolContext: { signin: async () => undefined },
     })
 
+    expect(callbacks.onToolDispatch).not.toHaveBeenCalled()
     // The first onTextChunk is the settle answer "done", not an empty speak text
     const speakTextCalls = (callbacks.onTextChunk as any).mock.calls.filter((c: any[]) => c[0] === "")
     expect(speakTextCalls).toHaveLength(0)
