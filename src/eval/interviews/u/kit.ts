@@ -5,6 +5,7 @@
  * hidden test, which this kit reads back into a verdict. The household still runs beside the agent container, as in
  * every sandboxed run, but no U tool reaches it.
  */
+import { emitNervesEvent } from "../../../nerves/runtime"
 import type { Case, Observation } from "../../domain/case"
 import type { SandboxRun } from "../../sandbox/remote"
 import type { ProductKit, Verdict } from "../runner"
@@ -66,6 +67,7 @@ export function gradeU(run: SandboxRun): Verdict {
     { name: "u.hidden.statusSaysDone", ok: grade.hidden.statusSaysDone, detail },
   ]
   const failed = checks.filter((check) => !check.ok).map((check) => check.name)
+  emitNervesEvent({ component: "eval", event: "eval.u_graded", message: "graded a U run", meta: { failed: failed.length } })
   return { passed: failed.length === 0, reason: failed.length === 0 ? null : `failed ${failed.join(", ")}`, checks }
 }
 
