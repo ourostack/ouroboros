@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1398",
+      "changes": [
+        "iMessage sends go through BlueBubbles' Private API helper whenever the server reports it connected, instead of AppleScript into Messages, which macOS can refuse (-1743) and which held Slugger's sends for minutes on 2026-11-23. Each send start says which method it used."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1397",
       "changes": [
         "When an agent tells a person something unprompted, surface now texts them on their own iMessage, Telegram or Teams chat, or says plainly it was not sent and saves it for their next message; it never queues it into an MCP or CLI session they don't read."

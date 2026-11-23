@@ -9,7 +9,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { describeImage } from "../../heart/attachments/understand"
 import { normalizeBlueBubblesEvent, type BlueBubblesChatRef, type BlueBubblesNormalizedEvent } from "./model"
 import { hydrateBlueBubblesAttachments, type VlmDescribeFn } from "./media"
-import { verifyBlueBubblesServerAccount } from "./host-account-verifier"
+import { verifyBlueBubblesServerAccount, type BlueBubblesServerFacts } from "./host-account-verifier"
 
 export interface BlueBubblesSendTextParams {
   chat: BlueBubblesChatRef
@@ -419,7 +419,7 @@ export function createBlueBubblesClient(
   // Everything that acts as the signed-in Apple ID first confirms the server
   // runs under the agent's declared macOS host account.
   // Sends recheck every time; quieter actions may reuse a recent confirmation.
-  const assertHostAccount = (options: { fresh?: boolean } = {}): Promise<void> => verifyBlueBubblesServerAccount({
+  const assertHostAccount = (options: { fresh?: boolean } = {}): Promise<BlueBubblesServerFacts | undefined> => verifyBlueBubblesServerAccount({
     agent: hostOptions.agent ?? getAgentName(),
     hostUsername: "hostUsername" in hostOptions
       ? hostOptions.hostUsername
@@ -435,7 +435,7 @@ export function createBlueBubblesClient(
       if (!trimmedText) {
         throw new Error("BlueBubbles send requires non-empty text.")
       }
-      await assertHostAccount({ fresh: true })
+      const server = await assertHostAccount({ fresh: true })
       const resolvedChatGuid = await resolveChatGuid(params.chat, config, channelConfig)
       if (!resolvedChatGuid) {
         // Nothing reached the server, so a caller may safely send again once the chat exists.
@@ -451,6 +451,11 @@ export function createBlueBubblesClient(
         tempGuid: params.tempGuid?.trim() || randomUUID(),
         message: trimmedText,
       }
+      // Left to itself, BlueBubbles sends through AppleScript into Messages, which macOS can refuse ("Not authorized to
+      // send Apple events to Messages", -1743) until Messages restarts, holding the send for minutes. The Private API
+      // helper sends from inside Messages without Apple events, so every send uses it while the server reports it
+      // connected (the fresh server info above).
+      if (server?.privateApiReady === true) body.method = "private-api"
       if (params.replyToMessageGuid?.trim()) {
         body.method = "private-api"
         body.selectedMessageGuid = params.replyToMessageGuid.trim()
@@ -464,6 +469,7 @@ export function createBlueBubblesClient(
         meta: {
           chatGuid: resolvedChatGuid,
           hasReplyTarget: Boolean(params.replyToMessageGuid?.trim()),
+          method: body.method === "private-api" ? "private-api" : "server-default",
         },
       })
 

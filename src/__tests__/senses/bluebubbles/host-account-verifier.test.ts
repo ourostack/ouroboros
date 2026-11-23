@@ -21,8 +21,23 @@ describe("verifyBlueBubblesServerAccount", () => {
 
   it("passes when the server runs under the declared host account", async () => {
     const fetchImpl = serverInfo("clawdbot@ouroboros-host")
-    await expect(verifyBlueBubblesServerAccount({ ...base, hostUsername: "clawdbot", fetchImpl })).resolves.toBeUndefined()
+    await expect(verifyBlueBubblesServerAccount({ ...base, hostUsername: "clawdbot", fetchImpl })).resolves.toEqual({ privateApiReady: false })
     expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:1234/api/v1/server/info?password=pw", expect.objectContaining({ method: "GET" }))
+  })
+
+  it("reports whether the server can send through its Private API helper right now", async () => {
+    const info = (data: Record<string, unknown>) => vi.fn(async () => new Response(JSON.stringify({ status: 200, data: { computer_id: "clawdbot@ouroboros-host", ...data } }), { status: 200 })) as unknown as typeof fetch
+    const verify = (data: Record<string, unknown>) => verifyBlueBubblesServerAccount({ ...base, hostUsername: "clawdbot", fresh: true, fetchImpl: info(data) })
+    await expect(verify({ private_api: true, helper_connected: true })).resolves.toEqual({ privateApiReady: true })
+    await expect(verify({ private_api: true, helper_connected: false })).resolves.toEqual({ privateApiReady: false })
+    await expect(verify({ private_api: false, helper_connected: true })).resolves.toEqual({ privateApiReady: false })
+    await expect(verify({})).resolves.toEqual({ privateApiReady: false })
+  })
+
+  it("reports nothing about the helper when it reuses a recent confirmation", async () => {
+    const fetchImpl = serverInfo("clawdbot@ouroboros-host")
+    await verifyBlueBubblesServerAccount({ ...base, hostUsername: "clawdbot", fetchImpl })
+    await expect(verifyBlueBubblesServerAccount({ ...base, hostUsername: "clawdbot", fetchImpl })).resolves.toBeUndefined()
   })
 
   it("refuses a server running under another account and treats the field as a human decision", async () => {
@@ -89,7 +104,7 @@ describe("verifyBlueBubblesServerAccount", () => {
     const original = global.fetch
     global.fetch = serverInfo("clawdbot@host")
     try {
-      await expect(verifyBlueBubblesServerAccount({ ...base, hostUsername: "clawdbot" })).resolves.toBeUndefined()
+      await expect(verifyBlueBubblesServerAccount({ ...base, hostUsername: "clawdbot" })).resolves.toEqual({ privateApiReady: false })
     } finally {
       global.fetch = original
     }
