@@ -3,7 +3,7 @@ import * as os from "os"
 import * as path from "path"
 import { execFileSync } from "child_process"
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const {
   comparePackedTarballs,
@@ -94,6 +94,40 @@ describe("npm publish idempotency", () => {
       spec: SPEC,
     })
     expect(publishCalls(fake.calls)).toEqual([["publish", "--access", "public", "--tag", "latest"]])
+  })
+
+  it("records npm's bounded output when a publish exits 0", () => {
+    const local = tarball("local", SAME_FILES)
+    const fake = fakeNpm({ local, remote: null, publish: () => {
+      fake.state.remote = local
+      return ok(`+ ${SPEC}\n${"x".repeat(400)}\n${Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n")}`)
+    } })
+    const log = vi.spyOn(console, "error").mockImplementation(() => {})
+    try {
+      publishPackageIdempotently({ cwd: work, tag: "latest" }, fake.npm)
+      const message = String(log.mock.calls.at(-1)?.[0])
+      expect(message).toContain(`npm publish ${SPEC} exited 0`)
+      expect(message).toContain(`+ ${SPEC}`)
+      expect(message).not.toContain("x".repeat(301))
+      expect(message.split("\n").length).toBeLessThanOrEqual(21)
+    } finally {
+      log.mockRestore()
+    }
+  })
+
+  it("says so when a publish that exits 0 printed nothing", () => {
+    const local = tarball("local", SAME_FILES)
+    const fake = fakeNpm({ local, remote: null, publish: () => {
+      fake.state.remote = local
+      return ok()
+    } })
+    const log = vi.spyOn(console, "error").mockImplementation(() => {})
+    try {
+      publishPackageIdempotently({ cwd: work, tag: "latest" }, fake.npm)
+      expect(String(log.mock.calls.at(-1)?.[0])).toContain("(no output)")
+    } finally {
+      log.mockRestore()
+    }
   })
 
   it("skips without publishing when npm already holds identical contents", () => {

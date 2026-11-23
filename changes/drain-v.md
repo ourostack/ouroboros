@@ -1,1 +1,1 @@
-- The container build compiles native dependencies against the Node headers already installed on the runner, so one timed-out download from nodejs.org no longer stops a release.
+- The npm publish step now prints npm's own output (first 20 lines, 300 characters each) when `npm publish` exits 0. Until now that output was discarded, so a version that npm reported as published but never served could not be compared with what npm said.
