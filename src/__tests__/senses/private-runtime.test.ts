@@ -2673,7 +2673,7 @@ describe("private runtime", () => {
         const key = "owner-notice:delegated:req-1"
         const effects = path.join(agentRoot, "state", "telegram", "effects")
         fs.mkdirSync(effects, { recursive: true })
-        fs.writeFileSync(path.join(effects, `${createHash("sha256").update(key).digest("hex")}.json`), options.notice === "unreadable" ? "{not-json" : JSON.stringify({ idempotencyKey: key, authorClass: "butler", target: { friendId: options.notice === "other-friend" ? "someone-else" : "owner" } }))
+        fs.writeFileSync(path.join(effects, `${createHash("sha256").update(key).digest("hex")}.json`), options.notice === "unreadable" ? "{not-json" : JSON.stringify({ idempotencyKey: key, authorClass: "butler", target: { friendId: options.notice === "other-friend" ? "someone-else" : "owner" }, parts: [{ index: 0, text: "notice", state: "session_recorded" }] }))
       }
       const provenance = options.provenance ?? "filed_from: a2a\nfiled_for_friend_id: peer\nfiled_from_key: conv-1\nrequest_id: req-1\n"
       fs.writeFileSync(path.join(agentRoot, "awaiting", "release.md"), `---\ncondition: release landed\ncadence: 30m\nalert: a2a\nstatus: pending\n${provenance}${obligation ? `obligation_id: ${obligation.id}\n` : ""}---\n`, "utf8")
