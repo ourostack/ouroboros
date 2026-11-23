@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { ProviderRuntime, ProviderTurnRequest } from "../../../heart/core"
 import type { TurnResult } from "../../../heart/streaming"
-import { createWire, responsesEvents, responsesRequest, serveWire, sse } from "../../../eval/interviews/guest/h/wire"
+import { chatAnswer, chatRequest, createWire, responsesEvents, responsesRequest, serveWire, sse } from "../../../eval/interviews/guest/h/wire"
 
 const PREFIX = [{ role: "user" as const, content: "Morning." }, { role: "assistant" as const, content: "Morning, Ari." }]
 
@@ -98,7 +98,80 @@ describe("the H wire's Responses translation", () => {
   })
 })
 
+describe("the H wire's chat-completions translation", () => {
+  it("turns a chat body into the harness's request: instructions first, the case's conversation before the first user message, calls and results as they are", () => {
+    const body = {
+      model: "openai/model", stream: false,
+      messages: [
+        { role: "system", content: [{ type: "text", text: "You are a helpful agent.", cache_control: { type: "ephemeral" } }] },
+        { role: "user", content: "Remove the bad copy." },
+        { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "terminal", arguments: "{\"command\":\"ls\"}" } }] },
+        { role: "tool", tool_call_id: "c1", name: "terminal", content: [{ type: "text", text: "books" }] },
+        { role: "assistant", content: "Done." },
+        { role: "user", content: [{ type: "text", text: "How did it go?" }] },
+      ],
+      tools: [{ type: "function", function: { name: "terminal", description: "Run a command.", parameters: { type: "object" } } }],
+    }
+    expect(chatRequest(body, PREFIX)).toEqual({
+      messages: [
+        { role: "system", content: "You are a helpful agent." },
+        ...PREFIX,
+        { role: "user", content: "Remove the bad copy." },
+        { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "terminal", arguments: "{\"command\":\"ls\"}" } }] },
+        { role: "tool", tool_call_id: "c1", content: "books" },
+        { role: "assistant", content: "Done." },
+        { role: "user", content: "How did it go?" },
+      ],
+      activeTools: [{ type: "function", function: { name: "terminal", description: "Run a command.", parameters: { type: "object" } } }],
+    })
+    // A developer message is a system message; no tools is fine, and so is a tool with no description or schema.
+    expect(chatRequest({ messages: [{ role: "developer", content: "d" }, { role: "user", content: "u" }] }, [])).toEqual({ messages: [{ role: "system", content: "d" }, { role: "user", content: "u" }], activeTools: [] })
+    expect(chatRequest({ messages: [], tools: [{ type: "function", function: { name: "t" } }] }, []).activeTools).toEqual([{ type: "function", function: { name: "t" } }])
+  })
+
+  it("refuses what it can't carry faithfully, naming it", () => {
+    expect(() => chatRequest({ messages: [], stream: true }, [])).toThrow("the H wire answers chat completions only without streaming")
+    expect(() => chatRequest({}, [])).toThrow("a chat body needs a messages list")
+    expect(() => chatRequest({ messages: [{ role: "critic", content: "x" }] }, [])).toThrow("the H wire can't carry a message from critic")
+    expect(() => chatRequest({ messages: [null] }, [])).toThrow("the H wire can't carry a message from undefined")
+    expect(() => chatRequest({ messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "x" } }] }] }, [])).toThrow("the H wire can't carry content of type image_url")
+    expect(() => chatRequest({ messages: [], tools: [{ type: "web_search" }] }, [])).toThrow("the H wire can't carry a tool of type web_search")
+  })
+
+  it("answers with one chat completion: the reply, its calls, why it stopped and the usage", () => {
+    expect(chatAnswer({ content: "Done.", toolCalls: [{ id: "c1", name: "terminal", arguments: "{}" }], outputItems: [], usage }, "chat_1")).toEqual({
+      id: "chat_1", object: "chat.completion", created: 0, model: "model",
+      choices: [{ index: 0, finish_reason: "tool_calls", message: { role: "assistant", content: "Done.", tool_calls: [{ id: "c1", type: "function", function: { name: "terminal", arguments: "{}" } }] } }],
+      usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110, prompt_tokens_details: { cached_tokens: 20 }, completion_tokens_details: { reasoning_tokens: 4 } },
+    })
+    expect(chatAnswer({ content: "", toolCalls: [], outputItems: [] }, "c").choices).toEqual([{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "" } }])
+  })
+})
+
 describe("the H wire", () => {
+  it("answers chat completions through the host's runtime too, keeping the same trace", async () => {
+    const seen: ProviderTurnRequest[] = []
+    const wire = createWire({ runtime: runtime([
+      { content: "", toolCalls: [{ id: "c1", name: "terminal", arguments: "{\"command\":\"ls\"}" }], outputItems: [], usage },
+      { content: "All done.", toolCalls: [], outputItems: [] },
+    ], seen), prefix: PREFIX })
+    const first = await wire.handle("/v1/chat/completions", { messages: [{ role: "user", content: "go" }] })
+    expect(first.status).toBe(200)
+    expect(first.contentType).toBe("application/json")
+    expect(JSON.parse(first.body).choices[0].message.tool_calls[0].id).toBe("c1")
+    const second = await wire.handle("/chat/completions", { messages: [
+      { role: "user", content: "go" },
+      { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "terminal", arguments: "{\"command\":\"ls\"}" } }] },
+      { role: "tool", tool_call_id: "c1", content: "books" },
+    ] })
+    expect(JSON.parse(second.body).choices[0].message.content).toBe("All done.")
+    expect(seen[0]!.messages).toEqual([...PREFIX, { role: "user", content: "go" }])
+    expect(wire.timeline()).toEqual([{ kind: "call", name: "terminal", args: "{\"command\":\"ls\"}", result: "books" }, { kind: "reply", text: "All done." }])
+    // A streaming request is refused, never sent.
+    expect((await wire.handle("/v1/chat/completions", { messages: [], stream: true })).status).toBe(400)
+    expect(wire.calls()).toBe(2)
+  })
+
   it("sends each request through the host's runtime, reset first, and keeps the trace: each call with the output the client sent back, then the reply", async () => {
     const seen: ProviderTurnRequest[] = []
     const resets: unknown[] = []

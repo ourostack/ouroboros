@@ -124,6 +124,63 @@ export function responsesRequest(body: unknown, prefix: Message[]): WireRequest 
   return { messages: [...(leading.length > 0 ? [{ role: "system" as const, content: leading.join("\n\n") }] : []), ...rest], activeTools }
 }
 
+/**
+ * A chat-completions body as the harness's request: its messages as they are, with text-only content made plain, a
+ * developer message as a system message, and the case's conversation before the first user message. Streaming is
+ * refused: the clients the wire serves this way (openhands) ask for one whole answer.
+ */
+export function chatRequest(body: unknown, prefix: Message[]): WireRequest {
+  if (!isRecord(body) || !Array.isArray(body.messages)) throw new Error("a chat body needs a messages list")
+  if (body.stream === true) throw new Error("the H wire answers chat completions only without streaming")
+  const messages: Message[] = []
+  let prefixed = false
+  for (const item of body.messages as unknown[]) {
+    const value = isRecord(item) ? item : {}
+    const role = String(value.role)
+    if (role === "system" || role === "developer") {
+      messages.push({ role: "system", content: textOf(value.content) })
+    } else if (role === "user") {
+      if (!prefixed) messages.push(...prefix)
+      prefixed = true
+      messages.push({ role: "user", content: textOf(value.content) })
+    } else if (role === "assistant") {
+      const calls = Array.isArray(value.tool_calls) ? value.tool_calls as OpenAI.ChatCompletionMessageFunctionToolCall[] : []
+      messages.push({
+        role: "assistant", content: value.content === null || value.content === undefined ? null : textOf(value.content),
+        ...(calls.length > 0 ? { tool_calls: calls.map((call) => ({ id: String(call.id), type: "function" as const, function: { name: String(call.function.name), arguments: String(call.function.arguments) } })) } : {}),
+      })
+    } else if (role === "tool") {
+      messages.push({ role: "tool", tool_call_id: String(value.tool_call_id), content: textOf(value.content) })
+    } else {
+      throw new Error(`the H wire can't carry a message from ${role}`)
+    }
+  }
+  const tools = Array.isArray(body.tools) ? body.tools as unknown[] : []
+  const activeTools = tools.map((tool): Tool => {
+    if (typeOf(tool) !== "function") throw new Error(`the H wire can't carry a tool of type ${typeOf(tool)}`)
+    const { name, description, parameters } = (tool as { function: { name: string; description?: string; parameters?: Record<string, unknown> } }).function
+    return { type: "function", function: { name, ...(description !== undefined ? { description } : {}), ...(parameters !== undefined ? { parameters } : {}) } }
+  })
+  return { messages, activeTools }
+}
+
+/** One chat completion for an answer: the reply, its calls, why it stopped and the usage. */
+export function chatAnswer(result: TurnResult, id: string): { id: string; object: string; created: number; model: string; choices: object[]; usage: object } {
+  const usage = result.usage
+  const message = {
+    role: "assistant", content: result.content,
+    ...(result.toolCalls.length > 0 ? { tool_calls: result.toolCalls.map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } })) } : {}),
+  }
+  return {
+    id, object: "chat.completion", created: 0, model: "model",
+    choices: [{ index: 0, finish_reason: result.toolCalls.length > 0 ? "tool_calls" : "stop", message }],
+    usage: {
+      prompt_tokens: usage?.input_tokens ?? 0, completion_tokens: usage?.output_tokens ?? 0, total_tokens: usage?.total_tokens ?? 0,
+      prompt_tokens_details: { cached_tokens: usage?.cached_input_tokens ?? 0 }, completion_tokens_details: { reasoning_tokens: usage?.reasoning_tokens ?? 0 },
+    },
+  }
+}
+
 /** The events a Responses client reads for one answer: created, each output item done, then completed with usage. */
 export function responsesEvents(result: TurnResult, id: string): object[] {
   const usage = result.usage
@@ -169,10 +226,11 @@ export function createWire(input: { runtime: ProviderRuntime; prefix: Message[] 
     calls: () => calls,
     error: () => failure,
     async handle(route, body) {
-      if (route !== "/v1/responses" && route !== "/responses") return errorAnswer(404, `no route ${route}`)
+      const chat = route === "/v1/chat/completions" || route === "/chat/completions"
+      if (!chat && route !== "/v1/responses" && route !== "/responses") return errorAnswer(404, `no route ${route}`)
       let request: WireRequest
       try {
-        request = responsesRequest(body, input.prefix)
+        request = chat ? chatRequest(body, input.prefix) : responsesRequest(body, input.prefix)
       } catch (error) {
         failure = messageOf(error)
         emitNervesEvent({ component: "eval", level: "warn", event: "eval.h_wire_refused", message: "the H wire refused a request it can't carry", meta: { reason: failure } })
@@ -206,6 +264,7 @@ export function createWire(input: { runtime: ProviderRuntime; prefix: Message[] 
       }
       if (result.toolCalls.length === 0) timeline.push({ kind: "reply", text: result.content })
       responses += 1
+      if (chat) return { status: 200, contentType: "application/json", body: JSON.stringify(chatAnswer(result, `chat_${responses}`)) }
       return { status: 200, contentType: "text/event-stream", body: sse(responsesEvents(result, `resp_${responses}`)) }
     },
   }
