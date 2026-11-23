@@ -31,12 +31,16 @@ export const H_CODEX_FIDELITY: readonly string[] = [
 
 export const H_OPENHANDS_FIDELITY: readonly string[] = [
   "num_retries = 0: LiteLLM's retries are off, since a retry would be a second metered call",
-  "the tools are the terminal and the file editor, as pre-registration v2 names; the SDK's default preset also gives the task tracker and the browser, and the browser couldn't reach anything in the sandbox",
+  "the agent's tools are the terminal and the file editor, as pre-registration v2 names, plus the SDK's own finish tool and, when a skill is installed, its invoke_skill tool; the SDK's default preset also gives the task tracker and the browser, and the browser couldn't reach anything in the sandbox",
   "no condenser: the default preset summarises a long history with extra model calls; these conversations are short",
-  "load_public_skills = False: public skills are fetched from the internet, which the sandbox can't reach",
+  "load_user_skills = True: the bundle's skills are installed as user skills and listed in the prompt's skills block, as codex lists them; the default preset loads none",
   "the model is called through chat completions without streaming (api_mode chat, stream False), since the H wire answers chat only whole",
-  "the SDK doesn't know the model's name (openai/model), so it uses its defaults for an unknown model",
+  "the request's own settings (max_completion_tokens, prompt_cache_key) are not passed on: the host's runtime sets the model's settings, as it does for the ouro arm",
+  "the SDK doesn't know the model's name (openai/model), so it uses its defaults for an unknown model; LITELLM_LOCAL_MODEL_COST_MAP = True makes LiteLLM read the cost map it ships with instead of fetching one",
   "the Butler's persona and the label line are the system message's suffix, after the SDK's own system prompt",
+  "the brand words in the SDK's system prompt and tool descriptions are replaced before the call reaches the model",
+  "the shell can still show the brand: the tmux socket and session names in TMUX, the ~/.openhands folder, and the LITELLM_LOCAL_MODEL_COST_MAP variable; none is in the prompt",
+  "the SDK runs on the uv-managed Python 3.13 and uv 0.13.7 its own agent-server image uses, with bytecode compiled at build time because the image is read-only when the arm runs",
   "runs from a neutral home under /tmp (the agent container is read-only elsewhere), with the bundle linked at /tmp/agent/AgentBundles/sanctuary.agent",
   "the supervisor process, and with it the whole conversation, is killed at 540 seconds, inside the host's 600-second guest deadline",
 ]

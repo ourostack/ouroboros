@@ -98,7 +98,8 @@ describe("the openhands arm", () => {
     expect(started).toHaveLength(1)
     expect(started[0]!.cwd).toBe(workdir)
     expect(started[0]!.spec).toEqual({ baseUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/v1$/), workdir, systemSuffix: "I am the Butler.\n\nYou are working in environment Z." })
-    expect(started[0]!.env).toEqual({ HOME: home, PATH: process.env.PATH, LITELLM_LOCAL_MODEL_COST_MAP: "True" })
+    // PWD keeps the neutral path in the terminal: without it, the shell resolves the link to the bundle's real path.
+    expect(started[0]!.env).toEqual({ HOME: home, PWD: workdir, PATH: process.env.PATH, LITELLM_LOCAL_MODEL_COST_MAP: "True" })
     expect(fs.realpathSync(workdir)).toBe(fs.realpathSync(bundle))
     expect(fs.existsSync(path.join(home, ".agents", "skills", "books", "SKILL.md"))).toBe(true)
     expect(seen[0]!.messages).toEqual([...TURN.prefix, { role: "user", content: "Remove the bad copy." }])
@@ -133,8 +134,14 @@ describe("the openhands arm", () => {
 
   it("has a fidelity note for every setting the supervisor changes from the SDK's defaults", () => {
     const supervisor = fs.readFileSync(path.join(__dirname, "../../../../deploy/eval/openhands/supervise.py"), "utf8")
-    const settings = [...supervisor.matchAll(/\b(\w+)=(False|0|"chat")[,)]/g)].map((match) => match[1]!)
-    expect(settings).toEqual(["api_mode", "num_retries", "stream", "load_public_skills"])
+    // The settings are the keyword arguments of the SDK's constructors, from the LLM to the conversation.
+    const setup = supervisor.slice(supervisor.indexOf("LLM("), supervisor.indexOf("for line in sys.stdin"))
+    const settings = [...setup.matchAll(/\b(\w+)=(True|False|None|\d+|"[^"]*")[,)]/g)].map((match) => match[1]!)
+    expect(settings).toEqual(["usage_id", "model", "api_mode", "num_retries", "stream", "load_user_skills", "visualizer"])
+    // Naming the LLM's use and turning off the console view change nothing the model sees.
+    settings.splice(settings.indexOf("usage_id"), 1)
+    settings.splice(settings.indexOf("visualizer"), 1)
+    settings.splice(settings.indexOf("model"), 1, "openai/model")
     for (const setting of settings) {
       if (!H_OPENHANDS_FIDELITY.some((note) => note.includes(setting))) throw new Error(`no fidelity note names ${setting}`)
     }

@@ -33,21 +33,25 @@ def main(spec_file: str) -> int:
     agent = Agent(
         llm=llm,
         tools=[Tool(name=TerminalTool.name), Tool(name=FileEditorTool.name)],
-        agent_context=AgentContext(system_message_suffix=spec["systemSuffix"], load_user_skills=True, load_public_skills=False),
+        agent_context=AgentContext(system_message_suffix=spec["systemSuffix"], load_user_skills=True),
     )
     conversation = Conversation(agent=agent, workspace=spec["workdir"], visualizer=None)
-    for line in sys.stdin:
-        if not line.strip():
-            continue
-        try:
-            conversation.send_message(json.loads(line))
-            conversation.run()
-        except Exception as error:  # noqa: BLE001 -- any failure ends the conversation, and the host is told why
-            print(json.dumps({"error": f"{type(error).__name__}: {error}"}), flush=True)
-            return 1
-        status = conversation.state.execution_status
-        print(json.dumps({"status": getattr(status, "value", str(status))}), flush=True)
-    return 0
+    try:
+        for line in sys.stdin:
+            if not line.strip():
+                continue
+            try:
+                conversation.send_message(json.loads(line))
+                conversation.run()
+            except Exception as error:  # noqa: BLE001 -- any failure ends the conversation, and the host is told why
+                print(json.dumps({"error": f"{type(error).__name__}: {error}"}), flush=True)
+                return 1
+            status = conversation.state.execution_status
+            print(json.dumps({"status": getattr(status, "value", str(status))}), flush=True)
+        return 0
+    finally:
+        # Shuts down the terminal's tmux server, so nothing the conversation started outlives it.
+        conversation.close()
 
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
+import fs from "node:fs"
+import path from "node:path"
 import { describe, expect, it } from "vitest"
 import type { ProviderRuntime, ProviderTurnRequest } from "../../../heart/core"
 import type { TurnResult } from "../../../heart/streaming"
@@ -136,6 +138,15 @@ describe("the H wire's chat-completions translation", () => {
     expect(() => chatRequest({ messages: [null] }, [])).toThrow("the H wire can't carry a message from undefined")
     expect(() => chatRequest({ messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "x" } }] }] }, [])).toThrow("the H wire can't carry content of type image_url")
     expect(() => chatRequest({ messages: [], tools: [{ type: "web_search" }] }, [])).toThrow("the H wire can't carry a tool of type web_search")
+    // OpenHands' real tools at the pinned SDK commit (captured from a scripted run) reach the model exactly as sent:
+    // name, description and the whole schema, with its required lists, enums and nested objects.
+    const openhands = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/openhands-tools-ecea9a91.json"), "utf8")) as unknown[]
+    expect(openhands.length).toBe(4)
+    expect(chatRequest({ messages: [], tools: openhands }, []).activeTools).toEqual(openhands)
+    expect(() => chatRequest({ messages: [], tools: [{ type: "function" }] }, [])).toThrow("a chat tool needs its function")
+    expect(() => chatRequest({ messages: [], tools: [{ type: "function", function: { name: "t", cache_control: {} } }] }, [])).toThrow("the H wire can't carry a tool's cache_control")
+    expect(chatRequest({ messages: [], tools: [{ type: "function", function: { name: "t", description: "d", strict: false, parameters: { type: "object", additionalProperties: false } } }] }, []).activeTools)
+      .toEqual([{ type: "function", function: { name: "t", description: "d", strict: false, parameters: { type: "object", additionalProperties: false } } }])
   })
 
   it("answers with one chat completion: the reply, its calls, why it stopped and the usage", () => {

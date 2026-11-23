@@ -49,6 +49,8 @@ const startPython: StartSupervisor = (specFile, options) => {
     child.on("close", (code) => resolve(code ?? 137))
   })
   child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8") })
+  // A supervisor that died between turns breaks the pipe; its exit says why, so the write's error is not thrown.
+  child.stdin.on("error", () => undefined)
   child.stdout.on("data", (chunk: Buffer) => {
     buffered += chunk.toString("utf8")
     let at: number
@@ -110,7 +112,8 @@ export function openhandsArm(options: { start?: StartSupervisor; home?: string; 
       const specFile = path.join(home, ".arm-spec.json")
       fs.writeFileSync(specFile, JSON.stringify({ baseUrl: served.url, workdir, systemSuffix: `${personaPrompt(bundle)}\n\n${turn.labelLine}` }))
       // The SDK reads the model cost map it ships with rather than fetching one; the container has no route out.
-      const supervisor = start(specFile, { cwd: workdir, env: { HOME: home, PATH: process.env.PATH, LITELLM_LOCAL_MODEL_COST_MAP: "True" } })
+      // PWD keeps the neutral path in the terminal; without it, the shell resolves the link to the bundle's real path.
+      const supervisor = start(specFile, { cwd: workdir, env: { HOME: home, PWD: workdir, PATH: process.env.PATH, LITELLM_LOCAL_MODEL_COST_MAP: "True" } })
       // OpenHands' `finish` call is the turn's reply.
       const traced = (): Array<TraceCall | TraceReply> => wire.timeline().map((entry) => entry.kind === "call" && entry.name === "finish"
         ? { kind: "reply", text: withoutThinking(finishMessage(entry.args)) }
