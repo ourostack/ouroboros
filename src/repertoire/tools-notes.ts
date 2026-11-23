@@ -92,7 +92,7 @@ export const notesToolDefinitions: ToolDefinition[] = [
     summaryKeys: ["name"],
     riskProfile: { mutates: "none", risk: "low" },
     ax: { id: "tool:load_skill", eager: true, group: "turn-skills", when: "Pick this to read a skill's full steps once you know its exact name.", effect: "read", idempotent: true, errors: [
-      { code: "skill-not-found", means: "No skill with that name could be found or read; the message lists the skills this agent can load.", fix: "Load one of the names the error lists, spelled exactly." },
+      { code: "skill-not-found", means: "No skill with that name could be found or read; the message lists the skills this agent can load, or says why a listed one could not be read.", fix: "Load one of the names the error lists, spelled exactly." },
     ] },
   },
   {

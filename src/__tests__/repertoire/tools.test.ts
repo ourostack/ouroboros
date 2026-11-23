@@ -636,7 +636,7 @@ describe("execTool", () => {
 
   it("load_skill returns error on exception", async () => {
     vi.mocked(loadSkill).mockImplementation(() => { throw new Error("not found") })
-    vi.mocked(listSkills).mockReturnValue(["test"] as any)
+    vi.mocked(listSkills).mockReturnValueOnce(["test"] as any)
     const result = await execTool("load_skill", { name: "missing" })
     expect(result).toContain("error:")
     expect(result).toContain("Skills you can load: test.")
