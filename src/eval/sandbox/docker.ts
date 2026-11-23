@@ -289,6 +289,7 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
     ])
   }
   try {
+    // Every case is a books case, so the bundle source must make `books/` and each writable path, as the projection does.
     const { gaps } = profile.bundleSource({ include: input.case.bundle.include, out: bundle })
     fs.writeFileSync(path.join(bundle, "books/credentials.json"), `${JSON.stringify(booksSettings(), null, 1)}\n`)
     for (const dir of [fixtures, tls, household]) fs.mkdirSync(dir)

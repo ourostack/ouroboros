@@ -1,8 +1,7 @@
 /**
  * The sandbox runs an agent other than the Butler: a scripted X interview conversation, end to end in the real
  * two-container sandbox, with a profile whose agent is `evalbot` and whose writable paths are only the books CLI's
- * and `state`. The agent container must hold that bundle, and only it, at `$HOME/AgentBundles/evalbot.ouro`, and the
- * turn must still remove the bad copy. Needs Docker and a built checkout: `npm run test:eval-sandbox` (CI runs it on
+ * and `state`. The turn must still remove the bad copy, through evalbot's own bundle. Needs Docker and a built checkout: `npm run test:eval-sandbox` (CI runs it on
  * ubuntu-24.04). No model is called.
  */
 import fs from "node:fs"
@@ -44,8 +43,10 @@ describe("a scripted sandbox run of an agent other than the Butler", () => {
       bundleSource: ({ include, out }) => projectBundle({ bundleDir, seedBundleDir: SEED, include, out }),
       writable: ["books/work", "books/removed", "books/ledger.ndjson", "state"],
     }
+    // The arm's shell runs only `books` commands. The guest runs on the one bundle mounted (`mountedAgentRoot` refuses
+    // any other count) and its books CLI is that bundle's, so a removal that lands proves the run used evalbot's bundle
+    // and could write its `books` paths; the mount path and `--agent` are pinned by `sanctuary-default.test.ts`.
     const steps = [
-      { name: "shell", arguments: { command: "ls /home/ouro/AgentBundles; cat /home/ouro/AgentBundles/*/agent.json" } },
       { name: "shell", arguments: { command: "books library find 'The Harbour Almanac'" } },
       { name: "shell", arguments: { command: "books library remove 187" } },
     ]
@@ -68,7 +69,6 @@ describe("a scripted sandbox run of an agent other than the Butler", () => {
       guest: { entry: "interview-guest-entry.js", turn }, profile,
     })
     expect(obs.outcome).toBe("settled")
-    expect(results[0]).toMatch(/^evalbot\.ouro\n\{"name":"evalbot"\}/)
     expect(results.join("\n")).toContain("189")
     expect(obs.library.map((book) => book.id)).not.toContain(187)
   }, 300_000)
