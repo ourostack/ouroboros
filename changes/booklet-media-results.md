@@ -1,0 +1,1 @@
+The Butler's media tools say what happened or what the tool does, instead of giving the agent rules ("never", "do not"). A test checks every string in the media server and the MCP write guard for those words.

@@ -16,10 +16,12 @@
 import * as fs from "node:fs"
 import * as net from "node:net"
 import * as path from "node:path"
+import { randomBytes } from "node:crypto"
 import { parseDidKey, ready, type DidKeyIdentity, type SeenLedgerLike, type Sodium } from "@ouro.bot/friends/a2a-client"
 
 import { APPROVAL_RELAY_FILE, checkRelayedDecision, readApprovalRelaySwitch } from "../a2a/approval-relay"
 import { approvalRelaySocketPath } from "../a2a/approval-relay-forward"
+import { approvalActionLine, newRelayCode, type ApprovalRequestPayload } from "../a2a/approval-request-wire"
 import { loadSelfA2AIdentity } from "../a2a/identity"
 import { operatorTrustFile } from "../a2a/operator-trust"
 import { loadAgentConfig } from "../heart/identity"
@@ -28,6 +30,7 @@ import { FileA2ASeenLedger } from "../a2a/seen-ledger"
 import type { A2AMessage } from "../a2a/types"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { TelegramApprovalRuntime, TelegramRelayAnswer } from "./telegram-approval-runtime"
+import type { TelegramApprovalTransport } from "./telegram-client"
 
 /** What the relay sends back to Slugger, who tells Ari word for word. */
 export type RelayReply =
@@ -217,7 +220,7 @@ export function createApprovalRelayDoor(input: {
           sodium,
           // A failed load is forgotten, so the next answer tries again instead of failing forever.
           self: () => (identity ??= loadIdentity().catch((error: unknown) => { identity = undefined; throw error })),
-          routeDid: () => loadAgentConfig({ agentName: input.agentName, agentRoot: input.agentRoot }).senses?.telegram.ownerNoticesTo?.did,
+          routeDid: () => ownerRouteDid(input.agentName, input.agentRoot),
           runtime: input.runtime,
           seen: relayAnswerSeenLedger(input.agentRoot),
         }
@@ -234,5 +237,48 @@ export function createApprovalRelayDoor(input: {
       server = undefined
       await current?.close()
     },
+  }
+}
+
+/** The owner route's pinned DID from `agent.json` (`senses.telegram.ownerNoticesTo.did`), if it has one. */
+export function ownerRouteDid(agentName: string, agentRoot: string): string | undefined {
+  return loadAgentConfig({ agentName, agentRoot }).senses?.telegram.ownerNoticesTo?.did
+}
+
+/**
+ * The request the owner route hands the peer's harness for a tool approval's card that is being sent now (design v3,
+ * step 1), or none. None unless the trust-folder switch is on and names the route's own DID, and the transport still
+ * holds the card's decision token. Admission cards never get one: v1 relays tool approvals only.
+ */
+export function approvalRelayRequestFor(input: {
+  agentRoot: string
+  /** Read only once the switch is on. */
+  routeDid: () => string | undefined
+  approvalId: string
+  transport: Pick<TelegramApprovalTransport, "approvalRelayRequest"> | undefined
+  now?: () => Date
+  randomBytes?: (size: number) => Uint8Array
+}): ApprovalRequestPayload | undefined {
+  const now = (input.now ?? (() => new Date()))()
+  const relaySwitch = readApprovalRelaySwitch(input.agentRoot, now)
+  if (!relaySwitch.on) return undefined
+  const skip = (reason: string): undefined => {
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.telegram_relay_request_skipped", message: "sent the approval without a relay request; Ari can still tap", meta: { reason } })
+    return undefined
+  }
+  // A config that can't be read leaves the card as it would be without the relay; it never stops the card.
+  let routeDid: string | undefined
+  try { routeDid = input.routeDid() } catch { return skip("route_unreadable") }
+  if (routeDid !== relaySwitch.did) return skip(routeDid === undefined ? "no_owner_route" : "route_mismatch")
+  const held = input.transport?.approvalRelayRequest?.({ approvalId: input.approvalId, routeDid })
+  if (!held) return skip("no_decision_token")
+  if (held.expiresAt <= now.getTime()) return skip("expired")
+  emitNervesEvent({ component: "senses", event: "senses.telegram_relay_request_prepared", message: "prepared an approval relay request for the owner route", meta: { routeDid } })
+  return {
+    relayToken: held.relayToken,
+    code: newRelayCode(input.randomBytes ?? ((size) => randomBytes(size))),
+    actionLine: approvalActionLine(held.prompt),
+    decisions: ["deny"],
+    expiresAt: new Date(held.expiresAt).toISOString(),
   }
 }
