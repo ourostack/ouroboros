@@ -590,7 +590,7 @@ describe("execTool", () => {
 
   it("safe_workspace is no longer a registered tool", async () => {
     const result = await execTool("safe_workspace", {})
-    expect(result).toBe("unknown: safe_workspace (code: unknown-tool)")
+    expect(result).toBe("unknown: safe_workspace; no tool has a name close to it, so pick one from this turn's tool list (code: unknown-tool)")
   })
 
   it("shell does not rewrite commands (no workspace routing)", async () => {
@@ -607,17 +607,17 @@ describe("execTool", () => {
   // ── removed tools: gh_cli, list_directory, git_commit, get_current_time ──
   it("gh_cli is no longer a registered tool", async () => {
     const result = await execTool("gh_cli", { command: "pr list" })
-    expect(result).toBe("unknown: gh_cli (code: unknown-tool)")
+    expect(result).toBe("unknown: gh_cli; no tool has a name close to it, so pick one from this turn's tool list (code: unknown-tool)")
   })
 
   it("list_directory is no longer a registered tool", async () => {
     const result = await execTool("list_directory", { path: "/tmp" })
-    expect(result).toBe("unknown: list_directory (code: unknown-tool)")
+    expect(result).toBe("unknown: list_directory; no tool has a name close to it, so pick one from this turn's tool list (code: unknown-tool)")
   })
 
   it("git_commit is no longer a registered tool", async () => {
     const result = await execTool("git_commit", { message: "test", paths: ["/tmp/test.txt"] })
-    expect(result).toBe("unknown: git_commit (code: unknown-tool)")
+    expect(result).toBe("unknown: git_commit; no tool has a name close to it, so pick one from this turn's tool list (code: unknown-tool)")
   })
 
   // ── list_skills ──
@@ -642,7 +642,7 @@ describe("execTool", () => {
 
   it("get_current_time is no longer a registered tool", async () => {
     const result = await execTool("get_current_time", {})
-    expect(result).toBe("unknown: get_current_time (code: unknown-tool)")
+    expect(result).toBe("unknown: get_current_time; no tool has a name close to it, so pick one from this turn's tool list (code: unknown-tool)")
   })
 
   // ── claude ──
@@ -897,13 +897,13 @@ describe("execTool", () => {
   })
 
   it("task tools return 'unknown' since they were consolidated into ouro task CLI", async () => {
-    expect(await execTool("task_board", {})).toBe("unknown: task_board (code: unknown-tool)")
-    expect(await execTool("task_create", { title: "x", type: "one-shot", category: "infra", body: "b" })).toBe("unknown: task_create (code: unknown-tool)")
-    expect(await execTool("task_update_status", { name: "x", status: "done" })).toBe("unknown: task_update_status (code: unknown-tool)")
-    expect(await execTool("task_board_status", { status: "processing" })).toBe("unknown: task_board_status (code: unknown-tool)")
-    expect(await execTool("task_board_action", {})).toBe("unknown: task_board_action (code: unknown-tool)")
-    expect(await execTool("task_board_deps", {})).toBe("unknown: task_board_deps (code: unknown-tool)")
-    expect(await execTool("task_board_sessions", {})).toBe("unknown: task_board_sessions (code: unknown-tool)")
+    expect(await execTool("task_board", {})).toBe("unknown: task_board; no tool has a name close to it, so pick one from this turn's tool list (code: unknown-tool)")
+    expect(await execTool("task_create", { title: "x", type: "one-shot", category: "infra", body: "b" })).toBe("unknown: task_create; no tool has a name close to it, so pick one from this turn's tool list (code: unknown-tool)")
+    expect(await execTool("task_update_status", { name: "x", status: "done" })).toBe("unknown: task_update_status; no tool has a name close to it, so pick one from this turn's tool list (code: unknown-tool)")
+    expect(await execTool("task_board_status", { status: "processing" })).toBe("unknown: task_board_status; no tool has a name close to it, so pick one from this turn's tool list (code: unknown-tool)")
+    expect(await execTool("task_board_action", {})).toBe("unknown: task_board_action; no tool has a name close to it, so pick one from this turn's tool list (code: unknown-tool)")
+    expect(await execTool("task_board_deps", {})).toBe("unknown: task_board_deps; no tool has a name close to it, so pick one from this turn's tool list (code: unknown-tool)")
+    expect(await execTool("task_board_sessions", {})).toBe("unknown: task_board_sessions; no tool has a name close to it, so pick one from this turn's tool list (code: unknown-tool)")
   })
 
   it("schedule_reminder tool is removed from baseToolDefinitions", async () => {
@@ -913,13 +913,17 @@ describe("execTool", () => {
       scheduledAt: "2026-03-10T17:00:00.000Z",
     })
 
-    expect(result).toBe("unknown: schedule_reminder (code: unknown-tool)")
+    expect(result).toBe("unknown: schedule_reminder; no tool has a name close to it, so pick one from this turn's tool list (code: unknown-tool)")
   })
 
   // ── unknown tool ──
   it("returns 'unknown' for unrecognized tool name", async () => {
     const result = await execTool("nonexistent_tool", {})
-    expect(result).toBe("unknown: nonexistent_tool (code: unknown-tool)")
+    expect(result).toBe("unknown: nonexistent_tool; no tool has a name close to it, so pick one from this turn's tool list (code: unknown-tool)")
+  })
+
+  it("names the real tools a mistyped name could mean", async () => {
+    expect(await execTool("read_fil", {})).toBe('unknown: read_fil; did you mean "read_file"? (code: unknown-tool)')
   })
 })
 
