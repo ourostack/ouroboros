@@ -55,7 +55,9 @@ async function fixture(enabled = true, duringCreate?: (options: Parameters<typeo
     createLongPoll: (input: any) => { handlers = input; return { run: vi.fn(async () => undefined), stop: vi.fn(), pollOnce: vi.fn() } },
     migrateIdentity: async () => undefined,
   })
-  const message = () => handlers.onMessage({ updateId: 10, messageId: "110", userId: "42", chatId: "42", text: "run id", authority: observation })
+  // Each call is a new Telegram message; one update that already has an outcome is not run again.
+  let nextUpdateId = 10
+  const message = () => { const updateId = nextUpdateId++; return handlers.onMessage({ updateId, messageId: String(updateId + 100), userId: "42", chatId: "42", text: "run id", authority: observation }) }
   return { app, handlers, create, host, port, transport, ordinary, message, observation, friend, friends, agentRoot, api, runTurn, hostPropose, ordinaryPropose, prepared: () => prepared, turn: () => turn }
 }
 
@@ -72,8 +74,9 @@ describe("root host Telegram production routing", () => {
       const incoming = { updateId: 12, messageId: 112, botId: "777", userId: "84", chatId: "84", text: "hello", displayLabel: "Household", hasAttachments: false }
       await expect(f.handlers.onUnknownMessage(incoming)).rejects.toThrow("gateway unavailable")
       expect(f.runTurn).not.toHaveBeenCalled()
-      await f.handlers.onUnknownMessage(incoming)
-      expect(f.transport.admitChat).toHaveBeenLastCalledWith({ admissionId: expect.stringMatching(/^[a-f0-9]{20}$/u), updateId: 12, userId: "84", chatId: "84" })
+      // That message is recorded as failed, so the household Friend's next one is what runs.
+      await f.handlers.onUnknownMessage({ ...incoming, updateId: 13, messageId: 113 })
+      expect(f.transport.admitChat).toHaveBeenLastCalledWith({ admissionId: expect.stringMatching(/^[a-f0-9]{20}$/u), updateId: 13, userId: "84", chatId: "84" })
       expect(f.runTurn).toHaveBeenCalledOnce()
     } finally { await f.app.stop() }
   })
@@ -150,6 +153,45 @@ describe("root host Telegram production routing", () => {
       await f.app.run()
       expect(f.host.recover).toHaveBeenCalledOnce()
       expect(f.ordinary.recover).toHaveBeenCalledOnce()
+    } finally { await f.app.stop() }
+  })
+
+  it("notes the approval card the root host sends as a send for the message, before it asks for the card", async () => {
+    const f = await fixture()
+    try {
+      const wrapped = f.create.mock.calls[0]![0].port
+      const pendingDir = path.join(f.agentRoot, "state", "senses", "telegram", "pending-inbound")
+      let notedBeforeCard: boolean | undefined
+      f.port.register = vi.fn(async () => {
+        if (notedBeforeCard !== undefined) return { registrationId: "root" }
+        const entries = fs.readdirSync(pendingDir).map((name) => JSON.parse(fs.readFileSync(path.join(pendingDir, name), "utf8")))
+        expect(entries).toHaveLength(1)
+        notedBeforeCard = entries[0].spoke
+        return { registrationId: "root" }
+      })
+      f.runTurn.mockImplementationOnce(async () => {
+        await wrapped.register({} as never)
+        return { response: "", deliveries: [], deliveryFailures: [], turnOutcome: "suspended", providerInvocationCount: 1, toolInvocationCount: 1 }
+      })
+      await f.message()
+      expect(notedBeforeCard).toBe(true)
+      expect(fs.readdirSync(path.join(f.agentRoot, "state", "senses", "telegram", "inbound-outcomes")).map((name) =>
+        JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "senses", "telegram", "inbound-outcomes", name), "utf8")).outcome)).toEqual(["answered"])
+
+      // Outside a message's turn there is nothing to note.
+      await wrapped.register({} as never)
+      expect(f.port.register).toHaveBeenCalledTimes(2)
+      // Everything else goes straight to the root host's port.
+      f.port.status = vi.fn(async () => ({ state: "committed" }))
+      f.port.execute = vi.fn(async () => undefined)
+      expect(wrapped.pins).toBe(f.port.pins)
+      expect(await wrapped.refresh()).toBe(true)
+      expect(wrapped.isHealthy()).toBe(true)
+      expect(wrapped.acceptsObservation(f.observation)).toBe(true)
+      expect(wrapped.callbackForUpdate({ update_id: 1 } as never)).toEqual({ handled: true })
+      expect(await wrapped.status({ registrationId: "root" } as never)).toEqual({ state: "committed" })
+      await wrapped.execute({ registrationId: "root" } as never)
+      expect(f.port.execute).toHaveBeenCalledWith({ registrationId: "root" })
     } finally { await f.app.stop() }
   })
 

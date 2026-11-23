@@ -19,9 +19,10 @@ function telegramMessageId(value: string): number | undefined {
 
 /**
  * Telegram turns here are one-to-one chats, where a reply reads plainly without quoting, so the default posts plainly.
- * The agent can still reply to a specific message.
+ * The agent can still reply to a specific message. `beforeSend` runs just before a reaction or file goes out, and
+ * nothing is sent when it throws.
  */
-export function createTelegramChatActions(api: TelegramBotApi, chatId: string, inboundMessageId?: string): TelegramTurnChatActions {
+export function createTelegramChatActions(api: TelegramBotApi, chatId: string, inboundMessageId?: string, beforeSend: () => void = () => undefined): TelegramTurnChatActions {
   let selection: ReplyTargetSelection = { target: "current_lane" }
   const replyToMessageId = (): number | undefined => selection.target === "thread" ? telegramMessageId(selection.messageId) : undefined
   return {
@@ -29,6 +30,7 @@ export function createTelegramChatActions(api: TelegramBotApi, chatId: string, i
       react: async (emoji, messageId) => {
         const id = telegramMessageId(messageId)
         if (id === undefined) return `${messageId} is not a Telegram message id.`
+        beforeSend()
         await api.request("setMessageReaction", { chat_id: chatId, message_id: id, reaction: [{ type: "emoji", emoji }] })
         emitNervesEvent({ component: "senses", event: "senses.telegram_reaction_sent", message: "sent a Telegram reaction", meta: {} })
         return `reacted with ${emoji}`
@@ -45,6 +47,7 @@ export function createTelegramChatActions(api: TelegramBotApi, chatId: string, i
         const file = await readChatFile(filePath, MAX_TELEGRAM_UPLOAD_BYTES)
         const field = TELEGRAM_PHOTO_TYPES.has(file.contentType) ? "photo" : "document"
         const replyTo = replyToMessageId()
+        beforeSend()
         await api.request(field === "photo" ? "sendPhoto" : "sendDocument", {
           chat_id: chatId,
           [field]: { kind: "telegram_input_file", ...file },
