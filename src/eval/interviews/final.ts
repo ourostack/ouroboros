@@ -7,7 +7,8 @@
 import type OpenAI from "openai"
 import type { ProviderRuntime } from "../../heart/core"
 import { emitNervesEvent } from "../../nerves/runtime"
-import type { ToolDoorCard } from "../../repertoire/tools-base"
+import type { McpToolInfo } from "../../repertoire/mcp-client"
+import { mcpToolSchema } from "../../repertoire/mcp-tools"
 import { messageOf, NO_CALLBACKS, withoutThinking } from "./guest/loop"
 import { CHOOSE_NUDGE, FINAL_SYSTEM_PROMPT, IDENTIFY_QUESTION, choiceQuestion, type Note, type Product } from "./protocol"
 
@@ -25,47 +26,37 @@ export type FinalResult = {
  * pre-registration's closing step has it; the code goes to the nerves event. */
 const NOT_RECORDED = "not-recorded"
 
-/** The two closing tools' Ouro AX cards, for the census: they are offered only to the study's model. */
-export const toolCards: ToolDoorCard[] = [
-  {
-    id: "tool:choose", group: "eval-interview", effect: "write",
-    when: "Record which of the three tool interfaces you would pick first and second for the household's book jobs, with the reason.",
-    errors: [{ code: NOT_RECORDED, means: "Nothing was recorded: the arguments weren't JSON, first isn't one of the three labels, or the choice step had ended.", fix: "Call choose once during the choice step, with first set to one of the three labels." }],
-  },
-  {
-    id: "tool:identify", group: "eval-interview", effect: "write",
-    when: "Record your guess of which product each tool interface label was, or no idea.",
-    errors: [{ code: NOT_RECORDED, means: "Nothing was recorded: the call came before the product question, or had no guesses object.", fix: "Call identify once after the product question, with guesses keyed by label." }],
-  },
-]
-
-export function finalTools(labels: readonly string[]): OpenAI.ChatCompletionFunctionTool[] {
+/**
+ * The two closing tools as the pre-registration words them, `first` and `second` taking only the session's labels.
+ * Like the arms' tools they are the study's own, offered only to the study's model and never registered as the
+ * harness's tools, so they go out the way a connected server's tools do: through `mcpToolSchema`, the census's
+ * passthrough (ax/census.config.json). Each keeps its name and description.
+ */
+export function closingTools(labels: readonly string[]): McpToolInfo[] {
   return [
     {
-      type: "function",
-      function: {
-        name: "choose",
-        description: "Your first and second choice of the three, and one sentence on what decided it.",
-        parameters: {
-          type: "object",
-          properties: { first: { type: "string", enum: [...labels] }, second: { type: "string", enum: [...labels] }, reason: { type: "string" } },
-          required: ["first", "second", "reason"],
-        },
+      name: "choose",
+      description: "Your first and second choice of the three, and one sentence on what decided it.",
+      inputSchema: {
+        type: "object",
+        properties: { first: { type: "string", enum: [...labels] }, second: { type: "string", enum: [...labels] }, reason: { type: "string" } },
+        required: ["first", "second", "reason"],
       },
     },
     {
-      type: "function",
-      function: {
-        name: "identify",
-        description: "For each label, the product you think it is, or \"no idea\".",
-        parameters: {
-          type: "object",
-          properties: { guesses: { type: "object", properties: Object.fromEntries(labels.map((label) => [label, { type: "string" }])), additionalProperties: { type: "string" } } },
-          required: ["guesses"],
-        },
+      name: "identify",
+      description: "For each label, the product you think it is, or \"no idea\".",
+      inputSchema: {
+        type: "object",
+        properties: { guesses: { type: "object", properties: Object.fromEntries(labels.map((label) => [label, { type: "string" }])), additionalProperties: { type: "string" } } },
+        required: ["guesses"],
       },
     },
   ]
+}
+
+export function finalTools(labels: readonly string[]): OpenAI.ChatCompletionFunctionTool[] {
+  return closingTools(labels).map((tool) => mcpToolSchema({ server: tool.name }, tool))
 }
 
 const parse = (text: string): Record<string, unknown> | null => {
