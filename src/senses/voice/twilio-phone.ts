@@ -1342,13 +1342,12 @@ export class TwilioMediaStreamSession {
       record?.settle("failed", "the call ended before this was answered")
       return
     }
-    const generation = this.startPlayback()
+    const generation = this.startPlayback("a later reply took its place before it was played")
     // The turn's outcome waits until the reply has gone down the call: one spoken after a hangup was never heard.
-    const spoken: { outcome?: Parameters<VoiceUtteranceTurn["settle"]> } = {}
-    const turnRecord: VoiceUtteranceTurn | null = record && { ...record, settle: (...outcome) => { spoken.outcome = outcome } }
     // A turn that throws is recorded as failed by processUtterance.
+    const hold = heldUtterance(record)
     const turn = await runVoiceLoopbackTurn({
-      utterance: turnRecord,
+      utterance: hold.turn,
       agentName: this.options.agentName,
       friendId: this.friendId,
       sessionKey: this.sessionKey,
@@ -1372,10 +1371,10 @@ export class TwilioMediaStreamSession {
     }
     // A turn with a record always reported its outcome; with none there is nothing to record.
     const played = (this.playbackBytesByGeneration.get(generation) ?? 0) > 0
-    if (spoken.outcome?.[0] === "answered" && !played) {
-      record?.settle("failed", this.closed ? "the call ended before the reply was played" : "the caller spoke again before the reply was played")
+    if (hold.outcome()?.[0] === "answered" && !played) {
+      record?.settle("failed", this.closed ? "the call ended before the reply was played" : this.playbackStartedBecause.get(generation + 1))
     } else {
-      record?.settle(...spoken.outcome!)
+      hold.release()
     }
     if (!current) return
     /* v8 ignore start -- runVoiceLoopbackTurn always yields at least one delivered segment (it falls back to a whole-reply synthesis); kept as a guard @preserve */
@@ -1404,7 +1403,7 @@ export class TwilioMediaStreamSession {
   /* v8 ignore start -- unchanged prebuffered greeting playback; the bridge greeting tests cover the path @preserve */
   private async streamGreetingJob(jobId: string, job: TwilioAudioStreamJob): Promise<void> {
     if (this.closed || !this.streamSid) return
-    const generation = this.startPlayback()
+    const generation = this.startPlayback("the greeting played in its place before the reply was played")
     try {
       for await (const chunk of job.stream()) {
         if (generation !== this.playbackGeneration || this.closed) return
@@ -1442,8 +1441,13 @@ export class TwilioMediaStreamSession {
   }
 
   /* v8 ignore stop */
-  private startPlayback(): number {
+  /** Why each playback round after the first began, so a reply it cut off before any audio played says why. */
+  private readonly playbackStartedBecause = new Map<number, string>()
+
+  /** `supersedes` says, for a reply this new round cuts off before it played, what took its place. */
+  private startPlayback(supersedes: string): number {
     this.playbackGeneration += 1
+    this.playbackStartedBecause.set(this.playbackGeneration, supersedes)
     this.playbackActive = true
     this.clearHangupFallback()
     return this.playbackGeneration
@@ -1476,7 +1480,7 @@ export class TwilioMediaStreamSession {
     const prepared = await prepareVoiceCallAudio(request, {
       agentRoot: resolveTwilioPhoneAgentRoot(this.options),
     })
-    const generation = this.startPlayback()
+    const generation = this.startPlayback("audio a tool played took its place before the reply was played")
     for (let offset = 0; offset < prepared.audio.byteLength; offset += 160) {
       if (this.closed || generation !== this.playbackGeneration) break
       this.sendAudioChunk(prepared.audio.subarray(offset, offset + 160), generation)
@@ -1504,6 +1508,7 @@ export class TwilioMediaStreamSession {
     if (!this.playbackActive || !this.streamSid || !this.socket.isOpen()) return false
     this.cancelPendingHangup("barge_in")
     this.playbackGeneration += 1
+    this.playbackStartedBecause.set(this.playbackGeneration, "the caller spoke again before the reply was played")
     this.playbackActive = false
     this.socket.send(JSON.stringify({ event: "clear", streamSid: this.streamSid }))
     emitNervesEvent({
@@ -4562,6 +4567,11 @@ function streamAudioUrl(
   )
 }
 
+/** The reply to a recording whose answer streams: play the stream, then listen again. */
+function streamedReplyTwiml(options: TwilioPhoneBridgeOptions, basePath: string, safeCallSid: string, jobId: string): string {
+  return `${playTwiml(streamAudioUrl(options, basePath, safeCallSid, jobId))}${redirectTwiml(options.publicBaseUrl, basePath)}`
+}
+
 function scheduleJobCleanup(jobs: TwilioAudioStreamJobStore, safeCallSid: string, jobId: string): void {
   /* v8 ignore start -- stream job cleanup is delayed beyond request-scope tests @preserve */
   const cleanup = setTimeout(() => {
@@ -4657,6 +4667,8 @@ async function runPhonePromptTurn(options: {
     text: options.promptText,
     source: "loopback",
   })
+  // The outcome waits for the playback files: a reply that could not be written never reached the caller.
+  const hold = heldUtterance(options.utterance)
   const turn = await runVoiceLoopbackTurn({
     agentName: options.bridgeOptions.agentName,
     friendId: options.friendId,
@@ -4664,11 +4676,12 @@ async function runPhonePromptTurn(options: {
     transcript,
     tts: options.bridgeOptions.tts,
     runSenseTurn: options.bridgeOptions.runSenseTurn,
-    utterance: options.utterance,
+    utterance: hold.turn,
   })
   const after = nextInputTwiml(options.bridgeOptions, options.basePath, options.afterPlayback)
 
   if (turn.tts.status !== "delivered") {
+    hold.release()
     return xmlResponse(`${sayTwiml("voice output failed after the text response was captured.")}${after}`)
   }
 
@@ -4680,6 +4693,7 @@ async function runPhonePromptTurn(options: {
     baseUtteranceId: options.utteranceId,
     turn,
   })
+  hold.release()
 
   return xmlResponse(`${playManyTwiml(audioUrls)}${after}`)
 }
@@ -5495,7 +5509,12 @@ async function handleRecording(
       message: "Twilio sent a recording that already has a turn; it is not run again",
       meta: { agentName: options.agentName, callSid: safeCallSid, recordingSid: safeRecordingSid, inFlight: inFlight !== undefined },
     })
-    return inFlight ?? xmlResponse(redirectTwiml(options.publicBaseUrl, basePath))
+    if (inFlight) return inFlight
+    // A streamed reply's audio stays served for a while after the first reply, so a retry can still play it.
+    const jobId = safeSegment(utteranceId)
+    return xmlResponse(jobs.get(safeCallSid, jobId)
+      ? streamedReplyTwiml(options, basePath, safeCallSid, jobId)
+      : redirectTwiml(options.publicBaseUrl, basePath))
   }
   const answer = answerRecording(options, basePath, params, jobs, recording, utteranceId)
   recordingsInFlight.set(inFlightKey, answer)
@@ -5503,6 +5522,23 @@ async function handleRecording(
     return await answer
   } finally {
     recordingsInFlight.delete(inFlightKey)
+  }
+}
+
+/**
+ * Holds a turn's outcome until its reply is ready to reach the caller, so a reply that never did is not recorded as
+ * answered. `release` records what the turn reported; it is called only after the turn returned, which always reports.
+ */
+function heldUtterance(record: VoiceUtteranceTurn | null | undefined): {
+  turn: VoiceUtteranceTurn | null
+  outcome(): Parameters<VoiceUtteranceTurn["settle"]> | undefined
+  release(): void
+} {
+  const held: { outcome?: Parameters<VoiceUtteranceTurn["settle"]> } = {}
+  return {
+    turn: record ? { ...record, settle: (...outcome) => { held.outcome = outcome } } : null,
+    outcome: () => held.outcome,
+    release: () => { record?.settle(...held.outcome!) },
   }
 }
 
@@ -5589,7 +5625,7 @@ async function answerRecording(
         },
         meta: { agentName: options.agentName, callSid: safeCallSid, recordingSid: safeRecordingSid, utteranceId },
       })
-      return xmlResponse(`${playTwiml(streamAudioUrl(options, basePath, safeCallSid, jobId))}${redirectTwiml(options.publicBaseUrl, basePath)}`)
+      return xmlResponse(streamedReplyTwiml(options, basePath, safeCallSid, jobId))
     }
 
     await fs.mkdir(callDir, { recursive: true })
@@ -5622,6 +5658,8 @@ async function answerRecording(
       })
     }
 
+    // The outcome waits for the playback files: a reply that could not be written never reached the caller.
+    const hold = heldUtterance(record)
     const turn = await runVoiceLoopbackTurn({
       agentName: options.agentName,
       friendId,
@@ -5629,10 +5667,11 @@ async function answerRecording(
       transcript,
       tts: options.tts,
       runSenseTurn: options.runSenseTurn,
-      utterance: record,
+      utterance: hold.turn,
     })
 
     if (turn.tts.status !== "delivered") {
+      hold.release()
       return xmlResponse(`${sayTwiml("voice output failed after the text response was captured.")}${redirectTwiml(options.publicBaseUrl, basePath)}`)
     }
 
@@ -5644,6 +5683,7 @@ async function answerRecording(
       baseUtteranceId: utteranceId,
       turn,
     })
+    hold.release()
 
     emitNervesEvent({
       component: "senses",

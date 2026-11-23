@@ -522,6 +522,32 @@ describe("voice turn outcomes", () => {
     expect(journal.outcome("utt_outcome_silent")).toMatchObject({ outcome: "silent", detail: "the agent had nothing to say" })
   })
 
+  it("records a turn whose only speech could not be spoken as failed, even when its final reply is empty", async () => {
+    const { turn, journal } = utterance("utt_outcome_mid_turn_fail")
+    await runVoiceLoopbackTurn({
+      agentName: "slugger", friendId: "ari", sessionKey: "phone", utterance: turn,
+      tts: { synthesize: vi.fn(async () => { throw new Error("speaker unplugged") }) },
+      runSenseTurn: vi.fn(async (request) => {
+        // As the real turn does, a failed delivery is caught and the turn goes on.
+        await request.deliverySink?.onDelivery({ kind: "speak", text: "Checking now." }).catch(() => undefined)
+        return { response: "", ponderDeferred: false }
+      }),
+      transcript: buildVoiceTranscript({ utteranceId: "utt_outcome_mid_turn_fail", text: "status?", source: "loopback" }),
+    })
+    expect(journal.outcome("utt_outcome_mid_turn_fail")).toMatchObject({ outcome: "failed", detail: "the reply could not be spoken: speaker unplugged" })
+
+    const failures = utterance("utt_outcome_delivery_failures")
+    await runVoiceLoopbackTurn({
+      agentName: "slugger", friendId: "ari", sessionKey: "phone", utterance: failures.turn, tts: { synthesize: vi.fn() },
+      runSenseTurn: vi.fn(async () => ({
+        response: "", ponderDeferred: false, deliveries: [],
+        deliveryFailures: [{ kind: "speak" as const, text: "Checking now.", error: "shared speaker down" }],
+      })),
+      transcript: buildVoiceTranscript({ utteranceId: "utt_outcome_delivery_failures", text: "status?", source: "loopback" }),
+    })
+    expect(failures.journal.outcome("utt_outcome_delivery_failures")).toMatchObject({ outcome: "failed", detail: "the reply could not be spoken: shared speaker down" })
+  })
+
   it("passes no outward-send hook when the utterance has no record", async () => {
     const runSenseTurn = vi.fn(async () => ({ response: "Hi.", ponderDeferred: false }))
     await runVoiceLoopbackTurn({

@@ -98,8 +98,9 @@ export async function runVoiceLoopbackTurn(options: VoiceLoopbackTurnOptions): P
   const utterance = options.utterance
   utterance?.beginAttempt()
   try {
-    const result = await runRecordedVoiceTurn(options)
-    if (result.speechSegments.length === 0 && !result.responseText.trim()) utterance?.settle("silent", "the agent had nothing to say")
+    const said: { nothing?: boolean } = {}
+    const result = await runRecordedVoiceTurn(options, said)
+    if (said.nothing) utterance?.settle("silent", "the agent had nothing to say")
     else if (result.tts.status === "delivered") utterance?.settle("answered")
     else utterance?.settle("failed", `the reply could not be spoken: ${result.tts.error}`)
     return result
@@ -109,7 +110,8 @@ export async function runVoiceLoopbackTurn(options: VoiceLoopbackTurnOptions): P
   }
 }
 
-async function runRecordedVoiceTurn(options: VoiceLoopbackTurnOptions): Promise<VoiceLoopbackTurnResult> {
+/** `said.nothing` is set when the turn ended with no speech, no failed speech and an empty reply. */
+async function runRecordedVoiceTurn(options: VoiceLoopbackTurnOptions, said: { nothing?: boolean }): Promise<VoiceLoopbackTurnResult> {
   const runSenseTurn = options.runSenseTurn ?? defaultRunSenseTurn
   const utterance = options.utterance
   let userMessage: string
@@ -229,7 +231,8 @@ async function runRecordedVoiceTurn(options: VoiceLoopbackTurnOptions): Promise<
   }
 
   try {
-    if (turn.response.trim()) utterance?.noteSpoke(turnSpoke("speech:text", turn.response))
+    said.nothing = !turn.response.trim()
+    if (!said.nothing) utterance?.noteSpoke(turnSpoke("speech:text", turn.response))
     const spoken: VoiceTtsResult = await options.tts.synthesize({
       utteranceId: options.transcript.utteranceId,
       text: turn.response,

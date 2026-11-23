@@ -84,6 +84,46 @@ describe("Twilio recording outcomes", () => {
     expect(voiceUtterances(f.outputDir).outcome("twilio-CAone-REslow")).toMatchObject({ outcome: "answered", attempts: 1 })
   })
 
+  it("gives a streamed recording's retry the same play link while its stream is still there", async () => {
+    const f = await fixture({ transportMode: "record-play", playbackMode: "stream" })
+    const release = Promise.withResolvers<void>()
+    const turn = f.runSenseTurn.getMockImplementation()!
+    f.runSenseTurn.mockImplementationOnce(async (request) => {
+      await release.promise
+      return turn(request)
+    })
+    const first = await f.post("/voice/twilio/recording", recording("REstreamed"))
+    expect(String(first.body)).toContain("<Play>")
+    const duringTurn = await f.post("/voice/twilio/recording", recording("REstreamed"))
+    expect(duringTurn.body).toEqual(first.body)
+    release.resolve()
+    await vi.waitFor(() => expect(voiceUtterances(f.outputDir).outcome("twilio-CAone-REstreamed")).toMatchObject({ outcome: "answered" }))
+    const afterTurn = await f.post("/voice/twilio/recording", recording("REstreamed"))
+    expect(afterTurn.body).toEqual(first.body)
+    expect(f.runSenseTurn).toHaveBeenCalledTimes(1)
+  })
+
+  it("records a buffered reply whose playback file could not be written as failed", async () => {
+    const f = await fixture({ transportMode: "record-play" })
+    fs.mkdirSync(path.join(f.outputDir, "CAone", "twilio-caone-reunwritable.mp3"), { recursive: true })
+    const reply = await f.post("/voice/twilio/recording", recording("REunwritable"))
+    expect(String(reply.body)).toContain("I could not process that audio")
+    expect(voiceUtterances(f.outputDir).outcome("twilio-CAone-REunwritable")).toMatchObject({ outcome: "failed", detail: expect.stringMatching(/^the turn failed: .*EISDIR/) })
+
+    fs.mkdirSync(path.join(f.outputDir, "CAone", "twilio-caone-renothing-nospeech.mp3"), { recursive: true })
+    vi.mocked(f.options.transcriber.transcribe).mockResolvedValueOnce(buildVoiceTranscript({ utteranceId: "x", text: "[BLANK_AUDIO]", source: "whisper.cpp" }))
+    await f.post("/voice/twilio/recording", recording("REnothing"))
+    expect(voiceUtterances(f.outputDir).outcome("twilio-CAone-REnothing")).toMatchObject({ outcome: "failed", detail: expect.stringMatching(/EISDIR/) })
+  })
+
+  it("records a buffered reply that could not be spoken as failed", async () => {
+    const f = await fixture({ transportMode: "record-play" })
+    vi.mocked(f.options.tts.synthesize).mockRejectedValueOnce(new Error("tts down"))
+    const reply = await f.post("/voice/twilio/recording", recording("REmute"))
+    expect(String(reply.body)).toContain("voice output failed")
+    expect(voiceUtterances(f.outputDir).outcome("twilio-CAone-REmute")).toMatchObject({ outcome: "failed", detail: "the reply could not be spoken: tts down" })
+  })
+
   it("records a streamed recording's turn, and one that could not be downloaded as failed", async () => {
     const f = await fixture({ transportMode: "record-play", playbackMode: "stream" })
     await f.post("/voice/twilio/recording", recording("REstream"))
@@ -206,6 +246,44 @@ describe("Twilio Media Stream utterance outcomes", () => {
     speak(second)
     await vi.waitFor(() => expect(voiceUtterances(f.outputDir).outcome("twilio-CAtwo-1")).toMatchObject({
       outcome: "failed", detail: "the turn failed: provider down",
+    }))
+  })
+
+  it("records a reply the caller heard part of as answered, even when they talked over the rest or hung up", async () => {
+    const f = await fixture({ mediaMinSpeechMs: 20, mediaSilenceEndMs: 40 })
+    const session = new TwilioMediaStreamSession(fakeSocket().socket, identity(), f.options, new TwilioAudioStreamJobStore())
+    session.attach()
+    session.handleRawMessage(start("CAone", {}))
+    await vi.waitFor(() => expect(f.runSenseTurn).toHaveBeenCalled())
+    const firstChunk = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const synthesize = f.options.tts.synthesize
+    vi.mocked(synthesize).mockImplementationOnce(async (request) => {
+      request.onAudioChunk?.(Buffer.alloc(160, 0x7f))
+      firstChunk.resolve()
+      await release.promise
+      return { utteranceId: request.utteranceId, audio: Buffer.alloc(160, 0x7f), byteLength: 160, chunkCount: 1, modelId: "m", voiceId: "v", mimeType: "audio/x-mulaw" }
+    })
+    speak(session)
+    await firstChunk.promise
+    for (let i = 0; i < 4; i += 1) session.handleRawMessage(media(0x00))
+    release.resolve()
+    await vi.waitFor(() => expect(voiceUtterances(f.outputDir).outcome("twilio-CAone-1")).toMatchObject({ outcome: "answered" }))
+  })
+
+  it("records a reply a tool's audio took the place of as failed, naming the tool audio", async () => {
+    const f = await fixture({ mediaMinSpeechMs: 20, mediaSilenceEndMs: 40 })
+    const session = new TwilioMediaStreamSession(fakeSocket().socket, identity(), f.options, new TwilioAudioStreamJobStore())
+    session.attach()
+    session.handleRawMessage(start("CAone", {}))
+    await vi.waitFor(() => expect(f.runSenseTurn).toHaveBeenCalled())
+    f.runSenseTurn.mockImplementationOnce(async (request: { toolContext?: { voiceCall?: { playAudio?: (r: unknown) => Promise<unknown> } } }) => {
+      await request.toolContext!.voiceCall!.playAudio!({ source: "tone", durationMs: 40 })
+      return { response: "That was the tone.", ponderDeferred: false }
+    })
+    speak(session)
+    await vi.waitFor(() => expect(voiceUtterances(f.outputDir).outcome("twilio-CAone-1")).toMatchObject({
+      outcome: "failed", detail: "audio a tool played took its place before the reply was played",
     }))
   })
 
