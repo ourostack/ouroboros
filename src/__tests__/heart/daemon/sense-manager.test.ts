@@ -2572,8 +2572,8 @@ describe("daemon sense manager", () => {
       })
       const turnsDir = path.join(bundlesRoot, "slugger.ouro", "state", "senses", "a2a", "turns-in-flight")
       fs.mkdirSync(turnsDir, { recursive: true })
-      const writeTurn = (startedAgoMs: number, quietForMs: number, name = `${process.pid}-1.json`) => fs.writeFileSync(path.join(turnsDir, name), JSON.stringify({
-        pid: process.pid,
+      const writeTurn = (startedAgoMs: number, quietForMs: number, name = `${process.pid}-1.json`, pid = process.pid) => fs.writeFileSync(path.join(turnsDir, name), JSON.stringify({
+        pid,
         sessionKey: "peer",
         startedAt: new Date(Date.now() - startedAgoMs).toISOString(),
         lastProgressAt: new Date(Date.now() - quietForMs).toISOString(),
@@ -2603,11 +2603,26 @@ describe("daemon sense manager", () => {
       writeTurn(10 * 60_000, 6 * 60_000)
       expect(row(manager)).toEqual(expect.objectContaining({
         status: "error",
-        recoveryAction: `look in the sense's log for the turn's last step; the turn runs in process ${process.pid}, outside the sense's worker, and ends only with that process`,
+        recoveryAction: `look in the sense's log for the turn's last step; the turn in process ${process.pid} runs outside the sense's worker and ends only with that process`,
       }))
-      const unknownWorker = await a2aManager({ status: "running", startedAt: null, pid: null })
-      unknownWorker.writeTurn(10 * 60_000, 6 * 60_000)
-      expect(row(unknownWorker.manager)).toEqual(expect.objectContaining({ recoveryAction: expect.stringContaining(`process ${process.pid}, outside`) }))
+    })
+
+    it("names both remedies when stalled turns sit in the worker and outside it", async () => {
+      const { manager, writeTurn } = await a2aManager({ status: "running", startedAt: null, pid: process.ppid })
+      writeTurn(10 * 60_000, 6 * 60_000, "in-worker.json", process.ppid)
+      writeTurn(10 * 60_000, 6 * 60_000, "outside.json")
+      expect(row(manager)).toEqual(expect.objectContaining({
+        stalledTurnCount: 2,
+        recoveryAction: `look in the sense's log for the turn's last step; restarting the sense ends the worker's turn; the turn in process ${process.pid} runs outside the sense's worker and ends only with that process`,
+      }))
+    })
+
+    it("doesn't guess where the turn runs when the worker's pid is unknown", async () => {
+      const { manager, writeTurn } = await a2aManager({ status: "running", startedAt: null, pid: null })
+      writeTurn(10 * 60_000, 6 * 60_000)
+      expect(row(manager)).toEqual(expect.objectContaining({
+        recoveryAction: `look in the sense's log for the turn's last step; the turn runs in process ${process.pid}; if that is the sense's worker, restarting the sense ends it`,
+      }))
     })
 
     it("shows a turn that is still moving without calling the sense broken", async () => {

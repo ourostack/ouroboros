@@ -810,17 +810,27 @@ function turnWatchFields(watched: { snapshot: TurnsInFlightSnapshot; workerPid?:
   if (turns.stalledTurnCount === 0) return facts
   const count = turns.stalledTurnCount
   const detail = `${count} ${count === 1 ? "turn has" : "turns have"} recorded no progress for ${Math.floor(Number(turns.longestSilenceMs) / 60_000)}m`
-  // A turn can run outside the sense's worker (a daemon ask, a foreground serve), where restarting the sense won't end it.
-  const others = (turns.stalledPids as number[]).filter((pid) => pid !== watched.workerPid)
   return {
     ...facts,
     detail,
     lastFailure: detail,
     failureLayer: "live_turn_stall",
-    recoveryAction: others.length === 0
-      ? "look in the sense's log for the turn's last step; restarting the sense ends the turn"
-      : `look in the sense's log for the turn's last step; the turn runs in process ${others.join(", ")}, outside the sense's worker, and ends only with that process`,
+    recoveryAction: `look in the sense's log for the turn's last step; ${stalledTurnRemedy(turns.stalledPids as number[], watched.workerPid)}`,
   }
+}
+
+/**
+ * How the stalled turns end. A turn can run outside the sense's worker (a daemon ask, a foreground serve), where
+ * restarting the sense won't end it; when the worker's pid is unknown, that can't be told.
+ */
+function stalledTurnRemedy(stalledPids: number[], workerPid: number | undefined): string {
+  if (workerPid === undefined) {
+    return `the turn runs in process ${stalledPids.join(", ")}; if that is the sense's worker, restarting the sense ends it`
+  }
+  const others = stalledPids.filter((pid) => pid !== workerPid)
+  if (others.length === 0) return "restarting the sense ends the turn"
+  const outside = `the turn in process ${others.join(", ")} runs outside the sense's worker and ends only with that process`
+  return others.length < stalledPids.length ? `restarting the sense ends the worker's turn; ${outside}` : outside
 }
 
 export class DaemonSenseManager implements DaemonSenseManagerLike {
