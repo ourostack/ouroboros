@@ -24,9 +24,15 @@ const MAX_SKILLS = 2
 const MAX_NOTE_CHARS = 900
 const MAX_RUNS_CHARS = 200
 
-/** Words that name the same job, so "delete the book" finds a section that says "remove". */
-const SAME_AS: Readonly<Record<string, string>> = { delete: "remove", erase: "remove", ebook: "book" }
-const searchWords = (text: string): string[] => words(text).map((word) => SAME_AS[word] ?? word)
+/** Stems that name the same job, so "delete the book" finds a section that says "removing". */
+const SAME_AS: Readonly<Record<string, string>> = { delet: "remov", eras: "remov", ebook: "book" }
+/**
+ * The catalog's words with a final "e" dropped too, so "remove", "removed" and "removing" are one word, as are
+ * "replace" and "replacing"; then the synonyms.
+ */
+const searchWords = (text: string): string[] => words(text)
+  .map((word) => (word.length > 4 && word.endsWith("e") ? word.slice(0, -1) : word))
+  .map((word) => SAME_AS[word] ?? word)
 
 function firstCommandBlock(text: string): string | undefined {
   const block = /```[^\n]*\n([\s\S]*?)```/.exec(text)?.[1]?.trim()
@@ -104,10 +110,11 @@ export function searchSkills(query: string): SkillSection[] {
     sectionCount += sections.length
     const about = new Set(searchWords(`${name} ${sections[0]!.heading} ${whenLine(markdown) ?? ""}`))
     const scored = sections.map((section) => scoreSection(terms, section, about)).filter((entry) => entry.covered >= needed)
-    // Within a skill the heading carries the most weight, so "remove" in a heading beats it in a passing rule.
-    const top = scored.sort((a, b) => b.score - a.score)[0]
-    // Across skills, the skill that answers more of the query wins, whichever of its sections is shown.
-    if (top) best.push({ ...top, covered: Math.max(...scored.map((entry) => entry.covered)) })
+    // Within a skill, the section that answers most of the query, then the heading's weight: "remove" in a heading
+    // beats it in a passing rule.
+    const top = scored.sort((a, b) => b.covered - a.covered || b.score - a.score)[0]
+    // Across skills, the skill that answers more of the query wins.
+    if (top) best.push(top)
   }
   best.sort((a, b) => b.covered - a.covered || b.score - a.score)
   // A second skill comes back only when it answers as much of the query and nearly as strongly (80%).
@@ -130,6 +137,11 @@ export function findToolsSkillNote(query: string, tools: ReadonlySet<string>): {
   return { hits: hits.length, note: formatSkillHits(hits, { loadSkill: tools.has("load_skill") }) }
 }
 
+/** A clipped section that cut a code block open gets it closed again. */
+function closeFence(text: string): string {
+  return (text.match(/```/g)?.length ?? 0) % 2 === 1 ? `${text}\n\`\`\`` : text
+}
+
 function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text
 }
@@ -140,6 +152,6 @@ export function formatSkillHits(hits: readonly SkillSection[], offered: { loadSk
   return hits.map((hit) => {
     const open = offered.loadSkill ? `load_skill ${hit.skill}` : `read_file ${hit.path}`
     const runs = hit.runs ? `\nits commands run as: ${clip(hit.runs, MAX_RUNS_CHARS)}` : ""
-    return `skill ${hit.skill} documents this, in "${hit.heading}" (${open} for the whole skill):\n${clip(hit.text, each)}${runs}`
+    return `skill ${hit.skill} documents this, in "${hit.heading}" (${open} for the whole skill):\n${closeFence(clip(hit.text, each))}${runs}`
   }).join("\n\n")
 }

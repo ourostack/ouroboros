@@ -145,7 +145,8 @@ export function toAnthropicMessages(
   };
 
   for (const msg of messages) {
-    if (msg.role !== "tool") flushNotes();
+    // System messages go to the system prompt, not between messages, so they don't end a run of tool results.
+    if (msg.role !== "tool" && msg.role !== "system") flushNotes();
     if (msg.role === "system") {
       const text = toAnthropicTextContent((msg as OpenAI.ChatCompletionSystemMessageParam).content).trim();
       if (text) systemParts.push(text);

@@ -71,6 +71,7 @@ describe("Anthropic deferred tool loading", () => {
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: "assistant", content: null, tool_calls: [call("c1", "find_tools"), call("c2", "shell")] },
       { role: "tool", tool_call_id: "c1", content: formatFindToolsReply([tool("mail_send")], note) },
+      { role: "system", content: "a late system line" },
       { role: "tool", tool_call_id: "c2", content: "ok" },
       { role: "user", content: "next" },
     ]

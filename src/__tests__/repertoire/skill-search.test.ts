@@ -110,6 +110,19 @@ describe("skill search", () => {
     expect(send.every((hit) => hit.skill === "shelf-keeping")).toBe(true)
   })
 
+  it("treats remove, removed, removing, delete and deleted as one job", () => {
+    fs.writeFileSync(path.join(roots.repo, "skills", "archive.md"), "# Archive\n\n## Removing a crate\n\nTake the crate off the archive shelf.\n\n## Replacing a crate\n\nSwap the crate on the archive shelf.")
+    for (const query of ["deleted crate", "remove crate", "deleting a crate", "removed crates"]) expect(searchSkills(query)[0]?.heading).toBe("Removing a crate")
+    expect(searchSkills("replace crate")[0]?.heading).toBe("Replacing a crate")
+  })
+
+  it("shows the section that answers most of the query, and closes a code block it cuts open", () => {
+    fs.writeFileSync(path.join(roots.repo, "skills", "kiln.md"), "# Kiln\n\n## Kiln kiln kiln\n\nKiln.\n\n## Firing glaze\n\nFire the glaze in the kiln.")
+    expect(searchSkills("kiln firing glaze")[0]?.heading).toBe("Firing glaze")
+    const cut = formatSkillHits([{ skill: "c", path: "/c.md", heading: "C", text: "```\n" + "x".repeat(2000) + "\n```" }], { loadSkill: true })
+    expect(cut.match(/```/g)).toHaveLength(2)
+  })
+
   it("returns one section per skill, at most two skills, and nothing for a query no skill covers", () => {
     fs.writeFileSync(path.join(roots.repo, "skills", "library-hours.md"), "# Library hours\n\nUse this when someone asks when the library opens.\n\n## Book a library room\n\nCall the desk to book a room in the library.")
     const hits = searchSkills("book library remove")

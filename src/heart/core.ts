@@ -3122,6 +3122,7 @@ export async function runAgent(
             pushGenerated({ role: "tool", tool_call_id: tc.id, content: found })
             providerRuntime.appendToolOutput(tc.id, found)
             if (matched.length > 0 || skills.hits > 0) lastIterationMadeProgress = true
+            // onToolEnd's success means a door was loaded; a skill-only reply loaded none, but is still progress.
             callbacks.onToolEnd(FIND_TOOLS_NAME, query, matched.length > 0)
             recordFindTools({ query, matched: matched.length, deferred: deferralPool.length, skills: skills.hits })
             continue
