@@ -14,7 +14,6 @@ import type { AttentionItem } from "../arc/attention-types";
 import { placeTrustedFriendVoiceOutboundCall } from "../senses/voice/outbound";
 import type { ToolDefinition, ToolDoorCard, VoiceCallAudioRequest } from "./tools-base";
 import { withCode } from "./tool-error-code";
-import { channelToFacing } from "@ouro.bot/friends";
 
 type SurfaceDeliveryChannel = "auto" | "voice" | "teams"
 
@@ -63,7 +62,7 @@ export const surfaceToolDef: OpenAI.ChatCompletionFunctionTool = {
   function: {
     name: "surface",
     description:
-      "return a ready thought to a friend or active session without publishing private-runtime work to BlueBubbles. pass delegationId to address a held thought (see your attention queue above): it goes back to the session that asked. pass friendId for spontaneous outreach: it sends now on their Telegram or Teams, never into an MCP, CLI or agent session they don't read; with neither, it comes back \"not sent\" and names the tool that reaches them, so tell them that way. surface never texts by iMessage - use send_message with channel=\"bluebubbles\" for that. set channel=voice only when you intentionally want a live phone call; content becomes the call reason/opening context. set channel=teams to tell a friend on Teams now (it sends at once where your Teams sense runs, otherwise waits in their Teams chat). does not end your turn.",
+      "return a ready thought to a friend or active session; content carrying internal markers is refused. pass delegationId to address a held thought (see your attention queue above): it goes back to the session that asked. pass friendId for spontaneous outreach: it sends now on their newest iMessage, Telegram or Teams chat active in the last 30 days, trying the next if one does not send, and never into an MCP, CLI or agent session they don't read. if none sends, it comes back deferred: not sent, saved for their next message, and the result says why and what else reaches them. set channel=voice only when you intentionally want a live phone call; content becomes the call reason/opening context. set channel=teams to tell a friend on Teams now (it sends at once where your Teams sense runs, otherwise waits in their Teams chat). does not end your turn.",
     parameters: {
       type: "object",
       properties: {
@@ -77,7 +76,7 @@ export const surfaceToolDef: OpenAI.ChatCompletionFunctionTool = {
         },
         friendId: {
           type: "string",
-          description: "friend to reach out to spontaneously (when not addressing a held thought); sends now on their Telegram or Teams, otherwise comes back not sent with the tool that reaches them",
+          description: "friend to reach out to spontaneously (when not addressing a held thought); sends now on their newest active iMessage, Telegram or Teams chat, otherwise comes back deferred (not sent, saved)",
         },
         channel: {
           type: "string",
@@ -119,53 +118,95 @@ export const surfaceToolDef: OpenAI.ChatCompletionFunctionTool = {
   },
 }
 
-/** The channels surface sends on at once when it reaches out to a friend unprompted. */
-const SENDS_NOW_CHANNELS = new Set(["telegram", "teams"])
+/** A chat surface sends on unprompted is used only while the friend has been active in it this recently. */
+export const SPONTANEOUS_OUTREACH_FRESH_DAYS = 30
+const DAY_MS = 24 * 60 * 60 * 1000
 
-/** For a channel surface doesn't send on, the tool that does reach the friend there now. */
-const OTHER_ROUTE_TO_FRIEND: Record<string, (friendId: string) => string> = {
-  a2a: (friendId) => `a2a_send_message friend_id="${friendId}" (messages that agent)`,
-  voice: (friendId) => `surface friendId="${friendId}" channel="voice" (a live phone call)`,
-  mail: () => "mail_compose then mail_send to their address",
-  bluebubbles: (friendId) => `send_message friendId="${friendId}" channel="bluebubbles" (texts them by iMessage)`,
-}
+/** The senses surface sends on at once when it reaches out to a friend unprompted, as a person would name them. */
+const PUSH_CHANNEL_LABELS: Record<string, string> = { bluebubbles: "iMessage", telegram: "Telegram", teams: "Teams" }
 
-interface OutreachSession { friendId: string; friendName?: string; channel: string; key: string }
+interface OutreachSession { friendId: string; friendName?: string; channel: string; key: string; lastActivityMs: number }
+type OutreachAttempt = { status: "delivered" | "forwarded"; detail: string } | { status: "unsent"; why: string }
+type OutreachSenders = Record<"bluebubbles" | "telegram" | "teams", (target: OutreachSession) => Promise<OutreachAttempt>>
 
 /**
- * Where spontaneous outreach to a friend goes, given their sessions freshest first. It sends now on their freshest
- * Telegram or Teams session. It never picks an agent-facing session (MCP, where the next connecting agent would read
- * it) or one the friend only reads when they next open it (CLI). Without a session it can send on, the message is
- * not sent, and the detail names the tool that reaches them now; with no such tool either, it waits for their next
- * contact as a deferred return.
+ * Spontaneous outreach: send now on the friend's chats that reach a person (iMessage, Telegram, Teams), newest first,
+ * skipping group chats and chats quiet for more than SPONTANEOUS_OUTREACH_FRESH_DAYS, until one sends. It never
+ * picks an MCP session (the next connecting agent would read it) or a CLI session (they see it only when they reopen
+ * it). When none sends it returns the detail for a deferred return: why, and a call only if the friend takes calls.
  */
-export function chooseSpontaneousOutreach(friendId: string, sessions: OutreachSession[]):
-  | { kind: "send"; target: OutreachSession }
-  | { kind: "not_sent"; detail: string }
-  | { kind: "deferred"; detail: string } {
-  const target = sessions.find((session) => SENDS_NOW_CHANNELS.has(session.channel))
-  if (target) return { kind: "send", target }
+export async function sendSpontaneousOutreach(
+  friendId: string,
+  sessions: OutreachSession[],
+  senders: OutreachSenders,
+  nowMs: number,
+): Promise<{ sent: SurfaceRouteResult } | { unsentDetail: string }> {
+  const isPush = (session: OutreachSession): session is OutreachSession & { channel: keyof OutreachSenders } =>
+    session.channel in PUSH_CHANNEL_LABELS && !(session.channel === "bluebubbles" && session.key.includes(";+;"))
+  const quietDays = (session: OutreachSession): number => Math.floor((nowMs - session.lastActivityMs) / DAY_MS)
+  const failures: string[] = []
+  for (const target of sessions.filter((session) => isPush(session) && quietDays(session) < SPONTANEOUS_OUTREACH_FRESH_DAYS)) {
+    const attempt = await senders[target.channel as keyof OutreachSenders](target)
+    if (attempt.status !== "unsent") return { sent: { status: attempt.status, detail: attempt.detail } }
+    const failure = `${PUSH_CHANNEL_LABELS[target.channel]} did not send (${attempt.why})`
+    if (!failures.includes(failure)) failures.push(failure)
+  }
   const name = sessions.find((session) => session.friendName)?.friendName ?? friendId
-  const saved = "Saved for when they next message you on a chat sense."
-  if (sessions.length === 0) return { kind: "deferred", detail: `not sent now: ${name} has no chat session with you yet. ${saved}` }
-  const channels = [...new Set(sessions.map((session) => session.channel))]
-  const agentRead = channels.filter((channel) => channel !== "a2a" && channelToFacing(channel) === "agent")
-  const theirs = `(theirs: ${channels.join(", ")}${agentRead.length > 0 ? `; ${agentRead.join(" and ")} ${agentRead.length > 1 ? "are" : "is"} read only by agents` : ""})`
-  const routes = channels.flatMap((channel) => OTHER_ROUTE_TO_FRIEND[channel] ? [OTHER_ROUTE_TO_FRIEND[channel](friendId)] : [])
-  if (routes.length === 0) return { kind: "deferred", detail: `not sent now: nothing reaches ${name} now ${theirs}. ${saved}` }
+  const lead = "not sent now; saved for their next message."
+  if (sessions.length === 0) return { unsentDetail: `${lead} ${name} has no chat session with you yet.` }
+  const newestPerChannel = sessions.filter((session, index) => sessions.findIndex((other) => other.channel === session.channel) === index)
+  const theirs = newestPerChannel
+    .map((session) => isPush(session) && quietDays(session) >= SPONTANEOUS_OUTREACH_FRESH_DAYS ? `${session.channel} quiet for ${quietDays(session)} days` : session.channel)
+    .join(", ")
+  const why = failures.length > 0
+    ? `${failures.join("; ")}.`
+    : `${name} has no chat that surface can send on, active in the last ${SPONTANEOUS_OUTREACH_FRESH_DAYS} days (their sessions: ${theirs}).`
+  const call = sessions.some((session) => session.channel === "voice")
+    ? ` Only if it is urgent: surface friendId="${friendId}" channel="voice" calls them.`
+    : ""
+  return { unsentDetail: `${lead} ${why}${call}` }
+}
+
+/** How each push sense sends one spontaneous message, and what its outcome means. */
+function spontaneousOutreachSenders(agentName: string, agentRoot: string, content: string, queueItem?: AttentionItem): OutreachSenders {
   return {
-    kind: "not_sent",
-    detail: `surface sends now only on Telegram or Teams, and ${name} has no session there ${theirs}. To tell ${name} now: ${routes.join(", or ")}.`,
+    bluebubbles: async (target) => {
+      const { sendProactiveBlueBubblesMessageToSession } = await import("../senses/bluebubbles")
+      const sent = await sendProactiveBlueBubblesMessageToSession({ friendId: target.friendId, sessionKey: target.key, text: content, intent: "generic_outreach", origin: "proactive" })
+      return sent.delivered ? { status: "delivered", detail: "texted them by iMessage now" } : { status: "unsent", why: sent.reason ?? "not delivered" }
+    },
+    telegram: async (target) => {
+      const telegramKey = canonicalizeTelegramSessionKey(target.key)
+      const hash = createHash("sha256").update(`${target.friendId}\0${telegramKey}\0${content}`).digest("hex")
+      const { sendTelegramAwaitFollowUp } = await import("../senses/telegram")
+      const delivered = await sendTelegramAwaitFollowUp(agentName, {
+        friendId: target.friendId,
+        channel: "telegram",
+        key: telegramKey,
+        content,
+        requestId: queueItem?.obligationId ?? `surface:${hash}`,
+        deliveryId: queueItem?.obligationId ? `surface:${queueItem.obligationId}:${hash}` : `surface:${hash}`,
+        intent: "generic_outreach",
+      })
+      return delivered.status === "delivered_now" ? { status: "delivered", detail: "sent to Telegram now" } : { status: "unsent", why: delivered.detail ?? delivered.status }
+    },
+    teams: async (target) => {
+      const { sendTeamsOffTurn } = await import("../senses/teams-off-turn")
+      const sent = await sendTeamsOffTurn({ friendId: target.friendId, key: target.key, text: content, origin: "proactive" }, { agentRoot })
+      if (sent?.forwardedTo) return { status: "forwarded", detail: `handed to ${sent.forwardedTo}, which runs Teams; it sends on its next sync` }
+      if (sent?.delivered) return { status: "delivered", detail: "sent to Teams now" }
+      return { status: "unsent", why: sent?.reason ?? "not available here" }
+    },
   }
 }
 
 // Surface tool handler: routes content to friend's freshest session
 /**
  * Delivers content to a friend the way surface does: the held-work origin or a
- * bridge first, then for spontaneous outreach the friend's freshest Telegram or
- * Teams session (see chooseSpontaneousOutreach). Otherwise it is not sent and
- * says which tool reaches them, or waits as a deferred return for their next
- * contact. Also used for an ordinary agent's external-event owner message.
+ * bridge first, then for spontaneous outreach the friend's newest active iMessage,
+ * Telegram or Teams chat that sends (see sendSpontaneousOutreach), and otherwise
+ * a deferred return for their next message, saying it was not sent. Also used for
+ * an ordinary agent's external-event owner message.
  */
 export async function routeSurfaceToFriend(agentName: string, friendId: string, content: string, queueItem?: AttentionItem, hint?: SurfaceDeliveryHint): Promise<SurfaceRouteResult> {
   /* v8 ignore start -- routing: integration path tested via private-runtime routing tests @preserve */
@@ -298,11 +339,10 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
     // never into a session only agents read (MCP) or one they must reopen (CLI).
     const allFriendSessions = listSessionActivity({ sessionsDir, friendsDir, agentName, activeThresholdMs: Number.MAX_SAFE_INTEGER })
       .filter((s) => s.friendId === friendId && s.channel !== "inner")
-    const outreach = chooseSpontaneousOutreach(friendId, allFriendSessions)
-    if (outreach.kind === "send") return deliverOrQueue(outreach.target, `for next interaction via ${outreach.target.channel}`)
-    if (outreach.kind === "not_sent") return { status: "not_sent", detail: outreach.detail }
+    const outreach = await sendSpontaneousOutreach(friendId, allFriendSessions, spontaneousOutreachSenders(agentName, agentRoot, content, queueItem), Date.now())
+    if ("sent" in outreach) return outreach.sent
 
-    // Priority 3: Deferred — nothing reaches them now; their next contact picks it up.
+    // Priority 3: Deferred — nothing sent now; their next message picks it up.
     const { getDeferredReturnDir } = await import("../mind/pending")
     const { queuePendingMessage: queueDeferred } = await import("../mind/pending")
     const deferredDir = getDeferredReturnDir(agentName, friendId)
@@ -314,7 +354,7 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
       content,
       timestamp: Date.now(),
     })
-    return { status: "deferred", detail: outreach.detail }
+    return { status: "deferred", detail: outreach.unsentDetail }
   } catch {
     return { status: "failed" }
   }
@@ -330,7 +370,7 @@ const surfaceCard: ToolDoorCard = {
   errors: [
     { code: "delivery-blocked", means: "The content carries internal meta markers, so nothing was delivered.", fix: "Rewrite the content as plain words for the person and surface it again." },
     { code: "orientation-hold", means: "This turn is on a correction hold, so surfacing waits.", fix: "Call orientation_get, settle what the person meant, then surface the thought if it still answers them." },
-    { code: "surface-not-sent", means: "Nothing reaches this friend now through surface, so nothing was sent or queued.", fix: "Tell them with the tool the result names, such as send_message with channel=\"bluebubbles\"." },
+    { code: "surface-not-sent", means: "No chat sent the message now, so it is saved for the friend's next message; the result says why.", fix: "If it cannot wait and the result offers a call, call them; otherwise let it wait." },
   ],
 }
 
@@ -413,11 +453,11 @@ export const surfaceToolDefinition: ToolDefinition = {
         ctx?.habitSession?.recordSurfaceAttempt?.({
           recipient: targetFriendId,
           channel: queueItem?.channel ?? args.channel ?? "surface",
-          reason: result.status === "failed" || result.status === "not_sent" ? "blocked" : "answer",
-          result: result.status === "not_sent" ? "unavailable" : result.status,
+          reason: result.status === "failed" ? "blocked" : "answer",
+          result: result.status === "forwarded" ? "sent" : result.status,
           rawStatus: result.status,
           ...(queueItem ? { routeKind: "originator" } : {}),
-          ...(result.status === "failed" || result.status === "not_sent" ? { error: result.detail ?? "surface route failed" } : {}),
+          ...(result.status === "failed" ? { error: result.detail ?? "surface route failed" } : {}),
         })
       },
     })

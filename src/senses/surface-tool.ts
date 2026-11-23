@@ -5,8 +5,8 @@ import { withCode } from "../repertoire/tool-error-code"
 // ── Routing result ───────────────────────────────────────────────
 
 export interface SurfaceRouteResult {
-  /** not_sent: nothing reaches the friend through surface now, so nothing was sent or queued; detail names what does. */
-  status: "delivered" | "queued" | "deferred" | "failed" | "not_sent"
+  /** forwarded: handed to the machine that runs the sense, which sends it. deferred: not sent, saved for their next message. */
+  status: "delivered" | "forwarded" | "queued" | "deferred" | "failed"
   detail?: string
 }
 
@@ -127,7 +127,7 @@ export async function handleSurface(input: HandleSurfaceInput): Promise<string> 
   // On successful routing with delegationId:
   // 1. Advance obligation to "returned" (disk FIRST — crash safety)
   // 2. Dequeue from process-local queue (AFTER obligation advance)
-  if (queueItem && result.status !== "failed" && result.status !== "not_sent") {
+  if (queueItem && result.status !== "failed") {
     if (queueItem.obligationId) {
       advanceObligation(queueItem.obligationId, {
         status: "returned",
@@ -159,6 +159,6 @@ export async function handleSurface(input: HandleSurfaceInput): Promise<string> 
 
   // Return delivery status
   const detail = result.detail ? ` — ${result.detail}` : ""
-  if (result.status === "not_sent") return withCode(`not sent${detail}`, "surface-not-sent")
+  if (result.status === "deferred") return withCode(`deferred${detail}`, "surface-not-sent")
   return `${result.status}${detail}`
 }

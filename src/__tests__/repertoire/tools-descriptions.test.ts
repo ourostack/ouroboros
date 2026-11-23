@@ -161,12 +161,12 @@ describe("Phase 2: tool description enrichment", () => {
       expect(desc).toMatch(/friend|person|someone/)
     })
 
-    it("surface description says where spontaneous outreach goes and that anything else comes back not sent", () => {
+    it("surface description says where spontaneous outreach goes and what a not-sent result means", () => {
       const desc = surfaceToolDef.function.description ?? ""
-      expect(desc).toContain("sends now on their Telegram or Teams")
+      expect(desc).toContain("iMessage, Telegram or Teams chat active in the last 30 days")
       expect(desc).toContain("never into an MCP, CLI or agent session")
-      expect(desc).toContain("\"not sent\"")
-      expect(desc).toContain("send_message with channel=\"bluebubbles\"")
+      expect(desc).toContain("comes back deferred: not sent, saved for their next message")
+      expect(desc).not.toContain("send_message")
     })
 
     it("surface description does NOT contain 'surface progress'", () => {

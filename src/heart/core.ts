@@ -735,16 +735,22 @@ function stripThinkBlocksForViolationCheck(input: string): string {
 }
 
 /**
- * This turn's newest surface result when it came back not sent (it ends with the surface-not-sent code), unless the
- * turn reached for another way to tell someone after it. Rest uses it to say once that the person was not told.
+ * This turn's newest surface result that came back not sent (it ends with the surface-not-sent code), unless a later
+ * surface or send_message reached the same friend. Rest uses it to say once that the person was not told.
  */
 export function unsentSurfaceResult(records: TurnToolRecord[]): string | null {
-  for (let index = records.length - 1; index >= 0; index--) {
-    const record = records[index]!
-    if (record.name === "surface") return /\(code: surface-not-sent\)$/u.test(record.result) ? record.result : null
-    if (record.name === "send_message" || record.name === "a2a_send_message" || record.name === "mail_send") return null
+  let unsent: { result: string; friendId: string } | null = null
+  for (const record of records) {
+    const friendId = (record.args.friendId ?? "").toLowerCase()
+    if (record.name === "surface" && /\(code: surface-not-sent\)$/u.test(record.result)) {
+      unsent = { result: record.result, friendId }
+      continue
+    }
+    const reached = (record.name === "surface" && /^(?:delivered|forwarded)\b/u.test(record.result))
+      || (record.name === "send_message" && /^delivered now$/mu.test(record.result) && !/\(code: [a-z0-9-]+\)$/u.test(record.result))
+    if (unsent && reached && friendId === unsent.friendId) unsent = null
   }
-  return null
+  return unsent?.result ?? null
 }
 
 function hasFreshPendingWork(options?: RunAgentOptions): boolean {
