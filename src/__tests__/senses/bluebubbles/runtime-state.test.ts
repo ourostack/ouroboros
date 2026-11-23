@@ -65,8 +65,9 @@ describe("BlueBubbles runtime state", () => {
     const heartbeat = Date.parse(readBlueBubblesRuntimeState("slugger").lastHeartbeatAt!)
     expect(heartbeat).toBeGreaterThanOrEqual(before)
     expect(heartbeat).toBeLessThanOrEqual(Date.now())
-    // Written to a temporary file and renamed into place, so a reader never sees half of it.
+    // Written to a private temporary file and renamed into place, so a reader never sees half of it.
     expect(fs.readdirSync(path.dirname(getBlueBubblesRuntimeStatePath("slugger")))).toEqual(["runtime.json"])
+    expect(fs.statSync(getBlueBubblesRuntimeStatePath("slugger")).mode & 0o777).toBe(0o600)
   })
 
   it("keeps the catch-up cursor through writes that do not move it", async () => {

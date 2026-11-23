@@ -131,7 +131,7 @@ const DEFAULT_BLUEBUBBLES_WEBHOOK_PATH = "/bluebubbles-webhook"
 const BLUEBUBBLES_RUNTIME_FRESHNESS_WINDOW_MS = 90_000
 /**
  * The listener's 30 s sync loop refreshes its proof on every tick, even while a slow pass runs, and a pass that
- * hangs is abandoned after five minutes. So a proof this daemon has watched stay unchanged this long means the loop
+ * hangs is abandoned after two minutes without progress. So a proof this daemon has watched stay unchanged this long means the loop
  * itself has stopped. Busy turns never hold it back.
  */
 export const BLUEBUBBLES_STALE_PROOF_RESTART_MS = 10 * 60_000

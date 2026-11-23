@@ -6813,10 +6813,10 @@ describe("BlueBubbles sense runtime", () => {
     bluebubbles.startBlueBubblesApp()
     await flushAsyncWork()
 
-    // Under five minutes, a slow sync keeps its slot, and each tick it skips still says the listener is alive.
+    // Under two minutes without progress, a slow sync keeps its slot, and each tick it skips still says the listener is alive.
     await vi.advanceTimersByTimeAsync(30_000)
     expect(readBlueBubblesRuntimeState("testagent")).toEqual(expect.objectContaining({ lastCheckedAt: earlierProof, lastHeartbeatAt: new Date(Date.now()).toISOString() }))
-    await vi.advanceTimersByTimeAsync(240_000)
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(mocks.checkHealth).toHaveBeenCalledTimes(1)
     expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_runtime_sync_timeout" }))
 
@@ -6824,7 +6824,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       level: "warn",
       event: "senses.bluebubbles_runtime_sync_timeout",
-      meta: expect.objectContaining({ runningMs: 300_000 }),
+      meta: expect.objectContaining({ runningMs: 120_000, idleMs: 120_000 }),
     }))
     expect(mocks.checkHealth).toHaveBeenCalledTimes(2)
     await flushAsyncWork()
@@ -6846,7 +6846,7 @@ describe("BlueBubbles sense runtime", () => {
     const startedAt = Date.now()
     const stuckPage = createDeferred<never[]>()
     mocks.checkHealth.mockResolvedValue(undefined)
-    // Syncs at 0 s to 300 s finish; the one at 330 s hangs in catch-up and is abandoned at 630 s.
+    // Syncs at 0 s to 300 s finish; the one at 330 s hangs in catch-up and is abandoned two minutes later, at 450 s.
     mocks.listRecentMessages.mockImplementation(() => Date.now() - startedAt === 330_000 ? stuckPage.promise : Promise.resolve([]))
     const closableServer = createClosableServer()
     mocks.createServer.mockReturnValue(closableServer.server as any)
@@ -6854,13 +6854,60 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     bluebubbles.startBlueBubblesApp()
     await flushAsyncWork()
-    await vi.advanceTimersByTimeAsync(630_000)
+    await vi.advanceTimersByTimeAsync(450_000)
     await flushAsyncWork()
 
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_runtime_sync_timeout" }))
     const starts = mocks.emitNervesEvent.mock.calls.map(([event]) => event).filter((event) => event.event === "senses.bluebubbles_catchup_start")
     // 90 s before the end of the last finished catch-up (300 s), not before the abandoned one's start (330 s).
     expect(starts.at(-1)!.meta.since).toBe(new Date(startedAt + 300_000 - 90_000).toISOString())
+    closableServer.close()
+  })
+
+  it("lets a slow catch-up that keeps making progress finish, however long it takes", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.checkHealth.mockResolvedValue(undefined)
+    // A backlog of full pages from a server that takes 25 s for each: 20 pages, over eight minutes in all.
+    const fullPage = Array.from({ length: 50 }, (_, index) => ({ kind: "read", messageGuid: `read-${index}` }))
+    mocks.listRecentMessages.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(fullPage), 25_000)))
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+    const { readBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await vi.advanceTimersByTimeAsync(500_000)
+    await flushAsyncWork()
+
+    expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_runtime_sync_timeout" }))
+    expect(mocks.listRecentMessages).toHaveBeenCalledTimes(20)
+    expect(readBlueBubblesRuntimeState("testagent").catchUpThrough).toBeDefined()
+    closableServer.close()
+  })
+
+  it("logs a setup failure even while the previous sync had already failed", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const { writeBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
+    writeBlueBubblesRuntimeState("testagent", { upstreamStatus: "error", detail: "Cannot reach BlueBubbles", lastCheckedAt: new Date().toISOString(), pendingRecoveryCount: 0 })
+    const createClient = vi.fn()
+      .mockReturnValueOnce({})
+      .mockImplementationOnce(() => { throw new Error("client setup failed") })
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp({ createClient } as any)
+    await flushAsyncWork()
+
+    // A failed probe logs itself; a setup failure does not, so it is never folded into the streak.
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_runtime_sync_failed",
+      meta: { reason: "client setup failed", probePassed: false },
+    }))
     closableServer.close()
   })
 

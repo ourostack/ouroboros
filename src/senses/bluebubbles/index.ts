@@ -591,10 +591,10 @@ const BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS = 30_000
 /** After a failed sync, the next one comes sooner than the interval: 5 s, then 10 s, then 20 s. */
 const BLUEBUBBLES_RUNTIME_SYNC_RETRY_BASE_MS = 5_000
 /**
- * A sync still running this long is abandoned so the next one can start. Its proof was written right after the
- * probe, so a slow catch-up never leaves the proof older than about this, well inside the daemon's restart threshold.
+ * A sync that makes no progress (no probe answer, catch-up page or capture) for this long is abandoned so the next
+ * one can start. Every request times out in 30 s, so only a hang gets here; a slow catch-up that keeps going finishes.
  */
-const BLUEBUBBLES_RUNTIME_SYNC_TIMEOUT_MS = 5 * 60_000
+const BLUEBUBBLES_RUNTIME_SYNC_STALL_MS = 2 * 60_000
 const BLUEBUBBLES_RECOVERY_PASS_DELAY_MS = 1_000
 const BLUEBUBBLES_RECOVERY_PASS_INTERVAL_MS = 30_000
 // A turn that is still thinking after this long is treated as hung. It is generous on purpose: a slow reply that
@@ -3728,6 +3728,7 @@ async function syncBlueBubblesRuntime(
   options: {
     catchUpObservationBatch?: BlueBubblesObservationBatch
     lifecycleSignal?: AbortSignal
+    onProgress?: () => void
   } = {},
 ): Promise<BlueBubblesRuntimeSyncOutcome> {
   options.lifecycleSignal?.throwIfAborted()
@@ -3735,6 +3736,7 @@ async function syncBlueBubblesRuntime(
   const agentName = resolvedDeps.getAgentName()
   const checkedAt = new Date().toISOString()
   const previousState = readBlueBubblesRuntimeState(agentName)
+  let probeStarted = false
   let probePassed = false
 
   try {
@@ -3749,9 +3751,11 @@ async function syncBlueBubblesRuntime(
       new Set(listPendingBlueBubblesSemanticCaptures(agentName).map((capture) => capture.keyHash)),
     )
     const client = resolvedDeps.createClient()
+    probeStarted = true
     await client.checkHealth()
     options.lifecycleSignal?.throwIfAborted()
     probePassed = true
+    options.onProgress?.()
     // The listener logs at warn, so a healthy pass is silent; a recovery must not be.
     if (previousState.upstreamStatus === "error") {
       emitNervesEvent({
@@ -3778,6 +3782,7 @@ async function syncBlueBubblesRuntime(
       processTurns: false,
       observationBatch: catchUpObservationBatch,
       lifecycleSignal: options.lifecycleSignal,
+      onProgress: options.onProgress,
     })
     options.lifecycleSignal?.throwIfAborted()
     const failed = catchUp.failed
@@ -3805,8 +3810,8 @@ async function syncBlueBubblesRuntime(
   } catch (error) {
     if (options.lifecycleSignal?.aborted) return "aborted"
     const detail = error instanceof Error ? error.message : String(error)
-    // A failed probe logs itself, so a streak of them adds only the line that starts it.
-    if (probePassed || previousState.upstreamStatus !== "error") {
+    // A failed probe logs itself, so a streak of them adds only the line that starts it. Anything else logs here.
+    if (!probeStarted || probePassed || previousState.upstreamStatus !== "error") {
       emitNervesEvent({
         level: "warn",
         component: "senses",
@@ -3911,6 +3916,8 @@ interface BlueBubblesCatchUpOptions {
   processTurns?: boolean
   observationBatch?: BlueBubblesObservationBatch
   lifecycleSignal?: AbortSignal
+  /** Called after each page and each capture, so a slow catch-up that keeps going is not taken for a hung one. */
+  onProgress?: () => void
 }
 
 export function catchUpMissedBlueBubblesMessages(
@@ -3995,6 +4002,7 @@ async function catchUpMissedBlueBubblesMessagesInScope(
       break
     }
     options.lifecycleSignal?.throwIfAborted()
+    options.onProgress?.()
 
     const pageMessages = pageEvents
       .filter((event): event is BlueBubblesNormalizedMessage => event.kind === "message")
@@ -4072,6 +4080,7 @@ async function catchUpMissedBlueBubblesMessagesInScope(
           "upstream-catchup",
           observationReservation,
         )
+        options.onProgress?.()
         if (captured.status === "audit_only") {
           result.skipped++
           continue
@@ -5012,7 +5021,7 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
     lifecycleSignal: lifecycleController.signal,
   }))
   let recoveryPassRunning = false
-  let runtimeSync: { startedAt: number; controller: AbortController } | null = null
+  let runtimeSync: { startedAt: number; lastProgressAt: number; controller: AbortController } | null = null
   let runtimeSyncFailures = 0
   let runtimeSyncRetryTimer: ReturnType<typeof setTimeout> | null = null
   let recoveryDelayTimer: ReturnType<typeof setTimeout> | null = null
@@ -5073,7 +5082,8 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
     if (closed) return
     if (runtimeSync) {
       const runningMs = Date.now() - runtimeSync.startedAt
-      if (runningMs < BLUEBUBBLES_RUNTIME_SYNC_TIMEOUT_MS) {
+      const idleMs = Date.now() - runtimeSync.lastProgressAt
+      if (idleMs < BLUEBUBBLES_RUNTIME_SYNC_STALL_MS) {
         // A slow pass is still a live loop; say so, so the daemon does not take it for a stopped one.
         touchBlueBubblesRuntimeHeartbeat(resolvedDeps.getAgentName())
         return
@@ -5084,7 +5094,7 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
         component: "senses",
         event: "senses.bluebubbles_runtime_sync_timeout",
         message: "abandoned a bluebubbles runtime sync that did not finish",
-        meta: { runningMs },
+        meta: { runningMs, idleMs },
       })
       runtimeSync.controller.abort(new Error("bluebubbles_runtime_sync_timeout"))
       runtimeSync = null
@@ -5093,11 +5103,12 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
       clearTimeout(runtimeSyncRetryTimer)
       runtimeSyncRetryTimer = null
     }
-    const sync = { startedAt: Date.now(), controller: new AbortController() }
+    const sync = { startedAt: Date.now(), lastProgressAt: Date.now(), controller: new AbortController() }
     runtimeSync = sync
     void syncBlueBubblesRuntime(resolvedDeps, {
       ...(catchUpObservationBatch ? { catchUpObservationBatch } : {}),
       lifecycleSignal: AbortSignal.any([lifecycleController.signal, sync.controller.signal]),
+      onProgress: () => { sync.lastProgressAt = Date.now() },
     })
       .then((outcome) => {
         if (runtimeSync !== sync) return
