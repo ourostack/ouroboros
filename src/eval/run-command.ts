@@ -49,6 +49,8 @@ export type EvalArgs = {
   sandboxSsh?: string
   /** `<agent image>,<household image>`: the sandbox's own image tags, so a run on a shared Docker host uses its own names. */
   sandboxImages?: SandboxImages
+  /** The holder name to take the `--sandbox-ssh` host's lock under for the whole command (`sandbox/host-lock.ts`). */
+  hostLock?: string
 }
 
 export type EvalDeps = {
@@ -63,7 +65,7 @@ export type EvalDeps = {
 const STRING_FLAGS = {
   "--cases": "cases", "--bundle": "bundle", "--bundle-ref": "bundleRef", "--target": "target", "--credentials-agent": "credentialsAgent",
   "--copilot-account": "copilotAccount", "--output": "output", "--harness-ref": "harnessRef", "--seed-bundle": "seedBundle",
-  "--oracle-books": "oracleBooks", "--sandbox-ssh": "sandboxSsh", "--sandbox-images": "sandboxImages",
+  "--oracle-books": "oracleBooks", "--sandbox-ssh": "sandboxSsh", "--sandbox-images": "sandboxImages", "--host-lock": "hostLock",
 } as const
 const NUMBER_FLAGS = {
   "--runs": "runs", "--budget-premium": "budgetPremium", "--budget-credits": "budgetCredits", "--price-in": "priceIn", "--price-out": "priceOut",
@@ -97,6 +99,8 @@ export function parseEvalArgs(argv: string[]): EvalArgs {
     if (!agent || !household || rest.length > 0 || agent === household) throw new Error("--sandbox-images must be <agent image>,<household image>")
     out.sandboxImages = { agent, household }
   }
+  if (out.hostLock !== undefined && out.sandboxSsh === undefined) throw new Error("--host-lock needs --sandbox-ssh: it locks that host")
+  if (out.hostLock !== undefined && !/^[\w.:@+-]+$/.test(String(out.hostLock))) throw new Error("--host-lock takes one word of letters, digits and . : @ + - _ (it is sent over ssh)")
   const missing = REQUIRED.find((flag) => !seen.has(flag))
   if (missing) throw new Error(`${missing} is required`)
   return out as EvalArgs

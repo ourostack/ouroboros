@@ -7,6 +7,10 @@ export const IMAGE_REPO = "ghcr.io/ourostack/ouroboros-butler"
 export const REMOTE_UPGRADE = "/tmp/butler-upgrade.mjs"
 export const REMOTE_GATE = "/tmp/sanctuary-replay-gate.mjs"
 export const REMOTE_NODE = "/usr/local/bin/node"
+// The host lock (deploy/unraid/ouro-host-lock.mjs) keeps a ship and an eval run apart on the Butler's host (#1760).
+export const REMOTE_LOCK = "/tmp/ouro-host-lock.mjs"
+// Long enough for the baseline and the upgrade together; a ship that dies holding it frees the host when it expires.
+export const HOST_LOCK_TTL_S = 4 * 60 * 60
 // Written by sanctuary-sync-cutover.sh once the bundle owns its own git. From then on the Butler's image must have git.
 export const CUTOVER_MARKER = "/mnt/user/appdata/ouro-butler/bundle-backup/cutover-done"
 // While either of these exists, a cutover apply is running or a rollback did not finish, so no image may change under it.
@@ -220,13 +224,55 @@ export function buildResult({ version, terminal, log, logText, verifyText, verif
 export class ShipError extends Error {}
 
 /**
+ * The host lock as one ship holds it: taken before anything changes, and freed on the way out unless something this
+ * ship started (the baseline or the upgrade) may still be running, in which case it is left to expire.
+ */
+function shipHostLock(host, deps) {
+  const lock = {
+    token: undefined,
+    running: false,
+    async take(version, t) {
+      const must = (r, what) => { if (r.code !== 0) throw new ShipError(`${what} failed (exit ${r.code}): ${String(r.stderr || r.stdout).trim().split("\n").slice(-3).join(" | ")}`) }
+      must(await deps.scp(deps.writeTemp("ouro-host-lock.mjs", deps.hostLockScript()), host, REMOTE_LOCK), "copying ouro-host-lock.mjs to the host")
+      const start = deps.now()
+      let waiting = false
+      for (;;) {
+        const r = await deps.ssh(host, `${REMOTE_NODE} ${REMOTE_LOCK} acquire --holder 'butler:ship ${version}' --ttl ${HOST_LOCK_TTL_S} --wait 0`)
+        const token = /^@@LOCK acquired ([0-9a-f]{32})$/m.exec(r.stdout)?.[1]
+        if (r.code === 0 && token) { lock.token = token; return deps.log("  ok   holding the host lock") }
+        const busy = r.code === 1 && /guard .* is busy/.test(String(r.stderr))
+        const held = busy ? "someone taking or freeing it (its guard is busy)" : /^@@LOCK held (.+)$/m.exec(r.stdout)?.[1]
+        if (!busy && (r.code !== 3 || !held)) must({ ...r, code: r.code || 1 }, "taking the host lock")
+        if (deps.now() - start >= t.lock) throw new ShipError(`the host lock is held by ${held}, so nothing was changed. Ship ${version} again once it is released or expires.`)
+        if (!waiting) { deps.log(`  waiting: the host lock is held by ${held}`); waiting = true }
+        await deps.sleep(t.poll)
+      }
+    },
+    async free() {
+      const token = lock.token
+      if (!token) return
+      lock.token = undefined
+      if (lock.running) return deps.log(`  the host lock stays with what this ship started: a running upgrade holds it until it exits, and otherwise it expires ${HOST_LOCK_TTL_S / 3600} hours after it was taken`)
+      const r = await deps.ssh(host, `${REMOTE_NODE} ${REMOTE_LOCK} release --token ${token}`)
+      deps.log(r.code === 0 ? "  ok   freed the host lock" : `  WARN could not free the host lock (exit ${r.code}); it expires ${HOST_LOCK_TTL_S / 3600} hours after it was taken`)
+    },
+  }
+  return lock
+}
+
+/**
  * deps: { gh(args), ssh(host, cmd), scp(local, host, remote), writeTemp(name, content) -> path,
- *         sleep(ms), log(line), now() -> ms }
+ *         hostLockScript() -> this checkout's deploy/unraid/ouro-host-lock.mjs, sleep(ms), log(line), now() -> ms }
  * Each of gh/ssh/scp resolves to { code, stdout, stderr }.
  */
 export async function ship(opts, deps, timing = {}) {
+  const lock = shipHostLock(opts.host, deps)
+  try { return await shipHolding(opts, deps, timing, lock) } finally { await lock.free() }
+}
+
+async function shipHolding(opts, deps, timing, lock) {
   const { version, host, noGate, noBaseline, plant, dryRun } = opts
-  const t = { poll: 30_000, coverage: 45 * 60_000, image: 30 * 60_000, baseline: 100 * 60_000, upgrade: 90 * 60_000, ...timing }
+  const t = { poll: 30_000, coverage: 45 * 60_000, image: 30 * 60_000, baseline: 100 * 60_000, upgrade: 90 * 60_000, lock: 30 * 60_000, ...timing }
   const say = (m) => deps.log(`\n== ${m}`)
   const must = (r, what) => {
     if (r.code !== 0) throw new ShipError(`${what} failed (exit ${r.code}): ${String(r.stderr || r.stdout).trim().split("\n").slice(-3).join(" | ")}`)
@@ -243,7 +289,7 @@ export async function ship(opts, deps, timing = {}) {
   }
 
   say(`plan for ${version} on ${host}${dryRun ? " (dry run: read-only steps only)" : ""}`)
-  for (const step of ["resolve the release merge commit", "wait for its coverage-gate", `wait for ${IMAGE_REPO}:${version} on the host`, "back up and stage the release's upgrade and gate scripts", "preflight", ...(noGate || noBaseline ? [] : ["run the release's gate against the live version (the baseline)"]), `start the detached ${noGate ? "UNGATED " : ""}upgrade${plant ? ` (plant ${plant})` : ""}`, "follow the log to a terminal line", "verify"]) deps.log(`  - ${step}`)
+  for (const step of ["resolve the release merge commit", "wait for its coverage-gate", `wait for ${IMAGE_REPO}:${version} on the host`, "take the host lock, waiting while an eval run holds it", "back up and stage the release's upgrade and gate scripts", "preflight", ...(noGate || noBaseline ? [] : ["run the release's gate against the live version (the baseline)"]), `start the detached ${noGate ? "UNGATED " : ""}upgrade${plant ? ` (plant ${plant})` : ""}`, "follow the log to a terminal line", "verify", "free the host lock"]) deps.log(`  - ${step}`)
 
   say("1. resolve the release commit")
   const commits = JSON.parse(must(await deps.gh(["api", `repos/${REPO}/commits?sha=main&per_page=100`]), "listing main commits"))
@@ -292,6 +338,8 @@ export async function ship(opts, deps, timing = {}) {
   deps.log("  ok   image resolves")
 
   if (!dryRun) {
+    say("take the host lock")
+    await lock.take(version, t)
     say("4. back up and stage scripts")
     const current = (await deps.ssh(host, "docker inspect -f '{{.Config.Image}}' ouro-butler 2>/dev/null")).stdout
     const previous = imageFromConfig(current) || "previous"
@@ -317,7 +365,9 @@ export async function ship(opts, deps, timing = {}) {
   else if (noBaseline) baseline = { skipped: "--no-baseline" }
   else {
     say("6. baseline: run the release's gate against the live version")
+    lock.running = true
     baseline = await runBaseline(version, host, deps, t)
+    lock.running = false
     if (baseline.skipped) deps.log(`  WARN no live baseline (${baseline.skipped}); every gate failure will block the release`)
     else {
       deps.log(`  ok   live baseline: ${baseline.cases.filter((c) => c.status === "fail").length} of ${baseline.cases.length} cases fail on the live version too`)
@@ -328,7 +378,8 @@ export async function ship(opts, deps, timing = {}) {
   await assertNoEvalContainers(host, deps, "before the upgrade")
   const log = logPath(version)
   const flags = `${noGate ? " --no-gate" : ""}${plant ? ` --plant ${plant}` : ""}`
-  const env = baseline.cases ? `OURO_REPLAY_BASELINE=${baseline.log} ` : ""
+  const env = `OURO_HOST_LOCK_TOKEN=${lock.token} ${baseline.cases ? `OURO_REPLAY_BASELINE=${baseline.log} ` : ""}`
+  lock.running = true
   must(await deps.ssh(host, `: > ${log}; ${env}setsid nohup ${REMOTE_NODE} ${REMOTE_UPGRADE} upgrade ${version}${flags} > ${log} 2>&1 < /dev/null & echo started`), "starting the upgrade")
 
   say(`8. follow ${log}`)
@@ -349,6 +400,7 @@ export async function ship(opts, deps, timing = {}) {
     if (m[1] === "0") {
       // The detached process may not have started yet on the very first polls.
       if (text.trim() === "" && (empty += 1) <= 3) { await deps.sleep(t.poll); continue }
+      lock.running = false
       terminal = classifyLog(text).terminal
       if (!terminal) { terminal = "failed"; deps.log("  the upgrade process exited without a terminal line") }
       break
@@ -365,6 +417,8 @@ export async function ship(opts, deps, timing = {}) {
     say("live baseline and candidate, side by side")
     formatComparison(result.comparison).forEach((l) => deps.log(l))
   }
+  // The result stays the last line, for whatever reads it.
+  await lock.free()
   deps.log(JSON.stringify(result))
   return { result, exitCode }
 }
