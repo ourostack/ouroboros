@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 function defaultReadFileSync(filePath: any, _encoding?: any): string {
   const p = String(filePath)
@@ -91,7 +91,7 @@ function makeCallbacks(): ChannelCallbacks {
 
 const toolNames = (callIndex: number): string[] => (mockCreate.mock.calls[callIndex][0].tools ?? []).map((tool: any) => tool.function.name)
 
-describe("deferred tool loading in runAgent", () => {
+describe("the tool catalog in runAgent", () => {
   let runAgent: typeof import("../../heart/core").runAgent
 
   beforeEach(async () => {
@@ -109,20 +109,9 @@ describe("deferred tool loading in runAgent", () => {
     runAgent = (await import("../../heart/core")).runAgent
   })
 
-  afterEach(() => { delete process.env.OURO_DEFERRED_TOOLS })
-
   const run = async (messages: any[]) => runAgent(messages, makeCallbacks(), "cli", undefined, { toolContext: { signin: async () => undefined } })
 
-  it("sends every tool and no find_tools when the flag is off", async () => {
-    mockCreate.mockReturnValueOnce(makeStream(callChunk("settle", { answer: "hi", intent: "complete" }, "s1")))
-    await run([{ role: "user", content: "hello" }])
-    const names = toolNames(0)
-    expect(names).toContain("coding_spawn")
-    expect(names).not.toContain("find_tools")
-  })
-
-  it("defers non-core tools, loads them through find_tools, and advertises them on the next step", async () => {
-    process.env.OURO_DEFERRED_TOOLS = "1"
+  it("holds back doors whose card isn't eager, loads them through find_tools, and advertises them on the next step", async () => {
     mockCreate.mockReturnValueOnce(makeStream(callChunk("find_tools", { query: "spawn a coding agent" }, "f1")))
     mockCreate.mockReturnValueOnce(makeStream(callChunk("settle", { answer: "ready", intent: "complete" }, "s1")))
     const messages: any[] = [{ role: "user", content: "delegate this" }]
@@ -139,17 +128,70 @@ describe("deferred tool loading in runAgent", () => {
     expect(found.content).toContain("coding_spawn")
   })
 
-  it("rejects a call to a deferred tool that was never loaded", async () => {
-    process.env.OURO_DEFERRED_TOOLS = "1"
-    mockCreate.mockReturnValueOnce(makeStream(callChunk("coding_spawn", {}, "c1")))
+  it("runs a held-back door called by name and keeps it loaded", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(callChunk("coding_status", {}, "c1")))
     mockCreate.mockReturnValueOnce(makeStream(callChunk("settle", { answer: "ok", intent: "complete" }, "s1")))
-    const messages: any[] = [{ role: "user", content: "delegate this" }]
+    const messages: any[] = [{ role: "user", content: "status?" }]
     await run(messages)
+    expect(toolNames(0)).not.toContain("coding_status")
+    expect(messages.find((message) => message.tool_call_id === "c1").content).not.toContain("was not advertised")
+    expect(toolNames(1)).toContain("coding_status")
+  })
+
+  it("still refuses a call to a tool that isn't selected at all", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(callChunk("no_such_tool", {}, "c1")))
+    mockCreate.mockReturnValueOnce(makeStream(callChunk("settle", { answer: "ok", intent: "complete" }, "s1")))
+    await run([{ role: "user", content: "x" }])
     expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("was not advertised")
   })
 
+  it("loads the tools a skill declares when the skill loads", async () => {
+    const skills = await import("../../repertoire/skills")
+    vi.mocked(skills.loadSkill).mockReturnValue("---\nname: delegating\ntools: [coding_spawn, not_a_tool]\n---\nsteps")
+    mockCreate.mockReturnValueOnce(makeStream(callChunk("load_skill", { name: "delegating" }, "l1")))
+    mockCreate.mockReturnValueOnce(makeStream(callChunk("settle", { answer: "ok", intent: "complete" }, "s1")))
+    const messages: any[] = [{ role: "user", content: "delegate this" }]
+    await run(messages)
+    expect(toolNames(0)).not.toContain("coding_spawn")
+    expect(toolNames(1)).toContain("coding_spawn")
+    const loaded = messages.find((message) => message.tool_call_id === "l1").content
+    expect(loaded).toContain("steps")
+    expect(loaded).toContain("- coding_spawn(")
+    expect(loaded.slice(loaded.indexOf("loaded;"))).not.toContain("not_a_tool")
+  })
+
+  it("loads a skill's tools once when the skill loads twice", async () => {
+    const skills = await import("../../repertoire/skills")
+    vi.mocked(skills.loadSkill).mockReturnValue("---\ntools: [coding_spawn]\n---\nsteps")
+    mockCreate.mockReturnValueOnce(makeStream(callChunk("load_skill", { name: "delegating" }, "l1")))
+    mockCreate.mockReturnValueOnce(makeStream(callChunk("load_skill", { name: "delegating" }, "l2")))
+    mockCreate.mockReturnValueOnce(makeStream(callChunk("settle", { answer: "ok", intent: "complete" }, "s1")))
+    await run([{ role: "user", content: "delegate this" }])
+    expect(toolNames(2).filter((name) => name === "coding_spawn")).toHaveLength(1)
+  })
+
+  it("leaves a skill's reply alone when it declares no tools", async () => {
+    const skills = await import("../../repertoire/skills")
+    vi.mocked(skills.loadSkill).mockReturnValue("just steps")
+    mockCreate.mockReturnValueOnce(makeStream(callChunk("load_skill", { name: "plain" }, "l1")))
+    mockCreate.mockReturnValueOnce(makeStream(callChunk("settle", { answer: "ok", intent: "complete" }, "s1")))
+    const messages: any[] = [{ role: "user", content: "x" }]
+    await run(messages)
+    expect(messages.find((message) => message.tool_call_id === "l1").content).toBe("just steps")
+  })
+
+  it("keeps a door loaded that an earlier turn found but never called", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(callChunk("settle", { answer: "ok", intent: "complete" }, "s1")))
+    await run([
+      { role: "user", content: "earlier" },
+      { role: "assistant", content: null, tool_calls: [{ id: "f0", type: "function", function: { name: "find_tools", arguments: "{\"query\":\"select:coding_spawn\"}" } }] },
+      { role: "tool", tool_call_id: "f0", content: "loaded; callable on your next step:\n- coding_spawn(): spawn" },
+      { role: "user", content: "again" },
+    ])
+    expect(toolNames(0)).toContain("coding_spawn")
+  })
+
   it("keeps a deferred tool loaded when the conversation already called it", async () => {
-    process.env.OURO_DEFERRED_TOOLS = "1"
     mockCreate.mockReturnValueOnce(makeStream(callChunk("settle", { answer: "ok", intent: "complete" }, "s1")))
     await run([
       { role: "user", content: "earlier" },
@@ -161,7 +203,6 @@ describe("deferred tool loading in runAgent", () => {
   })
 
   it("answers an unmatched query with guidance and loads nothing", async () => {
-    process.env.OURO_DEFERRED_TOOLS = "1"
     mockCreate.mockReturnValueOnce(makeStream(callChunk("find_tools", { query: "zzzz" }, "f1")))
     mockCreate.mockReturnValueOnce(makeStream(callChunk("settle", { answer: "ok", intent: "complete" }, "s1")))
     const messages: any[] = [{ role: "user", content: "x" }]
@@ -171,7 +212,6 @@ describe("deferred tool loading in runAgent", () => {
   })
 
   it("loads a tool only once across repeated selects", async () => {
-    process.env.OURO_DEFERRED_TOOLS = "1"
     mockCreate.mockReturnValueOnce(makeStream(callChunk("find_tools", { query: "select:coding_status" }, "f2")))
     mockCreate.mockReturnValueOnce(makeStream(callChunk("find_tools", { query: "select:coding_status" }, "f3")))
     mockCreate.mockReturnValueOnce(makeStream(callChunk("settle", { answer: "ok", intent: "complete" }, "s1")))
@@ -181,14 +221,12 @@ describe("deferred tool loading in runAgent", () => {
   })
 
   it("never defers when tools are hard-disabled", async () => {
-    process.env.OURO_DEFERRED_TOOLS = "1"
     mockCreate.mockReturnValueOnce(makeStream([{ choices: [{ delta: { content: "ok" } }] }]))
     await runAgent([{ role: "user", content: "x" }], makeCallbacks(), "cli", undefined, { hardDisableTools: true, toolContext: { signin: async () => undefined } })
     expect(toolNames(0)).not.toContain("find_tools")
   })
 
   it("keeps a required tool loaded so its requirement can be met", async () => {
-    process.env.OURO_DEFERRED_TOOLS = "1"
     mockCreate.mockReturnValueOnce(makeStream(callChunk("coding_status", {}, "c1")))
     mockCreate.mockReturnValueOnce(makeStream(callChunk("settle", { answer: "ok", intent: "complete" }, "s1")))
     await runAgent([{ role: "user", content: "x" }], makeCallbacks(), "cli", undefined, {
@@ -199,7 +237,6 @@ describe("deferred tool loading in runAgent", () => {
   })
 
   it("never defers for the Sanctuary health private profile", async () => {
-    process.env.OURO_DEFERRED_TOOLS = "1"
     mockCreate.mockReturnValueOnce(makeStream(callChunk("rest", { status: "HEARTBEAT_OK" }, "r1")))
     await runAgent([{ role: "user", content: "x" }], makeCallbacks(), "inner", undefined, {
       toolProfile: "sanctuary-health-private",
