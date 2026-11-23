@@ -1,0 +1,1 @@
+- The edge benchmark now looks for the daemon socket every 5 ms instead of every 50 ms, so the measured time to socket is no longer rounded to 50 ms steps. Benchmark tooling only; no runtime change.
