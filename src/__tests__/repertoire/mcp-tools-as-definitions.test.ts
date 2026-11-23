@@ -274,6 +274,18 @@ describe("mcpToolsAsDefinitions", () => {
     expect(runtime[0].riskProfile).toMatchObject({ risk: "high" })
   })
 
+  it("gives each MCP tool an Ouro AX card, read only when its own server marks it read-only", () => {
+    const tools = [
+      { name: "lookup", description: "Look up a record. It reads only.", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } },
+      { name: "grab", inputSchema: { type: "object" } },
+    ]
+    const own = mcpToolsAsDefinitions(makeMockMcpManager([{ server: "media", tools }]))
+    expect(own[0].ax).toEqual({ id: "tool:media_lookup", group: "mcp:media", when: "Pick this to use media's lookup tool: Look up a record.", effect: "read", errors: [] })
+    expect(own[1].ax).toEqual({ id: "tool:media_grab", group: "mcp:media", when: "Pick this to use media's grab tool.", effect: "write", errors: [] })
+    const plugin = mcpToolsAsDefinitions(makeMockMcpManager([{ server: "desk", pluginId: "desk", tools }]))
+    expect(plugin[0].ax).toMatchObject({ id: "tool:mcp__desk__lookup", effect: "write" })
+  })
+
   describe("double-prefix avoidance", () => {
     it("skips prefix when tool name already starts with server name (e.g. browser_navigate)", () => {
       const mgr = makeMockMcpManager([{

@@ -5,7 +5,7 @@
 
 import type { McpServerView, McpToolBinding, McpTurnView } from "./mcp-manager"
 import type { McpContentPart, McpToolInfo } from "./mcp-client"
-import type { ToolDefinition, ToolResultImage } from "./tools-base"
+import type { ToolDefinition, ToolDoorCard, ToolResultImage } from "./tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
 import { digestJson } from "./tool-arguments"
 import { guardMcpArgs } from "./mcp-write-guard"
@@ -52,6 +52,21 @@ export function mcpToolSchema(entry: Pick<McpServerView, "server" | "pluginId">,
 }
 
 /**
+ * An MCP tool's Ouro AX card, made from what its server says: the tool's first description sentence as its `when`
+ * line, and a read effect only when the read-only hint is trusted (the agent's own servers), else a write.
+ */
+function mcpToolCard(server: string, tool: McpToolInfo, surfacedName: string, readOnly: boolean): ToolDoorCard {
+  const first = tool.description?.trim().split(/(?<=[.!?])\s/)[0]?.replace(/[.!?]$/, "")
+  return {
+    id: `tool:${surfacedName}`,
+    group: `mcp:${server}`,
+    when: `Pick this to use ${server}'s ${tool.name} tool${first ? `: ${first}` : ""}.`,
+    effect: readOnly ? "read" : "write",
+    errors: [],
+  }
+}
+
+/**
  * Convert an owned frozen MCP view into ToolDefinition objects.
  *
  * Naming rules:
@@ -77,11 +92,13 @@ export function mcpToolsAsDefinitions(view: McpTurnView): ToolDefinition[] {
       configDigest: entry.configDigest, generation: entry.generation,
       schemaDigest: digestJson(schema),
     })
+    // A read-only hint is trusted only from the agent's own bundle (agent.json mcpServers),
+    // so an orientation hold still lets the agent inspect through those tools.
+    const trustedReadOnly = entry.source === "builtin" && tool.annotations?.readOnlyHint === true
     return {
       tool: schema,
-      // A read-only hint is trusted only from the agent's own bundle (agent.json mcpServers),
-      // so an orientation hold still lets the agent inspect through those tools.
-      riskProfile: entry.source === "builtin" && tool.annotations?.readOnlyHint === true
+      ax: mcpToolCard(entry.server, tool, schema.function.name, trustedReadOnly),
+      riskProfile: trustedReadOnly
         ? { mutates: "none" as const, risk: "low" as const, reason: "read-only tool from the agent's own MCP server" }
         : {
           mutates: "external_side_effect" as const,
