@@ -87,6 +87,23 @@ describe("createA2AOwnerRoute", () => {
     expect(send).toHaveBeenCalledWith({ cardUrl: CARD_URL, text: formatOwnerRouteMessage(item), identity })
   })
 
+  it("hands the peer's harness a relay request instead of the text, and sends no text with it", async () => {
+    const send = vi.fn()
+    const sendRequest = vi.fn(async () => undefined)
+    const route = createA2AOwnerRoute({ cardUrl: CARD_URL, did: SLUGGER_DID, loadIdentity: async () => identity, fetchCard: async () => card(SLUGGER_DID) as never, send, sendRequest })
+    const approvalRequest = { relayToken: "r".repeat(43), code: "K7Q2", actionLine: "Restart plex?", decisions: ["deny"] as ["deny"], expiresAt: "2026-11-23T01:45:00.000Z" }
+    await expect(route({ ...ownerRouteItem("approval:a1:prompt", "Restart plex?", true), approvalRequest })).resolves.toEqual({ status: "delivered" })
+    expect(sendRequest).toHaveBeenCalledWith({ cardUrl: CARD_URL, peerDid: SLUGGER_DID, payload: approvalRequest, identity })
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it("reports a peer that won't take the relay request as unreachable, so Ari gets the card with a sound", async () => {
+    const sendRequest = vi.fn(async () => { throw new Error("the peer didn't take the approval request: hi") })
+    const route = createA2AOwnerRoute({ cardUrl: CARD_URL, did: SLUGGER_DID, loadIdentity: async () => identity, fetchCard: async () => card(SLUGGER_DID) as never, send: vi.fn(), sendRequest })
+    const approvalRequest = { relayToken: "r".repeat(43), code: "K7Q2", actionLine: "Restart plex?", decisions: ["deny"] as ["deny"], expiresAt: "2026-11-23T01:45:00.000Z" }
+    await expect(route({ ...ownerRouteItem("approval:a1:prompt", "Restart plex?", true), approvalRequest })).resolves.toEqual({ status: "unreachable", detail: "the peer didn't take the approval request: hi" })
+  })
+
   it("refuses a card at that address that serves another DID", async () => {
     const send = vi.fn()
     const route = createA2AOwnerRoute({ cardUrl: CARD_URL, did: SLUGGER_DID, loadIdentity: async () => identity, fetchCard: async () => card("did:key:z6MkOther") as never, send })

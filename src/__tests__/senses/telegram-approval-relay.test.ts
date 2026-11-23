@@ -6,6 +6,8 @@ import {
   createTelegramApprovalTransport,
   TELEGRAM_APPROVAL_RELAYED_NOTE,
   TELEGRAM_APPROVAL_RELAYED_UNAPPLIED_NOTE,
+  TELEGRAM_APPROVAL_TTL_MS,
+  type TelegramApprovalRelayRequest,
   type TelegramPendingApprovalStore,
 } from "../../senses/telegram-client"
 
@@ -20,6 +22,7 @@ function fixture(input: {
   edit?: (text: string) => Promise<void>
   onDecision?: ReturnType<typeof vi.fn>
   resolveDecisionToken?: () => Promise<string>
+  sendCard?: () => Promise<number>
 } = {}) {
   let records = structuredClone(input.records ?? [])
   const store: TelegramPendingApprovalStore = { load: () => structuredClone(records), save: (next) => { records = structuredClone(next) } }
@@ -38,7 +41,7 @@ function fixture(input: {
     now: input.now ?? (() => 1_000_000),
     effects: {
       sendText: vi.fn(async () => []),
-      sendCard: vi.fn(async () => 99),
+      sendCard: vi.fn(async () => (input.sendCard ? input.sendCard() : 99)),
       edit: vi.fn(async ({ text }) => { order.push(`edit:${text}`); edits.push(text); await input.edit?.(text) }),
       acknowledge: vi.fn(async (ack) => { acknowledgements.push(ack) }),
     },
@@ -190,5 +193,44 @@ describe("a relayed deny across a restart", () => {
     const g = fixture({ records: (await crashed()).map(tamper) })
     await expect(g.transport.recoverDecisionAttempt("approval-1")).rejects.toThrow("decision attempt is invalid")
     expect(g.onDecision).not.toHaveBeenCalled()
+  })
+})
+
+describe("approvalRelayRequest", () => {
+  it("hands out the token, prompt and expiry while the card is being sent, and the token is one relayDeny accepts", async () => {
+    let held: TelegramApprovalRelayRequest | undefined
+    let transport!: ReturnType<typeof fixture>["transport"]
+    const f = fixture({ sendCard: async () => { held = transport.approvalRelayRequest!({ approvalId: "approval-1", routeDid: ROUTE }); return 99 } })
+    transport = f.transport
+    await sent(f)
+    expect(held).toEqual({
+      relayToken: approvalRelayToken({ decisionToken: TOKEN, approvalId: "approval-1", routeDid: ROUTE }),
+      prompt: "Restart plex?",
+      expiresAt: 1_000_000 + TELEGRAM_APPROVAL_TTL_MS,
+    })
+    expect(await f.transport.relayDeny(relayed({ relayToken: held!.relayToken }))).toEqual({ status: "settled", approvalId: "approval-1" })
+  })
+
+  it("hands out nothing once the card is bound, for an unknown approval, or without a full decision token", async () => {
+    const f = fixture()
+    await sent(f)
+    expect(f.transport.approvalRelayRequest!({ approvalId: "approval-1", routeDid: ROUTE })).toBeUndefined()
+    expect(f.transport.approvalRelayRequest!({ approvalId: "approval-2", routeDid: ROUTE })).toBeUndefined()
+
+    let short: TelegramApprovalRelayRequest | undefined
+    let transport!: ReturnType<typeof fixture>["transport"]
+    const g = fixture({ sendCard: async () => { short = transport.approvalRelayRequest!({ approvalId: "approval-1", routeDid: ROUTE }); return 99 } })
+    transport = g.transport
+    await g.transport.sendApproval({ approvalId: "approval-1", decisionToken: "too-short", prompt: "Restart plex?" })
+    expect(short).toBeUndefined()
+  })
+
+  it("hands out nothing for a card a restarted process reloaded, since its decision token isn't kept on disk", async () => {
+    const f = fixture()
+    await sent(f)
+    const sending = f.records().map((record) => ({ ...record, deliveryState: "send_attempting" as const, messageId: null }))
+    expect(sending[0]).not.toHaveProperty("decisionToken")
+    const g = fixture({ records: sending })
+    expect(g.transport.approvalRelayRequest!({ approvalId: "approval-1", routeDid: ROUTE })).toBeUndefined()
   })
 })

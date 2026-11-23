@@ -1839,7 +1839,8 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       if (!pending || pending.deliveryState !== "send_attempting" || !pending.decisionToken || pending.decisionToken.length < MIN_RELAY_KEY_LENGTH) return undefined
       return {
         relayToken: approvalRelayToken({ decisionToken: pending.decisionToken, approvalId: pending.approvalId, routeDid: input.routeDid }),
-        prompt: pending.prompt ?? "Approval request",
+        // The decision token is held only in memory, set by sendApproval together with the prompt, so the prompt is there.
+        prompt: pending.prompt as string,
         expiresAt: pending.expiresAt,
       }
     },

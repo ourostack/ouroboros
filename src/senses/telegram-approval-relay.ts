@@ -244,7 +244,9 @@ export function approvalRelayRequestFor(input: {
     emitNervesEvent({ level: "warn", component: "senses", event: "senses.telegram_relay_request_skipped", message: "sent the approval without a relay request; Ari can still tap", meta: { reason } })
     return undefined
   }
-  const routeDid = input.routeDid()
+  // A config that can't be read leaves the card as it would be without the relay; it never stops the card.
+  let routeDid: string | undefined
+  try { routeDid = input.routeDid() } catch { return skip("route_unreadable") }
   if (routeDid !== relaySwitch.did) return skip(routeDid === undefined ? "no_owner_route" : "route_mismatch")
   const held = input.transport?.approvalRelayRequest?.({ approvalId: input.approvalId, routeDid })
   if (!held) return skip("no_decision_token")
