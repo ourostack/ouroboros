@@ -33,6 +33,16 @@ describe("Desk record paths", () => {
     expect(paths.factsPath).toBe(path.join(agentRoot, "desk", "_record", "diary", "facts.jsonl"))
   })
 
+  it("builds desk/_record on a fresh agent root that has no desk folder yet, so the diary tools never hit ENOENT", async () => {
+    const { resolveRecordDiaryRoot, resolveRecordNotesRoot } = await import("../../mind/record-paths")
+    const { readDiaryEntries } = await import("../../mind/diary")
+    expect(fs.existsSync(path.join(agentRoot, "desk"))).toBe(false)
+    const diaryRoot = resolveRecordDiaryRoot(agentRoot)
+    expect(fs.statSync(path.join(diaryRoot, "daily")).isDirectory()).toBe(true)
+    expect(fs.statSync(resolveRecordNotesRoot(agentRoot)).isDirectory()).toBe(true)
+    expect(readDiaryEntries(diaryRoot)).toEqual([])
+  })
+
   it("migrates legacy stores into Desk record and removes obsolete roots", async () => {
     fs.mkdirSync(path.join(agentRoot, "psyche", "memory"), { recursive: true })
     fs.writeFileSync(path.join(agentRoot, "psyche", "memory", "facts.jsonl"), '{"id":"legacy"}\n', "utf-8")
