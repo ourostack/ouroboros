@@ -42,11 +42,13 @@ import {
   normalizeBlueBubblesEvent,
   renderBlueBubblesEditText,
   renderBlueBubblesReactionText,
+  blueBubblesReactionInteraction,
   type BlueBubblesChatRef,
   type BlueBubblesNormalizedEvent,
   type BlueBubblesNormalizedMessage,
 } from "./model"
 import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesRepliedMessage } from "./client"
+import { renderChatInteraction, resolveChatInteractionTarget } from "../../heart/chat-interaction"
 import { reactInBlueBubbles } from "./reactions"
 import { sendFileInBlueBubbles } from "./send-file"
 import { chatActionsForTurn } from "../../repertoire/tools-chat"
@@ -3129,6 +3131,27 @@ function isCaptureOnlyBlueBubblesMutation(
 }
 
 /** A reaction or an edit is speech to the agent: it arrives as a message carrying the shared rendering, aimed at the message it changes. */
+/**
+ * A tapback names only the guid it points at. Ask the BlueBubbles server for that message (the agent's own sent
+ * history and the person's), through the reaction resolver every sense shares, so the agent reads what was reacted to.
+ */
+export async function nameBlueBubblesReactionTarget(
+  event: Extract<BlueBubblesDirectionObservedEvent, { kind: "mutation" }>,
+  client: Pick<BlueBubblesClient, "getMessageText" | "getRepliedMessage">,
+): Promise<Extract<BlueBubblesDirectionObservedEvent, { kind: "mutation" }>> {
+  if (event.mutationType !== "reaction" || !event.reaction || !event.targetMessageGuid) return event
+  const interaction = blueBubblesReactionInteraction(event.reaction, { guid: event.targetMessageGuid })
+  const named = await resolveChatInteractionTarget(interaction, async (guid) => {
+    if (client.getRepliedMessage) {
+      const replied = await client.getRepliedMessage(guid)
+      return replied ? { text: replied.text, fromAgent: replied.fromMe } : null
+    }
+    const text = await client.getMessageText(guid)
+    return text ? { text } : null
+  }, event.targetMessageGuid)
+  return named === interaction ? event : { ...event, textForAgent: renderChatInteraction(named) }
+}
+
 function blueBubblesInteractionAsMessage(event: Extract<BlueBubblesDirectionObservedEvent, { kind: "mutation" }>): BlueBubblesDirectionObservedMessage {
   return {
     kind: "message",
@@ -3583,7 +3606,9 @@ async function handleCapturedBlueBubblesSemanticEvent(
         && (identityGroundedRepaired.mutationType === "reaction" || identityGroundedRepaired.mutationType === "edit")
         ? identityGroundedRepaired
         : null
-      const turnEvent = interaction ? blueBubblesInteractionAsMessage(interaction) : identityGroundedRepaired
+      const turnEvent = interaction
+        ? blueBubblesInteractionAsMessage(await nameBlueBubblesReactionTarget(interaction, resolvedDeps.createClient()))
+        : identityGroundedRepaired
       if (turnEvent.kind === "mutation") {
         const outcome = auditOnlyHandledOutcome(turnEvent.mutationType as "read" | "delivery")
         publishTerminalReceipt(outcome)
