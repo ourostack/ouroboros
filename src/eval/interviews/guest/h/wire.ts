@@ -43,6 +43,24 @@ function textOf(content: unknown): string {
  * become the one system message; the case's conversation goes before the first user message; a call joins the
  * assistant message before it, and each output becomes its tool result. Reasoning items are not sent back.
  */
+/** A function tool the arm declares, as its request carries it. */
+type ArmTool = { name: string; description?: string; parameters?: Record<string, unknown> }
+
+/**
+ * The arm's own tool, passed through to the host's runtime under the arm's name, in the harness's shape. It is the
+ * arm's door, not the harness's, so the census counts it as a passthrough (ax/census.config.json).
+ */
+export function wireTool(tool: ArmTool): Tool {
+  return {
+    type: "function",
+    function: {
+      name: tool.name,
+      ...(tool.description !== undefined ? { description: tool.description } : {}),
+      ...(tool.parameters !== undefined ? { parameters: tool.parameters } : {}),
+    },
+  }
+}
+
 export function responsesRequest(body: unknown, prefix: Message[]): WireRequest {
   if (!isRecord(body) || !Array.isArray(body.input)) throw new Error("a Responses body needs an input list")
   const leading: string[] = []
@@ -82,11 +100,8 @@ export function responsesRequest(body: unknown, prefix: Message[]): WireRequest 
     }
   }
   const tools = Array.isArray(body.tools) ? body.tools as unknown[] : []
-  const activeTools = tools.map((tool): Tool => {
-    if (typeOf(tool) !== "function") throw new Error(`the H wire can't carry a tool of type ${typeOf(tool)}`)
-    const { name, description, parameters } = tool as { name: string; description?: string; parameters?: Record<string, unknown> }
-    return { type: "function", function: { name, ...(description !== undefined ? { description } : {}), ...(parameters !== undefined ? { parameters } : {}) } }
-  })
+  for (const tool of tools) if (typeOf(tool) !== "function") throw new Error(`the H wire can't carry a tool of type ${typeOf(tool)}`)
+  const activeTools = (tools as ArmTool[]).map((tool) => wireTool(tool))
   return { messages: [...(leading.length > 0 ? [{ role: "system" as const, content: leading.join("\n\n") }] : []), ...rest], activeTools }
 }
 
