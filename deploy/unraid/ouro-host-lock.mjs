@@ -10,7 +10,8 @@
 //
 // Holders: the eval runs `hold`, which keeps the lock with its own pid for as long as its stdin stays open (its ssh
 // session), so a dropped session frees it. butler:ship runs `acquire` and later `release`, and passes the token to
-// the upgrade (OURO_HOST_LOCK_TOKEN), which checks the lock again before it changes anything and before a rollback.
+// the upgrade (OURO_HOST_LOCK_TOKEN), which takes the lock over with its own pid (tryAcquire's `adopt`) for as long
+// as it runs and hands it back when it exits.
 //
 // Usage: ouro-host-lock.mjs acquire --holder <name> --ttl <seconds> [--wait <seconds>]
 //        ouro-host-lock.mjs hold    --holder <name> --ttl <seconds> [--wait <seconds>]
@@ -18,7 +19,7 @@
 //        ouro-host-lock.mjs check   --token <token>      (exit 0 only while that token holds a live lock)
 // Output lines start with @@LOCK. Exit 3: the lock stayed held for all of --wait. Exit 2: bad usage.
 import { randomBytes } from "node:crypto"
-import { mkdirSync, readFileSync, realpathSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs"
 import { hostname } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -60,6 +61,18 @@ export function describeOwner(owner) {
   return `${owner.holder} (${typeof owner.pid === "number" ? `pid ${owner.pid} ` : ""}on ${owner.host}) until ${owner.expiresAt}`
 }
 
+// Moves the stale guard aside (only one rename can win) and removes it, unless what was moved is not the guard that
+// was judged stale (another breaker already replaced it with a live one), which is put back.
+function breakGuard(guard, ino, io) {
+  io?.beforeBreak?.()
+  const aside = `${guard}.broken-${randomBytes(4).toString("hex")}`
+  try { renameSync(guard, aside) } catch { return }
+  let moved
+  try { moved = statSync(aside).ino } catch { return }
+  if (moved === ino) { try { rmdirSync(aside) } catch { /* emptied by no one; left */ } return }
+  try { renameSync(aside, guard) } catch { try { rmdirSync(aside) } catch { /* left */ } }
+}
+
 function withGuard(dir, io, work) {
   const guard = `${dir}.guard`
   const { now, guardWaitMs } = defaults(io)
@@ -68,17 +81,21 @@ function withGuard(dir, io, work) {
     try { mkdirSync(guard); break } catch (error) {
       if (error.code !== "EEXIST") throw error
     }
-    let age = 0
-    try { age = now() - statSync(guard).mtimeMs } catch { continue }
-    if (age > GUARD_STALE_MS) { try { rmdirSync(guard) } catch { /* another process broke it first */ } continue }
+    let seen
+    try { seen = statSync(guard) } catch { continue }
+    if (now() - seen.mtimeMs > GUARD_STALE_MS) { breakGuard(guard, seen.ino, io); continue }
     if (Date.now() >= deadline) throw new Error(`the host lock's guard ${guard} is busy`)
     sleepSync(10)
   }
   try { return work() } finally { rmdirSync(guard) }
 }
 
-/** Takes the lock if it is free or stale. { acquired: true, token, owner, broke?, staleBecause? } or { acquired: false, owner }. */
-export function tryAcquire(dir, { holder, ttlMs, pid }, io) {
+/**
+ * Takes the lock if it is free or stale. With `adopt`, a process that was handed a live lock's token takes it over
+ * with its own pid and a fresh expiry, keeping the token. { acquired: true, token, owner, adopted?, broke?,
+ * staleBecause? } or { acquired: false, owner }.
+ */
+export function tryAcquire(dir, { holder, ttlMs, pid, adopt }, io) {
   const { now, host } = defaults(io)
   return withGuard(dir, io, () => {
     let broke
@@ -86,6 +103,11 @@ export function tryAcquire(dir, { holder, ttlMs, pid }, io) {
     const current = readOwner(dir, io)
     if (current) {
       staleBecause = staleReason(current, io)
+      if (!staleBecause && adopt && current.token === adopt) {
+        const owner = { ...current, holder, pid: pid ?? null, host, expiresAt: new Date(now() + ttlMs).toISOString() }
+        writeFileSync(join(dir, OWNER), `${JSON.stringify(owner)}\n`, { mode: 0o644 })
+        return { acquired: true, token: adopt, owner, adopted: true }
+      }
       if (!staleBecause) return { acquired: false, owner: current }
       broke = current
       rmSync(dir, { recursive: true, force: true })
@@ -130,7 +152,7 @@ function parse(argv) {
   return { command, ...opts }
 }
 
-async function takeWaiting(dir, args, pid) {
+async function takeWaiting(dir, args, pid, over = () => false) {
   const pollMs = Number(process.env.OURO_HOST_LOCK_POLL_MS ?? 5_000)
   const until = Date.now() + Number(args.wait ?? 0) * 1000
   let said = false
@@ -141,7 +163,7 @@ async function takeWaiting(dir, args, pid) {
       console.log(`@@LOCK acquired ${got.token}`)
       return got.token
     }
-    if (Date.now() >= until) { console.log(`@@LOCK held ${describeOwner(got.owner)}`); return null }
+    if (Date.now() >= until || over()) { console.log(`@@LOCK held ${describeOwner(got.owner)}`); return null }
     if (!said) { console.log(`@@LOCK waiting ${describeOwner(got.owner)}`); said = true }
     await new Promise((resolve) => setTimeout(resolve, pollMs))
   }
@@ -158,7 +180,9 @@ export async function main(argv, dir = process.env.OURO_HOST_LOCK_DIR || LOCK_DI
     process.stdin.on("end", resolve).on("close", resolve).on("error", resolve).resume()
     for (const signal of ["SIGTERM", "SIGHUP", "SIGINT"]) process.on(signal, resolve)
   })
-  const token = await takeWaiting(dir, args, process.pid)
+  let over = false
+  void ended.then(() => { over = true })
+  const token = await takeWaiting(dir, args, process.pid, () => over)
   if (!token) return 3
   await ended
   console.log(release(dir, token) ? "@@LOCK released" : "@@LOCK not-held")

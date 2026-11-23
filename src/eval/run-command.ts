@@ -100,6 +100,7 @@ export function parseEvalArgs(argv: string[]): EvalArgs {
     out.sandboxImages = { agent, household }
   }
   if (out.hostLock !== undefined && out.sandboxSsh === undefined) throw new Error("--host-lock needs --sandbox-ssh: it locks that host")
+  if (out.hostLock !== undefined && !/^[\w.:@+-]+$/.test(out.hostLock)) throw new Error("--host-lock takes one word of letters, digits and . : @ + - _ (it is sent over ssh)")
   const missing = REQUIRED.find((flag) => !seen.has(flag))
   if (missing) throw new Error(`${missing} is required`)
   return out as EvalArgs

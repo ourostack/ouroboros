@@ -58,6 +58,11 @@ describe("butler-ship pure logic", () => {
     expect(imageFromConfig("sha256:abc")).toBeUndefined()
   })
 
+  it("reads a rollback the host lock kept from running as failed, not refused", async () => {
+    const { classifyLog } = await lib()
+    expect(classifyLog("  gate failed: case x\n\nROLLBACK FAILED: the host lock is held by eval opus (on sanctuary) until 2026-11-23T13:00:00.000Z, so the rollback did not run.\n")).toEqual({ terminal: "failed" })
+  })
+
   it("classifies terminal lines from real logs", async () => {
     const { classifyLog } = await lib()
     expect(classifyLog(fixture("butler-upgrade-868-gate-fail.log"))).toEqual({ terminal: "rolled_back" })
@@ -226,9 +231,20 @@ describe("butler-ship orchestrator", () => {
     expect(h.out.filter((l) => l.includes("waiting: the host lock is held by eval c17 replay (pid 9 on sanctuary) until 2026-11-23T18:00:00.000Z"))).toHaveLength(1)
   })
 
+  it("keeps waiting through a busy guard on the host lock", async () => {
+    let tries = 0
+    const h = await harness({ ssh: (cmd) => {
+      if (!cmd.includes("ouro-host-lock.mjs acquire")) return undefined as unknown as Res
+      tries += 1
+      return tries < 2 ? nok("Error: the host lock's guard /var/lock/ouro-host.d.guard is busy", 1) : ok(`@@LOCK acquired ${TOKEN}\n`)
+    } }, {}, { poll: 10 })
+    expect((await h.run()).result.result).toBe("kept")
+    expect(tries).toBe(2)
+  })
+
   it("changes nothing when the host lock stays held past its wait, or cannot be taken", async () => {
     const held = await harness({ ssh: (cmd) => (cmd.includes("ouro-host-lock.mjs acquire") ? { code: 3, stdout: "@@LOCK held eval gpt (pid 9 on sanctuary) until T\n", stderr: "" } : (undefined as unknown as Res)) }, {}, { poll: 10, lock: 25 })
-    await expect(held.run()).rejects.toThrow(/the host lock is held by eval gpt \(pid 9 on sanctuary\) until T, so nothing was changed/)
+    await expect(held.run()).rejects.toThrow(/the host lock is held by eval gpt \(pid 9 on sanctuary\) until T, so nothing was changed\. Ship .+ again once it is released or expires\./)
     expect(held.calls.some((c) => c.includes("cp -p") || c.includes("setsid") || c.includes("release"))).toBe(false)
     expect(held.scp).toEqual(["ouro-host-lock.mjs->sanctuary:/tmp/ouro-host-lock.mjs"])
     const broken = await harness({ ssh: (cmd) => (cmd.includes("ouro-host-lock.mjs acquire") ? nok("node: not found", 127) : (undefined as unknown as Res)) })
@@ -245,7 +261,7 @@ describe("butler-ship orchestrator", () => {
     const slow = await harness({ ssh: (cmd) => (cmd.includes("cat /var/log") ? ok("== upgrade\n@@RUNNING:1\n") : (undefined as unknown as Res)) }, {}, { poll: 10, upgrade: 25 })
     await expect(slow.run()).rejects.toThrow(/timed out following/)
     expect(slow.calls.some((c) => c.includes("ouro-host-lock.mjs release"))).toBe(false)
-    expect(slow.out.some((l) => l.includes("the host lock stays held until it expires (4 hours after it was taken)"))).toBe(true)
+    expect(slow.out.some((l) => l.includes("the host lock stays with what this ship started: a running upgrade holds it until it exits, and otherwise it expires 4 hours after it was taken"))).toBe(true)
   })
 
   it("streams new case lines across polls and waits while running", async () => {

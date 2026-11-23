@@ -960,20 +960,87 @@ describe("the upgrade and its rollbacks wait for the host lock", () => {
     done()
   })
 
-  it("loads the lock script from beside itself, and gives none when it is not there", async () => {
+  it("loads the lock script from beside itself, gives none when it is not there, and passes a broken one's error on", async () => {
     expect(typeof (await upgrade.loadHostLock())?.blocker).toBe("function")
     expect(await upgrade.loadHostLock(new URL("file:///nonexistent/ouro-host-lock.mjs"))).toBeNull()
+    const done = setup()
+    const broken = path.join(root, "ouro-host-lock.mjs")
+    fs.writeFileSync(broken, "export const = 1\n")
+    await expect(upgrade.loadHostLock(new URL(`file://${broken}`))).rejects.toThrow()
+    done()
+  })
+
+  it("takes over its ship's lock with its own pid, and hands it back to the ship when it exits", () => {
+    const done = setup()
+    const ship = lock.tryAcquire(dir, { holder: "butler:ship 1.0.0", ttlMs: 60_000, pid: null })
+    const c = clock()
+    const taken = upgrade.hostLockTake("the upgrade", { lockModule: lock, dir, token: ship.token, holder: "butler upgrade 1.0.0", pid: process.pid, ...c.opts })
+    expect(taken).toEqual({ token: ship.token, adopted: true })
+    const owner = JSON.parse(fs.readFileSync(path.join(dir, "owner.json"), "utf8"))
+    expect(owner).toEqual(expect.objectContaining({ holder: "butler upgrade 1.0.0", token: ship.token, pid: process.pid }))
+    expect(Date.parse(owner.expiresAt) - Date.now()).toBeGreaterThan(3 * 60 * 60 * 1000)
+    upgrade.hostLockLeave(taken, { lockModule: lock, dir, holder: "butler:ship 1.0.0" })
+    expect(JSON.parse(fs.readFileSync(path.join(dir, "owner.json"), "utf8"))).toEqual(expect.objectContaining({ holder: "butler:ship 1.0.0", token: ship.token, pid: null }))
+    expect(lock.release(dir, ship.token)).toBe(true)
+    done()
+  })
+
+  it("takes a lock of its own when run without a ship's token, and releases it when it exits", () => {
+    const done = setup()
+    const taken = upgrade.hostLockTake("the upgrade", { lockModule: lock, dir, token: undefined, holder: "butler upgrade 1.0.0", pid: process.pid, ...clock().opts })
+    expect(taken).toEqual({ token: expect.stringMatching(/^[0-9a-f]{32}$/), adopted: false })
+    expect(lock.tryAcquire(dir, { holder: "eval", ttlMs: 1000, pid: null }).acquired).toBe(false)
+    upgrade.hostLockLeave(taken, { lockModule: lock, dir, holder: "unused" })
+    expect(fs.existsSync(dir)).toBe(false)
+    done()
+  })
+
+  it("waits for an eval's lock before taking it, refuses once the wait runs out, and goes ahead unlocked only where there is no lock at all", () => {
+    const done = setup()
+    const held = lock.tryAcquire(dir, { holder: "eval opus", ttlMs: 600_000, pid: null })
+    const c = clock()
+    let sleeps = 0
+    const taken = upgrade.hostLockTake("the upgrade", { lockModule: lock, dir, holder: "butler upgrade", pid: process.pid, ...c.opts, sleep: () => { if (++sleeps === 2) lock.release(dir, held.token) } })
+    expect(taken.token).toMatch(/^[0-9a-f]{32}$/)
+    expect(c.log).toEqual([expect.stringMatching(/^ {2}waiting: the host lock is held by eval opus .+; the upgrade waits for it$/)])
+    lock.release(dir, taken.token)
+    lock.tryAcquire(dir, { holder: "eval gpt", ttlMs: 600_000, pid: null })
+    expect(upgrade.hostLockTake("the upgrade", { lockModule: lock, dir, holder: "x", pid: process.pid, ...clock().opts })).toEqual({ refusal: expect.stringMatching(/^the host lock is held by eval gpt .+, so the upgrade did not run$/) })
+    expect(upgrade.hostLockTake("the upgrade", { lockModule: null, dir, holder: "x", ...clock().opts })).toEqual({ refusal: expect.stringMatching(/ouro-host-lock\.mjs is not beside this script/) })
+    fs.rmSync(dir, { recursive: true })
+    expect(upgrade.hostLockTake("the upgrade", { lockModule: null, dir, holder: "x", ...clock().opts })).toEqual({ token: undefined, adopted: false })
+    upgrade.hostLockLeave({ token: undefined, adopted: false }, { lockModule: null, dir, holder: "x" })
+    done()
+  })
+
+  it("keeps waiting through a busy guard instead of failing", () => {
+    const done = setup()
+    let calls = 0
+    const busy = { ...lock, tryAcquire: (...args: unknown[]) => { if (++calls === 1) throw new Error("the host lock's guard is busy"); return lock.tryAcquire(...args) } }
+    const c = clock()
+    expect(upgrade.hostLockTake("the upgrade", { lockModule: busy, dir, holder: "x", pid: process.pid, ...c.opts }).token).toMatch(/^[0-9a-f]{32}$/)
+    expect(c.log).toEqual([expect.stringMatching(/waiting: the host lock is held by an unknown holder/)])
+    done()
+  })
+
+  it("says a rollback the lock kept from running failed, that the Butler may be down, and that the keeper retries it", () => {
+    const text = upgrade.ROLLBACK_LOCKED("the host lock is held by eval opus (on sanctuary) until 2026-11-23T13:00:00.000Z, so the rollback did not run", "/x/lifecycle.mjs")
+    expect(text).toMatch(/^ROLLBACK FAILED: the host lock is held by eval opus/)
+    expect(text).toMatch(/may be down/)
+    expect(text).toMatch(/keeper's authority boot retries the rollback/)
+    expect(text).toContain("node /x/lifecycle.mjs upgrade-rollback")
   })
 
   it("checks before the upgrade changes anything and before each of its rollbacks", () => {
     const body = source.slice(source.indexOf("async function upgrade(version, rehearse"), source.indexOf("// ---- verify"))
-    const first = body.indexOf('hostLockWait("the upgrade"')
+    const first = body.indexOf('hostLockTake("the upgrade"')
     expect(first).toBeGreaterThan(0)
     expect(first).toBeLessThan(body.indexOf("stageIncomingPackage(version)"))
     expect(first).toBeLessThan(body.indexOf('docker(["pull"'))
     const rollbacks = [...body.matchAll(/\[lifecycle, "upgrade-rollback"\]/g)].map((m) => m.index!)
     expect(rollbacks).toHaveLength(2)
-    expect(body).toContain('const rollbackLock = () => { const held = hostLockWait("the rollback"')
+    expect(body).toContain('const rollbackLock = () => { const held = hostLockWait("the rollback", { lockModule: hostLock, token: taken.token })')
+    expect(body).toContain('process.on("exit", () => hostLockLeave(taken')
     for (const at of rollbacks) {
       const before = body.slice(0, at)
       // The nearest lock check before each rollback comes after the previous rollback (or the helper's own text).

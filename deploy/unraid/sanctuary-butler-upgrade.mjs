@@ -1338,9 +1338,10 @@ export async function checkTelegramBeforePause({ journalExists, probe = telegram
 async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
   say(`in-place upgrade to ${version}${rehearse ? ` — REHEARSAL: stop after "${rehearse}", then roll back` : ""}`)
   const hostLock = await loadHostLock()
-  const lockHeld = hostLockWait("the upgrade", { lockModule: hostLock })
-  if (lockHeld) fail(`${lockHeld}; nothing was changed`)
-  const rollbackLock = () => { const held = hostLockWait("the rollback", { lockModule: hostLock }); if (held) fail(`${held}. The Butler is left on the failed upgrade; once the lock is free, run: node ${lifecycle} upgrade-rollback`) }
+  const taken = hostLockTake("the upgrade", { lockModule: hostLock, holder: `butler upgrade ${version}` })
+  if (taken.refusal) fail(`${taken.refusal}; nothing was changed`)
+  process.on("exit", () => hostLockLeave(taken, { lockModule: hostLock, holder: `butler:ship ${version}` }))
+  const rollbackLock = () => { const held = hostLockWait("the rollback", { lockModule: hostLock, token: taken.token }); if (held) { console.error(`\n${ROLLBACK_LOCKED(held, lifecycle)}`); process.exit(1) } }
   if (rehearse && !UPGRADE_STEPS.includes(rehearse)) fail(`--rehearse takes one of: ${UPGRADE_STEPS.join(", ")}`)
   const gated = !rehearse && !noGate
   if (noGate && !rehearse) console.log("\n!! --no-gate: this upgrade will NOT be replay-gated or auto-rolled-back on a behavioural regression")
@@ -1492,12 +1493,52 @@ function fail(m) { console.error(`\nREFUSING: ${m}`); process.exit(1) }
 // ---- host lock --------------------------------------------------------------
 // Eval runs hold the host lock (ouro-host-lock.mjs, staged beside this script by butler:ship) while they use this
 // host's Docker; butler:ship holds it for the whole ship and passes its token in OURO_HOST_LOCK_TOKEN. The upgrade
-// and each of its rollbacks wait while anyone else holds it, and never run past it: on 2026-11-23 an eval container
-// vanishing mid-upgrade failed the upgrade and its rollback and left the Butler down (#1760).
+// takes that lock over with its own pid (or takes its own when run by hand), waiting while anyone else holds it, and
+// each rollback checks it again: on 2026-11-23 an eval container vanishing mid-upgrade failed the upgrade and its
+// rollback and left the Butler down (#1760).
 export const HOST_LOCK_DIR = "/var/lock/ouro-host.d"
 
+export const HOST_LOCK_TTL_MS = 4 * 60 * 60 * 1000
+const HAND_BACK_TTL_MS = 30 * 60 * 1000
+
 export async function loadHostLock(url = new URL("./ouro-host-lock.mjs", import.meta.url)) {
-  try { return await import(url.href) } catch { return null }
+  try { return await import(url.href) } catch (error) { if (error?.code === "ERR_MODULE_NOT_FOUND") return null; throw error }
+}
+
+export const ROLLBACK_LOCKED = (held, lifecycle) => `ROLLBACK FAILED: ${held}. The Butler may be down or on the failed upgrade. Host supervision stays paused for about 30 minutes; after that the keeper's authority boot retries the rollback (that retry does not check the host lock). To roll back sooner once the lock is free: \`touch ${MAINTENANCE}; node ${lifecycle} upgrade-rollback\`.`
+
+/**
+ * Takes the host lock for this process before the upgrade changes anything, waiting up to waitMs while someone else
+ * holds it. Handed butler:ship's token, it takes that lock over with this pid and a fresh expiry, so the lock lasts
+ * exactly as long as the upgrade does. { token, adopted } or { refusal }; { token: undefined } on a host with neither
+ * a lock nor the script to take one.
+ */
+export function hostLockTake(what, {
+  lockModule, dir = HOST_LOCK_DIR, token = process.env.OURO_HOST_LOCK_TOKEN, holder, pid = process.pid, ttlMs = HOST_LOCK_TTL_MS,
+  waitMs = Number(process.env.OURO_HOST_LOCK_WAIT_S || 30 * 60) * 1000, pollMs = 15_000,
+  now = Date.now, sleep = (ms) => sh("/bin/sleep", [String(ms / 1000)]), log = console.log,
+} = {}) {
+  if (!lockModule) return existsSync(dir) ? { refusal: `the host lock ${dir} exists and ouro-host-lock.mjs is not beside this script to read it, so ${what} did not run` } : { token: undefined, adopted: false }
+  const start = now()
+  let said = false
+  for (;;) {
+    let got
+    try { got = lockModule.tryAcquire(dir, { holder, ttlMs, pid, adopt: token }, { now }) } catch { got = { acquired: false, owner: { unreadable: true } } }
+    if (got.acquired) return { token: got.token, adopted: Boolean(got.adopted) }
+    const owner = lockModule.describeOwner(got.owner)
+    if (now() - start >= waitMs) return { refusal: `the host lock is held by ${owner}, so ${what} did not run` }
+    if (!said) { log(`  waiting: the host lock is held by ${owner}; ${what} waits for it`); said = true }
+    sleep(pollMs)
+  }
+}
+
+/** On exit: hands an adopted lock back to the ship that owns it (no pid, a short expiry), or frees one taken here. */
+export function hostLockLeave(taken, { lockModule, dir = HOST_LOCK_DIR, holder }) {
+  if (!lockModule || !taken.token) return
+  try {
+    if (taken.adopted) lockModule.tryAcquire(dir, { holder, ttlMs: HAND_BACK_TTL_MS, pid: null, adopt: taken.token })
+    else lockModule.release(dir, taken.token)
+  } catch { /* the lock goes stale with this process */ }
 }
 
 /** null when the way is clear; otherwise why `what` must not run. Waits up to waitMs while someone else holds the lock. */

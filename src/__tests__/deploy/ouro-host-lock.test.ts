@@ -65,6 +65,36 @@ describe("tryAcquire", () => {
     expect(got).toEqual(expect.objectContaining({ acquired: true, staleBecause: expect.stringMatching(/no readable owner/) }))
   })
 
+  it("lets the holder of a live token adopt it with its own pid and a fresh expiry, and no one else", () => {
+    const ship = lock.tryAcquire(dir, { holder: "butler:ship 1.0.0", ttlMs: 60_000, pid: null }, io())
+    const other = lock.tryAcquire(dir, { holder: "butler upgrade", ttlMs: 600_000, pid: 99, adopt: "f".repeat(32) }, io())
+    expect(other.acquired).toBe(false)
+    const got = lock.tryAcquire(dir, { holder: "butler upgrade 1.0.0", ttlMs: 600_000, pid: 99, adopt: ship.token }, io({ now: () => T0 + 1000 }))
+    expect(got).toEqual(expect.objectContaining({ acquired: true, token: ship.token, adopted: true }))
+    expect(owner()).toEqual(expect.objectContaining({ holder: "butler upgrade 1.0.0", token: ship.token, pid: 99, expiresAt: "2026-11-23T12:10:01.000Z" }))
+    expect(lock.heldBy(dir, ship.token, io({ alive: (pid: number) => pid !== 99 }))).toBe(false)
+  })
+
+  it("takes a fresh lock when the token to adopt is no longer the live holder", () => {
+    const ship = lock.tryAcquire(dir, { holder: "butler:ship", ttlMs: 60_000, pid: null }, io())
+    const got = lock.tryAcquire(dir, { holder: "butler upgrade", ttlMs: 60_000, pid: 99, adopt: ship.token }, io({ now: () => T0 + 60_000 }))
+    expect(got).toEqual(expect.objectContaining({ acquired: true, staleBecause: expect.stringMatching(/expired/) }))
+    expect(got.token).not.toBe(ship.token)
+  })
+
+  it("breaks a stale guard only if it is still the guard it judged stale", () => {
+    fs.mkdirSync(`${dir}.guard`)
+    const old = new Date(Date.now() - lock.GUARD_STALE_MS - 5_000)
+    fs.utimesSync(`${dir}.guard`, old, old)
+    let swapped = false
+    // Another breaker wins the race: it removes the stale guard and takes a fresh one before this one acts.
+    const beforeBreak = () => { if (!swapped) { swapped = true; fs.rmdirSync(`${dir}.guard`); fs.mkdirSync(`${dir}.guard`) } }
+    expect(() => lock.tryAcquire(dir, { holder: "a", ttlMs: 1000, pid: null }, { host: "sanctuary", alive: () => true, guardWaitMs: 50, beforeBreak })).toThrow(/guard .* is busy/)
+    expect(swapped).toBe(true)
+    expect(fs.existsSync(`${dir}.guard`)).toBe(true)
+    expect(fs.readdirSync(root).filter((f) => f.includes("broken"))).toEqual([])
+  })
+
   it("breaks a guard left behind by a process that died inside it, and waits on a fresh one", () => {
     fs.mkdirSync(`${dir}.guard`)
     const made = fs.statSync(`${dir}.guard`).mtimeMs
@@ -141,6 +171,16 @@ describe("command line", () => {
     h.child.stdin.end()
     expect(await h.exited).toBe(0)
     expect(fs.existsSync(dir)).toBe(false)
+  })
+
+  it("hold stops waiting when its session ends before the lock frees", async () => {
+    const a = cli(["acquire", "--holder", "butler:ship", "--ttl", "600"])
+    await a.exited
+    const h = cli(["hold", "--holder", "eval", "--ttl", "600", "--wait", "30"], { OURO_HOST_LOCK_POLL_MS: "50" })
+    await h.line(/@@LOCK waiting butler:ship/)
+    h.child.stdin.end()
+    expect(await h.exited).toBe(3)
+    expect(owner().holder).toBe("butler:ship")
   })
 
   it("hold releases on SIGTERM too", async () => {

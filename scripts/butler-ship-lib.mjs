@@ -240,9 +240,10 @@ function shipHostLock(host, deps) {
         const r = await deps.ssh(host, `${REMOTE_NODE} ${REMOTE_LOCK} acquire --holder 'butler:ship ${version}' --ttl ${HOST_LOCK_TTL_S} --wait 0`)
         const token = /^@@LOCK acquired ([0-9a-f]{32})$/m.exec(r.stdout)?.[1]
         if (r.code === 0 && token) { lock.token = token; return deps.log("  ok   holding the host lock") }
-        const held = /^@@LOCK held (.+)$/m.exec(r.stdout)?.[1]
-        if (r.code !== 3 || !held) must({ ...r, code: r.code || 1 }, "taking the host lock")
-        if (deps.now() - start >= t.lock) throw new ShipError(`the host lock is held by ${held}, so nothing was changed. An eval run is using this host; ship ${version} again once it is released or expires.`)
+        const busy = r.code === 1 && /guard .* is busy/.test(String(r.stderr))
+        const held = busy ? "someone taking or freeing it (its guard is busy)" : /^@@LOCK held (.+)$/m.exec(r.stdout)?.[1]
+        if (!busy && (r.code !== 3 || !held)) must({ ...r, code: r.code || 1 }, "taking the host lock")
+        if (deps.now() - start >= t.lock) throw new ShipError(`the host lock is held by ${held}, so nothing was changed. Ship ${version} again once it is released or expires.`)
         if (!waiting) { deps.log(`  waiting: the host lock is held by ${held}`); waiting = true }
         await deps.sleep(t.poll)
       }
@@ -251,7 +252,7 @@ function shipHostLock(host, deps) {
       const token = lock.token
       if (!token) return
       lock.token = undefined
-      if (lock.running) return deps.log(`  the host lock stays held until it expires (${HOST_LOCK_TTL_S / 3600} hours after it was taken), since what this ship started may still be running`)
+      if (lock.running) return deps.log(`  the host lock stays with what this ship started: a running upgrade holds it until it exits, and otherwise it expires ${HOST_LOCK_TTL_S / 3600} hours after it was taken`)
       const r = await deps.ssh(host, `${REMOTE_NODE} ${REMOTE_LOCK} release --token ${token}`)
       deps.log(r.code === 0 ? "  ok   freed the host lock" : `  WARN could not free the host lock (exit ${r.code}); it expires ${HOST_LOCK_TTL_S / 3600} hours after it was taken`)
     },

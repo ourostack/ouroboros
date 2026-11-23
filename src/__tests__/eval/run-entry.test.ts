@@ -70,10 +70,10 @@ it("runs a local sandbox and its books oracle in the run's own images", async ()
 
 it("holds the remote host's lock for the whole command, sends its token with every job, and releases it after", async () => {
   lock.holdHostLock.mockResolvedValue({ token: "t0k", release: lock.release })
-  await runCaseFor({ sandboxSsh: "sanctuary:/tmp/x", bundle: "/tmp/x/bundle", hostLock: "eval c17 replay" })
+  await runCaseFor({ sandboxSsh: "sanctuary:/tmp/x", bundle: "/tmp/x/bundle", hostLock: "eval:c17-replay" })
   expect(lock.holdHostLock).toHaveBeenCalledWith({
     host: "sanctuary",
-    args: ["/tmp/x/harness/deploy/unraid/ouro-host-lock.mjs", "hold", "--holder", "eval c17 replay", "--ttl", "21600", "--wait", "1800"],
+    args: ["/tmp/x/harness/deploy/unraid/ouro-host-lock.mjs", "hold", "--holder", "eval:c17-replay", "--ttl", "21600", "--wait", "1800"],
   })
   expect(sandbox.remoteRunCase).toHaveBeenCalledWith(expect.objectContaining({ paths: expect.objectContaining({ hostLockToken: "t0k" }) }))
   expect(lock.release).toHaveBeenCalledTimes(1)
