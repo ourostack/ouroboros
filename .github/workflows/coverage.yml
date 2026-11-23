@@ -791,22 +791,11 @@ jobs:
           scripts/npm-verify-exact-version.sh "ouro.bot" "$LOCAL"
 
           # Published on latest: latest must now read this version or a later one,
-          # never an older one. It can lag the version, so this waits out the same window.
-          verify_latest_not_behind() {
-            started=$(date +%s)
-            deadline=$((started + PROPAGATION_DEADLINE_SECONDS))
-            until result=$(node scripts/npm-dist-tag-policy.cjs latest-check "$1" "$LOCAL" 2>&1); do
-              if [ "$(date +%s)" -ge "$deadline" ]; then
-                echo "::error::${result}"
-                return 1
-              fi
-              echo "${result}; retrying after npm propagation delay"
-              sleep 15
-            done
-            echo "$result"
-          }
-          if [ "$CLI_TAG" = latest ]; then verify_latest_not_behind "@ouro.bot/cli"; fi
-          if [ "$WRAPPER_TAG" = latest ]; then verify_latest_not_behind "ouro.bot"; fi
+          # never an older one. It can lag the version, so this waits out the same window,
+          # then prints diagnostics from other registry read paths if it still reads older.
+          export LATEST_DEADLINE_SECONDS="$PROPAGATION_DEADLINE_SECONDS"
+          if [ "$CLI_TAG" = latest ]; then scripts/npm-verify-latest-tag.sh "@ouro.bot/cli" "$LOCAL"; fi
+          if [ "$WRAPPER_TAG" = latest ]; then scripts/npm-verify-latest-tag.sh "ouro.bot" "$LOCAL"; fi
 
           echo "selected npm dist-tags verified by exact version ${LOCAL} (tags: cli=${CLI_TAG}, wrapper=${WRAPPER_TAG})"
 

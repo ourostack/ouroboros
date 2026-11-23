@@ -275,11 +275,11 @@ describe("engine.turn_summary", () => {
     mockCreate.mockReturnValueOnce(call("settle", { answer: "done", intent: "complete" }, "s1"))
     await withProbe(vi.fn().mockResolvedValue("ok"))
     const meta = summary()
-    const strings = ["channel", "outcome", "errorClass", "provider", "model"]
+    const strings = ["channel", "outcome", "errorClass", "provider", "model", "runtimeVersion"]
     expect(Object.keys(meta).sort()).toEqual([
       "channel", "deferredDoors", "eagerDoors", "errorClass", "findToolsCalls", "findToolsLoaded", "inputTokens", "loadedThenCalled", "model",
-      "outcome", "outputTokens", "provider", "providerSwitches", "reasoningTokens", "stepBudgetExhausted", "steps", "toolCalls", "toolErrors",
-      "unknownToolCalls",
+      "outcome", "outputTokens", "provider", "providerSwitches", "reasoningTokens", "runtimeVersion", "stepBudgetExhausted", "steps", "toolCalls",
+      "toolErrors", "unknownToolCalls",
     ])
     for (const [key, value] of Object.entries(meta)) {
       if (key === "toolCalls") continue
@@ -291,6 +291,7 @@ describe("engine.turn_summary", () => {
     expect(TURN_SUMMARY_ERROR_CLASSES).toContain(meta.errorClass)
     expect(meta.provider).toMatch(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}$/)
     expect(meta.model).toMatch(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}$/)
+    expect(meta.runtimeVersion).toMatch(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}$/)
     for (const [name, count] of Object.entries(meta.toolCalls)) {
       expect(["probe", "settle"]).toContain(name)
       expect(Number.isInteger(count)).toBe(true)
@@ -304,7 +305,11 @@ describe("engine.turn_summary", () => {
       if (entry.event === "engine.turn_summary") throw new Error("disk full")
       inner[level](entry)
     }
-    setRuntimeLogger({ ...inner, debug: guard("debug"), info: guard("info"), warn: guard("warn"), error: guard("error") })
+    const forced = (level: any, entry: any) => {
+      if (entry.event === "engine.turn_summary") throw new Error("disk full")
+      inner.emitDurable(level, entry)
+    }
+    setRuntimeLogger({ ...inner, debug: guard("debug"), info: guard("info"), warn: guard("warn"), error: guard("error"), emitDurable: forced })
     mockCreate.mockReturnValueOnce(call("settle", { answer: "done", intent: "complete" }, "s1"))
     const result = await withProbe(vi.fn())
     expect(result.outcome).toBe("settled")
