@@ -197,10 +197,18 @@ describe("forwardApprovalAnswer", () => {
   it.each([
     ["a reply it doesn't know", (socket: net.Socket) => socket.end('{"reply":"approved"}\n')],
     ["a reply that isn't JSON", (socket: net.Socket) => socket.end("nope\n")],
-    ["a closed connection", (socket: net.Socket) => socket.end()],
   ])("reads %s as unavailable", async (_label, reply) => {
     const socketPath = await listen(reply)
     await expect(forwardApprovalAnswer({ socketPath, message })).resolves.toBe(RELAY_UNAVAILABLE)
+  })
+
+  it.each([
+    ["closes without a reply", (socket: net.Socket) => socket.end()],
+    ["drops the connection", (socket: net.Socket) => socket.destroy()],
+    ["sends half a reply and closes", (socket: net.Socket) => socket.end('{"reply":"den')],
+  ])("reads a door that took the answer and %s as timed out, since the deny may have landed", async (_label, reply) => {
+    const socketPath = await listen(reply)
+    await expect(forwardApprovalAnswer({ socketPath, message })).resolves.toBe(RELAY_TIMED_OUT)
   })
 
   it("reads a missing socket as unavailable", async () => {
