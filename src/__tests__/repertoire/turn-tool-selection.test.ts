@@ -129,6 +129,44 @@ describe("turn-local canonical tool selection", () => {
     expect(handler).toHaveBeenCalledOnce()
   })
 
+  it("tells the context just before the handler runs, and never for a call rejected before it", async () => {
+    const { definition, handler } = addProbe()
+    const beforeHandler = vi.fn()
+    const context: ToolContext = { ...MCP_CONTEXT, toolSelection: { ordinary: [definition], engine: [restTool] }, beforeHandler }
+    handler.mockImplementationOnce(async () => {
+      expect(beforeHandler).toHaveBeenCalledOnce()
+      return "handler ran"
+    })
+
+    expect(await executeTool(definition.tool.function.name, { value: "safe" }, context)).toEqual({ kind: "handler_succeeded", text: "handler ran" })
+    expect(await executeTool("rest", { note: "complete" }, context)).toMatchObject({ kind: "rejected_before_handler" })
+    expect(await executeTool(definition.tool.function.name, {}, context)).toMatchObject({ kind: "rejected_before_handler" })
+
+    expect(beforeHandler).toHaveBeenCalledOnce()
+  })
+
+  it("tells the context about an MCP call only once the MCP checks pass and the call goes out", async () => {
+    const view = makeMcpView([{ server: "shared", tools: [{ name: "status", description: "Status", inputSchema: {} }] }])
+    const [definition] = mcpToolsAsDefinitions(view)
+    const name = definition!.tool.function.name
+    const beforeHandler = vi.fn()
+    const context: ToolContext = { ...MCP_CONTEXT, toolSelection: { ordinary: [definition!], engine: [] }, beforeHandler }
+
+    // Another agent's call is refused by the MCP handler itself.
+    expect(await executeTool(name, {}, { ...context, agentName: "someone-else" })).toMatchObject({ kind: "rejected_before_handler" })
+    // The server refuses before the call goes out (disconnected, stale binding).
+    vi.mocked(view.manager.callTool).mockRejectedValueOnce(new McpCallRejectedError("Server \"shared\" is disconnected"))
+    expect(await executeTool(name, {}, context)).toMatchObject({ kind: "rejected_before_handler" })
+    expect(beforeHandler).not.toHaveBeenCalled()
+
+    vi.mocked(view.manager.callTool).mockImplementationOnce(async (_binding, _args, _owner, beforeCall) => {
+      beforeCall?.()
+      return { content: [{ type: "text", text: "ok" }] }
+    })
+    expect(await executeTool(name, {}, context)).toMatchObject({ kind: "handler_succeeded" })
+    expect(beforeHandler).toHaveBeenCalledOnce()
+  })
+
   it.each(["profile", "advertisement"])("A001a coverage rejects allowed decisions with changed %s before execution", async (change) => {
     const { definition, handler } = addProbe()
     const context: ToolContext = {
@@ -276,7 +314,7 @@ describe("turn-local canonical tool selection", () => {
     getToolsForChannel(undefined, undefined, undefined, undefined, b)
 
     expect(await execTool("shared_status", {}, context)).toBe("A result")
-    expect(a.manager.callTool).toHaveBeenCalledWith(expect.objectContaining(MCP_OWNER), {}, MCP_OWNER)
+    expect(a.manager.callTool).toHaveBeenCalledWith(expect.objectContaining(MCP_OWNER), {}, MCP_OWNER, undefined)
     expect(b.manager.callTool).not.toHaveBeenCalled()
   })
 

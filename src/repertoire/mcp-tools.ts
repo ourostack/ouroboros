@@ -142,7 +142,7 @@ export function mcpToolsAsDefinitions(view: McpTurnView): ToolDefinition[] {
           if (guarded.rejected !== undefined) throw new McpCallRejectedError(guarded.rejected)
 
           try {
-            const result = await view.manager.callTool(binding, guarded.args as Record<string, string>, { agentName: ctx.agentName, agentRoot: ctx.agentRoot })
+            const result = await view.manager.callTool(binding, guarded.args as Record<string, string>, { agentName: ctx.agentName, agentRoot: ctx.agentRoot }, ctx.beforeHandler)
             const { text, images } = splitMcpContent(result.content)
 
             if (result.isError === true) {

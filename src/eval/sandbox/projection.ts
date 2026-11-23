@@ -69,6 +69,20 @@ function copyTree(from: string, to: string, relative: string, gaps: string[]): v
   fs.chmodSync(path.join(to, relative), stat.mode & 0o755)
 }
 
+/**
+ * The sandbox starts no MCP server: their programs and credentials are host-specific and never projected. Taking them
+ * out of `agent.json` makes that so whatever a case includes, instead of a server that fails to start.
+ */
+function dropMcpServers(file: string, gaps: string[]): void {
+  let config: unknown
+  try { config = JSON.parse(fs.readFileSync(file, "utf8")) } catch { return }
+  const servers = (config as { mcpServers?: unknown } | null)?.mcpServers
+  if (!servers || typeof servers !== "object" || Object.keys(servers).length === 0) return
+  delete (config as { mcpServers?: unknown }).mcpServers
+  fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`)
+  gaps.push(`agent.json: its MCP servers (${Object.keys(servers).sort().join(", ")}) are left out; the sandbox starts no MCP server`)
+}
+
 export function projectBundle(input: ProjectionInput): { gaps: string[] } {
   emitNervesEvent({ component: "eval", event: "eval.projection_start", message: "projecting a bundle for a sandboxed run", meta: { include: input.include } })
   for (const include of input.include) checkInclude(include)
@@ -89,6 +103,7 @@ export function projectBundle(input: ProjectionInput): { gaps: string[] } {
     if (!fs.existsSync(path.join(input.seedBundleDir, seeded))) gaps.push(`${seeded}: not in the seed bundle`)
     else copyTree(input.seedBundleDir, input.out, seeded, gaps)
   }
+  dropMcpServers(path.join(input.out, "agent.json"), gaps)
   for (const dir of EMPTY) fs.mkdirSync(path.join(input.out, dir), { recursive: true })
   fs.writeFileSync(path.join(input.out, "books/ledger.ndjson"), "")
   gaps.push(

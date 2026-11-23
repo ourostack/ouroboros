@@ -852,7 +852,13 @@ describe("runAgent tool loop guard", () => {
     mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{ index: 0, id: "settle-production", function: { name: "settle", arguments: JSON.stringify({ answer: "complete" }) } }])]))
     const { runAgent } = await import("../../heart/core")
 
-    const result = await runAgent([{ role: "user", content: "run the production control" }], makeCallbacks(), "telegram", undefined, {
+    let dispatchedBeforeHandler = false
+    getSystem.mockImplementationOnce(async () => {
+      dispatchedBeforeHandler = vi.mocked(callbacks.onToolDispatch!).mock.calls.length === 1
+      return { ok: true, data: { serverName: "Sanctuary" } }
+    })
+    const callbacks = makeCallbacks({ onToolDispatch: vi.fn() })
+    const result = await runAgent([{ role: "user", content: "run the production control" }], callbacks, "telegram", undefined, {
       tools: [systemTool],
       toolContext: { signin: async () => undefined, sanctuary: { getSystem } } as any,
       toolBoundaryObserver: (receipt: unknown) => boundaryReceipts.push(receipt),
@@ -860,6 +866,10 @@ describe("runAgent tool loop guard", () => {
 
     expect(result.outcome).toBe("settled")
     expect(getSystem).toHaveBeenCalledOnce()
+    // Told just before the handler ran, and only for the call that reached one (settle did not).
+    expect(dispatchedBeforeHandler).toBe(true)
+    expect(callbacks.onToolDispatch).toHaveBeenCalledOnce()
+    expect(callbacks.onToolDispatch).toHaveBeenCalledWith("unraid_get_system")
     expect(boundaryReceipts).toContainEqual(expect.objectContaining({
       name: "unraid_get_system", reason: "dispatched", globallyResolvable: true, invoked: true, sideEffect: false,
     }))
@@ -1125,7 +1135,7 @@ describe("runAgent tool loop guard", () => {
 
     const { runAgent } = await import("../../heart/core")
     const execTool = vi.fn().mockResolvedValue("status: running")
-    const callbacks = makeCallbacks()
+    const callbacks = makeCallbacks({ onToolDispatch: vi.fn() })
     const messages: any[] = [{ role: "system", content: "test" }]
 
     const result = await runAgent(messages, callbacks, undefined, undefined, {
@@ -1137,6 +1147,9 @@ describe("runAgent tool loop guard", () => {
     })
 
     expect(execTool).toHaveBeenCalledTimes(3)
+    // The fourth poll is shown as started but the loop guard refuses it, so only three reached the handler.
+    expect(vi.mocked(callbacks.onToolStart).mock.calls.filter(([name]) => name === "coding_status")).toHaveLength(4)
+    expect(callbacks.onToolDispatch).toHaveBeenCalledTimes(3)
     expect(execTool).toHaveBeenNthCalledWith(1, "coding_status", { sessionId: "coding-001" }, expect.anything())
     expect(result.completion).toEqual({
       answer: "using the current coding status",
@@ -1813,7 +1826,7 @@ describe("runAgent tool loop guard", () => {
       }])]))
 
     const { runAgent } = await import("../../heart/core")
-    const callbacks = makeCallbacks()
+    const callbacks = makeCallbacks({ onToolDispatch: vi.fn() })
     const result = await runAgent(
       [{ role: "user", content: "Please end this report." }],
       callbacks,
@@ -1834,6 +1847,7 @@ describe("runAgent tool loop guard", () => {
     )
 
     expect(handler).not.toHaveBeenCalled()
+    expect(callbacks.onToolDispatch).not.toHaveBeenCalled()
     expect(callbacks.onClearText).not.toHaveBeenCalled()
     expect(callbacks.onToolStart).not.toHaveBeenCalledWith(terminalToolName, expect.anything())
     expect(result.outcome).toBe("observed")
@@ -1870,7 +1884,7 @@ describe("runAgent tool loop guard", () => {
         function: { name: terminalToolName, arguments: "{}" },
       }]),
     ]))
-    const callbacks = makeCallbacks()
+    const callbacks = makeCallbacks({ onToolDispatch: vi.fn() })
     const { runAgent } = await import("../../heart/core")
 
     const result = await runAgent(
@@ -1894,6 +1908,8 @@ describe("runAgent tool loop guard", () => {
     )
 
     expect(handler).toHaveBeenCalledTimes(mode === "custom-string" ? 0 : 1)
+    expect(callbacks.onToolDispatch).toHaveBeenCalledOnce()
+    expect(callbacks.onToolDispatch).toHaveBeenCalledWith(terminalToolName)
     expect(callbacks.onClearText).not.toHaveBeenCalled()
     expect(callbacks.onToolEnd).toHaveBeenCalledWith(terminalToolName, expect.any(String), mode === "success")
     expect(callbacks.onTextChunk).toHaveBeenLastCalledWith(mode === "success" ? "terminal receipt" : "error: opaque terminal failure")
@@ -2069,7 +2085,8 @@ describe("runAgent tool loop guard", () => {
     const { runAgent } = await import("../../heart/core")
 
     const boundaryReceipts: unknown[] = []
-    const result = await runAgent(messages, makeCallbacks(), "cli", undefined, {
+    const callbacks = makeCallbacks({ onToolDispatch: vi.fn() })
+    const result = await runAgent(messages, callbacks, "cli", undefined, {
       tools: [{
         type: "function",
         function: {
@@ -2090,6 +2107,8 @@ describe("runAgent tool loop guard", () => {
 
     expect(result.outcome).toBe("settled")
     expect(execTool).not.toHaveBeenCalled()
+    // Only the settle after the rejection was shown as started, and nothing reached a handler.
+    expect(callbacks.onToolDispatch).not.toHaveBeenCalled()
     expectProviderOnlyRejection(messages, "call_valid_probe", "another call in this batch had invalid arguments")
     expect(boundaryReceipts).toEqual([
       expect.objectContaining({ name: "probe", reason: "invalid_arguments", invoked: false }),
@@ -2403,13 +2422,15 @@ describe("runAgent tool loop guard", () => {
       const messages: any[] = [{ role: "user", content: "restart calibre-web" }]
       const { runAgent } = await import("../../heart/core")
 
-      const result = await runAgent(messages, makeCallbacks(), "cli", undefined, {
+      const callbacks = makeCallbacks({ onToolDispatch: vi.fn() })
+      const result = await runAgent(messages, callbacks, "cli", undefined, {
         execTool,
         toolContext: { signin: async () => undefined },
       } as any)
 
       expect(result.outcome).toBe("settled")
       expect(execTool).not.toHaveBeenCalled()
+      expect(callbacks.onToolDispatch).not.toHaveBeenCalled()
       expectProviderOnlyRejection(messages, "call_uncoordinated_restart", "approval coordinator is unavailable")
     })
 
