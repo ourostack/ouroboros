@@ -119,6 +119,10 @@ export function mcpToolsAsDefinitions(view: McpTurnView): ToolDefinition[] {
             risk: "high" as const,
             reason: "MCP tools may mutate external systems",
           },
+        // A declared consequential tool waits for the person's approval, like the harness's own consequential tools.
+        ...(declared?.ax.effect === "consequential"
+          ? { approvalPolicy: () => ({ kind: "required" as const, policyId: "mcp.declared.consequential.v1", actionClass: `mcp.${entry.server}.${tool.name}`, requiresSoleCall: true as const }) }
+          : {}),
         handler: async (args, ctx): Promise<string> => {
           if (ctx?.agentName !== binding.agentName || ctx.agentRoot !== binding.agentRoot) {
             emitNervesEvent({
