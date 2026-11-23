@@ -1,9 +1,10 @@
 /**
- * W6 Unit 10 — `ouro desk` umbrella CLI tests.
+ * `ouro desk` CLI tests.
  *
  * Verifies that each subverb parses argv into the canonical
- * `{ kind: "desk", tool, toolArgs }` shape and that executor routes it through
- * the daemon socket as `mcp.call` with `server: "desk"`.
+ * `{ kind: "desk", tool, toolArgs }` shape, with tool names and arguments Desk
+ * 3's MCP tools accept, and that the executor routes it through the daemon
+ * socket as `mcp.call` with `server: "desk"` (or `desk-<name>` for --desk).
  *
  * Also covers the `ouro task ...` alias surface — must route identically to
  * `ouro desk task ...`.
@@ -35,74 +36,122 @@ function createMockDeps(overrides: Partial<OuroCliDeps> = {}): OuroCliDeps {
 
 // ── Parser tests ──
 
+const desk = (tool: string, toolArgs: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+  kind: "desk",
+  tool,
+  toolArgs,
+  ...extra,
+})
+
 describe("ouro desk CLI parsing — task subverbs", () => {
-  it("'desk task list' parses to desk_search with kind=task", () => {
-    expect(parseOuroCommand(["desk", "task", "list"])).toEqual({
-      kind: "desk",
-      tool: "desk_search",
-      toolArgs: { query: "", filters: { kind: "task" } },
-    })
+  it("'desk task list' lists tasks through desk_search with no query", () => {
+    expect(parseOuroCommand(["desk", "task", "list"])).toEqual(desk("desk_search", { filters: { kind: "task" } }))
   })
 
   it("'desk task list --track foo --status open' adds filters", () => {
-    expect(
-      parseOuroCommand(["desk", "task", "list", "--track", "foo", "--status", "open"]),
-    ).toEqual({
-      kind: "desk",
-      tool: "desk_search",
-      toolArgs: { query: "", filters: { kind: "task", track: "foo", status: "open" } },
-    })
+    expect(parseOuroCommand(["desk", "task", "list", "--track", "foo", "--status", "open"])).toEqual(
+      desk("desk_search", { filters: { kind: "task", track: "foo", status: "open" } }),
+    )
   })
 
-  it("'desk task new <slug> --track <t>' parses to task_create", () => {
-    expect(parseOuroCommand(["desk", "task", "new", "fix-bug", "--track", "harness"])).toEqual({
-      kind: "desk",
-      tool: "task_create",
-      toolArgs: { track: "harness", slug: "fix-bug" },
-    })
+  it("'desk task list' refuses extra words", () => {
+    expect(() => parseOuroCommand(["desk", "task", "list", "foo"])).toThrow(/takes no words/)
   })
 
-  it("'desk task new <slug>' without --track throws", () => {
+  it("'desk task new <track>/<slug>' parses to task_create with the slug as title", () => {
+    expect(parseOuroCommand(["desk", "task", "new", "harness/fix-bug"])).toEqual(
+      desk("task_create", { track: "harness", slug: "fix-bug", title: "fix-bug" }),
+    )
+  })
+
+  it("'desk task new <slug> --track <t> --title <title>' parses to task_create", () => {
+    expect(parseOuroCommand(["desk", "task", "new", "fix-bug", "--track", "harness", "--title", "Fix the bug"])).toEqual(
+      desk("task_create", { track: "harness", slug: "fix-bug", title: "Fix the bug" }),
+    )
+  })
+
+  it("'desk task new <track>/<slug> --track <t>' refuses the track twice", () => {
+    expect(() => parseOuroCommand(["desk", "task", "new", "harness/fix-bug", "--track", "harness"])).toThrow(/track once/)
+  })
+
+  it("'desk task new <slug>' without a track throws", () => {
     expect(() => parseOuroCommand(["desk", "task", "new", "fix-bug"])).toThrow(/usage/i)
   })
 
   it("'desk task new' without slug throws", () => {
-    expect(() => parseOuroCommand(["desk", "task", "new"])).toThrow(/usage/i)
+    expect(() => parseOuroCommand(["desk", "task", "new"])).toThrow(/<track>\/<slug>/)
   })
 
-  it("'desk task done <slug>' parses to task_update with status=done", () => {
-    expect(parseOuroCommand(["desk", "task", "done", "harness/fix-bug"])).toEqual({
-      kind: "desk",
-      tool: "task_update",
-      toolArgs: { path: "harness/fix-bug/task.md", frontmatter: { status: "done" } },
-    })
+  it("'desk task new a/b/c' throws: the slug can't hold a slash", () => {
+    expect(() => parseOuroCommand(["desk", "task", "new", "a/b/c", "--track", "a"])).toThrow(/usage/i)
   })
 
-  it("'desk task done' without slug throws", () => {
-    expect(() => parseOuroCommand(["desk", "task", "done"])).toThrow(/usage/i)
+  it("'desk task done <track>/<slug> --pr <url>' moves the task to done with PR evidence", () => {
+    expect(parseOuroCommand(["desk", "task", "done", "harness/fix-bug", "--pr", "https://github.com/o/r/pull/1"])).toEqual(
+      desk("task_update", {
+        track: "harness",
+        slug: "fix-bug",
+        status: "done",
+        evidence: { kind: "pr", ref: "https://github.com/o/r/pull/1" },
+      }),
+    )
   })
 
-  it("'desk task archive <slug>' parses to task_archive", () => {
-    expect(parseOuroCommand(["desk", "task", "archive", "harness/fix-bug"])).toEqual({
-      kind: "desk",
-      tool: "task_archive",
-      toolArgs: { path: "harness/fix-bug/task.md" },
-    })
+  it("'desk task done <track>/<slug> --commit <sha>' uses commit evidence", () => {
+    expect(parseOuroCommand(["desk", "task", "done", "harness/fix-bug", "--commit", "abc1234"])).toEqual(
+      desk("task_update", { track: "harness", slug: "fix-bug", status: "done", evidence: { kind: "commit", ref: "abc1234" } }),
+    )
   })
 
-  it("'desk task archive' without slug throws", () => {
+  it("'desk task done' without evidence says to pass --pr or --commit", () => {
+    expect(() => parseOuroCommand(["desk", "task", "done", "harness/fix-bug"])).toThrow(/--pr <url>.*--commit <sha>/)
+  })
+
+  it("'desk task done' with both --pr and --commit throws", () => {
+    expect(() =>
+      parseOuroCommand(["desk", "task", "done", "harness/fix-bug", "--pr", "https://x/pull/1", "--commit", "abc1234"]),
+    ).toThrow(/one of them/)
+  })
+
+  it("'desk task done' without a task throws", () => {
+    expect(() => parseOuroCommand(["desk", "task", "done", "--pr", "https://x/pull/1"])).toThrow(/<track>\/<slug>/)
+  })
+
+  it("'desk task done <slug>' without its track throws", () => {
+    expect(() => parseOuroCommand(["desk", "task", "done", "fix-bug", "--commit", "abc1234"])).toThrow(/<track>\/<slug>/)
+  })
+
+  it("'desk task done' refuses a flag value that is another flag", () => {
+    expect(() => parseOuroCommand(["desk", "task", "done", "harness/fix-bug", "--pr", "--commit"])).toThrow(/--pr needs a value/)
+  })
+
+  it("'desk task done' refuses a flag it doesn't take", () => {
+    expect(() => parseOuroCommand(["desk", "task", "done", "harness/fix-bug", "--steps"])).toThrow(/doesn't take --steps/)
+  })
+
+  it("'desk task archive <track>/<slug>' parses to task_archive", () => {
+    expect(parseOuroCommand(["desk", "task", "archive", "harness/fix-bug"])).toEqual(
+      desk("task_archive", { track: "harness", slug: "fix-bug" }),
+    )
+  })
+
+  it("'desk task archive <track>/<slug> --cancelled' archives it as cancelled", () => {
+    expect(parseOuroCommand(["desk", "task", "archive", "harness/fix-bug", "--cancelled"])).toEqual(
+      desk("task_archive", { track: "harness", slug: "fix-bug", outcome: "cancelled" }),
+    )
+  })
+
+  it("'desk task archive' without a task throws", () => {
     expect(() => parseOuroCommand(["desk", "task", "archive"])).toThrow(/usage/i)
   })
 
-  it("'desk task show <slug>' parses to desk_search query=slug, kind=task", () => {
-    expect(parseOuroCommand(["desk", "task", "show", "fix-bug"])).toEqual({
-      kind: "desk",
-      tool: "desk_search",
-      toolArgs: { query: "fix-bug", filters: { kind: "task" } },
-    })
+  it("'desk task show <track>/<slug>' searches for the slug in its track", () => {
+    expect(parseOuroCommand(["desk", "task", "show", "harness/fix-bug"])).toEqual(
+      desk("desk_search", { query: "fix-bug", filters: { kind: "task", track: "harness" } }),
+    )
   })
 
-  it("'desk task show' without slug throws", () => {
+  it("'desk task show' without a task throws", () => {
     expect(() => parseOuroCommand(["desk", "task", "show"])).toThrow(/usage/i)
   })
 
@@ -116,32 +165,29 @@ describe("ouro desk CLI parsing — task subverbs", () => {
 })
 
 describe("ouro desk CLI parsing — track subverbs", () => {
-  it("'desk track list' parses to desk_search with kind=track", () => {
-    expect(parseOuroCommand(["desk", "track", "list"])).toEqual({
-      kind: "desk",
-      tool: "desk_search",
-      toolArgs: { query: "", filters: { kind: "track" } },
-    })
+  it("'desk track list' is gone, since Desk 3 does not index tracks", () => {
+    expect(() => parseOuroCommand(["desk", "track", "list"])).toThrow(/usage/i)
   })
 
-  it("'desk track new <slug>' parses to track_create", () => {
-    expect(parseOuroCommand(["desk", "track", "new", "harness"])).toEqual({
-      kind: "desk",
-      tool: "track_create",
-      toolArgs: { slug: "harness" },
-    })
+  it("'desk track new <slug> --title <t> --scope <s>' parses to track_create", () => {
+    expect(
+      parseOuroCommand(["desk", "track", "new", "harness", "--title", "Harness", "--scope", "the runtime; not the site"]),
+    ).toEqual(desk("track_create", { slug: "harness", title: "Harness", scope: "the runtime; not the site" }))
+  })
+
+  it("'desk track new <slug>' without --title and --scope throws", () => {
+    expect(() => parseOuroCommand(["desk", "track", "new", "harness"])).toThrow(/--scope/)
+    expect(() => parseOuroCommand(["desk", "track", "new", "harness", "--title", "Harness"])).toThrow(/usage/i)
   })
 
   it("'desk track new' without slug throws", () => {
-    expect(() => parseOuroCommand(["desk", "track", "new"])).toThrow(/usage/i)
+    expect(() => parseOuroCommand(["desk", "track", "new", "--title", "H", "--scope", "s"])).toThrow(/usage/i)
   })
 
-  it("'desk track show <slug>' parses to desk_search with slug as query", () => {
-    expect(parseOuroCommand(["desk", "track", "show", "harness"])).toEqual({
-      kind: "desk",
-      tool: "desk_search",
-      toolArgs: { query: "harness", filters: { kind: "track" } },
-    })
+  it("'desk track show <slug>' lists the track's tasks through desk_search", () => {
+    expect(parseOuroCommand(["desk", "track", "show", "harness"])).toEqual(
+      desk("desk_search", { filters: { kind: "task", track: "harness" } }),
+    )
   })
 
   it("'desk track show' without slug throws", () => {
@@ -158,24 +204,20 @@ describe("ouro desk CLI parsing — track subverbs", () => {
 })
 
 describe("ouro desk CLI parsing — friction / lesson", () => {
-  it("'desk friction add <text>' parses to friction_add", () => {
-    expect(parseOuroCommand(["desk", "friction", "add", "build is slow"])).toEqual({
-      kind: "desk",
-      tool: "friction_add",
-      toolArgs: { text: "build is slow" },
-    })
+  it("'desk friction add <text>' parses to friction_add with the text as body", () => {
+    expect(parseOuroCommand(["desk", "friction", "add", "build is slow"])).toEqual(
+      desk("friction_add", { body: "build is slow" }),
+    )
   })
 
   it("'desk friction add' joins remaining args with spaces", () => {
-    expect(parseOuroCommand(["desk", "friction", "add", "build", "is", "slow"])).toEqual({
-      kind: "desk",
-      tool: "friction_add",
-      toolArgs: { text: "build is slow" },
-    })
+    expect(parseOuroCommand(["desk", "friction", "add", "build", "is", "slow"])).toEqual(
+      desk("friction_add", { body: "build is slow" }),
+    )
   })
 
   it("'desk friction add' without text throws", () => {
-    expect(() => parseOuroCommand(["desk", "friction", "add"])).toThrow(/usage/i)
+    expect(() => parseOuroCommand(["desk", "friction", "add"])).toThrow(/note's text/)
   })
 
   it("'desk friction' with unknown subverb throws", () => {
@@ -186,16 +228,19 @@ describe("ouro desk CLI parsing — friction / lesson", () => {
     expect(() => parseOuroCommand(["desk", "friction"])).toThrow(/usage/i)
   })
 
-  it("'desk lesson add <text>' parses to lesson_add", () => {
-    expect(parseOuroCommand(["desk", "lesson", "add", "always quote paths"])).toEqual({
-      kind: "desk",
-      tool: "lesson_add",
-      toolArgs: { text: "always quote paths" },
-    })
+  it("'desk lesson add <text> --scope <s> --topic <t>' parses to lesson_add", () => {
+    expect(
+      parseOuroCommand(["desk", "lesson", "add", "always", "quote", "paths", "--scope", "personal", "--topic", "quoting"]),
+    ).toEqual(desk("lesson_add", { scope: "personal", topic: "quoting", body: "always quote paths" }))
+  })
+
+  it("'desk lesson add <text>' without --scope and --topic throws", () => {
+    expect(() => parseOuroCommand(["desk", "lesson", "add", "always quote paths"])).toThrow(/--scope.*--topic/)
+    expect(() => parseOuroCommand(["desk", "lesson", "add", "x", "--scope", "personal"])).toThrow(/usage/i)
   })
 
   it("'desk lesson add' without text throws", () => {
-    expect(() => parseOuroCommand(["desk", "lesson", "add"])).toThrow(/usage/i)
+    expect(() => parseOuroCommand(["desk", "lesson", "add", "--scope", "personal", "--topic", "t"])).toThrow(/lesson's text/)
   })
 
   it("'desk lesson' with unknown subverb throws", () => {
@@ -207,57 +252,47 @@ describe("ouro desk CLI parsing — friction / lesson", () => {
   })
 })
 
-describe("ouro desk CLI parsing — search / recall / reindex / thread", () => {
+describe("ouro desk CLI parsing — search / recall / status / doctor / reindex", () => {
   it("'desk search <query>' parses to desk_search with query", () => {
-    expect(parseOuroCommand(["desk", "search", "build errors"])).toEqual({
-      kind: "desk",
-      tool: "desk_search",
-      toolArgs: { query: "build errors" },
-    })
+    expect(parseOuroCommand(["desk", "search", "build errors"])).toEqual(desk("desk_search", { query: "build errors" }))
   })
 
   it("'desk search' joins multiple words", () => {
-    expect(parseOuroCommand(["desk", "search", "build", "errors"])).toEqual({
-      kind: "desk",
-      tool: "desk_search",
-      toolArgs: { query: "build errors" },
-    })
+    expect(parseOuroCommand(["desk", "search", "build", "errors"])).toEqual(desk("desk_search", { query: "build errors" }))
   })
 
   it("'desk search' without query throws", () => {
     expect(() => parseOuroCommand(["desk", "search"])).toThrow(/usage/i)
   })
 
-  it("'desk recall <topic>' parses to desk_recall", () => {
-    expect(parseOuroCommand(["desk", "recall", "europe trip"])).toEqual({
-      kind: "desk",
-      tool: "desk_recall",
-      toolArgs: { query: "europe trip" },
-    })
+  it("'desk recall <topic>' parses to desk_recall with topic", () => {
+    expect(parseOuroCommand(["desk", "recall", "europe trip"])).toEqual(desk("desk_recall", { topic: "europe trip" }))
   })
 
-  it("'desk recall' without query throws", () => {
-    expect(() => parseOuroCommand(["desk", "recall"])).toThrow(/usage/i)
+  it("'desk recall' without topic throws", () => {
+    expect(() => parseOuroCommand(["desk", "recall"])).toThrow(/needs a topic/)
   })
 
-  it("'desk reindex' parses to desk_reindex with no args", () => {
-    expect(parseOuroCommand(["desk", "reindex"])).toEqual({
-      kind: "desk",
-      tool: "desk_reindex",
-      toolArgs: {},
-    })
+  it("'desk status' parses to desk_status", () => {
+    expect(parseOuroCommand(["desk", "status"])).toEqual(desk("desk_status", {}))
   })
 
-  it("'desk thread <path>' parses to desk_thread", () => {
-    expect(parseOuroCommand(["desk", "thread", "harness/fix-bug/task.md"])).toEqual({
-      kind: "desk",
-      tool: "desk_thread",
-      toolArgs: { start_path: "harness/fix-bug/task.md" },
-    })
+  it("'desk doctor' parses to desk_doctor", () => {
+    expect(parseOuroCommand(["desk", "doctor"])).toEqual(desk("desk_doctor", {}))
   })
 
-  it("'desk thread' without path throws", () => {
-    expect(() => parseOuroCommand(["desk", "thread"])).toThrow(/usage/i)
+  it("'desk reindex' parses to desk_doctor with reindex", () => {
+    expect(parseOuroCommand(["desk", "reindex"])).toEqual(desk("desk_doctor", { reindex: true }))
+  })
+
+  it("'desk status|doctor|reindex' refuse extra words", () => {
+    for (const verb of ["status", "doctor", "reindex"]) {
+      expect(() => parseOuroCommand(["desk", verb, "now"])).toThrow(/takes no words/)
+    }
+  })
+
+  it("'desk thread' is gone: Desk has no such tool", () => {
+    expect(() => parseOuroCommand(["desk", "thread", "harness/fix-bug/task.md"])).toThrow(/usage/i)
   })
 
   it("'desk' with unknown subverb throws", () => {
@@ -269,47 +304,70 @@ describe("ouro desk CLI parsing — search / recall / reindex / thread", () => {
   })
 })
 
+describe("ouro desk CLI parsing — --desk and --agent", () => {
+  it("--desk <name> picks the desk, wherever it sits", () => {
+    expect(parseOuroCommand(["desk", "--desk", "work", "status"])).toEqual(desk("desk_status", {}, { desk: "work" }))
+    expect(parseOuroCommand(["desk", "task", "list", "--desk", "work"])).toEqual(
+      desk("desk_search", { filters: { kind: "task" } }, { desk: "work" }),
+    )
+  })
+
+  it("--agent <name> names the agent", () => {
+    expect(parseOuroCommand(["desk", "search", "x", "--agent", "slugger"])).toEqual(
+      desk("desk_search", { query: "x" }, { agent: "slugger" }),
+    )
+  })
+
+  it("--desk refuses a name that isn't a desk name", () => {
+    expect(() => parseOuroCommand(["desk", "status", "--desk", "Work!"])).toThrow(/is not a desk name/)
+    expect(() => parseOuroCommand(["desk", "status", "--desk", "-work"])).toThrow(/is not a desk name/)
+  })
+
+  it("--desk without a value throws", () => {
+    expect(() => parseOuroCommand(["desk", "status", "--desk"])).toThrow(/--desk needs a value/)
+  })
+
+  it("the Hosted Desk admin verbs don't take --desk", () => {
+    expect(() => parseOuroCommand(["desk", "access", "acct", "on", "--desk", "work"])).toThrow()
+    expect(() => parseOuroCommand(["desk", "--desk", "work", "access", "acct", "on"])).toThrow(/usage/i)
+  })
+
+  it("'task' alias takes --desk too", () => {
+    expect(parseOuroCommand(["task", "show", "harness/fix-bug", "--desk", "work"])).toEqual(
+      desk("desk_search", { query: "fix-bug", filters: { kind: "task", track: "harness" } }, { desk: "work" }),
+    )
+  })
+})
+
 // ── Task alias router ──
 
 describe("ouro task alias — must route through desk_*", () => {
   it("'task list' routes through desk_search with kind=task", () => {
-    expect(parseOuroCommand(["task", "list"])).toEqual({
-      kind: "desk",
-      tool: "desk_search",
-      toolArgs: { query: "", filters: { kind: "task" } },
-    })
+    expect(parseOuroCommand(["task", "list"])).toEqual(desk("desk_search", { filters: { kind: "task" } }))
   })
 
   it("'task new <slug> --track <t>' routes through task_create", () => {
-    expect(parseOuroCommand(["task", "new", "fix-bug", "--track", "harness"])).toEqual({
-      kind: "desk",
-      tool: "task_create",
-      toolArgs: { track: "harness", slug: "fix-bug" },
-    })
+    expect(parseOuroCommand(["task", "new", "fix-bug", "--track", "harness"])).toEqual(
+      desk("task_create", { track: "harness", slug: "fix-bug", title: "fix-bug" }),
+    )
   })
 
-  it("'task done <slug>' routes through task_update", () => {
-    expect(parseOuroCommand(["task", "done", "harness/fix-bug"])).toEqual({
-      kind: "desk",
-      tool: "task_update",
-      toolArgs: { path: "harness/fix-bug/task.md", frontmatter: { status: "done" } },
-    })
+  it("'task done <track>/<slug> --pr <url>' routes through task_update", () => {
+    expect(parseOuroCommand(["task", "done", "harness/fix-bug", "--pr", "https://x/pull/1"])).toEqual(
+      desk("task_update", { track: "harness", slug: "fix-bug", status: "done", evidence: { kind: "pr", ref: "https://x/pull/1" } }),
+    )
   })
 
-  it("'task archive <slug>' routes through task_archive", () => {
-    expect(parseOuroCommand(["task", "archive", "harness/fix-bug"])).toEqual({
-      kind: "desk",
-      tool: "task_archive",
-      toolArgs: { path: "harness/fix-bug/task.md" },
-    })
+  it("'task archive <track>/<slug>' routes through task_archive", () => {
+    expect(parseOuroCommand(["task", "archive", "harness/fix-bug"])).toEqual(
+      desk("task_archive", { track: "harness", slug: "fix-bug" }),
+    )
   })
 
-  it("'task show <slug>' routes through desk_search", () => {
-    expect(parseOuroCommand(["task", "show", "fix-bug"])).toEqual({
-      kind: "desk",
-      tool: "desk_search",
-      toolArgs: { query: "fix-bug", filters: { kind: "task" } },
-    })
+  it("'task show <track>/<slug>' routes through desk_search", () => {
+    expect(parseOuroCommand(["task", "show", "harness/fix-bug"])).toEqual(
+      desk("desk_search", { query: "fix-bug", filters: { kind: "task", track: "harness" } }),
+    )
   })
 
   it("'task' with no subverb throws", () => {
@@ -343,7 +401,7 @@ describe("ouro desk CLI execution (daemon-routed)", () => {
       kind: "mcp.call",
       server: "desk",
       tool: "desk_search",
-      args: JSON.stringify({ query: "", filters: { kind: "task" } }),
+      args: JSON.stringify({ filters: { kind: "task" } }),
     })
     expect(result).toContain("task list result")
   })
@@ -361,7 +419,7 @@ describe("ouro desk CLI execution (daemon-routed)", () => {
       kind: "mcp.call",
       server: "desk",
       tool: "friction_add",
-      args: JSON.stringify({ text: "build is slow" }),
+      args: JSON.stringify({ body: "build is slow" }),
     })
   })
 
@@ -395,7 +453,7 @@ describe("ouro desk CLI execution (daemon-routed)", () => {
       kind: "mcp.call",
       server: "desk",
       tool: "desk_search",
-      args: JSON.stringify({ query: "", filters: { kind: "task" } }),
+      args: JSON.stringify({ filters: { kind: "task" } }),
     })
   })
 
@@ -500,33 +558,26 @@ describe("ouro desk CLI execution (daemon-routed)", () => {
       agent: "slugger",
     })
   })
-})
 
-// ── Helper-branch coverage ──
+  it("--desk <name> sends the call to that desk's server, desk-<name>", async () => {
+    sendCommand.mockResolvedValue({ ok: true, data: { content: [{ type: "text", text: "ready" }] } })
+    const deps = createMockDeps({ sendCommand })
 
-describe("desk task helpers — slug normalisation", () => {
-  it("'task done' accepts a slug already ending in /task.md (idempotent)", () => {
-    expect(parseOuroCommand(["desk", "task", "done", "harness/fix/task.md"])).toEqual({
-      kind: "desk",
-      tool: "task_update",
-      toolArgs: { path: "harness/fix/task.md", frontmatter: { status: "done" } },
+    const result = await runOuroCli(["desk", "status", "--desk", "work"], deps)
+
+    expect(sendCommand).toHaveBeenCalledWith("/tmp/ouro-test.sock", {
+      kind: "mcp.call",
+      server: "desk-work",
+      tool: "desk_status",
+      args: JSON.stringify({}),
     })
+    expect(result).toContain("ready")
   })
 
-  it("'task archive' accepts a slug already ending in /task.md", () => {
-    expect(parseOuroCommand(["desk", "task", "archive", "harness/fix/task.md"])).toEqual({
-      kind: "desk",
-      tool: "task_archive",
-      toolArgs: { path: "harness/fix/task.md" },
-    })
-  })
-
-  it("'task done' strips a trailing slash before appending /task.md", () => {
-    expect(parseOuroCommand(["desk", "task", "done", "harness/fix/"])).toEqual({
-      kind: "desk",
-      tool: "task_update",
-      toolArgs: { path: "harness/fix/task.md", frontmatter: { status: "done" } },
-    })
+  it("a usage error fails with the usage code", async () => {
+    const deps = createMockDeps({ sendCommand })
+    await expect(runOuroCli(["desk", "task", "done", "harness/fix-bug"], deps)).rejects.toMatchObject({ code: "usage" })
+    expect(sendCommand).not.toHaveBeenCalled()
   })
 })
 
@@ -537,5 +588,7 @@ describe("deskUsage()", () => {
     expect(usage).toContain("ouro desk task list")
     expect(usage).toContain("ouro desk friction add")
     expect(usage).toContain("ouro task list|new|done|archive|show ...")
+    expect(usage).toContain("--desk <name>")
+    expect(usage).not.toContain("thread")
   })
 })
