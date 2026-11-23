@@ -133,6 +133,8 @@ describe("declared tools on a bundle's MCP server", () => {
     const share = defs.find((d) => d.tool.function.name === "shop_share_shopping_list")!
     expect(share.ax!.confirm).toBe(fixture.tools[3].ax.confirm)
     expect(share.riskProfile).toMatchObject({ risk: "high", mutates: "external_side_effect" })
+    expect(share.approvalPolicy!({})).toEqual({ kind: "required", policyId: "mcp.declared.consequential.v1", actionClass: "mcp.shop.share_shopping_list", requiresSoleCall: true })
+    expect(get.approvalPolicy).toBeUndefined()
     expect(get.mcpBinding!.surfacedName).toBe("shop_get_shopping_list")
     // A served tool the declaration doesn't name stays as every MCP tool is: the card made from what its server says, high risk.
     const order = defs.find((d) => d.tool.function.name === "shop_place_grocery_order")!
