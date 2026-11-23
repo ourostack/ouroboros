@@ -5,11 +5,16 @@ import { getAgentRoot } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { BlueBubblesNormalizedMessage } from "./model"
 
+/** A reply waiting this long for permission to send counts as a stalled turn. */
+export const BLUEBUBBLES_DELIVERY_ADMISSION_STALLED_MS = 60_000
+
 export interface BlueBubblesActiveTurnEntry {
   turnId: string
   pid: number
   startedAt: string
   lastVisibleActivityAt?: string
+  /** Set while the reply has waited over a minute for permission to send. */
+  admissionWaitingSince?: string
   messageGuid: string
   sessionKey: string
   chatGuid: string | null
@@ -19,6 +24,8 @@ export interface BlueBubblesActiveTurnEntry {
 export interface BlueBubblesActiveTurnSnapshot {
   activeTurnCount: number
   stalledTurnCount: number
+  admissionStalledTurnCount: number
+  oldestAdmissionWaitAgeMs?: number
   oldestActiveTurnStartedAt?: string
   oldestActiveTurnAgeMs?: number
 }
@@ -51,6 +58,9 @@ function parseActiveTurn(raw: string): BlueBubblesActiveTurnEntry | null {
       startedAt: parsed.startedAt,
       lastVisibleActivityAt: typeof parsed.lastVisibleActivityAt === "string"
         ? parsed.lastVisibleActivityAt
+        : undefined,
+      admissionWaitingSince: typeof parsed.admissionWaitingSince === "string"
+        ? parsed.admissionWaitingSince
         : undefined,
       messageGuid: parsed.messageGuid,
       sessionKey: parsed.sessionKey,
@@ -96,6 +106,25 @@ export function beginBlueBubblesActiveTurn(agentName: string, event: BlueBubbles
 }
 
 export function noteBlueBubblesActiveTurnVisibleActivity(agentName: string, turnId: string): void {
+  updateActiveTurn(agentName, turnId, (entry) => ({ ...entry, lastVisibleActivityAt: new Date().toISOString() }))
+}
+
+/** Marks (or, with null, clears) a turn whose reply is stuck waiting for permission to send. */
+export function noteBlueBubblesActiveTurnAdmissionWait(
+  agentName: string,
+  turnId: string,
+  waitingSince: string | null,
+): void {
+  updateActiveTurn(agentName, turnId, ({ admissionWaitingSince: _cleared, ...entry }) => (
+    waitingSince ? { ...entry, admissionWaitingSince: waitingSince } : entry
+  ))
+}
+
+function updateActiveTurn(
+  agentName: string,
+  turnId: string,
+  update: (entry: BlueBubblesActiveTurnEntry) => BlueBubblesActiveTurnEntry,
+): void {
   const filePath = activeTurnPath(agentName, turnId)
   let entry: BlueBubblesActiveTurnEntry | null = null
   try {
@@ -107,7 +136,7 @@ export function noteBlueBubblesActiveTurnVisibleActivity(agentName: string, turn
   try {
     fs.writeFileSync(
       filePath,
-      JSON.stringify({ ...entry, lastVisibleActivityAt: new Date().toISOString() }, null, 2) + "\n",
+      JSON.stringify(update(entry), null, 2) + "\n",
       "utf-8",
     )
   } catch (error) {
@@ -187,9 +216,20 @@ export function snapshotBlueBubblesActiveTurns(
     .filter((entry): entry is { value: string; ms: number } => Number.isFinite(entry.ms))
     .sort((left, right) => left.ms - right.ms)
   const oldest = started[0]
+  const admissionWaitAges = entries
+    .map((entry) => nowMs - Date.parse(entry.admissionWaitingSince ?? ""))
+    .filter((ageMs) => Number.isFinite(ageMs) && ageMs >= BLUEBUBBLES_DELIVERY_ADMISSION_STALLED_MS)
+  const stalledTurns = entries.filter((entry) => {
+    const startedMs = Date.parse(entry.startedAt)
+    const waitingMs = Date.parse(entry.admissionWaitingSince ?? "")
+    return (Number.isFinite(startedMs) && nowMs - startedMs >= stalledAfterMs)
+      || (Number.isFinite(waitingMs) && nowMs - waitingMs >= BLUEBUBBLES_DELIVERY_ADMISSION_STALLED_MS)
+  })
   return {
     activeTurnCount: entries.length,
-    stalledTurnCount: started.filter((entry) => nowMs - entry.ms >= stalledAfterMs).length,
+    stalledTurnCount: stalledTurns.length,
+    admissionStalledTurnCount: admissionWaitAges.length,
+    ...(admissionWaitAges.length > 0 ? { oldestAdmissionWaitAgeMs: Math.max(...admissionWaitAges) } : {}),
     oldestActiveTurnStartedAt: oldest?.value,
     oldestActiveTurnAgeMs: oldest ? Math.max(0, nowMs - oldest.ms) : undefined,
   }
