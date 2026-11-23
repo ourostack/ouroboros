@@ -298,6 +298,9 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
       if (sent?.forwardedTo) return { status: "forwarded", detail: teamsForwardedDetail(sent.forwardedTo) }
       if (sent?.delivered) return { status: "delivered", detail: "sent to Teams now" }
       if (sent && teamsSendMayHaveGoneOut(sent)) return { status: "unconfirmed", detail: unconfirmedDetail("Teams") }
+      if (sent?.reason && CONTENT_REFUSALS.has(sent.reason)) {
+        return { status: "failed", detail: withCode(`blocked: Teams refused this text as internal (${sent.reason}); rewrite it as plain words for them`, "delivery-blocked") }
+      }
       return queueToSession(target, detail)
     }
     const deliverOrQueue = (target: { friendId: string; channel: string; key: string }, detail: string): Promise<SurfaceRouteResult> =>

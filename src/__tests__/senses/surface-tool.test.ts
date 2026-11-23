@@ -1010,6 +1010,16 @@ describe("surface tool", () => {
       expect(fs.writeFileSync).not.toHaveBeenCalled()
     })
 
+    it("surfaceToolDefinition with channel=teams fails text Teams refused as internal instead of queueing it", async () => {
+      const fs = await import("fs")
+      mockSendTeamsOffTurn.mockResolvedValue({ delivered: false, reason: "internal_content_blocked" })
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({ content: "the build is done", friendId: "ari", channel: "teams" }, { delegatedOrigins: [] } as any)
+
+      expect(result).toBe("failed — blocked: Teams refused this text as internal (internal_content_blocked); rewrite it as plain words for them (code: delivery-blocked)")
+      expect(fs.writeFileSync).not.toHaveBeenCalled()
+    })
+
     it("surfaceToolDefinition with channel=teams forwards to the machine that runs Teams without queueing here", async () => {
       const fs = await import("fs")
       mockSendTeamsOffTurn.mockResolvedValue({ delivered: false, forwardedTo: "aris-mac-mini" })
