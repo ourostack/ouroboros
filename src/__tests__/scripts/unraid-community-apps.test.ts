@@ -38,6 +38,34 @@ describe("Ouro Butler Community Apps release", () => {
     expect(build).toContain("BEFORE: ${{ github.event.before || github.sha }}")
   })
 
+  it("builds the image only after npm published this commit's version, carrying the changelog npm shipped", () => {
+    const workflow = fs.readFileSync(".github/workflows/container-publish.yml", "utf8")
+    const jobs = workflow.slice(workflow.indexOf("\njobs:\n"))
+    const job = (name: string) => {
+      const start = jobs.indexOf(`\n  ${name}:\n`)
+      expect(start).toBeGreaterThan(0)
+      const next = jobs.slice(start + 1).search(/\n {2}[a-z-]+:\n/)
+      return next < 0 ? jobs.slice(start) : jobs.slice(start, start + 1 + next)
+    }
+    const wait = job("npm-changelog")
+    expect(wait).toContain("needs: plan")
+    expect(wait).toContain("if: needs.plan.outputs.release == 'true'")
+    expect(wait).toContain('node scripts/release-version.cjs published-changelog "${{ needs.plan.outputs.version }}"')
+    expect(wait).toContain("name: npm-changelog")
+    // The wait covers the npm job's own run (coverage gate, publish, verify-npm's 70 minutes).
+    const minutes = Number(/timeout-minutes: (\d+)/.exec(wait)?.[1])
+    expect(minutes).toBeGreaterThanOrEqual(95)
+    expect(wait).toContain("RELEASE_WAIT_SECONDS: 5400")
+
+    const build = job("build")
+    expect(build).toMatch(/needs:\n {6}- plan\n {6}- npm-changelog\n/)
+    expect(build).toContain("name: npm-changelog")
+    const assets = build.slice(build.indexOf("- name: Build release assets"))
+    expect(assets).toContain('apply "$BEFORE" --changelog "$RUNNER_TEMP/npm-changelog/changelog.json"')
+    expect(assets.indexOf("download-artifact")).toBe(-1)
+    expect(build.indexOf("download-artifact")).toBeLessThan(build.indexOf("- name: Build release assets"))
+  })
+
   it("publishes the required repository profile from canonical project metadata", () => {
     const profile = fs.readFileSync("ca_profile.xml", "utf8")
     const profileBody = profile.match(/<Profile>([\s\S]*?)<\/Profile>/u)?.[1].trim()
