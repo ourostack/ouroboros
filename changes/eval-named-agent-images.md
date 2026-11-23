@@ -1,0 +1,1 @@
+An eval guest can now run in its own agent image. The guest names the image, and the run's images map that name to a tag, which the interviews command takes as `--images <agent>,<household>,<name>=<tag>`. The household always runs from its own image. A guest whose name the run doesn't map is refused before anything starts.
