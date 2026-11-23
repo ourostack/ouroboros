@@ -1135,17 +1135,18 @@ describe("Teams messages whose turn never finished", () => {
     expect(outcomeFiles()).toEqual([expect.objectContaining({ outcome: "answered" })])
   })
 
-  it("answers a replayed message that only starts with a slash", async () => {
-    const body = sdkActivity("/Users/ari/report.pdf what is in this?")
-    const id = await leaveUnfinishedTurn(body)
-    state.run.mockImplementationOnce(async (messages, callbacks: ChannelCallbacks) => {
+  it("answers a replayed message that only starts with a slash, or names a command Teams does not handle", async () => {
+    const path = await leaveUnfinishedTurn(sdkActivity("/Users/ari/report.pdf what is in this?"))
+    const cliOnly = await leaveUnfinishedTurn(sdkActivity("/help me with the report"))
+    state.run.mockImplementation(async (messages, callbacks: ChannelCallbacks) => {
       messages.push({ role: "assistant", content: "A report." })
       callbacks.onTextChunk("A report.")
       return { outcome: "settled" }
     })
     await restart()
-    await vi.waitFor(() => expect(readInboundOutcome(state.root, "teams", id)).toMatchObject({ outcome: "answered" }))
-    expect(state.run).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(readInboundOutcome(state.root, "teams", cliOnly)).toMatchObject({ outcome: "answered" }))
+    expect(readInboundOutcome(state.root, "teams", path)).toMatchObject({ outcome: "answered" })
+    expect(state.run).toHaveBeenCalledTimes(2)
   })
 
   it("records a turn whose only reply Teams never confirmed as failed", async () => {

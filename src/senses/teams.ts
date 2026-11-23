@@ -975,10 +975,10 @@ function createTeamsCommandRegistry() {
   return registry
 }
 
-/** Whether a message is a command Teams handles itself, such as /new, rather than text that starts with "/". */
+/** Whether a message is a command Teams handles itself, such as /new, rather than text that starts with "/" or a CLI-only command. */
 function isTeamsCommand(text: string): boolean {
   const parsed = parseSlashCommand(text)
-  return parsed !== null && createTeamsCommandRegistry().get(parsed.command) !== undefined
+  return parsed !== null && createTeamsCommandRegistry().get(parsed.command)?.channels.includes("teams") === true
 }
 
 /* v8 ignore start -- superseding follow-up slash command handler; tested via startTeamsApp integration tests @preserve */
