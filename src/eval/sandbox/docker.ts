@@ -44,7 +44,7 @@ export const POCKETBOOK_ADDRESS = "pocketbook@example.invalid"
 const ALIASES = ["calibre-web", "smtp", ...LIBGEN_MIRRORS]
 const BUNDLE = "/home/ouro/AgentBundles/sanctuary.ouro"
 /** What the turn and the books CLI write; everything else in the bundle is read-only. */
-export const WRITABLE = ["books/work", "books/removed", "books/ledger.ndjson", "state", "friends", "arc"]
+export const WRITABLE = ["books/work", "books/removed", "books/ledger.ndjson", "state", "friends", "arc", "desk/_record"]
 const HARDENING = [
   "--log-driver", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "512",
   "--memory", "2g", "--memory-swap", "2g", "--cpus", "2", "--ulimit", `fsize=${SNAPSHOT_LIMITS.bytes}`,

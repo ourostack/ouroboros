@@ -78,8 +78,8 @@ describe("runTelegramTurn", () => {
     expect(result.timeline.at(-1)).toEqual({ kind: "reply", text: "done" })
     const offered = seen[0]!.activeTools.map((tool) => tool.function.name)
     expect(offered).toContain("shell")
-    // The owner profile decides the list: load_skill is not in it, and the skills file is not in the prompt.
-    expect(offered).not.toContain("load_skill")
+    // The owner profile decides the list: load_skill is in it, and the prompt names skills without carrying their text.
+    expect(offered).toContain("load_skill")
     expect(JSON.stringify(seen[0]!.messages)).not.toContain("Use the books command")
     // What the turn wrote in the bundle, as the doc comment lists it, and nothing beside it.
     const after = snapshot(agentRoot)

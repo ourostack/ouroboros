@@ -7,7 +7,8 @@ import { learnContextWindow } from "./model-limits";
 import { sourceGroundingFinding, withUnverifiedDisclosure, type TurnToolRecord } from "./source-grounding";
 import { shelfClaimError, withShelfDisclosure } from "./shelf-claims";
 import { briefStyleRequested, briefStyleViolation, savedCommunicationPreference } from "./reply-style";
-import { FIND_TOOLS_NAME, buildToolCatalog, formatLoadedDoors, namesLoadedInHistory, partitionCatalog, recordFindTools, searchCatalog } from "../repertoire/tool-catalog";
+import { FIND_TOOLS_NAME, buildToolCatalog, formatFindToolsReply, formatLoadedDoors, namesLoadedInHistory, partitionCatalog, recordFindTools, searchCatalog } from "../repertoire/tool-catalog";
+import { findToolsSkillNote } from "../repertoire/skill-search";
 import { declaredTools } from "../repertoire/skill-summaries";
 import { APPROVAL_UNAVAILABLE_REJECTION, classifyApprovalForInvocation, executeTool, preflightToolCall, summarizeArgs, buildToolResultSummary, restTool, selectToolsForChannel, reduceToolSelection, ToolSelectionError, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
 import type { HabitSessionToolContext, ToolContext, ToolResultImage, ToolRiskProfile, ToolSelection } from "../repertoire/tools-base";
@@ -3115,12 +3116,15 @@ export async function runAgent(
             const matched = deferralPool.filter((tool) => matchedNames.includes(tool.function.name))
               .sort((a, b) => matchedNames.indexOf(a.function.name) - matchedNames.indexOf(b.function.name))
             for (const name of matchedNames) if (!loadedDeferredTools.includes(name)) loadedDeferredTools.push(name)
-            const found = formatLoadedDoors(matched)
+            // A job a bundle does with a command its skill documents has no door to find; the skill's section answers.
+            const skills = findToolsSkillNote(query, activeToolNames)
+            const found = formatFindToolsReply(matched, skills.note)
             pushGenerated({ role: "tool", tool_call_id: tc.id, content: found })
             providerRuntime.appendToolOutput(tc.id, found)
-            if (matched.length > 0) lastIterationMadeProgress = true
+            if (matched.length > 0 || skills.hits > 0) lastIterationMadeProgress = true
+            // onToolEnd's success means a door was loaded; a skill-only reply loaded none, but is still progress.
             callbacks.onToolEnd(FIND_TOOLS_NAME, query, matched.length > 0)
-            recordFindTools({ query, matched: matched.length, deferred: deferralPool.length })
+            recordFindTools({ query, matched: matched.length, deferred: deferralPool.length, skills: skills.hits })
             continue
           }
           if (tc.name === "speak") {
