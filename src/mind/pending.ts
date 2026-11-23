@@ -317,11 +317,16 @@ export function claimPending(pendingDir: string): PendingClaim {
       }
       let stored: PendingMessage & { failedTries?: number }
       try {
-        stored = JSON.parse(fs.readFileSync(claimedPath, "utf-8")) as typeof stored
+        const parsed: unknown = JSON.parse(fs.readFileSync(claimedPath, "utf-8"))
+        // Valid JSON that is not a message (null, a number, a list) is as unreadable as a torn file.
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not a pending message")
+        stored = parsed as typeof stored
       } catch (error) {
         // A fresh file may still be being written: leave it for a later turn. One that stays unreadable, or that a
         // crash left mid-read, is kept as .json.failed for a person to look at, never deleted.
-        const recent = !leftByCrash && Date.now() - fs.statSync(claimedPath).mtimeMs < UNREADABLE_GRACE_MS
+        // A file that is gone (a link to nothing, say) has no age; it is set aside like an old one.
+        const stat = fs.statSync(claimedPath, { throwIfNoEntry: false })
+        const recent = !leftByCrash && stat !== undefined && Date.now() - stat.mtimeMs < UNREADABLE_GRACE_MS
         if (recent) {
           try { fs.renameSync(claimedPath, path.join(pendingDir, name)) } catch { /* left claimed; the next claim reads it as a leftover */ }
         } else if (setAside()) {

@@ -146,6 +146,32 @@ describe("claimPending", () => {
     expect(fs.readdirSync(dir)).toEqual([])
   })
 
+  it("sets aside a crash-left file that holds JSON but no message, and still claims the rest", () => {
+    const dir = pendingDir()
+    fs.writeFileSync(path.join(dir, "1-null.json.claimed"), "null")
+    fs.writeFileSync(path.join(dir, "2-list.json.claimed"), "[]")
+    fs.writeFileSync(path.join(dir, "3-number.json.claimed"), "7")
+    queuePendingMessage(dir, message("still read", 4))
+
+    const claim = claimPending(dir)
+
+    expect(claim.messages.map((each) => each.content)).toEqual(["still read"])
+    expect(suffixes(dir).filter((suffix) => suffix === ".json.failed")).toHaveLength(3)
+    claim.settle()
+  })
+
+  it("does not fail the claim on a file that is gone when it is looked at, and sets it aside", () => {
+    const dir = pendingDir()
+    fs.symlinkSync(path.join(dir, "nowhere"), path.join(dir, "1-dangling.json"))
+    queuePendingMessage(dir, message("still read", 2))
+
+    const claim = claimPending(dir)
+
+    expect(claim.messages.map((each) => each.content)).toEqual(["still read"])
+    expect(fs.readdirSync(dir)).toContain("1-dangling.json.failed")
+    claim.settle()
+  })
+
   it("leaves a file it cannot read yet for a writer that may still be writing it, and sets an old one aside", () => {
     const dir = pendingDir()
     const events = vi.spyOn(nervesRuntime, "emitNervesEvent")

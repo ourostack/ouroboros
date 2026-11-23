@@ -601,11 +601,27 @@ export function deferPostTurnPersist(
   lease?: SessionTurnLease,
   expectedRevision?: string,
 ): Promise<SessionEvent[]> {
-  return enqueueSessionPersist(sessPath, () => new Promise<SessionEvent[]>((resolve) => {
+  return deferPersist(sessPath, () => postTurnPersist(sessPath, prepared, usage, state, lease, expectedRevision), "resolve")
+}
+
+/**
+ * Deferred persist that rejects when the persist fails, for a caller that must know the turn was saved before it
+ * lets go of what the turn read (the private runtime's claimed pending notices).
+ */
+export function deferPostTurnPersistOrThrow(
+  sessPath: string,
+  prepared: PostTurnPrepared,
+  usage?: UsageData,
+  state?: SessionContinuityState,
+): Promise<SessionEvent[]> {
+  return deferPersist(sessPath, () => postTurnPersist(sessPath, prepared, usage, state), "reject")
+}
+
+function deferPersist(sessPath: string, persist: () => SessionEvent[], onError: "resolve" | "reject"): Promise<SessionEvent[]> {
+  return enqueueSessionPersist(sessPath, () => new Promise<SessionEvent[]>((resolve, reject) => {
     setImmediate(() => {
       try {
-        const events = postTurnPersist(sessPath, prepared, usage, state, lease, expectedRevision)
-        resolve(events)
+        resolve(persist())
       } catch (err) {
         emitNervesEvent({
           level: "warn",
@@ -614,7 +630,8 @@ export function deferPostTurnPersist(
           message: "deferred session persist failed",
           meta: { error: err instanceof Error ? err.message : String(err) },
         })
-        resolve([])
+        if (onError === "reject") reject(err)
+        else resolve([])
       }
     })
   }))
