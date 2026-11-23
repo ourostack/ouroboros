@@ -172,6 +172,14 @@ describe("the interview guest", () => {
     expect(order).toEqual(["call", "call", "grade"])
   })
 
+  it("answers a grader's failure as the grade, keeping the conversation", async () => {
+    const turnFile = path.join(root, "turn.json")
+    fs.writeFileSync(turnFile, JSON.stringify({ product: "U", arm: "a", labelLine: "l", prefix: [], userText: "job", followUps: [] }))
+    const built: Arm = { key: "u", tools: [], operationOf: () => null, call: async () => ({ text: "x", isError: false }), grade: async () => { throw new Error("the checker crashed") } }
+    const { stdin, stdout } = wire(scripted([{ content: "done" }]))
+    expect(await runInterviewGuest({ stdin, stdout, turnFile, bundle: root, builders: { U: () => built } })).toMatchObject({ ok: true, result: { finalReply: "done", grade: { error: "the checker crashed" } } })
+  })
+
   it("answers with no grade from an arm that has none, and refuses a product with no arms in the guest", async () => {
     const turnFile = path.join(root, "turn.json")
     fs.writeFileSync(turnFile, JSON.stringify({ product: "X", arm: "mcp-plain", labelLine: "l", prefix: [], userText: "job", followUps: [] }))
@@ -182,6 +190,9 @@ describe("the interview guest", () => {
     fs.writeFileSync(turnFile, JSON.stringify({ product: "H", arm: "codex", labelLine: "l", prefix: [], userText: "job", followUps: [] }))
     const none = wire(scripted([]))
     expect(await runInterviewGuest({ stdin: none.stdin, stdout: none.stdout, turnFile, bundle: root })).toEqual({ ok: false, error: "no arms for product H in the guest" })
+    fs.writeFileSync(turnFile, JSON.stringify({ product: "toString", arm: "a", labelLine: "l", prefix: [], userText: "job", followUps: [] }))
+    const inherited = wire(scripted([]))
+    expect(await runInterviewGuest({ stdin: inherited.stdin, stdout: inherited.stdout, turnFile, bundle: root })).toEqual({ ok: false, error: "no arms for product toString in the guest" })
   })
 
   it.each([

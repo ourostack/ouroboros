@@ -420,6 +420,16 @@ describe("runSandboxed", () => {
     expect(await runSandboxed(input(telegram.docker))).not.toHaveProperty("grade")
   })
 
+  it("splits a job that ended on a turn-ending call, with no reply of its own, from its debrief", () => {
+    const call = (name: string) => ({ kind: "call" as const, name, args: "{}", result: "r" })
+    const observation = { timeline: [call("write_file"), call("finish"), call("read_file"), { kind: "reply" as const, text: "6\nok" }], finalReply: "Finished", outcome: "settled", steps: 4 }
+    const turns = [{ start: 0, finalReply: "Finished", outcome: "settled", calls: 2 }, { start: 2, finalReply: "6\nok", outcome: "settled", calls: 2 }]
+    expect(splitTurns(observation, turns)).toEqual({
+      observation: { ...observation, timeline: [call("write_file"), call("finish")] },
+      followUps: [{ finalReply: "6\nok", outcome: "settled", calls: 2, toolCalls: 1 }],
+    })
+  })
+
   it("splits no follow-ups out of a timeline the guest's turn starts no longer index", () => {
     const observation = { timeline: [{ kind: "reply" as const, text: "a" }], finalReply: "a", outcome: "trace-mismatch", steps: 1 }
     const turns = [{ start: 0, finalReply: "a", outcome: "settled", calls: 1 }, { start: 1, finalReply: "b", outcome: "settled", calls: 1 }]

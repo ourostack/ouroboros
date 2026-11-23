@@ -62,7 +62,11 @@ export type ProductKit = {
   canonical(arm: string, obs: Observation): Observation
   /** The product's own job by its Appendix B name, when it is not a case in `--cases`; the cases folder otherwise. */
   job?(id: string): Case | undefined
-  /** The product's own verdict on a run, in place of the case's assertions; a refused call still fails the job. */
+  /**
+   * The product's own verdict on a run, in place of the case's assertions, from what the guest reported (a grade the
+   * guest made in the container, `run.grade`, which the host does not check again). A refused call, or a conversation
+   * that did not settle, still fails the job; a verdict that throws fails it too.
+   */
   grade?(run: SandboxRun, c: Case): Verdict
   /** The product's fidelity notes, per `<product>:<arm>` key, added to the report's `fidelity`. */
   fidelity?: Readonly<Record<string, string[]>>
@@ -181,10 +185,12 @@ const providerFailure = (outcome: string): boolean => /^(provider-error|sandbox-
 function armRecord(input: { arm: LabelledArm; c: Case; obs: SandboxRun; kit: ProductKit; job: Gate; debrief: Gate }): ArmRecord {
   const { gaps: _gaps, followUps, grade: _grade, ...raw } = input.obs
   const observation = input.kit.canonical(input.arm.arm, raw)
-  const own = input.kit.grade?.(input.obs, input.c)
+  const own = input.kit.grade ? ownGrade(input.kit.grade, input.obs, input.c) : undefined
   const graded = own ?? evaluate(input.c, observation)
   const refused = input.job.refused()
-  const verdict = refused ? { passed: false, reason: `refused: ${refused}` } : own ? { passed: own.passed, reason: own.reason } : gradeRun(observation, graded)
+  // A kit's verdict decides only a job whose conversation settled, as gradeRun does for a case.
+  const verdict = refused ? { passed: false, reason: `refused: ${refused}` } : !own ? gradeRun(observation, graded)
+    : observation.outcome !== "settled" ? { passed: false, reason: `outcome ${observation.outcome}` } : { passed: own.passed, reason: own.reason }
   const debrief = followUps?.[0]
   const note = debrief && debrief.outcome === "settled" ? debrief.finalReply : ""
   return {
@@ -192,6 +198,27 @@ function armRecord(input: { arm: LabelledArm; c: Case; obs: SandboxRun; kit: Pro
     debriefOutcome: debrief?.outcome ?? null, debriefToolCalls: debrief?.toolCalls ?? 0,
     jobCalls: input.job.calls(), debriefCalls: input.debrief.calls(), observation,
   }
+}
+
+/** A kit's verdict, or a failed one when it throws: the guest's grade is untrusted input. */
+function ownGrade(grade: NonNullable<ProductKit["grade"]>, run: SandboxRun, c: Case): Verdict {
+  try {
+    return grade(run, c)
+  } catch (error) {
+    return { passed: false, reason: `grade: ${messageOf(error)}`, checks: [] }
+  }
+}
+
+/** The report's fidelity notes: X's, and those of each product kit with a session in this run. A kit may not restate one. */
+export function fidelityOf(kits: Partial<Record<Product, ProductKit>>, sessions: Session[]): Record<string, string[]> {
+  const out: Record<string, string[]> = { ...FIDELITY }
+  for (const product of new Set(sessions.map((session) => session.product))) {
+    for (const [key, notes] of Object.entries(kits[product]?.fidelity ?? {})) {
+      if (Object.hasOwn(out, key)) throw new Error(`product ${product}'s kit restates the fidelity notes for ${key}`)
+      out[key] = notes
+    }
+  }
+  return out
 }
 
 /** A session's job: the product's own, or the case of that name in `--cases`. */
@@ -307,6 +334,7 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
   if (rerun) throw new Error(`session ${rerun.id}${version === 1 ? "" : ` of version ${version}`} has already started once; a session is never rerun`)
   const missingKit = chosen.find((session) => !deps.kits[session.product])
   if (missingKit) throw new Error(`session ${missingKit.id} is product ${missingKit.product}, which has no runner kit yet`)
+  const fidelity = fidelityOf(deps.kits, chosen)
   const cases = new Map(deps.loadCases(args.cases).map((c) => [c.id, c]))
   const missingCase = chosen.find((session) => !caseOf(deps.kits[session.product]!, cases, session))
   if (missingCase) throw new Error(`session ${missingCase.id} needs case ${missingCase.job}, which is not in ${args.cases}`)
@@ -339,7 +367,7 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
     deps.writeReport(args.output, {
       schemaVersion: 1, kind: "blind-interviews", preregistrationVersion: version, target: args.target, harnessRef: args.harnessRef, reduced: args.reduced, account: target.account,
       premiumMultiplier: target.unitCost, multiplierSource: target.multiplierSource, caps: totals.caps, spent: totals.spent, calls: totals.calls, stopped, quota: { before, after: after ?? before },
-      fidelity: Object.assign({}, FIDELITY, ...Object.values(deps.kits).map((kit) => kit?.fidelity ?? {})) as Record<string, string[]>, pricing, sessions: records,
+      fidelity, pricing, sessions: records,
     })
   }
   let after: Awaited<ReturnType<ResolvedTarget["quota"]>> | null = null

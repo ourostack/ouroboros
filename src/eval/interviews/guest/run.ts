@@ -61,7 +61,8 @@ export async function runInterviewGuest(input: { stdin: Readable; stdout: Writab
   let outcome: GuestOutcome
   try {
     const turn = readTurnFile(input.turnFile)
-    const builder = (input.builders ?? ARM_BUILDERS)[turn.product]
+    const builders = input.builders ?? ARM_BUILDERS
+    const builder = Object.hasOwn(builders, turn.product) ? builders[turn.product] : undefined
     if (!builder) throw new Error(`no arms for product ${turn.product} in the guest`)
     const arm = builder(turn.arm, { bundle: input.bundle, ...(input.core ? { core: input.core } : {}) })
     const runtime = await createProxyRuntime(channel)
@@ -69,7 +70,13 @@ export async function runInterviewGuest(input: { stdin: Readable; stdout: Writab
     const conversation = await runConversation({ runtime, product: turn.product, system, prefix: turn.prefix, userTexts: [turn.userText, ...turn.followUps], arm })
     const job = conversation.turns[0]!
     // A product graded in the container grades once the whole conversation (the job and its debrief) has ended.
-    const grade = arm.grade ? await arm.grade() : undefined
+    // A grader that fails is the job's failure, reported as the grade, not the loss of the conversation.
+    let grade: unknown
+    try {
+      grade = arm.grade ? await arm.grade() : undefined
+    } catch (error) {
+      grade = { error: messageOf(error) }
+    }
     outcome = { ok: true, result: { timeline: conversation.timeline, finalReply: job.finalReply, outcome: job.outcome, turns: conversation.turns, ...(grade !== undefined ? { grade } : {}) } }
     emitNervesEvent({ component: "eval", event: "eval.interview_guest_end", message: "interview guest finished its conversation", meta: { turns: conversation.turns.length } })
   } catch (error) {

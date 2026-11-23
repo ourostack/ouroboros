@@ -389,6 +389,38 @@ describe("a product kit's own job, grade and fidelity", () => {
     expect(records[0]!.arms[0]).toMatchObject({ passed: false, reason: expect.stringMatching(/^refused: /) })
   })
 
+  it("fails a kit-graded job whose conversation did not settle, and one whose verdict throws", async () => {
+    const outcomes: Record<string, string> = { ouro: "trace-mismatch", "cli-shell": "settled", "mcp-plain": "settled" }
+    const runCase: RunCase = async (input) => {
+      const arm = (input.guest!.turn as { arm: string }).arm
+      return { ...(await sandbox(() => ({}))(input)), outcome: outcomes[arm]!, grade: arm === "mcp-plain" ? "bad" : true }
+    }
+    const kit = {
+      ...X_KIT,
+      grade: (run: SandboxRun) => {
+        if (run.grade === "bad") throw new Error("not a grade")
+        return { passed: true, reason: null, checks: [] }
+      },
+    }
+    const { records } = await runInterviews(args(), deps(runCase, target(chooseOuro), { kits: { X: kit } }).d)
+    expect(records[0]!.arms.map((arm) => [arm.arm, arm.passed, arm.reason])).toEqual([
+      ["ouro", false, "outcome trace-mismatch"],
+    ])
+    expect(records[0]!.status).toBe("crashed")
+    const settled = await runInterviews(args({ output: "/r/2.json" }), deps(async (input) => ({ ...(await sandbox(() => ({}))(input)), grade: (input.guest!.turn as { arm: string }).arm === "mcp-plain" ? "bad" : true }), target(chooseOuro), { kits: { X: kit } }).d)
+    expect(settled.records[0]!.arms.map((arm) => [arm.arm, arm.passed, arm.reason])).toEqual([["ouro", true, null], ["cli-shell", true, null], ["mcp-plain", false, "grade: not a grade"]])
+  })
+
+  it("reports only the fidelity of products in the run, and refuses a kit that restates a note before any session", async () => {
+    const h = { ...X_KIT, fidelity: { "H:codex": ["h note"] } }
+    const { d, reports } = deps(sandbox(() => ({})), target(chooseOuro), { kits: { X: X_KIT, H: h } })
+    await runInterviews(args(), d)
+    expect(reports[0]).not.toHaveProperty("fidelity.H:codex")
+    const restating = deps(sandbox(() => ({})), target(chooseOuro), { kits: { X: { ...X_KIT, fidelity: { "X:all": ["again"] } } } })
+    await expect(runInterviews(args(), restating.d)).rejects.toThrow("product X's kit restates the fidelity notes for X:all")
+    expect(restating.reports).toHaveLength(0)
+  })
+
   it("leaves X as it was: no hooks, its case from the folder, graded by the case's assertions, and only its own fidelity", async () => {
     expect(X_KIT.job).toBeUndefined()
     expect(X_KIT.grade).toBeUndefined()
