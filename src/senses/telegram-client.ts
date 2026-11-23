@@ -1,5 +1,6 @@
 import { escapeTelegramHtml, splitTelegramText, type TelegramChunkOptions } from "./telegram-markdown"
 import { emitNervesEvent } from "../nerves/runtime"
+import { approvalRelayToken, relayTokensEqual } from "../a2a/approval-relay"
 import { readFileSync } from "node:fs"
 import { createHash, createHmac, timingSafeEqual } from "node:crypto"
 import { writeFileAtomicSync } from "../heart/atomic-file"
@@ -1008,6 +1009,14 @@ export interface TelegramApprovalDecision {
   transportMessageId: string
   decisionAt: number
   acceptanceBinding?: TelegramPersistedPendingApproval["acceptanceBinding"]
+  /** Present when Ari answered through his primary agent's relay instead of tapping: deny only. */
+  relay?: TelegramRelayOrigin
+}
+
+/** Who relayed an answer, and in which signed envelope. */
+export interface TelegramRelayOrigin {
+  senderDid: string
+  envelopeBindingId: string
 }
 
 export interface TelegramPersistedPendingApproval {
@@ -1054,6 +1063,7 @@ export interface TelegramPersistedPendingApproval {
     attemptedAt: number
     evidenceMac: string
     recoveryMac?: string | null
+    relay?: TelegramRelayOrigin
   }
   settlementReceipt?: {
     schemaVersion: "telegram-approval-settlement-receipt-v1"
@@ -1061,7 +1071,7 @@ export interface TelegramPersistedPendingApproval {
     callbackAt: number
     accepted: boolean
     reason: "accepted" | "decision_refused"
-    acknowledgementState: "acknowledged" | "rejected_as_stale" | "indeterminate_after_restart"
+    acknowledgementState: "acknowledged" | "rejected_as_stale" | "indeterminate_after_restart" | "relayed"
     recoveredAt: number | null
     decisionAttemptDigest: string
     evidenceMac: string | null
@@ -1185,7 +1195,27 @@ export interface TelegramApprovalTransport {
   terminalizeRecovered(approvalId: string, terminalText: string): Promise<void>
   listPendingDeliveries(): TelegramPersistedPendingApproval[]
   validatePendingTerminalControl(approvalId: string): Promise<void>
+  /**
+   * Ari's deny relayed by his primary agent, after the caller has checked the envelope, the sender and the switch. It
+   * finds the card by its relay token, edits it silently before deciding (and refuses if that edit fails), then
+   * decides through the same signed attempt, settlement and recovery as a tap.
+   */
+  relayDeny(input: TelegramRelayDenyInput): Promise<TelegramRelayDenyResult>
 }
+
+export interface TelegramRelayDenyInput extends TelegramRelayOrigin {
+  relayToken: string
+  routeDid: string
+}
+
+export type TelegramRelayDenyResult =
+  | { status: "settled"; approvalId: string }
+  | { status: "not_pending" }
+  | { status: "expired" }
+  | { status: "refused"; reason: "card_edit_failed" }
+
+/** The line a relayed answer adds to its card, before the decision and in the final state. */
+export const TELEGRAM_APPROVAL_RELAYED_NOTE = "↪️ Answered through Slugger: Deny"
 
 export interface TelegramApprovalTransportOptions {
   api: TelegramBotApi
@@ -1220,6 +1250,24 @@ export const TELEGRAM_APPROVAL_TOMBSTONE_TTL_MS = 600_000
 function assertTelegramCallbackData(value: string): void {
   const bytes = Buffer.byteLength(value, "utf8")
   if (bytes < 1 || bytes > 64) throw new Error("Telegram callback_data must be 1 to 64 bytes")
+}
+
+function validRelayOrigin(value: unknown): value is TelegramRelayOrigin {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const origin = value as Record<string, unknown>
+  return Object.keys(origin).sort().join(",") === "envelopeBindingId,senderDid"
+    && typeof origin.senderDid === "string" && origin.senderDid.length > 0
+    && typeof origin.envelopeBindingId === "string" && origin.envelopeBindingId.length > 0
+}
+
+/** A relayed answer has no callback query; its attempt is keyed by the envelope it came in. */
+function relayQueryIdDigest(relay: TelegramRelayOrigin): string {
+  return createHash("sha256").update(`relay\0${relay.envelopeBindingId}`).digest("hex")
+}
+
+function withRelayedNote(text: string): string {
+  const note = `\n\n${TELEGRAM_APPROVAL_RELAYED_NOTE}`
+  return `${text.slice(0, 4_096 - note.length)}${note}`
 }
 
 export function createTelegramApprovalTransport(options: TelegramApprovalTransportOptions): TelegramApprovalTransport {
@@ -1323,6 +1371,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
     decision: attempt.decision,
     queryIdDigest: attempt.queryIdDigest,
     attemptedAt: attempt.attemptedAt,
+    ...(attempt.relay === undefined ? {} : { relay: attempt.relay }),
   })
 
   const decisionAttemptMac = (
@@ -1339,11 +1388,16 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
 
   const validateDecisionAttempt = async (
     pending: TelegramPendingApproval,
-    expected?: { decision: "approve" | "deny"; queryIdDigest: string },
+    expected?: { decision: "approve" | "deny"; queryIdDigest: string; relay?: TelegramRelayOrigin },
   ): Promise<NonNullable<TelegramPersistedPendingApproval["decisionAttempt"]>> => {
     const attempt = pending.decisionAttempt!
     const lowerBound = pending.acceptanceBinding?.boundAt ?? pending.expiresAt - TELEGRAM_APPROVAL_TTL_MS
-    const unsigned = { schemaVersion: attempt.schemaVersion, decision: attempt.decision, queryIdDigest: attempt.queryIdDigest, attemptedAt: attempt.attemptedAt }
+    const unsigned = {
+      schemaVersion: attempt.schemaVersion, decision: attempt.decision, queryIdDigest: attempt.queryIdDigest, attemptedAt: attempt.attemptedAt,
+      ...(attempt.relay === undefined ? {} : { relay: attempt.relay }),
+    }
+    const relayValid = attempt.relay === undefined || (validRelayOrigin(attempt.relay) && attempt.decision === "deny"
+      && attempt.queryIdDigest === relayQueryIdDigest(attempt.relay))
     const token = pending.decisionToken ?? await options.resolveDecisionToken?.(pending.approvalId)
     const expectedMac = token ? decisionAttemptMac(token, pending, unsigned) : null
     const suppliedMac = typeof attempt.evidenceMac === "string" ? Buffer.from(attempt.evidenceMac, "hex") : Buffer.alloc(0)
@@ -1360,7 +1414,9 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       || !/^[0-9a-f]{64}$/u.test(attempt.queryIdDigest)
       || !Number.isSafeInteger(attempt.attemptedAt) || attempt.attemptedAt < lowerBound || attempt.attemptedAt >= pending.expiresAt
       || (!tokenMacValid && !recoveryMacValid)
-      || (expected !== undefined && (attempt.decision !== expected.decision || attempt.queryIdDigest !== expected.queryIdDigest))) {
+      || !relayValid
+      || (expected !== undefined && (attempt.decision !== expected.decision || attempt.queryIdDigest !== expected.queryIdDigest
+        || (attempt.relay === undefined) !== (expected.relay === undefined))) ) {
       throw new Error("Telegram persisted decision attempt is invalid")
     }
     return attempt
@@ -1402,7 +1458,9 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       || !Number.isSafeInteger(receipt.callbackAt)
       || typeof receipt.accepted !== "boolean"
       || receipt.reason !== (receipt.accepted ? "accepted" : "decision_refused")
-      || (receipt.kind === "live" ? !["acknowledged", "rejected_as_stale"].includes(receipt.acknowledgementState) : receipt.acknowledgementState !== "indeterminate_after_restart")
+      || (receipt.kind === "live"
+        ? !(pending.decisionAttempt.relay ? ["relayed"] : ["acknowledged", "rejected_as_stale"]).includes(receipt.acknowledgementState)
+        : receipt.acknowledgementState !== "indeterminate_after_restart")
       || (receipt.kind === "live" ? receipt.recoveredAt !== null : !Number.isSafeInteger(receipt.recoveredAt))
       || receipt.callbackAt !== pending.decisionAttempt.attemptedAt
       || !/^[0-9a-f]{64}$/u.test(receipt.decisionAttemptDigest) || receipt.decisionAttemptDigest !== decisionAttemptDigest
@@ -1544,7 +1602,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
 
   const settleDecisionAttempt = async (
     pending: TelegramPendingApproval,
-    expected?: { decision: "approve" | "deny"; queryIdDigest: string; callbackQueryId: string; observedAt: number },
+    expected?: { decision: "approve" | "deny"; queryIdDigest: string; callbackQueryId: string; observedAt: number; relay?: TelegramRelayOrigin },
   ): Promise<{ accepted: boolean; terminalText: string; callbackAt: number }> => {
     if (pending.settlementReceipt) {
       const receipt = validateSettlementReceipt(pending)
@@ -1563,6 +1621,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         decision: observed.decision,
         queryIdDigest: observed.queryIdDigest,
         attemptedAt: observed.observedAt,
+        ...(observed.relay === undefined ? {} : { relay: { senderDid: observed.relay.senderDid, envelopeBindingId: observed.relay.envelopeBindingId } }),
       }
       if (unsigned.attemptedAt < (pending.acceptanceBinding?.boundAt ?? pending.expiresAt - TELEGRAM_APPROVAL_TTL_MS)
         || unsigned.attemptedAt >= pending.expiresAt) throw new Error("Telegram decision attempt was observed outside its deadline")
@@ -1579,7 +1638,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
     if (outcome) validateTerminalOutcome(pending)
     else {
       decisionToken ??= await resolveDecisionToken(pending)
-      outcome = await options.onDecision({
+      const decided = await options.onDecision({
         approvalId: pending.approvalId,
         decisionToken,
         decision: attempt.decision,
@@ -1589,13 +1648,17 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         transportChatId: options.expectedChatId,
         transportMessageId: pending.messageId!,
         ...(pending.acceptanceBinding ? { acceptanceBinding: pending.acceptanceBinding } : {}),
+        ...(attempt.relay ? { relay: { ...attempt.relay } } : {}),
       })
+      outcome = attempt.relay ? { ...decided, terminalText: withRelayedNote(decided.terminalText) } : decided
       persistMutation(pending, () => {
         pending.terminal = outcome
         pending.terminalMac = signState("telegram.approval_terminal_outcome_state", pending, terminalOutcomeFields(pending))
       })
     }
-    const acknowledgementState = expected ? await acknowledge(expected.callbackQueryId, false) : "indeterminate_after_restart"
+    const acknowledgementState = !expected ? "indeterminate_after_restart"
+      : attempt.relay ? "relayed"
+        : await acknowledge(expected.callbackQueryId, false)
     await editTerminal(pending, outcome.terminalText)
     const reason = outcome.accepted ? "accepted" : "decision_refused"
     persistMutation(pending, () => {
@@ -1757,6 +1820,40 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       return handleUpdateUnlocked(update, observedAt)
     },
     reconcileExpired,
+    async relayDeny(input) {
+      const receivedAt = now()
+      let match: TelegramPendingApproval | undefined
+      for (const candidate of uniquePending()) {
+        if (candidate.deliveryState !== "bound" || candidate.messageId === null) continue
+        const decisionToken = candidate.decisionToken ?? await options.resolveDecisionToken?.(candidate.approvalId)
+        if (!decisionToken) continue
+        const expected = approvalRelayToken({ decisionToken, approvalId: candidate.approvalId, routeDid: input.routeDid })
+        if (relayTokensEqual(expected, input.relayToken)) match = candidate
+      }
+      const result = match === undefined ? undefined : await withApprovalExclusive(match.approvalId, true, async (): Promise<TelegramRelayDenyResult> => {
+        const pending = uniquePending().find((record) => record.approvalId === match!.approvalId)
+        if (!pending || pending.deliveryState !== "bound" || classifyTelegramPersistedApprovalState(pending) !== "ordinary") return { status: "not_pending" }
+        const lowerBound = pending.acceptanceBinding?.boundAt ?? pending.expiresAt - TELEGRAM_APPROVAL_TTL_MS
+        if (receivedAt >= pending.expiresAt || receivedAt < lowerBound) return { status: "expired" }
+        try {
+          effectBarrier()
+          await options.effects.edit({
+            idempotencyKey: `approval:${pending.approvalId}:relayed`,
+            chatId: options.expectedChatId,
+            messageId: Number(pending.messageId),
+            text: withRelayedNote(pending.prompt ?? "Approval request"),
+          })
+        } catch {
+          emitNervesEvent({ level: "warn", component: "senses", event: "telegram.approval_relay_refused", message: "a relayed deny was refused because the card could not be edited first", meta: { reason: "card_edit_failed" } })
+          return { status: "refused", reason: "card_edit_failed" }
+        }
+        const relay = { senderDid: input.senderDid, envelopeBindingId: input.envelopeBindingId }
+        await settleDecisionAttempt(pending, { decision: "deny", queryIdDigest: relayQueryIdDigest(relay), callbackQueryId: "", observedAt: receivedAt, relay })
+        emitNervesEvent({ component: "senses", event: "telegram.approval_relay_settled", message: "a relayed deny was decided", meta: { senderDid: input.senderDid } })
+        return { status: "settled", approvalId: pending.approvalId }
+      })
+      return result ?? { status: "not_pending" }
+    },
     async recoverDecisionAttempt(approvalId) {
       const result = await withApprovalExclusive(approvalId, true, async () => {
         const pending = uniquePending().find((record) => record.approvalId === approvalId)
@@ -1837,6 +1934,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       else if (pending.deliveryState === "send_attempting" || pending.deliveryState === "delivery_indeterminate") invalidReason = "delivery_indeterminate"
       else if (pending.deliveryState !== "bound" || pending.messageId === null) invalidReason = "prompt_not_bound"
       else if (messageId !== pending.messageId) invalidReason = "foreign_message"
+      else if (pending.decisionAttempt?.relay !== undefined) invalidReason = "already_relayed"
       else if (persistedState === "expiry_observed") invalidReason = "expired"
       else {
         if (!pending.decisionAttempt && observedAt >= pending.expiresAt) {

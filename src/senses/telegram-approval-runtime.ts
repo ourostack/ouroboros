@@ -27,6 +27,7 @@ import {
   TELEGRAM_APPROVAL_EXPIRED_TEXT,
   type TelegramApprovalTransport,
   type TelegramApprovalTransportOptions,
+  type TelegramRelayDenyInput,
   type TelegramBotApi,
 } from "./telegram-client"
 
@@ -37,8 +38,15 @@ export interface TelegramApprovalRuntime {
   migrateIdentity(legacySubjects: readonly string[]): void
   recover(): Promise<void>
   isPendingTerminalControl?(input: Pick<TelegramEffectAuthorizationInput, "authorClass" | "effect" | "idempotencyKey">): Promise<boolean>
+  /**
+   * Ari's deny, relayed by his primary agent, once the caller has checked the signed envelope, the sender and the
+   * trust-folder switch. Answers what the relay tells Ari, word for word.
+   */
+  relayDeny(input: TelegramRelayDenyInput): Promise<TelegramRelayAnswer>
   close(): void
 }
+
+export type TelegramRelayAnswer = "denied" | "already_decided" | "expired" | "not_pending" | "refused:card_edit_failed"
 
 export function telegramApprovalCommitBarrierHooks(effectBarrier: () => void): NonNullable<Parameters<typeof commitApprovalProposal>[0]["hooks"]> {
   return {
@@ -534,7 +542,23 @@ export function createTelegramApprovalRuntime(options: {
       const existing = store.read(decision.approvalId)
       if (!existing) return { accepted: false, terminalText: "⚠️ Approval is no longer valid" }
       let record: ApprovalRecord
-      if (existing.state === "claimed") {
+      if (decision.relay) {
+        if (existing.state === "proposed") {
+          effectBarrier()
+          record = store.decideRelayed({
+            approvalId: existing.approvalId,
+            decisionToken: decision.decisionToken,
+            decision: "deny",
+            senderDid: decision.relay.senderDid,
+            envelopeBindingId: decision.relay.envelopeBindingId,
+            decisionAt: decision.decisionAt,
+          })
+        } else if (existing.state === "denied" || existing.state === "expired") {
+          record = existing
+        } else {
+          return { accepted: false, terminalText: "⚠️ Approval was already decided" }
+        }
+      } else if (existing.state === "claimed") {
         effectBarrier()
         record = recoverClaimedApproval({ approvalStore: store, approvalId: existing.approvalId, reason: "decision interrupted before action attempt; action was not executed" })
       } else if (existing.state === "attempted") {
@@ -791,5 +815,20 @@ export function createTelegramApprovalRuntime(options: {
     return false
   }
 
-  return { transport, coordinator, legacySubjects, migrateIdentity, recover, isPendingTerminalControl, close: () => store.close() }
+  const relayDeny: TelegramApprovalRuntime["relayDeny"] = async (input) => {
+    const result = await transport.relayDeny(input)
+    let answer: TelegramRelayAnswer
+    if (result.status === "refused") answer = `refused:${result.reason}`
+    else if (result.status !== "settled") answer = result.status
+    else {
+      const record = store.read(result.approvalId)
+      answer = record?.state === "denied" && record.relayDecision?.envelopeBindingId === input.envelopeBindingId ? "denied"
+        : record?.state === "expired" ? "expired"
+          : "already_decided"
+    }
+    emitNervesEvent({ component: "senses", event: "senses.telegram_approval_relay_answered", message: "answered a relayed approval decision", meta: { agentName: options.agentName, answer } })
+    return answer
+  }
+
+  return { transport, coordinator, legacySubjects, migrateIdentity, recover, isPendingTerminalControl, relayDeny, close: () => store.close() }
 }
