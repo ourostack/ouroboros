@@ -39,6 +39,18 @@ describe("runGuest", () => {
     return { stdin: hostToGuest, stdout: guestToHost, received }
   }
 
+  it("runs the turn on the bundle of the agent it is given", async () => {
+    fs.writeFileSync(turnFile, JSON.stringify({ prefix: [], userText: "now" }))
+    const { stdin, stdout } = wire()
+    const roots: string[] = []
+    const runTurn: typeof runTelegramTurn = async (turn) => {
+      roots.push(turn.agentRoot)
+      return { timeline: [], finalReply: "", outcome: "settled", steps: 0 }
+    }
+    expect((await runGuest({ stdin, stdout, turnFile, runTurn, agentRoot: "/home/ouro/AgentBundles/slugger.ouro" })).ok).toBe(true)
+    expect(roots).toEqual(["/home/ouro/AgentBundles/slugger.ouro"])
+  })
+
   it("runs the turn from the turn file with the host's provider, on the sanctuary bundle, and ends with its result", async () => {
     fs.writeFileSync(turnFile, JSON.stringify({ prefix: [{ role: "user", content: "earlier" }], userText: "now" }))
     const { stdin, stdout, received } = wire()

@@ -20,6 +20,8 @@ export type GuestInput = {
   turnFile: string
   /** `runTelegramTurn` in the container; a test passes its own. */
   runTurn: typeof runTelegramTurn
+  /** The agent's bundle: in the container, the one `--agent` names. Without it, the Butler's. */
+  agentRoot?: string
 }
 
 function readTurnFile(file: string): GuestTurnFile {
@@ -35,7 +37,7 @@ export async function runGuest(input: GuestInput): Promise<GuestOutcome> {
   try {
     const turn = readTurnFile(input.turnFile)
     const providerRuntime = await createProxyRuntime(channel)
-    const result = await input.runTurn({ agentRoot: getAgentRoot("sanctuary"), prefix: turn.prefix, userText: turn.userText, providerRuntime })
+    const result = await input.runTurn({ agentRoot: input.agentRoot ?? getAgentRoot("sanctuary"), prefix: turn.prefix, userText: turn.userText, providerRuntime })
     outcome = { ok: true, result }
     emitNervesEvent({ component: "eval", event: "eval.guest_end", message: "sandbox guest finished its turn", meta: { outcome: result.outcome } })
   } catch (error) {
