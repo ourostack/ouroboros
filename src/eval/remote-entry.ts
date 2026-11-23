@@ -7,6 +7,7 @@
 import { emitNervesEvent } from "../nerves/runtime"
 import { validateCase } from "./domain/case"
 import { dockerCli, HOUSEHOLD_IMAGE, runSandboxed } from "./sandbox/docker"
+import { localHostLock } from "./sandbox/host-lock"
 import { dockerOracle } from "./sandbox/oracle"
 import { serveRemoteJob } from "./sandbox/remote"
 
@@ -20,6 +21,7 @@ void serveRemoteJob({
       ...(job.workRoot ? { workRoot: job.workRoot } : {}),
       ...(job.guest ? { guest: job.guest } : {}),
       ...(job.images ? { images: job.images } : {}),
+      ...(job.hostLockToken ? { hostLock: localHostLock(job.hostLockToken) } : {}),
       ...(job.oracleBooks ? { oracle: dockerOracle({ docker, image: job.images?.household ?? HOUSEHOLD_IMAGE, booksLib: job.oracleBooks }) } : {}),
     })
   },

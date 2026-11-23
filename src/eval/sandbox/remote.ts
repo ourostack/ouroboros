@@ -14,8 +14,11 @@ import { createProxyRuntime, createStreamChannel, serveProxyRuntime, type GuestO
 import type { FollowUp, InterviewGuestEntry, SandboxImages } from "./docker"
 
 export type SandboxRun = Observation & { gaps: string[]; followUps?: FollowUp[] }
-/** Where the job's files are on the remote host, and which images there to run (the eval's own tags by default). */
-export type RemotePaths = { bundleDir: string; seedBundleDir: string; workRoot?: string; oracleBooks?: string; images?: SandboxImages }
+/**
+ * Where the job's files are on the remote host, which images there to run (the eval's own tags by default), and the
+ * token of the host lock this command holds there, if any.
+ */
+export type RemotePaths = { bundleDir: string; seedBundleDir: string; workRoot?: string; oracleBooks?: string; images?: SandboxImages; hostLockToken?: string }
 /** Another guest than the Telegram turn, as `runSandboxed` takes it. */
 export type GuestChoice = { entry: InterviewGuestEntry; turn: unknown }
 export type RemoteJob = RemotePaths & { case: Case; guest?: GuestChoice }
@@ -86,8 +89,13 @@ export function remoteRunCase(options: { start(): RemoteProcess; paths: RemotePa
 /* v8 ignore start -- process wiring: the channel and its lifecycle are tested above through in-memory pipes @preserve */
 /** `ssh -T <host> node <entry>`, with its stdin and stdout as the channel. */
 export function sshStart(host: string, entry: string): () => RemoteProcess {
+  return sshNode(host, [entry])
+}
+
+/** `ssh -T <host> node <args...>`, with its stdin and stdout as the channel. */
+export function sshNode(host: string, args: string[]): () => RemoteProcess {
   return () => {
-    const child = spawn("ssh", ["-T", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30", host, "node", entry], { stdio: ["pipe", "pipe", "pipe"] })
+    const child = spawn("ssh", ["-T", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30", host, "node", ...args], { stdio: ["pipe", "pipe", "pipe"] })
     let err = ""
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => { err = (err + chunk).slice(-4000) })
     const exited = new Promise<number>((resolve) => {

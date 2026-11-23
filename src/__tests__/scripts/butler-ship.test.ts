@@ -110,6 +110,7 @@ describe("butler-ship pure logic", () => {
 
 const V = "0.1.0-alpha.870"
 const SHA = "abc123"
+const TOKEN = "f".repeat(32)
 
 type Script = { gh?: (a: string[]) => Res; ssh?: (cmd: string, n: number) => Res; npm?: (a: string[]) => Res }
 
@@ -135,6 +136,8 @@ async function harness(script: Script = {}, opts: Record<string, unknown> = {}, 
       calls.push(`ssh ${cmd}`)
       sshN += 1
       if (script.ssh) { const r = script.ssh(cmd, sshN); if (r) return r }
+      if (cmd.includes("ouro-host-lock.mjs acquire")) return ok(`@@LOCK acquired ${TOKEN}\n`)
+      if (cmd.includes("ouro-host-lock.mjs release")) return ok("@@LOCK released\n")
       if (cmd.includes("@@CUTOVER")) return ok("@@CUTOVER:0\n")
       if (cmd.includes("name=^ouro-eval-")) return ok()
       if (cmd.includes("manifest inspect")) return ok()
@@ -151,6 +154,7 @@ async function harness(script: Script = {}, opts: Record<string, unknown> = {}, 
     },
     scp: async (l: string, h: string, r: string) => { scp.push(`${path.basename(l)}->${h}:${r}`); return ok() },
     writeTemp: (name: string, content: string) => `/tmp/${name}:${content}`.split(":")[0],
+    hostLockScript: () => "LOCK SCRIPT",
     sleep: async (ms: number) => { clock += ms },
     now: () => clock,
     log: (l: string) => out.push(l),
@@ -165,7 +169,7 @@ describe("butler-ship orchestrator", () => {
     const r = await h.run()
     expect(r.exitCode).toBe(0)
     expect(r.result).toMatchObject({ version: V, result: "kept", log: `/var/log/ouro-upgrade-${V}.log` })
-    expect(h.scp).toEqual(["sanctuary-butler-upgrade.mjs->sanctuary:/tmp/butler-upgrade.mjs", "sanctuary-replay-gate.mjs->sanctuary:/tmp/sanctuary-replay-gate.mjs"])
+    expect(h.scp).toEqual(["ouro-host-lock.mjs->sanctuary:/tmp/ouro-host-lock.mjs", "sanctuary-butler-upgrade.mjs->sanctuary:/tmp/butler-upgrade.mjs", "sanctuary-replay-gate.mjs->sanctuary:/tmp/sanctuary-replay-gate.mjs"])
     expect(h.calls.some((c) => c.includes(".bak-0.1.0-alpha.868"))).toBe(true)
     expect(h.calls.some((c) => c.includes("contents/deploy/unraid/sanctuary-butler-upgrade.mjs?ref=abc123"))).toBe(true)
     const start = h.calls.find((c) => c.includes("butler-upgrade.mjs upgrade"))!
@@ -191,6 +195,57 @@ describe("butler-ship orchestrator", () => {
     expect(r.exitCode).toBe(1)
     expect(r.result.result).toBe("rolled_back")
     expect(r.result.summary.failed).toEqual(["books-up"])
+  })
+
+  // The host lock keeps a ship and an eval run apart on the Butler's host (#1760): ship takes it before it changes
+  // anything, hands its token to the upgrade (which checks it again before any rollback), and frees it once nothing of
+  // its own can still be running.
+  it("takes the host lock before it changes anything, gives the upgrade its token, and frees it at the end", async () => {
+    const h = await harness()
+    await h.run()
+    const at = (match: string) => h.calls.findIndex((c) => c.includes(match))
+    const acquire = h.calls[at("ouro-host-lock.mjs acquire")]!
+    expect(acquire).toBe(`ssh /usr/local/bin/node /tmp/ouro-host-lock.mjs acquire --holder 'butler:ship ${V}' --ttl 14400 --wait 0`)
+    expect(at("ouro-host-lock.mjs acquire")).toBeLessThan(at("cp -p"))
+    expect(h.calls[at("butler-upgrade.mjs upgrade")]).toContain(`OURO_HOST_LOCK_TOKEN=${TOKEN} `)
+    expect(h.calls.at(-1)).toBe(`ssh /usr/local/bin/node /tmp/ouro-host-lock.mjs release --token ${TOKEN}`)
+    expect(at("ouro-host-lock.mjs release")).toBeGreaterThan(at(" verify"))
+    expect(h.calls.filter((c) => c.includes("ouro-host-lock.mjs release"))).toHaveLength(1)
+    expect(h.out.at(-1)).toContain('"result":"kept"')
+  })
+
+  it("waits while an eval run holds the host lock, then ships", async () => {
+    let tries = 0
+    const h = await harness({ ssh: (cmd) => {
+      if (!cmd.includes("ouro-host-lock.mjs acquire")) return undefined as unknown as Res
+      tries += 1
+      return tries < 3 ? { code: 3, stdout: "@@LOCK held eval c17 replay (pid 9 on sanctuary) until 2026-11-23T18:00:00.000Z\n", stderr: "" } : ok(`@@LOCK acquired ${TOKEN}\n`)
+    } }, {}, { poll: 10 })
+    expect((await h.run()).result.result).toBe("kept")
+    expect(tries).toBe(3)
+    expect(h.out.filter((l) => l.includes("waiting: the host lock is held by eval c17 replay (pid 9 on sanctuary) until 2026-11-23T18:00:00.000Z"))).toHaveLength(1)
+  })
+
+  it("changes nothing when the host lock stays held past its wait, or cannot be taken", async () => {
+    const held = await harness({ ssh: (cmd) => (cmd.includes("ouro-host-lock.mjs acquire") ? { code: 3, stdout: "@@LOCK held eval gpt (pid 9 on sanctuary) until T\n", stderr: "" } : (undefined as unknown as Res)) }, {}, { poll: 10, lock: 25 })
+    await expect(held.run()).rejects.toThrow(/the host lock is held by eval gpt \(pid 9 on sanctuary\) until T, so nothing was changed/)
+    expect(held.calls.some((c) => c.includes("cp -p") || c.includes("setsid") || c.includes("release"))).toBe(false)
+    expect(held.scp).toEqual(["ouro-host-lock.mjs->sanctuary:/tmp/ouro-host-lock.mjs"])
+    const broken = await harness({ ssh: (cmd) => (cmd.includes("ouro-host-lock.mjs acquire") ? nok("node: not found", 127) : (undefined as unknown as Res)) })
+    await expect(broken.run()).rejects.toThrow(/taking the host lock failed \(exit 127\): node: not found/)
+  })
+
+  it("frees the host lock when it stops before anything was started", async () => {
+    const red = await harness({ ssh: (cmd) => (cmd.includes(" preflight ") ? ok("PREFLIGHT RED\n") : (undefined as unknown as Res)) })
+    await expect(red.run()).rejects.toThrow(/preflight is not green/)
+    expect(red.calls.at(-1)).toBe(`ssh /usr/local/bin/node /tmp/ouro-host-lock.mjs release --token ${TOKEN}`)
+  })
+
+  it("keeps the host lock when the upgrade or the baseline may still be running, and says until when", async () => {
+    const slow = await harness({ ssh: (cmd) => (cmd.includes("cat /var/log") ? ok("== upgrade\n@@RUNNING:1\n") : (undefined as unknown as Res)) }, {}, { poll: 10, upgrade: 25 })
+    await expect(slow.run()).rejects.toThrow(/timed out following/)
+    expect(slow.calls.some((c) => c.includes("ouro-host-lock.mjs release"))).toBe(false)
+    expect(slow.out.some((l) => l.includes("the host lock stays held until it expires (4 hours after it was taken)"))).toBe(true)
   })
 
   it("streams new case lines across polls and waits while running", async () => {
@@ -263,7 +318,7 @@ describe("butler-ship orchestrator", () => {
     const r = await h.run()
     expect(r).toEqual({ dryRun: true, exitCode: 0 })
     expect(h.scp).toEqual([])
-    expect(h.calls.some((c) => c.includes("setsid") || c.includes("cp -p"))).toBe(false)
+    expect(h.calls.some((c) => c.includes("setsid") || c.includes("cp -p") || c.includes("ouro-host-lock"))).toBe(false)
   })
 
   it("falls back to package.json: the oldest commit of the newest run carrying the version", async () => {
