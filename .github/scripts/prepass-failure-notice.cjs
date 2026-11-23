@@ -1,6 +1,14 @@
 const { appendFileSync, existsSync, readFileSync } = require("node:fs")
 
-const BUMP_HINT = "run `npm run release:bump -- --version <next> --change \"<what changed>\"` (it bumps every version file and the changelog)"
+// Pull requests carry a change note, never a version: the release job on main sets the version and changelog.
+const NOTE_HINT = "add a new file changes/<branch-name>.md saying what changed for the people who use it, one paragraph per change"
+const DROP_BUMP_HINT = "run `npm run release:drop-bump`, then `git push --force-with-lease` (it moves an old-style bump's changelog lines into a change note, merges main and rebuilds the branch as one commit on main, so no commit on it changes the version)"
+
+function hintFor(detail) {
+  if (/release:drop-bump|version moved|changes package\.json's version|changelog\.json gains/i.test(detail)) return DROP_BUMP_HINT
+  if (/change note/i.test(detail)) return NOTE_HINT
+  return ""
+}
 
 // The lines that follow the last "FAIL" line of a step's output are its reasons; with no FAIL line, the last few lines are.
 function reasonsFrom(log) {
@@ -13,8 +21,8 @@ function reasonsFrom(log) {
 function buildNotice({ step, log }) {
   const reasons = reasonsFrom(log)
   const detail = reasons.length > 0 ? reasons.join("; ") : "no output was captured; open the step's log"
-  const needsBump = /changelog|version/i.test(detail)
-  const hint = needsBump ? ` Fix: ${BUMP_HINT}.` : ""
+  const fix = hintFor(detail)
+  const hint = fix ? ` Fix: ${fix}.` : ""
   const message = `${step} failed: ${detail}.${hint} The cancelled checks below were stopped because of this failure; they are not the cause.`
   return {
     annotation: `::error title=${step} failed, so the shards were cancelled::${message}`,

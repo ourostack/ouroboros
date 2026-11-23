@@ -530,6 +530,18 @@ describe("Sanctuary pre-activation container auditor", () => {
     }
   })
 
+  it("accepts the release template URL and main's older one, and nothing else", () => {
+    const expectedImage = "sha256:" + "a".repeat(64)
+    const policy = JSON.stringify({ scheduler: "supercronic", updates: "disabled" })
+    const mainUrl = "https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml"
+    const releaseUrl = "https://github.com/ourostack/ouroboros/releases/latest/download/sanctuary.xml"
+    const withUrl = (url: string) => stagedTemplate().replace(mainUrl, url)
+    expect(auditSanctuaryStagedFiles({ templateXml: withUrl(releaseUrl), runtimePolicyText: policy, expectedImage })).toEqual({ ok: true, violations: [] })
+    expect(auditSanctuaryStagedFiles({ templateXml: withUrl(mainUrl), runtimePolicyText: policy, expectedImage })).toEqual({ ok: true, violations: [] })
+    expect(auditSanctuaryStagedFiles({ templateXml: withUrl("https://example.com/sanctuary.xml"), runtimePolicyText: policy, expectedImage }).violations)
+      .toContain("template URL must equal the canonical release template")
+  })
+
   it("audits staged template equality and updater-off policy before creation", () => {
     const expectedImage = "sha256:" + "a".repeat(64)
     expect(auditSanctuaryStagedFiles({

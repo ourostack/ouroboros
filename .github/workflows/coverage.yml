@@ -14,6 +14,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# bash -eo pipefail, so a step that pipes a command into tee or grep fails when the command does (GitHub's default
+# shell has no pipefail: a failing release preflight piped into tee passed).
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # Fails in a minute or two on a release-metadata miss, a syntax error
   # anywhere in src (tests included) or deploy/*.mjs, a type error, or a broken
@@ -39,7 +45,7 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      # Missing version bumps, wrapper drift and changelog misses fail here,
+      # A missing change note, a leftover version bump or wrapper drift fails here,
       # before any coverage shard starts.
       - name: Release preflight (PRs only)
         id: preflight
@@ -562,14 +568,26 @@ jobs:
           test "${{ needs.package-e2e-image.result }}" = success
 
   # Publishes the moment a commit lands on main. It does not wait for this run's own
-  # test jobs: the pull request ran every one of them, and main requires them with
-  # "require branches to be up to date", so the commit on main is the tree they passed.
-  # The run's test jobs stay as the tripwire for anything that slips past that.
+  # test jobs: the pull request ran every one of them, and the run's test jobs stay as
+  # the tripwire for anything that slips past that.
+  # Pull requests never carry the version: this job works it out from main's history
+  # (scripts/release-version.cjs) and writes it, with the changelog from the change
+  # notes, into the release files before it builds. A push publishes once when any
+  # commit it brought releases something, with every note from all of them; a push
+  # that releases nothing (docs, tests, workflows) publishes nothing. Publishes run
+  # one at a time, in push order, and none is dropped while it waits, so npm's
+  # latest never moves back to an older version.
   publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    concurrency:
+      group: npm-publish-${{ github.repository }}
+      cancel-in-progress: false
+      queue: max
     outputs:
+      release: ${{ steps.release-version.outputs.release }}
+      version: ${{ steps.release-version.outputs.version }}
       cli_tag: ${{ steps.cli-publish-tag.outputs.tag }}
       wrapper_tag: ${{ steps.wrapper-publish-tag.outputs.tag }}
     permissions:
@@ -578,8 +596,22 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Work out this push's release version
+        id: release-version
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          PLAN=$(node scripts/release-version.cjs push "$BEFORE")
+          printf '%s\n' "$PLAN" | tee -a "$GITHUB_OUTPUT"
+          if printf '%s\n' "$PLAN" | grep -qx 'release=false'; then
+            echo "This push releases nothing, so it publishes nothing." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Setup Node
+        if: steps.release-version.outputs.release == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -587,6 +619,7 @@ jobs:
           package-manager-cache: false
 
       - name: Verify npm trusted-publishing toolchain (trusted publishing requires npm >=11.5.1 on Node >=22.14)
+        if: steps.release-version.outputs.release == 'true'
         run: |
           node <<'NODE'
           const { execFileSync } = require("child_process")
@@ -624,12 +657,26 @@ jobs:
           NODE
 
       - name: Install Dependencies
+        if: steps.release-version.outputs.release == 'true'
         run: npm ci
 
+      # Writes the version into package.json, the lockfiles, the wrapper and the Sanctuary
+      # deploy files, and the change notes into changelog.json, in this checkout only.
+      - name: Write the release version and changelog
+        if: steps.release-version.outputs.release == 'true'
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          test "$(node scripts/release-version.cjs apply "$BEFORE")" = "${{ steps.release-version.outputs.version }}"
+          node scripts/changelog-gate.cjs
+          node scripts/release-version.cjs assert-new "${{ steps.release-version.outputs.version }}"
+
       - name: Build
+        if: steps.release-version.outputs.release == 'true'
         run: npm run build
 
       - name: Resolve @ouro.bot/cli publish tag
+        if: steps.release-version.outputs.release == 'true'
         id: cli-publish-tag
         run: |
           TAG=$(node scripts/npm-dist-tag-policy.cjs publish-tag "@ouro.bot/cli" "$(node -p "require('./package.json').version")")
@@ -637,12 +684,15 @@ jobs:
           echo "publishing @ouro.bot/cli with dist-tag ${TAG}"
 
       - name: Publish @ouro.bot/cli
+        if: steps.release-version.outputs.release == 'true'
         run: node scripts/npm-publish-idempotency.cjs publish "${{ steps.cli-publish-tag.outputs.tag }}"
 
       - name: Build for wrapper publish guard
+        if: steps.release-version.outputs.release == 'true'
         run: npm run build
 
       - name: Check ouro.bot wrapper publish needed
+        if: steps.release-version.outputs.release == 'true'
         id: wrapper-check
         run: |
           node - <<'NODE'
@@ -673,6 +723,7 @@ jobs:
           NODE
 
       - name: Resolve ouro.bot wrapper publish tag
+        if: steps.release-version.outputs.release == 'true'
         id: wrapper-publish-tag
         run: |
           TAG=$(node scripts/npm-dist-tag-policy.cjs publish-tag "ouro.bot" "$(node -p "require('./packages/ouro.bot/package.json').version")")
@@ -680,7 +731,7 @@ jobs:
           echo "publishing ouro.bot with dist-tag ${TAG}"
 
       - name: Publish ouro.bot
-        if: steps.wrapper-check.outputs.should_publish == 'true'
+        if: steps.release-version.outputs.release == 'true' && steps.wrapper-check.outputs.should_publish == 'true'
         run: |
           cd packages/ouro.bot
           node ../../scripts/npm-publish-idempotency.cjs publish "${{ steps.wrapper-publish-tag.outputs.tag }}"
@@ -692,10 +743,11 @@ jobs:
   verify-npm:
     needs:
       - publish
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.publish.outputs.release == 'true'
     runs-on: ubuntu-latest
-    # Room for the dist-tag wait (10 min) plus the tarball wait (about 21 min).
-    timeout-minutes: 45
+    # Room for the two version waits and the two latest-tag waits (10 min each at most), the tarball wait (about
+    # 21 min), the install and the smoke.
+    timeout-minutes: 70
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -707,9 +759,14 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
+      # For the latest check's semver, from the lockfile.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
       - name: Verify selected npm dist-tags
         run: |
-          LOCAL=$(node -p "require('./package.json').version")
+          LOCAL="${{ needs.publish.outputs.version }}"
+          test -n "$LOCAL"
           CLI_TAG="${{ needs.publish.outputs.cli_tag }}"
           WRAPPER_TAG="${{ needs.publish.outputs.wrapper_tag }}"
 
@@ -755,6 +812,24 @@ jobs:
           verify_tag "@ouro.bot/cli" "$LOCAL"
           verify_tag "ouro.bot" "$LOCAL"
 
+          # Published on latest: latest must now read this version or a later one,
+          # never an older one. It can lag the version, so this waits out the same window.
+          verify_latest_not_behind() {
+            started=$(date +%s)
+            deadline=$((started + PROPAGATION_DEADLINE_SECONDS))
+            until result=$(node scripts/npm-dist-tag-policy.cjs latest-check "$1" "$LOCAL" 2>&1); do
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "::error::${result}"
+                return 1
+              fi
+              echo "${result}; retrying after npm propagation delay"
+              sleep 15
+            done
+            echo "$result"
+          }
+          if [ "$CLI_TAG" = latest ]; then verify_latest_not_behind "@ouro.bot/cli"; fi
+          if [ "$WRAPPER_TAG" = latest ]; then verify_latest_not_behind "ouro.bot"; fi
+
           echo "selected npm dist-tags verified by exact version ${LOCAL} (tags: cli=${CLI_TAG}, wrapper=${WRAPPER_TAG})"
 
       # Hand the exact bytes npm now serves to the github-release job. `npm pack`
@@ -767,7 +842,7 @@ jobs:
       # release.
       - name: Fetch the published @ouro.bot/cli tarball
         continue-on-error: true
-        run: node scripts/release-smoke.cjs pack release-tarball
+        run: node scripts/release-smoke.cjs pack release-tarball "${{ needs.publish.outputs.version }}"
 
       - name: Hand the published tarball to the GitHub release job
         continue-on-error: true
@@ -779,7 +854,7 @@ jobs:
           retention-days: 7
 
       - name: Smoke published package binaries
-        run: npm run release:smoke
+        run: npm run release:smoke -- "${{ needs.publish.outputs.version }}"
 
   # Attach the npm tarball that publish just released to a GitHub release so
   # `ouro self-update` can install it on networks that block
@@ -790,11 +865,17 @@ jobs:
   # release hiccup never stops the container image.
   github-release:
     needs:
+      - publish
       - verify-npm
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.publish.outputs.release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     continue-on-error: true
+    # One at a time, so the latest-release check below never races another release.
+    concurrency:
+      group: github-release-${{ github.repository }}
+      cancel-in-progress: false
+      queue: max
     permissions:
       contents: write
       id-token: write
@@ -802,6 +883,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      # For the latest-release check's semver, from the lockfile.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
 
       - name: Download the published tarball
         uses: actions/download-artifact@v8
@@ -815,17 +906,34 @@ jobs:
         with:
           subject-path: release-tarball/*.tgz
 
+      # The release also carries the Sanctuary template the release job wrote, whose TemplateURL
+      # (releases/latest/download/sanctuary.xml) is how Unraid finds the newest image: main's copy
+      # keeps the version it was committed with. A release becomes latest only when no later
+      # version already is.
       - name: Create the GitHub release with the published tarball
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          LOCAL=$(node -p "require('./package.json').version")
+          LOCAL="${{ needs.publish.outputs.version }}"
+          test -n "$LOCAL"
           TAG="v${LOCAL}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "GitHub release ${TAG} already exists — skipping"
-            exit 0
-          fi
           TARBALL="release-tarball/ouro.bot-cli-${LOCAL}.tgz"
           test -f "$TARBALL"
-          node -e 'const c=require("./changelog.json");const v=c.versions.find((x)=>x.version===process.argv[1]);process.stdout.write((v?v.changes:[]).join("\n\n")||"See changelog.json.")' "$LOCAL" > "${RUNNER_TEMP}/notes.md"
-          gh release create "$TAG" "$TARBALL" deploy/unraid/install.sh --target "$GITHUB_SHA" --title "@ouro.bot/cli ${LOCAL}" --notes-file "${RUNNER_TEMP}/notes.md"
+          # The notes and template come from inside the published tarball, which the release job wrote.
+          tar -xzf "$TARBALL" -C "$RUNNER_TEMP" package/changelog.json package/deploy/unraid/sanctuary.xml
+          TEMPLATE="${RUNNER_TEMP}/package/deploy/unraid/sanctuary.xml"
+          grep -qF "<Repository>ghcr.io/ourostack/ouroboros-butler:${LOCAL}</Repository>" "$TEMPLATE"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub release ${TAG} already exists; making sure it carries the template"
+            gh release upload "$TAG" "$TEMPLATE" --clobber
+            exit 0
+          fi
+          node -e 'const c=require(process.argv[2]);const v=c.versions.find((x)=>x.version===process.argv[1]);process.stdout.write((v?v.changes:[]).join("\n\n")||"See changelog.json.")' "$LOCAL" "${RUNNER_TEMP}/package/changelog.json" > "${RUNNER_TEMP}/notes.md"
+          LATEST_TAG=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+          if node -e 'const { assessLatestAfterPublish } = require("./scripts/npm-dist-tag-policy.cjs"); process.exit(assessLatestAfterPublish({ publishedVersion: process.argv[1], latestVersion: process.argv[2] }).ok ? 0 : 1)' "$LOCAL" "${LATEST_TAG#v}"; then
+            echo "${LATEST_TAG} is already the latest release and not older than ${LOCAL}; ${TAG} will not replace it"
+            MAKE_LATEST=--latest=false
+          else
+            MAKE_LATEST=--latest
+          fi
+          gh release create "$TAG" "$TARBALL" deploy/unraid/install.sh "$TEMPLATE" --target "$GITHUB_SHA" --title "@ouro.bot/cli ${LOCAL}" --notes-file "${RUNNER_TEMP}/notes.md" "$MAKE_LATEST"

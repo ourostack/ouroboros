@@ -3,6 +3,7 @@ import * as path from "path"
 import { describe, expect, it, vi } from "vitest"
 
 const {
+  assessLatestAfterPublish,
   planPublishTag,
   resolvePublishTag,
 } = require(path.resolve(__dirname, "../../../scripts/npm-dist-tag-policy.cjs"))
@@ -27,6 +28,17 @@ describe("npm dist-tag policy", () => {
       action: "publish",
       tag: "latest",
       reason: "latest dist-tag points at prerelease 0.1.0-alpha.531; advancing latest as the selected prerelease consumption tag",
+    })
+  })
+
+  it("never moves latest back when a later prerelease published first", () => {
+    expect(planPublishTag({
+      localVersion: "0.1.0-alpha.539",
+      latestVersion: "0.1.0-alpha.540",
+    })).toEqual({
+      action: "publish",
+      tag: "alpha",
+      reason: "latest dist-tag already points at the later prerelease 0.1.0-alpha.540; publishing 0.1.0-alpha.539 on alpha so latest does not move back",
     })
   })
 
@@ -146,5 +158,14 @@ describe("npm dist-tag policy", () => {
     expect(() => resolvePublishTag("@ouro.bot/cli", "0.1.0-alpha.539", {
       latestVersion: "definitely-not-semver",
     })).toThrow("@ouro.bot/cli: latest dist-tag points at invalid version definitely-not-semver")
+  })
+
+  it("checks after a publish that latest did not end up behind the version just published", () => {
+    expect(assessLatestAfterPublish({ publishedVersion: "0.1.0-alpha.12", latestVersion: "0.1.0-alpha.12" })).toMatchObject({ ok: true })
+    expect(assessLatestAfterPublish({ publishedVersion: "0.1.0-alpha.12", latestVersion: "0.1.0-alpha.13" })).toMatchObject({ ok: true })
+    const behind = assessLatestAfterPublish({ publishedVersion: "0.1.0-alpha.12", latestVersion: "0.1.0-alpha.11" })
+    expect(behind.ok).toBe(false)
+    expect(behind.reason).toContain("latest reads 0.1.0-alpha.11, behind 0.1.0-alpha.12")
+    expect(assessLatestAfterPublish({ publishedVersion: "0.1.0-alpha.12", latestVersion: "" }).ok).toBe(false)
   })
 })

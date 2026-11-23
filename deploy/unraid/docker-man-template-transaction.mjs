@@ -10,7 +10,13 @@ import xmlValidator from "./docker-man-template-xml.cjs"
 
 const TARGET_PATH = "/boot/config/plugins/dockerMan/templates-user/my-ouro-butler.xml"
 const JOURNAL_PATH = "/boot/config/custom/ouro-butler/docker-man-template-transaction.json"
-const TEMPLATE_URL = "https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml"
+// The release's own template (the GitHub release job attaches the one the release job wrote), then main's copy, which
+// templates carried before releases moved off pull requests. An installed template, a rollback's prior bytes or an
+// open journal may still carry main's.
+const TEMPLATE_URLS = new Set([
+  "https://github.com/ourostack/ouroboros/releases/latest/download/sanctuary.xml",
+  "https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml",
+])
 const ICON = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
 const COMMUNITY_APPS_ENTRY_PATH = "/usr/local/emhttp/plugins/community.applications/include/exec.php"
 const COMMUNITY_APPS_HELPER_PATH = "/usr/local/emhttp/plugins/community.applications/include/previous_apps_helpers.php"
@@ -101,7 +107,7 @@ function templateIdentity(bytes, expectedRepository) {
   }
   if (identity.name !== "ouro-butler" || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]+$/u.test(identity.name)) throw new Error("template technical name is invalid")
   if (identity.repository !== expectedRepository || !VERSION_TAG.test(identity.repository)) throw new Error("template version reference is invalid")
-  if (identity.templateUrl !== TEMPLATE_URL || identity.icon !== ICON) throw new Error("template identity is invalid")
+  if (!TEMPLATE_URLS.has(identity.templateUrl) || identity.icon !== ICON) throw new Error("template identity is invalid")
   const webUi = directChildren(document, "WebUI")
   if (webUi.length !== 1 || webUi[0].form !== "empty" || Object.keys(webUi[0].attributes).length !== 0) throw new Error("template WebUI must be exactly empty")
   return identity
@@ -218,7 +224,7 @@ function validateJournalRecord(raw, state) {
   if (record.schemaVersion !== 1 || !["rollback", "committing"].includes(record.state)) throw new Error("template transaction journal state is invalid")
   const target = object(record.target, "template transaction journal target")
   exactKeys(target, ["path", "name", "templateUrl", "icon"], "template transaction journal target")
-  if (target.path !== state.targetPath || target.name !== "ouro-butler" || target.templateUrl !== TEMPLATE_URL || target.icon !== ICON) throw new Error("template transaction journal target is invalid")
+  if (target.path !== state.targetPath || target.name !== "ouro-butler" || !TEMPLATE_URLS.has(target.templateUrl) || target.icon !== ICON) throw new Error("template transaction journal target is invalid")
   const prior = object(record.priorTemplate, "template transaction journal prior template")
   exactKeys(prior, ["present", "bytesBase64", "metadata"], "template transaction journal prior template")
   if (typeof prior.present !== "boolean") throw new Error("template transaction journal prior presence is invalid")

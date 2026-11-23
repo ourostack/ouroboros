@@ -40,6 +40,15 @@ function planPublishTag({ localVersion, latestVersion }) {
     };
   }
 
+  // Two merges a minute apart publish in parallel, and the later version can reach npm first.
+  if (semver.gt(normalizedLatest, localVersion)) {
+    return {
+      action: "publish",
+      tag: channel,
+      reason: `latest dist-tag already points at the later prerelease ${normalizedLatest}; publishing ${localVersion} on ${channel} so latest does not move back`,
+    };
+  }
+
   return {
     action: "publish",
     tag: "latest",
@@ -82,9 +91,22 @@ function resolvePublishTag(packageName, localVersion, deps = {}) {
   return { ...plan, latestVersion };
 }
 
+// After a publish on latest: latest must read the version just published or a later one. Publishes run one at a time
+// in push order, so an older latest means a publish went out of order or npm has not caught up yet.
+function assessLatestAfterPublish({ publishedVersion, latestVersion }) {
+  if (!semver.valid(latestVersion)) {
+    return { ok: false, reason: `latest reads ${latestVersion || "nothing"}, not a version` };
+  }
+  if (semver.lt(latestVersion, publishedVersion)) {
+    return { ok: false, reason: `latest reads ${latestVersion}, behind ${publishedVersion}, which this run published` };
+  }
+  return { ok: true, reason: `latest reads ${latestVersion}, at or after ${publishedVersion}` };
+}
+
 function printUsageAndExit() {
   console.error("usage:");
   console.error("  node scripts/npm-dist-tag-policy.cjs publish-tag <package> <version>");
+  console.error("  node scripts/npm-dist-tag-policy.cjs latest-check <package> <published-version>");
   process.exit(2);
 }
 
@@ -97,6 +119,12 @@ if (require.main === module) {
       const result = resolvePublishTag(packageName, localVersion);
       console.error(`${packageName}: ${result.reason}`);
       console.log(result.tag);
+    } else if (command === "latest-check") {
+      const [packageName, publishedVersion] = args;
+      if (!packageName || !publishedVersion) printUsageAndExit();
+      const result = assessLatestAfterPublish({ publishedVersion, latestVersion: npmViewLatestVersion(packageName) });
+      console.log(`${packageName}: ${result.reason}`);
+      if (!result.ok) process.exit(1);
     } else {
       printUsageAndExit();
     }
@@ -107,6 +135,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  assessLatestAfterPublish,
   planPublishTag,
   resolvePublishTag,
 };

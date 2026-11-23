@@ -62,7 +62,11 @@ const LEGACY_ALPHA742_MOUNTS = EXPECTED_MOUNTS.slice(0, 2)
 
 const EXPECTED_EXTRA_PARAMS = "--restart=unless-stopped --user=10001:10001"
 const EXPECTED_NAME = "ouro-butler"
-const EXPECTED_TEMPLATE_URL = "https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml"
+// The release's own template, then main's copy, which templates carried before releases moved off pull requests.
+const EXPECTED_TEMPLATE_URLS: ReadonlySet<string> = new Set([
+  "https://github.com/ourostack/ouroboros/releases/latest/download/sanctuary.xml",
+  "https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml",
+])
 const EXPECTED_ICON = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
 const EXACT_IMAGE = /^sha256:[a-f0-9]{64}$/u
 const VERSION_REFERENCE = /^ghcr\.io\/ourostack\/ouroboros-butler:[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/u
@@ -247,7 +251,7 @@ function auditTemplate(input: { templateXml: string | Uint8Array; runtimePolicyT
   if (!repositoryIsValid) violations.push(repositoryViolation)
   if (repository !== expectedRepository) violations.push("template repository does not match the reviewed image identity")
   if (singleTextChild(template, "Name") !== EXPECTED_NAME) violations.push("template technical name must be exactly ouro-butler")
-  if (singleTextChild(template, "TemplateURL") !== EXPECTED_TEMPLATE_URL) violations.push("template URL must equal the canonical release template")
+  if (!EXPECTED_TEMPLATE_URLS.has(singleTextChild(template, "TemplateURL") ?? "")) violations.push("template URL must equal the canonical release template")
   if (singleTextChild(template, "Icon") !== EXPECTED_ICON) violations.push("template icon must equal the canonical release icon")
   const webUi = directChildren(template, "WebUI")
   if (webUi.length !== 1 || webUi[0]!.form !== "empty" || Object.keys(webUi[0]!.attributes).length !== 0) violations.push("template WebUI must be present exactly once and empty")

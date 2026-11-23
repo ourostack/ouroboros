@@ -73,6 +73,25 @@ describe("package metadata", () => {
     expect(verifyJob).not.toContain('verify_tag "ouro.bot@${WRAPPER_TAG}"')
   })
 
+  it("refuses to publish a version at or below npm's highest before building it", () => {
+    const workflow = fs.readFileSync(path.resolve(__dirname, "../../../.github/workflows/coverage.yml"), "utf8")
+    const publishJob = workflow.slice(workflow.indexOf("  publish:"), workflow.indexOf("  verify-npm:"))
+    const check = publishJob.indexOf('node scripts/release-version.cjs assert-new "${{ steps.release-version.outputs.version }}"')
+    expect(check).toBeGreaterThan(publishJob.indexOf("release-version.cjs apply"))
+    expect(check).toBeLessThan(publishJob.indexOf("name: Publish @ouro.bot/cli"))
+  })
+
+  it("gives verify-npm room for every bounded wait it can make", () => {
+    const workflow = fs.readFileSync(path.resolve(__dirname, "../../../.github/workflows/coverage.yml"), "utf8")
+    const start = workflow.indexOf("  verify-npm:")
+    const verifyJob = workflow.slice(start, workflow.indexOf("  github-release:", start))
+    const waits = (verifyJob.match(/^          (verify_tag|if \[ "\$(CLI|WRAPPER)_TAG" = latest \]; then verify_latest_not_behind) /gmu) ?? []).length
+    expect(waits).toBe(4)
+    expect(verifyJob).toContain("PROPAGATION_DEADLINE_SECONDS=600")
+    // Four 10-minute waits, the tarball wait (about 21 minutes), install and smoke.
+    expect(Number(/timeout-minutes: (\d+)/u.exec(verifyJob)?.[1])).toBeGreaterThanOrEqual(4 * 10 + 21 + 5)
+  })
+
   it("gates publish on both packed artifact E2E suites", () => {
     expect(packageJson.scripts["test:e2e:ouro-bot-package"]).toBe("node scripts/ouro-bot-package-e2e.cjs")
     const workflow = fs.readFileSync(path.resolve(__dirname, "../../../.github/workflows/coverage.yml"), "utf8")
