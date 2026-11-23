@@ -10,7 +10,7 @@
  */
 import * as fs from "node:fs"
 import * as path from "node:path"
-import type { ToolDoorCard, ToolErrorCard, ToolRiskProfile } from "./tools-base"
+import type { ToolApprovalPolicy, ToolDoorCard, ToolErrorCard, ToolRiskProfile } from "./tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export interface DeclaredTool {
@@ -114,3 +114,12 @@ export function declaredRiskProfile(effect: ToolDoorCard["effect"]): ToolRiskPro
   if (effect === "write") return { mutates: "durable_state_write", risk: "high", reason: "declared write in the agent bundle's tools.json" }
   return { mutates: "external_side_effect", risk: "high", reason: `declared ${effect} in the agent bundle's tools.json` }
 }
+
+/**
+ * The approval a declared consequential tool needs before it runs (ourostack/ouroboros#1694). It is the harness's one
+ * approval path, the one its own consequential tools take: dispatch suspends the turn and asks the person, the call runs
+ * only on their approval, a declined call answers that nothing ran, and a turn with no one to ask refuses the call.
+ */
+export const DECLARED_CONSEQUENTIAL_APPROVAL: Extract<ToolApprovalPolicy, { kind: "required" }> = Object.freeze({
+  kind: "required", policyId: "mcp.declared-consequential.v1", actionClass: "mcp.declared_consequential", requiresSoleCall: true,
+})
