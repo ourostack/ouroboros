@@ -6,6 +6,7 @@ import { WorkbenchCodingSessionManager } from "./workbench-manager"
 import { WorkbenchMcpClient } from "./workbench-client"
 import { CODING_BACKENDS, CodingSessionRouter } from "./router"
 import type { CodingBackend, CodingSessionManagerApi } from "./types"
+import { reportCodingSessionUpdate } from "./feedback"
 
 /** Ouro's current choice for where coding agents run when agent.json names none. */
 export const DEFAULT_CODING_BACKEND: CodingBackend = "orca"
@@ -20,14 +21,22 @@ export function preferredCodingBackend(): CodingBackend {
   throw new Error(`agent.json coding.backend is ${JSON.stringify(configured)}; use one of ${CODING_BACKENDS.join(", ")} (or remove it for ${DEFAULT_CODING_BACKEND})`)
 }
 
+/**
+ * Every session a backend runs reports to the agent when it finishes, fails, stops or needs input, whatever chat
+ * started it. The listener lives on the backend's manager, not on each coding_spawn call, so it also hears sessions
+ * the manager restores after a restart (found dead locally, or still open in Orca or Workbench).
+ */
 export function createBackendManager(backend: CodingBackend, agentName: string): CodingSessionManagerApi {
   switch (backend) {
     case "orca":
-      return new OrcaCodingSessionManager({ agentName })
-    case "workbench":
-      return new WorkbenchCodingSessionManager({ agentName, client: new WorkbenchMcpClient() })
+      return new OrcaCodingSessionManager({ agentName, onUpdate: reportCodingSessionUpdate })
+    case "workbench": {
+      const workbench = new WorkbenchCodingSessionManager({ agentName, client: new WorkbenchMcpClient(), onUpdate: reportCodingSessionUpdate })
+      void workbench.watch()
+      return workbench
+    }
     case "local":
-      return new CodingSessionManager({ agentName })
+      return new CodingSessionManager({ agentName, onUpdate: reportCodingSessionUpdate })
   }
 }
 
@@ -84,4 +93,4 @@ export type {
 export { CodingSessionMonitor } from "./monitor"
 export type { CodingMonitorReport, CodingMonitorSummary, CodingRecoveryAction, CodingRecoveryActionType } from "./monitor"
 export { formatCodingMonitorReport } from "./reporter"
-export { attachCodingSessionFeedback, formatCodingTail } from "./feedback"
+export { attachCodingSessionFeedback, formatCodingTail, reportCodingSessionUpdate } from "./feedback"

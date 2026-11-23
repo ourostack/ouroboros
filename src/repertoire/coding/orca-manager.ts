@@ -31,6 +31,8 @@ export interface OrcaCodingSessionManagerOptions {
   writeFileSync?: (target: string, data: string, encoding: "utf-8") => void
   mkdirSync?: (target: string, options: { recursive: true }) => unknown
   pollIntervalMs?: number
+  /** Hears every session's updates, including sessions restored from the state file. */
+  onUpdate?: Listener
 }
 
 interface OrcaRecord {
@@ -102,6 +104,7 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
   private readonly writeFileSync: (target: string, data: string, encoding: "utf-8") => void
   private readonly mkdirSync: (target: string, options: { recursive: true }) => unknown
   private readonly pollIntervalMs: number
+  private readonly onUpdate?: Listener
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private polling = false
 
@@ -116,7 +119,9 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
     this.writeFileSync = options.writeFileSync ?? fs.writeFileSync
     this.mkdirSync = options.mkdirSync ?? fs.mkdirSync
     this.pollIntervalMs = options.pollIntervalMs ?? 30_000
+    this.onUpdate = options.onUpdate
     this.loadState()
+    this.syncPolling()
   }
 
   async spawnSession(request: CodingSessionRequest): Promise<CodingSession> {
@@ -204,6 +209,7 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
       meta: { id, runner: session.runner, worktreePath: launch.worktree.path, created: !inExisting },
     })
     this.notify(id, { kind: "spawned", session: cloneSession(session) })
+    this.syncPolling()
     return cloneSession(session)
   }
 
@@ -226,6 +232,7 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
     for (const [worktreeId, records] of byWorktree) {
       await this.refreshWorktree(worktreeId, records)
     }
+    this.syncPolling()
     return this.listSessions()
   }
 
@@ -243,6 +250,7 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
         this.reportOrcaUnreachable(sessionId, error)
       }
     }
+    this.syncPolling()
     return cloneSession(record.session)
   }
 
@@ -250,13 +258,11 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
     const set = this.listeners.get(sessionId) ?? new Set<Listener>()
     set.add(listener)
     this.listeners.set(sessionId, set)
-    this.startPolling()
     return () => {
       const current = this.listeners.get(sessionId)
       if (!current) return
       current.delete(listener)
       if (current.size === 0) this.listeners.delete(sessionId)
-      if (this.listeners.size === 0) this.stopPolling()
     }
   }
 
@@ -297,6 +303,7 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
     record.session.checkpoint = `terminated by parent agent; worktree kept at ${record.session.orca!.worktreePath}`
     this.persistState()
     this.notify(sessionId, { kind: "killed", session: cloneSession(record.session) })
+    this.syncPolling()
     return { ok: true, message: `killed ${sessionId}; its worktree stays at ${record.session.orca!.worktreePath}` }
   }
 
@@ -382,6 +389,15 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
     })
   }
 
+  /**
+   * Poll Orca while any session is still open, whether or not anyone subscribed, so a session that finishes or
+   * waits for input is heard (and reported through onUpdate) without anyone asking. Stop once none is open.
+   */
+  private syncPolling(): void {
+    if ([...this.records.values()].some((record) => !isClosed(record.session))) this.startPolling()
+    else this.stopPolling()
+  }
+
   private startPolling(): void {
     if (this.pollTimer) return
     this.pollTimer = setInterval(() => {
@@ -401,8 +417,18 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
   }
 
   private notify(sessionId: string, update: CodingSessionUpdate): void {
-    for (const listener of this.listeners.get(sessionId) ?? []) {
-      void Promise.resolve(listener(update))
+    for (const listener of [...(this.listeners.get(sessionId) ?? []), ...(this.onUpdate ? [this.onUpdate] : [])]) {
+      void Promise.resolve()
+        .then(() => listener(update))
+        .catch((error) => {
+          emitNervesEvent({
+            level: "warn",
+            component: "repertoire",
+            event: "repertoire.orca_coding_listener_error",
+            message: "an Orca coding session listener failed",
+            meta: { sessionId, kind: update.kind, reason: error instanceof Error ? error.message : String(error) },
+          })
+        })
     }
   }
 
