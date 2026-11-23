@@ -10,3 +10,5 @@ ouro.bot-cli-*.tgz
 .claude/
 .playwright-mcp/
 .audit/
+# Leftover build output of the removed Mailbox page in checkouts made before its removal.
+packages/mailbox-ui/

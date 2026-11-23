@@ -1,6 +1,6 @@
 # Agent Mail Setup
 
-Agent Mail is the mail sense for an Ouro agent and the first slice of the Ouro work substrate account. It gives each agent a private `@ouro.bot` mailbox, optional delegated human-mail aliases, encrypted mail storage, explicit read tools, Screener decisions, confirmed outbound mail, and a Mailbox surface.
+Agent Mail is the mail sense for an Ouro agent and the first slice of the Ouro work substrate account. It gives each agent a private `@ouro.bot` mailbox, optional delegated human-mail aliases, encrypted mail storage, explicit read tools, Screener decisions, confirmed outbound mail, and an access log for audits.
 
 Use this runbook when a human says something like: "Please set up email."
 
@@ -338,7 +338,7 @@ For the full recovery map, use the repo path `docs/agent-mail-recovery.md` ([Age
 - Missing-key mail: `mail_recent` and `mail_search` must keep decryptable mail visible and say `N mail message(s) could not be decrypted`. `No matching mail.` plus that warning means "no readable match," not "mail never existed."
 - No Mail sense: confirm `senses.mail.enabled = true` in `agent.json`, then `ouro up`.
 - Screener body leakage: stop and fix; Screener lists must show sender/context, not message bodies.
-- Expected mail missing: check Mailbox Discarded/Quarantine, then `mail_screener`, then source-forwarding/DNS status.
+- Expected mail missing: check `mail_recent` with `placement` discarded or quarantine, then `mail_screener`, then source-forwarding/DNS status.
 - HEY import missing messages: re-check the human-downloaded MBOX and import output counts.
 - Live mail missing: do not assume MX is active; verify the production ingress host and human-confirmed DNS/MX first.
 

@@ -35,12 +35,7 @@ function tmpSocketPath(name: string): string {
   return path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
 }
 
-function makeDaemon(
-  socketPath: string,
-  options?: {
-    senseStopAll?: () => Promise<void>
-  },
-) {
+function makeDaemon(socketPath: string) {
   const processManager = {
     listAgentSnapshots: vi.fn(() => []),
     startAutoStartAgents: vi.fn(async () => undefined),
@@ -61,7 +56,7 @@ function makeDaemon(
   }
   const senseManager = {
     startAutoStartSenses: vi.fn(async () => undefined),
-    stopAll: vi.fn(options?.senseStopAll ?? (async () => undefined)),
+    stopAll: vi.fn(async () => undefined),
     listSenseRows: vi.fn(() => []),
     listManagedPids: vi.fn(() => []),
   }
@@ -114,11 +109,7 @@ async function sendDaemonStopOverRealSocket(socketPath: string, timeoutMs: numbe
 describe("daemon.stop deadlock regression", () => {
   let daemons: OuroDaemon[] = []
   let socketPath: string
-  let releaseBlockedSenseStop: (() => void) | null = null
-
   afterEach(async () => {
-    releaseBlockedSenseStop?.()
-    releaseBlockedSenseStop = null
     setRuntimeLogger(null)
     vi.restoreAllMocks()
     for (const daemon of daemons.reverse()) {
@@ -188,33 +179,16 @@ describe("daemon.stop deadlock regression", () => {
   it("an older daemon stop path does not unlink a replacement path entry after releasing the original socket", async () => {
     socketPath = tmpSocketPath("daemon-stop-socket-race")
 
-    let markSenseStopBlocked: (() => void) | null = null
-    const senseStopBlocked = new Promise<void>((resolve) => {
-      markSenseStopBlocked = resolve
-    })
-    const daemonA = makeDaemon(socketPath, {
-      senseStopAll: async () => {
-        await new Promise<void>((resolve) => {
-          releaseBlockedSenseStop = resolve
-          markSenseStopBlocked?.()
-        })
-      },
-    })
+    const daemonA = makeDaemon(socketPath)
     daemons.push(daemonA)
     await daemonA.start()
 
-    const daemonAStop = daemonA.stop()
-    await senseStopBlocked
-
-    // The bug is pathname ownership, not socket protocol. While daemon A is
-    // still stopping, a newer daemon takes over the pathname; that newer entry
-    // must be preserved. Using a plain file makes the race deterministic while
-    // still proving the old daemon never deletes a path it no longer owns.
-    fs.unlinkSync(socketPath)
-    fs.writeFileSync(socketPath, "replacement-daemon-socket", "utf-8")
-    expect(fs.existsSync(socketPath)).toBe(true)
-    const replacementStats = fs.lstatSync(socketPath)
-
+    // The bug is pathname ownership, not socket protocol. After daemon A
+    // closes its server (which releases the original path), a newer daemon
+    // may already own the pathname by the time A checks it. Writing a plain
+    // file at the moment A first looks at the path makes that race
+    // deterministic while still proving A never deletes a path it no
+    // longer owns.
     const warn = vi.fn()
     setRuntimeLogger({
       debug: vi.fn(),
@@ -222,20 +196,38 @@ describe("daemon.stop deadlock regression", () => {
       warn,
       error: vi.fn(),
     })
+    const pathExists = (targetPath: fs.PathLike): boolean => {
+      try {
+        fs.lstatSync(targetPath)
+        return true
+      } catch {
+        return false
+      }
+    }
+    let replacementStats: fs.Stats | null = null
+    vi.spyOn(fs, "existsSync").mockImplementation(((targetPath: fs.PathLike) => {
+      if (String(targetPath) === socketPath && !replacementStats) {
+        if (pathExists(socketPath)) fs.unlinkSync(socketPath)
+        fs.writeFileSync(socketPath, "replacement-daemon-socket", "utf-8")
+        replacementStats = fs.lstatSync(socketPath)
+      }
+      return pathExists(targetPath)
+    }) as typeof fs.existsSync)
 
-    releaseBlockedSenseStop?.()
-    releaseBlockedSenseStop = null
-    await daemonAStop
+    await daemonA.stop()
+    vi.mocked(fs.existsSync).mockRestore()
 
+    expect(replacementStats).not.toBeNull()
+    const stats = replacementStats as unknown as fs.Stats
     expect(fs.existsSync(socketPath)).toBe(true)
     expect(fs.readFileSync(socketPath, "utf-8")).toBe("replacement-daemon-socket")
     expect(warn).toHaveBeenCalledWith(expect.objectContaining({
       event: "daemon.socket_cleanup_skipped",
       meta: expect.objectContaining({
         socketPath,
-        actualDev: replacementStats.dev,
-        actualIno: replacementStats.ino,
-        actualCtimeMs: replacementStats.ctimeMs,
+        actualDev: stats.dev,
+        actualIno: stats.ino,
+        actualCtimeMs: stats.ctimeMs,
       }),
     }))
   })

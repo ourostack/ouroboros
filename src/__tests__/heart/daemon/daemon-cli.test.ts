@@ -2048,7 +2048,6 @@ describe("ouro CLI execution", () => {
     const result = await runOuroCli(["status"], deps)
 
     expect(result).toContain("unknown")
-    expect(result).toContain("unavailable")
     expect(result).toContain("Socket")
     expect(result).toContain("Health")
     expect(result).not.toContain("Mailbox")

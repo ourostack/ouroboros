@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest"
 import * as fs from "fs"
 import * as path from "path"
+import { execFileSync } from "child_process"
 
-// The old Ouro Mailbox (an agent-inspector page on port 6876) was removed so a fresh Mailbox can be built in its
-// place. This guard keeps its code, build steps and data paths from coming back, and proves nothing reads, moves or
-// deletes the old data it left in agent bundles (state/mailbox/, state/mailbox-prefs.json, state/outlook-prefs.json).
+// The old Ouro Mailbox (an agent-inspector page on a fixed loopback port) was removed so a fresh Mailbox can be built
+// in its place. This guard keeps its code, build steps, commands and names from coming back in tracked files, and
+// keeps the literal paths of the old data it left in agent bundles (state/mailbox/, state/mailbox-prefs.json,
+// state/outlook-prefs.json) out of the code. It matches text, so a path assembled from parts would get past it.
 
 const REPO_ROOT = path.resolve(__dirname, "../..")
 const THIS_FILE = path.relative(REPO_ROOT, __filename)
@@ -19,6 +21,14 @@ const HISTORICAL_PREFIXES = ["docs/doing/", "docs/superpowers/", "docs/planning/
 const ALLOWED_FILES: Record<string, string> = {
   "scripts/package-assets.cjs": "refuses to pack stale old-page output left in a local dist/",
   "src/__tests__/scripts/package-assets.test.ts": "proves that refusal",
+  ".gitignore": "keeps a pre-removal checkout's leftover old-page build output out of git status",
+  "src/__tests__/docs/agent-mail-setup.contract.test.ts": "asserts the mail guide no longer names the old page",
+  // The Unraid acceptance contract still allows (does not require) a loopback listener on the old port; tightening it
+  // is a separate change to the Sanctuary deployment.
+  "deploy/unraid/README.txt": "documents the still-allowed loopback port",
+  "deploy/unraid/sanctuary-acceptance-contract.json": "still allows the loopback port",
+  "deploy/unraid/sanctuary-deployment-target.mjs": "still allows the loopback port",
+  "src/__tests__/scripts/sanctuary-deployment-target.test.ts": "tests that allowance",
 }
 
 const PATTERNS: { id: string; regex: RegExp }[] = [
@@ -29,28 +39,22 @@ const PATTERNS: { id: string; regex: RegExp }[] = [
   { id: "old prefs file", regex: /(mailbox|outlook)-prefs\.json/ },
   { id: "old state folder", regex: /state\/mailbox\b/ },
   { id: "old Outlook name", regex: /outlook-ui|heart\/outlook\b/ },
+  { id: "old page name", regex: /Ouro Mailbox/ },
+  { id: "old command", regex: /ouro (mailbox|outlook)\b/ },
+  { id: "old status field", regex: /mailboxUrl|outlookUrl/ },
+  { id: "old port", regex: /\b6876\b/ },
 ]
 
 const TEXT_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".cjs", ".mjs", ".mts", ".json", ".md", ".yml", ".yaml", ".css", ".html", ".txt", ".sh"])
 
-function walk(dir: string, out: string[]): void {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === "node_modules" || entry.name === "dist" || entry.name === ".git") continue
-    const full = path.join(dir, entry.name)
-    if (entry.isDirectory()) walk(full, out)
-    else if (TEXT_EXTENSIONS.has(path.extname(entry.name))) out.push(full)
-  }
+function trackedFiles(): string[] {
+  const output = execFileSync("git", ["ls-files", "-z", "--", ...SCANNED_ROOTS, ...SCANNED_FILES], { cwd: REPO_ROOT, encoding: "utf8" })
+  return output.split("\0").filter((file) => file !== "" && (TEXT_EXTENSIONS.has(path.extname(file)) || file === ".gitignore"))
 }
 
 function scannedFiles(): string[] {
-  const files: string[] = []
-  for (const root of SCANNED_ROOTS) {
-    const full = path.join(REPO_ROOT, root)
-    if (fs.existsSync(full)) walk(full, files)
-  }
-  for (const file of SCANNED_FILES) files.push(path.join(REPO_ROOT, file))
-  return files
-    .map((file) => path.relative(REPO_ROOT, file))
+  return trackedFiles()
+    .filter((file) => fs.existsSync(path.join(REPO_ROOT, file)))
     .filter((file) => file !== THIS_FILE && !(file in ALLOWED_FILES) && !HISTORICAL_PREFIXES.some((prefix) => file.startsWith(prefix)))
 }
 
@@ -68,8 +72,8 @@ describe("the old Ouro Mailbox is gone", () => {
     expect(findings).toEqual([])
   })
 
-  it("has no old UI package or server folder on disk", () => {
-    expect(fs.existsSync(path.join(REPO_ROOT, "packages/mailbox-ui"))).toBe(false)
-    expect(fs.existsSync(path.join(REPO_ROOT, "src/heart/mailbox"))).toBe(false)
+  it("tracks no file in the old UI package or server folder", () => {
+    const tracked = execFileSync("git", ["ls-files", "--", "packages/mailbox-ui", "src/heart/mailbox"], { cwd: REPO_ROOT, encoding: "utf8" })
+    expect(tracked).toBe("")
   })
 })
