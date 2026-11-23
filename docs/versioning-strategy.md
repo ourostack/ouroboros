@@ -22,51 +22,18 @@ It is the main answer to "what runtime am I running?"
 
 ### Release numbering
 
-Pull requests never set the version. The release job on `main` (`publish` in
-`.github/workflows/coverage.yml`, and `container-publish.yml` for the image)
-runs `scripts/release-version.cjs`, which works it out from main's history:
+Pull requests never set the version. The release job on `main` (`publish` in `.github/workflows/coverage.yml`, and `container-publish.yml` for the image) runs `scripts/release-version.cjs`, which works it out from main's history:
 
-- The anchor is the last commit on main's first-parent line that changed
-  `package.json`'s version. It releases that version.
-- After it, every commit that releases something takes the next number in
-  order (`0.1.0-alpha.N`, then `N+1`). A commit releases something when it
-  changes shipped source, scripts, skills, the Unraid deploy files,
-  `package.json`, the `ouro.bot` wrapper, or adds a change note. A commit that
-  changes only docs, tests or workflows publishes nothing. Only commits made
-  once `changes/README.md` exists count.
-- A push to `main` publishes once, when any commit it brought releases
-  something: under the number of the newest such commit, with the change notes
-  of all of them in that version's changelog entry. A squash merge is one
-  commit, so it takes one number. A rebase merge of several commits publishes
-  one version and skips the numbers of its earlier commits; npm never sees them.
-- A changelog entry is the change notes its commits added under `changes/`,
-  one line per paragraph or bullet, or their subjects when they added none.
-  Earlier entries are rebuilt from history each time: the `v<version>` tags
-  that the GitHub release job puts on each push's last commit mark where each
-  published push ended, and a release with no tag yet gets one entry per commit.
+- The anchor is the last commit on main's first-parent line whose `package.json` version differs from its parent's. It releases that version. Moving or reformatting the version line does not count.
+- After it, every commit that releases something takes the next number in order (`0.1.0-alpha.N`, then `N+1`). A commit releases something when it changes shipped source, scripts, skills, the Unraid deploy files, `package.json` or the `ouro.bot` wrapper, or adds or edits a change note. A commit that changes only docs, tests or workflows, or only removes change notes, publishes nothing. Only commits made once `changes/README.md` exists count.
+- A push to `main` publishes once, when any commit it brought releases something: under the number of the newest such commit, with the change notes of all of them, as its last commit left them, in that version's changelog entry. A squash merge is one commit, so it takes one number. A rebase merge of several commits publishes one version and skips the numbers of its earlier commits; npm never sees them.
+- A changelog entry is the change notes its commits added under `changes/`, one line per paragraph or bullet, or their subjects when they added none. Earlier entries are rebuilt from git history alone, one per numbered commit, so every job writes the same changelog whenever it runs. An earlier rebase merge therefore shows one entry per commit, including the skipped numbers.
 
-The job writes the version into `package.json`, both lockfiles,
-`packages/ouro.bot/package.json` and the Sanctuary deploy files
-(`deploy/unraid/sanctuary.xml`, `deploy/unraid/sanctuary.ouro/bundle-meta.json`),
-and merges the entries into `changelog.json`, newest first, in its own checkout
-only. Nothing is committed back, so on `main` those files keep the version they
-were committed with; the published package and image carry the real one. The
-GitHub release attaches the written `sanctuary.xml`, and the template's
-`TemplateURL` points at `releases/latest/download/sanctuary.xml`, so Unraid
-always finds the newest image. The same push always gets the same version, so
-the npm and container jobs agree without asking npm or each other. Publishes
-run one at a time in push order, and a publish that finds a later version
-already on npm's `latest` publishes on `alpha` instead.
+The job writes the version into `package.json`, both lockfiles, `packages/ouro.bot/package.json` and the Sanctuary deploy files (`deploy/unraid/sanctuary.xml`, `deploy/unraid/sanctuary.ouro/bundle-meta.json`), and merges the entries into `changelog.json`, newest first, in its own checkout only. Nothing is committed back, so on `main` those files keep the version they were committed with; the published package and image carry the real one. The GitHub release attaches the written `sanctuary.xml`, and the template's `TemplateURL` points at `releases/latest/download/sanctuary.xml`, so Unraid always finds the newest image. The same push always gets the same version, so the npm and container jobs agree without asking npm or each other. Publishes run one at a time in push order, and a publish that finds a later version already on npm's `latest` publishes on `alpha` instead.
 
-To start a new release line (for example `0.2.0-alpha.0`, or a stable
-`1.0.0`), a pull request sets that version with `npm run release:bump`; the
-preflight allows a move to a new, higher line and refuses a move within one.
-That pull request writes the new version's `changelog.json` entry itself,
-since its own landing publishes that version; entries worked out for the old
-line are kept. A branch made before this scheme that still carries a bump runs
-`npm run release:drop-bump`, which moves the `changelog.json` entries it added
-into a change note, keeps any fix it made to an older entry, puts the release
-files back and merges main.
+A manual run of `container-publish.yml` rebuilds the image for main's head only, and only when npm published main's version from that very commit (npm's `gitHead`), so an image never carries code npm did not ship under its tag. `npm run butler:ship -- <version>` finds a release's commit the same way, then from its `v<version>` tag.
+
+To start a new release line (for example `0.2.0-alpha.0`, or a stable `1.0.0`), a pull request sets that version with `npm run release:bump`; the preflight allows a move to a new, higher line and refuses a move within one. That pull request writes the new version's `changelog.json` entry itself and adds no change note, since its own landing publishes that version from that entry; entries worked out for the old line are kept. A branch made before this scheme that still carries a bump runs `npm run release:drop-bump`, which moves the `changelog.json` entries it added into a change note named after the branch (one name main does not have), keeps any fix it made to an older entry, puts the release files back and merges main.
 
 ## 2. Runtime Metadata
 
