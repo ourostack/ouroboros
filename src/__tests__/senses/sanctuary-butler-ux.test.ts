@@ -603,7 +603,7 @@ describe("Ouro Butler household UX", () => {
         effectScopes: expect.arrayContaining(["telegram.proactive", "telegram.request_return"]),
       },
       "sanctuary-household": {
-        version: 7,
+        version: 8,
         contextScopes: expect.arrayContaining(["household.status"]),
         toolNames: expect.arrayContaining(["unraid_get_system", "unraid_check_services", "sanctuary_search_media_catalog", "list_recent_attachments", "materialize_attachment", "describe_image"]),
         effectScopes: ["telegram.request_return"],
