@@ -40,6 +40,27 @@ describe("session activity", () => {
     ])
   })
 
+  it("drops a freshly written session whose friend-facing activity is older than the threshold", async () => {
+    const sessionsDir = "/mock/sessions"
+    const friendsDir = "/mock/friends"
+    const nowMs = Date.parse("2026-11-23T12:00:00.000Z")
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockImplementation(((p: string) => {
+      if (p === sessionsDir) return ["ari"] as any
+      if (p === path.join(sessionsDir, "ari")) return ["cli"] as any
+      if (p === path.join(sessionsDir, "ari", "cli")) return ["session.json"] as any
+      return [] as any
+    }) as any)
+    vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: nowMs - 1000 } as any)
+    vi.mocked(fs.readFileSync).mockImplementation(((p: string) => {
+      if (p === path.join(friendsDir, "ari.json")) return JSON.stringify({ name: "Ari" })
+      return JSON.stringify({ version: 1, messages: [], state: { lastFriendActivityAt: new Date(nowMs - 1000 * 60 * 60).toISOString() } })
+    }) as any)
+
+    const { listSessionActivity } = await import("../../heart/session-activity")
+    expect(listSessionActivity({ sessionsDir, friendsDir, agentName: "slugger", activeThresholdMs: 1000 * 60, nowMs })).toEqual([])
+  })
+
   it("prefers explicit friend-facing activity over newer file mtimes", async () => {
     const sessionsDir = "/mock/sessions"
     const friendsDir = "/mock/friends"
