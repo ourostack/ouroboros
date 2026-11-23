@@ -110,7 +110,23 @@ describe("bounded readonly custody inspection", () => {
   })
 
   it("looks up an exact dispatch beyond the maximum first page without scanning pages", () => {
-    const ids = Array.from({ length: 205 }, (_, index) => seed("unknown", { session: `terminal-${index}` }).id).sort()
+    // Seeds through one open store (seed() would open and close it 205 times). Phases are reported to stderr only when
+    // the case took over 2s (normally well under 0.5s): a bounded observation of which phase stalled, not a cause.
+    const phases: string[] = []
+    const started = performance.now()
+    const lap = (name: string) => phases.push(`${name}@${Math.round(performance.now() - started)}ms`)
+    try {
+    const ids: string[] = []
+    const store = openCheckInStore(file)
+    try {
+      for (let index = 0; index < 205; index++) {
+        const claim = store.claimDispatch(input({ session: `terminal-${index}` }), "worker-1")!
+        store.completeDispatch(claim.id, "worker-1", { state: "unknown", reason: "original outcome" })
+        ids.push(claim.id)
+      }
+    } finally { store.close() }
+    ids.sort()
+    lap("205-records")
     const id = ids.at(-1)!
     expect(readCheckInSnapshot(file, { limit: 200 }).entries.some(entry => entry.id === id)).toBe(false)
     const exact = readCheckInSnapshot(file, { limit: 1, id })
@@ -119,6 +135,10 @@ describe("bounded readonly custody inspection", () => {
     expect(exact.totalCount).toBe(205)
     expect(() => readCheckInSnapshot(file, { limit: 1, id, cursor: "ambiguous" })).toThrow(/inspection/)
     expect(() => readCheckInSnapshot(file, { limit: 1, id: "invalid" })).toThrow(/inspection/)
+    lap("lookups")
+    } finally {
+      if (performance.now() - started > 2_000) process.stderr.write(`recovery exact-lookup case slow (${Math.round(performance.now() - started)}ms): ${phases.join(", ")}\n`)
+    }
   })
 
   it("reports missing without creating a database, directories, or a comforting empty count", () => {
