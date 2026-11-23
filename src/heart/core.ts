@@ -559,6 +559,21 @@ export const STEP_BUDGET_EXTENSION = 4
 export const MAX_PROVIDER_ITERATIONS_CEILING = 24
 
 const STEP_BUDGET_REPORT_INSTRUCTION = "the step budget for this turn is used up. do not call any more work tools; none of the tool calls in your last message were executed. call settle now with a short progress report: what is done (with evidence from tool results above), what is still in flight, and what you will do next. say you can continue where you left off when the conversation resumes."
+/** How few tool-running steps a turn has left before the model is told, so it finishes the asked-for change before the stop. */
+export const STEP_BUDGET_NOTICE_AT = 2
+
+/**
+ * The note on a batch's last tool result once the turn is near its step budget: how many more steps can run tools, whether
+ * more can still be earned, and what to do with them. `left` counts the steps that will run tools if no further call makes
+ * progress; `ceilingLeft` the most the turn can ever get.
+ */
+export function stepBudgetNotice(left: number, ceilingLeft: number, wrapUpTool: "settle" | "rest"): string {
+  if (left <= 0) return `[step budget] that was the last step in this turn that can run tools. call ${wrapUpTool} now: what is done (with evidence from the results above), what is still open, and what you will do next.`
+  const steps = left === 1 ? "at most 1 more step" : `at most ${left} more steps`
+  const more = left >= ceilingLeft ? ", and that is this turn's limit" : "; more come only while new calls keep succeeding"
+  return `[step budget] ${steps} in this turn can run tools${more}. finish what was asked first (a change or a send you have ready), leave extra checks for later, then call ${wrapUpTool}.`
+}
+
 const STEP_BUDGET_REST_INSTRUCTION = "the step budget for this turn is used up. do not call any more work tools; none of the tool calls in your last message were executed. call rest now with a short note: what is done, what is still open, and what to pick up next time."
 
 export interface ApprovalProposalRequest {
@@ -1794,7 +1809,10 @@ export async function runAgent(
   // Adaptive step budget: starts at the base, grows while tool calls make progress.
   let stepBudget = MAX_PROVIDER_ITERATIONS;
   const stepBudgetCeiling = Math.max(MAX_PROVIDER_ITERATIONS, getContextConfig().maxStepsPerTurn ?? MAX_PROVIDER_ITERATIONS_CEILING)
-  let lastIterationMadeProgress = false;
+  // The iteration whose tool calls last made progress. The budget grows when any of the last few iterations did, so one
+  // step without progress at the boundary (a speak, a check that exits 1, a rejected call) does not end a working turn.
+  let lastProgressIteration = 0;
+  const progressedRecently = (): boolean => lastProgressIteration > 0 && lastProgressIteration >= providerIterations - STEP_BUDGET_EXTENSION
   let stepReportIteration: number | null = null;
   // The one tool a turn may call after its step budget is used up: settle for conversations, rest for private turns.
   let stepReportTool: "settle" | "rest" = "settle";
@@ -1802,12 +1820,31 @@ export async function runAgent(
   const requiredDispatchRejectionCounts = new Map<string, number>();
   const budgetExhausted = (): boolean => {
     if (providerIterations < stepBudget) return false
-    if (lastIterationMadeProgress && stepBudget < stepBudgetCeiling) {
+    if (progressedRecently() && stepBudget < stepBudgetCeiling) {
       stepBudget = Math.min(stepBudgetCeiling, stepBudget + STEP_BUDGET_EXTENSION)
       emitNervesEvent({ component: "engine", event: "engine.step_budget_extended", message: "tool progress extended the per-turn step budget", meta: { stepBudget } })
       return providerIterations >= stepBudget
     }
     return true
+  }
+  // After this iteration's calls: how many later steps will run tools if nothing more makes progress, told to the model
+  // once that is STEP_BUDGET_NOTICE_AT or fewer, so a prepared change is not cut off by a stop it never saw coming.
+  const nearBudgetNotice = (toolNames: ReadonlySet<string>): string | null => {
+    // The next boundary is the first later step that reaches the budget; it extends only if this or an earlier step's
+    // progress still falls in its window, and a second extension is never earned without new progress.
+    const boundary = Math.max(providerIterations + 1, stepBudget)
+    const grows = lastProgressIteration > 0 && lastProgressIteration >= boundary - STEP_BUDGET_EXTENSION && stepBudget < stepBudgetCeiling
+    const budget = grows ? Math.min(stepBudgetCeiling, stepBudget + STEP_BUDGET_EXTENSION) : stepBudget
+    const left = Math.max(0, budget - providerIterations - 1)
+    if (left > STEP_BUDGET_NOTICE_AT) return null
+    const wrapUpTool = toolNames.has("settle") ? "settle" : toolNames.has("rest") ? "rest" : null
+    if (!wrapUpTool) return null
+    return stepBudgetNotice(left, stepBudgetCeiling - providerIterations - 1, wrapUpTool)
+  }
+  // Adds the note, when there is one, to the last result the model gets for this step's batch.
+  const withBudgetNote = (content: string, isLast: boolean, toolNames: ReadonlySet<string>): string => {
+    const note = isLast && stepReportIteration === null ? nearBudgetNotice(toolNames) : null
+    return note ? `${content}\n\n${note}` : content
   }
   const requiredToolCallNames = [...new Set(options?.requiredToolCalls?.names ?? [])];
   const dispatchedRequiredToolCalls = new Set<string>();
@@ -1879,9 +1916,12 @@ export async function runAgent(
     }
     return { error: groundingError ?? shelfError ?? brevityError, unverifiedNames, shelfUnverified }
   }
+  // The tools this step offered, so a whole-batch rejection can carry the step-budget note too.
+  let budgetNoteToolNames: ReadonlySet<string> = new Set()
   const rejectToolBatch = (assistant: OpenAI.ChatCompletionAssistantMessageParam, reasons: string[]): void => {
-    rejectAttempt(assistant, assistant.tool_calls!.map((call, index) => ({
-      role: "tool", tool_call_id: call.id, content: reasons[index]!,
+    const calls = assistant.tool_calls!
+    rejectAttempt(assistant, calls.map((call, index) => ({
+      role: "tool", tool_call_id: call.id, content: withBudgetNote(reasons[index]!, index === calls.length - 1, budgetNoteToolNames),
     })))
   }
   const pendingRequiredToolCalls = (): { missing: string[]; message: string } | null => {
@@ -2063,6 +2103,7 @@ export async function runAgent(
       })()
       : ordinaryActiveTools;
     const candidateToolNames = new Set(candidateActiveTools.map((tool) => tool.function.name))
+    budgetNoteToolNames = candidateToolNames
     const unadvertisedRequiredTool = requiredToolCallNames.find((name) => !candidateToolNames.has(name))
     if (unadvertisedRequiredTool) {
       emitNervesEvent({ level: "error", component: "engine", event: "engine.required_tool_unadvertised", message: "required tool is not advertised for the active channel", meta: { toolName: unadvertisedRequiredTool, channel: String(channel) } })
@@ -2350,7 +2391,6 @@ export async function runAgent(
         emitNervesEvent({ level: "warn", component: "engine", event: "engine.step_budget_exhausted", message: `step budget used up; requesting a ${wrapUpTool}-only progress report`, meta: { stepBudget, providerIterations } })
         continue
       }
-      if (result.toolCalls.length > 0) lastIterationMadeProgress = false;
       // Phase annotation for Codex provider
       const hasPhaseAnnotation = providerRuntime.capabilities.has("phase-annotation");
       const isSoleSettle = result.toolCalls.length === 1 && result.toolCalls[0].name === "settle";
@@ -3101,6 +3141,7 @@ export async function runAgent(
         pushGenerated(msg);
         const batchToolImages: ToolCallImages[] = [];
         // Every pre-dispatch gate accepted the complete batch.
+        const isLastCall = (tc: object): boolean => tc === result.toolCalls[result.toolCalls.length - 1]
         for (const tc of result.toolCalls) {
           if (signal?.aborted) break;
           const args = validatedCallArguments.get(tc)!
@@ -3118,10 +3159,10 @@ export async function runAgent(
             for (const name of matchedNames) if (!loadedDeferredTools.includes(name)) loadedDeferredTools.push(name)
             // A job a bundle does with a command its skill documents has no door to find; the skill's section answers.
             const skills = findToolsSkillNote(query, activeToolNames)
-            const found = formatFindToolsReply(matched, skills.note)
+            if (matched.length > 0 || skills.hits > 0) lastProgressIteration = providerIterations
+            const found = withBudgetNote(formatFindToolsReply(matched, skills.note), isLastCall(tc), candidateToolNames)
             pushGenerated({ role: "tool", tool_call_id: tc.id, content: found })
             providerRuntime.appendToolOutput(tc.id, found)
-            if (matched.length > 0 || skills.hits > 0) lastIterationMadeProgress = true
             // onToolEnd's success means a door was loaded; a skill-only reply loaded none, but is still progress.
             callbacks.onToolEnd(FIND_TOOLS_NAME, query, matched.length > 0)
             recordFindTools({ query, matched: matched.length, deferred: deferralPool.length, skills: skills.hits })
@@ -3134,7 +3175,7 @@ export async function runAgent(
             const argSummary = summarizeArgs("speak", { message: speakMessage }, toolSelection);
             callbacks.onToolStart("speak", { message: speakMessage });
             if (speakMessage.trim().length === 0) {
-              const err = FLOW_TOOL_REFUSALS.speakEmpty;
+              const err = withBudgetNote(FLOW_TOOL_REFUSALS.speakEmpty, isLastCall(tc), candidateToolNames);
               callbacks.onToolEnd("speak", argSummary, false);
               pushGenerated({ role: "tool", tool_call_id: tc.id, content: err });
               providerRuntime.appendToolOutput(tc.id, err);
@@ -3157,7 +3198,7 @@ export async function runAgent(
             }
             if (speakDeliveryError) {
               callbacks.onToolEnd("speak", argSummary, false);
-              const failMsg = FLOW_TOOL_REFUSALS.speakNotDelivered(speakDeliveryError.message);
+              const failMsg = withBudgetNote(FLOW_TOOL_REFUSALS.speakNotDelivered(speakDeliveryError.message), isLastCall(tc), candidateToolNames);
               pushGenerated({ role: "tool", tool_call_id: tc.id, content: failMsg });
               providerRuntime.appendToolOutput(tc.id, failMsg);
               emitNervesEvent({
@@ -3170,7 +3211,7 @@ export async function runAgent(
               continue;
             }
             callbacks.onToolEnd("speak", argSummary, true);
-            const ack = "(spoken)";
+            const ack = withBudgetNote("(spoken)", isLastCall(tc), candidateToolNames);
             pushGenerated({ role: "tool", tool_call_id: tc.id, content: ack });
             providerRuntime.appendToolOutput(tc.id, ack);
             emitNervesEvent({
@@ -3345,7 +3386,7 @@ export async function runAgent(
             }
 
             callbacks.onToolEnd(tc.name, argSummary, success);
-            const shieldedToolResult = shieldDelegatedBanner(toolResult);
+            const shieldedToolResult = withBudgetNote(shieldDelegatedBanner(toolResult), isLastCall(tc), candidateToolNames);
             pushGenerated({ role: "tool", tool_call_id: tc.id, content: shieldedToolResult });
             providerRuntime.appendToolOutput(tc.id, shieldedToolResult);
             continue;
@@ -3399,7 +3440,9 @@ export async function runAgent(
           for (const saved of surfacesReachedLater(turnToolRecords)) {
             try { withdrawDeferredReturn(getAgentName(), saved.friendId, saved.content) } catch { /* a stale saved copy only repeats the news */ }
           }
-          const modelResult = shieldDelegatedBanner(fitToolOutputForModel(tc.name, rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger)));
+          if (success && !hasRecordedToolCall(toolLoopState, tc.name, args)) lastProgressIteration = providerIterations;
+          const fittedResult = shieldDelegatedBanner(fitToolOutputForModel(tc.name, rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger)));
+          const modelResult = withBudgetNote(fittedResult, isLastCall(tc), candidateToolNames)
           pushGenerated({ role: "tool", tool_call_id: tc.id, content: modelResult });
           providerRuntime.appendToolOutput(tc.id, modelResult);
           if (!success) augmentedToolContext?.habitSession?.recordError?.(toolResult);
@@ -3433,8 +3476,7 @@ export async function runAgent(
             invoked,
             sideEffect: success && changesState,
           })
-          if (success && !hasRecordedToolCall(toolLoopState, tc.name, args)) lastIterationMadeProgress = true;
-          recordToolOutcome(toolLoopState, tc.name, args, modelResult, success);
+          recordToolOutcome(toolLoopState, tc.name, args, fittedResult, success);
           callbacks.onToolEnd(tc.name, buildToolResultSummary(tc.name, args, modelResult, success, toolSelection), success);
           callbacks.onToolResult?.(messages);
         }
