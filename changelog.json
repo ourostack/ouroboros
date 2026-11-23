@@ -2,9 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1398",
+      "version": "0.1.0-alpha.1399",
       "changes": [
         "The owner route no longer shows the peer an approval or admission id: dedupe keys carry a hash of it."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1398",
+      "changes": [
+        "iMessage sends go through BlueBubbles' Private API helper whenever the server reports it connected, instead of AppleScript into Messages, which macOS can refuse (-1743) and which held Slugger's sends for minutes on 2026-11-23. Each send start says which method it used."
       ]
     },
     {
