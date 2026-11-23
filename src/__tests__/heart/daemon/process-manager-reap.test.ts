@@ -4,7 +4,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { describe, expect, it, vi } from "vitest"
 import { DaemonProcessManager } from "../../../heart/daemon/process-manager"
-import { listProcesses } from "../../../heart/daemon/process-tree"
+import { listProcesses, sendSignal } from "../../../heart/daemon/process-tree"
 
 function alive(pid: number): boolean {
   try {
@@ -16,12 +16,13 @@ function alive(pid: number): boolean {
 }
 
 // A real worker that ignores SIGTERM and has started what sync starts: a detached git-like child with its own
-// child in the same group, and a plain child. After the stop, none of them may still run.
+// child in the same group, and a plain child. The detached group ignores SIGTERM too, as ssh run under sudo
+// effectively does, so only the SIGKILL that follows the grace ends it. After the stop, none of them may still run.
 const WORKER = `
 const { spawn } = require("node:child_process")
 const fs = require("node:fs")
 process.on("SIGTERM", () => {})
-const detached = spawn("sh", ["-c", "sleep 60 & wait"], { detached: true, stdio: "ignore" })
+const detached = spawn("sh", ["-c", "trap '' TERM; sleep 60 & wait"], { detached: true, stdio: "ignore" })
 const plain = spawn("sleep", ["60"], { stdio: "ignore" })
 fs.writeFileSync(process.argv[1], JSON.stringify({ detached: detached.pid, plain: plain.pid }))
 setInterval(() => {}, 1000)
@@ -38,16 +39,19 @@ describe("stopping a worker that ignores SIGTERM", () => {
       spawn: (_command, _args, options) => {
         const child = nodeSpawn(process.execPath, ["-e", WORKER, pidsFile], { stdio: options.stdio as never })
         workerPid = child.pid!
+        spawned.push(workerPid)
         return child
       },
       listProcesses,
+      killProcess: sendSignal,
+      reapGraceMs: 500,
       stopTimeoutMs: 300,
       killTimeoutMs: 5_000,
     })
     try {
       await manager.startAgent("stuck")
       const started = await vi.waitFor(() => JSON.parse(fs.readFileSync(pidsFile, "utf-8")) as { detached: number; plain: number }, { timeout: 10_000, interval: 50 })
-      spawned.push(workerPid, started.detached, -started.detached, started.plain)
+      spawned.push(started.detached, -started.detached, started.plain)
       const grandchild = await vi.waitFor(() => {
         const row = listProcesses().find((candidate) => candidate.ppid === started.detached)
         expect(row).toBeDefined()
@@ -59,6 +63,8 @@ describe("stopping a worker that ignores SIGTERM", () => {
       await vi.waitFor(() => {
         for (const pid of [workerPid, started.detached, grandchild, started.plain]) expect(alive(pid), `pid ${pid}`).toBe(false)
       }, { timeout: 5_000, interval: 50 })
+      // All gone: their pids may now belong to someone else, so the cleanup below must not signal them.
+      spawned.length = 0
     } finally {
       // A failed run must not leave its sleeps behind on a shared machine.
       for (const pid of spawned) {

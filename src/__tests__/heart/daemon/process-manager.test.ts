@@ -1517,10 +1517,58 @@ describe("daemon process manager", () => {
     timers[0]?.cb()
     await stop
 
+    // SIGTERM first, so a child that relays signals (sudo, to the ssh it runs) can pass it on; SIGKILL after a grace.
     expect(hung.kill).toHaveBeenLastCalledWith("SIGKILL")
-    expect(killProcess.mock.calls).toEqual([[-200, "SIGKILL"], [300, "SIGKILL"]])
+    expect(killProcess.mock.calls).toEqual([[-200, "SIGTERM"], [300, "SIGTERM"]])
     expect(events).toHaveBeenCalledWith(expect.objectContaining({ event: "daemon.agent_stop_reaped_children", meta: expect.objectContaining({ pid: 111, groups: 1, processes: 1 }) }))
+    const grace = timers.find((timer) => timer.delay === 1_000)
+    expect(grace).toBeDefined()
+    grace!.cb()
+    expect(killProcess.mock.calls.slice(2)).toEqual([[-200, "SIGKILL"], [300, "SIGKILL"]])
     events.mockRestore()
+  })
+
+  it("does not signal real processes for workers a test spawned, unless told to", async () => {
+    const hung = new MockChild()
+    hung.pid = 111
+    hung.kill.mockImplementation((signal?: string) => {
+      if (signal === "SIGKILL") hung.emit("exit", null, "SIGKILL")
+      return true
+    })
+    spawn.mockReturnValue(hung)
+    now.mockReturnValue(1_000)
+    const realKill = vi.spyOn(process, "kill")
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn, stopTimeoutMs: 25, reapGraceMs: 50, listProcesses: () => [{ pid: 111, ppid: 100, pgid: 100 }, { pid: 2_000_000, ppid: 111, pgid: 100 }] })
+    await manager.startAgent("slugger")
+    const stop = manager.stopAgent("slugger")
+    await Promise.resolve()
+    timers[0]?.cb()
+    await stop
+    timers.find((timer) => timer.delay === 50)!.cb()
+    expect(realKill).not.toHaveBeenCalled()
+    realKill.mockRestore()
+  })
+
+  it("reads no process table for a worker whose pid is unknown", async () => {
+    const hung = new MockChild()
+    ;(hung as { pid?: number }).pid = undefined
+    hung.kill.mockImplementation((signal?: string) => {
+      if (signal === "SIGKILL") hung.emit("exit", null, "SIGKILL")
+      return true
+    })
+    spawn.mockReturnValue(hung)
+    now.mockReturnValue(1_000)
+    const listProcesses = vi.fn(() => [])
+    const killProcess = vi.fn()
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn, stopTimeoutMs: 25, listProcesses, killProcess })
+    await manager.startAgent("slugger")
+    const stop = manager.stopAgent("slugger")
+    await Promise.resolve()
+    timers[0]?.cb()
+    await stop
+    expect(hung.kill).toHaveBeenLastCalledWith("SIGKILL")
+    expect(listProcesses).not.toHaveBeenCalled()
+    expect(killProcess).not.toHaveBeenCalled()
   })
 
   it("leaves a worker's children alone when SIGKILL could not be sent to it", async () => {

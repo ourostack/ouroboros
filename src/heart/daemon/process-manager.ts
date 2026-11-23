@@ -3,7 +3,7 @@ import { randomUUID } from "crypto"
 import * as path from "path"
 import { getRepoRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { killProcessTree, listProcesses, processTreeTargets, type ProcessRow } from "./process-tree"
+import { killProcessTree, listProcesses, processTreeTargets, sendSignal, type ProcessRow } from "./process-tree"
 import type { RuntimeCredentialBootstrapMessage, RuntimeCredentialConfig, RuntimeCredentialItemKind } from "../runtime-credentials"
 import type { ProviderCredentialRecord } from "../provider-credentials"
 
@@ -78,8 +78,11 @@ export interface DaemonProcessManagerOptions {
   /** The process table, read before a worker is sent SIGKILL to find what it started. Defaults to `ps`; when `spawn`
    *  is injected the workers are not real processes, so it defaults to an empty table. */
   listProcesses?: () => ProcessRow[]
-  /** Sends a signal to a process, or to a process group when the pid is negative. Defaults to `process.kill`. */
+  /** Sends a signal to a process, or to a process group when the pid is negative. Defaults to `process.kill`; when
+   *  `spawn` is injected it defaults to doing nothing, so fake worker pids can never reach real processes. */
   killProcess?: (pid: number, signal: NodeJS.Signals) => void
+  /** How long what a SIGKILLed worker started gets between SIGTERM and SIGKILL. Default 1s. */
+  reapGraceMs?: number
   now?: () => number
   setTimeoutFn?: (cb: () => void, delay: number) => unknown
   clearTimeoutFn?: (timer: unknown) => void
@@ -170,6 +173,7 @@ export class DaemonProcessManager {
   private readonly spawnFn: (command: string, args: string[], options: Record<string, unknown>) => ChildProcess
   private readonly listProcessesFn: () => ProcessRow[]
   private readonly killProcessFn: (pid: number, signal: NodeJS.Signals) => void
+  private readonly reapGraceMs: number
   private readonly now: () => number
   private readonly setTimeoutFn: (cb: () => void, delay: number) => unknown
   private readonly clearTimeoutFn: (timer: unknown) => void
@@ -267,7 +271,8 @@ export class DaemonProcessManager {
     this.killTimeoutMs = options.killTimeoutMs ?? 2_000
     this.spawnFn = options.spawn ?? ((command, args, spawnOptions) => nodeSpawn(command, args, spawnOptions))
     this.listProcessesFn = options.listProcesses ?? (options.spawn ? () => [] : listProcesses)
-    this.killProcessFn = options.killProcess ?? ((pid, signal) => { process.kill(pid, signal) })
+    this.killProcessFn = options.killProcess ?? (options.spawn ? () => {} : sendSignal)
+    this.reapGraceMs = options.reapGraceMs ?? 1_000
     this.now = options.now ?? (() => Date.now())
     this.setTimeoutFn = options.setTimeoutFn ?? ((cb, delay) => setTimeout(cb, delay))
     this.clearTimeoutFn = options.clearTimeoutFn ?? ((timer) => clearTimeout(timer as NodeJS.Timeout))
@@ -686,15 +691,18 @@ export class DaemonProcessManager {
           killAccepted = false
         }
         if (killAccepted && tree) {
-          const reaped = killProcessTree(tree, childPid!, this.killProcessFn)
+          // SIGTERM first: a child that relays signals (sudo, to the ssh it runs) can only pass that one on. Whatever
+          // is still there after the grace gets SIGKILL.
+          const reaped = killProcessTree(tree, childPid!, this.killProcessFn, "SIGTERM")
           if (reaped.groups + reaped.processes > 0) {
             emitNervesEvent({
               level: "warn",
               component: "daemon",
               event: "daemon.agent_stop_reaped_children",
-              message: "sent SIGKILL to what the stuck worker started, so none of it outlives the worker",
-              meta: { agent, pid: childPid, groups: reaped.groups, processes: reaped.processes },
+              message: "sent SIGTERM to what the stuck worker started, and SIGKILL after a grace, so none of it outlives the worker",
+              meta: { agent, pid: childPid, groups: reaped.groups, processes: reaped.processes, graceMs: this.reapGraceMs },
             })
+            this.setTimeoutFn(() => { killProcessTree(tree, childPid!, this.killProcessFn, "SIGKILL") }, this.reapGraceMs)
           }
         }
         emitNervesEvent({
