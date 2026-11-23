@@ -81,6 +81,14 @@ it("holds no lock and sends no token without --host-lock", async () => {
   expect(sandbox.remoteRunCase).toHaveBeenCalledWith(expect.objectContaining({ paths: expect.not.objectContaining({ hostLockToken: expect.anything() }) }))
 })
 
+it("sends the run's named agent images with every job, beside the agent's and household's", async () => {
+  runner.run.mockResolvedValue({ exitCode: 0 })
+  expect((await run([...REMOTE, "--images", "ouro-eval-a:1,ouro-eval-h:1,arm-a=ouro-eval-arm-a:1"])).exitCode).toBe(0)
+  expect(sandbox.remoteRunCase).toHaveBeenCalledWith(expect.objectContaining({
+    paths: expect.objectContaining({ images: { agent: "ouro-eval-a:1", household: "ouro-eval-h:1", named: { "arm-a": "ouro-eval-arm-a:1" } } }),
+  }))
+})
+
 it("refuses a --host-lock with no holder, or one that isn't a single safe word, before taking anything", async () => {
   for (const flags of [[...REMOTE, "--host-lock"], [...REMOTE, "--host-lock", "--reduced"], [...REMOTE, "--host-lock", "eval; rm -rf /"]]) {
     vi.resetModules()
