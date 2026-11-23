@@ -5,7 +5,7 @@
  * checker that cannot run, or answers anything but true or false, grades the file as not readable.
  */
 import { emitNervesEvent } from "../../nerves/runtime"
-import type { Docker } from "./docker"
+import { EVAL_LABEL, type Docker } from "./docker"
 
 const CHECK = "import json, sys; sys.path.insert(0, '/oracle'); from booklib import quality; print(json.dumps(bool(quality.check('/book.epub')['ok'])))"
 
@@ -13,7 +13,7 @@ export function dockerOracle(input: { docker: Docker; image: string; booksLib: s
   return async (file) => {
     try {
       const out = await input.docker.run([
-        "run", "--rm", "--network", "none", "--log-driver", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+        "run", "--rm", "--label", EVAL_LABEL, "--network", "none", "--log-driver", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
         "--tmpfs", "/tmp:rw,size=64m", "-v", `${input.booksLib}:/oracle:ro`, "-v", `${file}:/book.epub:ro`, input.image, "python3", "-I", "-c", CHECK,
       ])
       const verdict = out.trim()
