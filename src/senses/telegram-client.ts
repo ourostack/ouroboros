@@ -1201,6 +1201,18 @@ export interface TelegramApprovalTransport {
    * The card is edited once, after the decision settles, with what actually happened.
    */
   relayDeny(input: TelegramRelayDenyInput): Promise<TelegramRelayDenyResult>
+  /**
+   * The relay token, prompt and expiry for an approval whose card is being sent right now, so the owner route can hand
+   * the request to the primary agent's harness. None once the card is bound or settled, or without a decision token.
+   */
+  approvalRelayRequest?(input: { approvalId: string; routeDid: string }): TelegramApprovalRelayRequest | undefined
+}
+
+export interface TelegramApprovalRelayRequest {
+  relayToken: string
+  prompt: string
+  /** Epoch ms: the card's expiry when it is sent. Binding can only push it later. */
+  expiresAt: number
 }
 
 export interface TelegramRelayDenyInput extends TelegramRelayOrigin {
@@ -1822,6 +1834,16 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       return handleUpdateUnlocked(update, observedAt)
     },
     reconcileExpired,
+    approvalRelayRequest(input) {
+      const pending = uniquePending().find((record) => record.approvalId === input.approvalId)
+      if (!pending || pending.deliveryState !== "send_attempting" || !pending.decisionToken || pending.decisionToken.length < MIN_RELAY_KEY_LENGTH) return undefined
+      return {
+        relayToken: approvalRelayToken({ decisionToken: pending.decisionToken, approvalId: pending.approvalId, routeDid: input.routeDid }),
+        // The decision token is held only in memory, set by sendApproval together with the prompt, so the prompt is there.
+        prompt: pending.prompt as string,
+        expiresAt: pending.expiresAt,
+      }
+    },
     async relayDeny(input) {
       const receivedAt = now()
       const matches = async (candidate: TelegramPendingApproval): Promise<boolean> => {

@@ -12,7 +12,7 @@ import { APPROVAL_RELAY_FILE } from "../../a2a/approval-relay"
 import { openApprovalAnswer, sealChatMessage } from "../../a2a/sealed-chat"
 import type { A2AMessage } from "../../a2a/types"
 import {
-  approvalRelaySocketPath, createApprovalRelayDoor, handleRelayedApprovalAnswer, MAX_RELAY_CONNECTIONS, MAX_SOCKET_PATH_BYTES, relayAnswerSeenLedger, startApprovalRelaySocket,
+  approvalRelayRequestFor, approvalRelaySocketPath, createApprovalRelayDoor, handleRelayedApprovalAnswer, MAX_RELAY_CONNECTIONS, MAX_SOCKET_PATH_BYTES, ownerRouteDid, relayAnswerSeenLedger, startApprovalRelaySocket,
   type RelayedAnswerDeps, type RelayReply,
 } from "../../senses/telegram-approval-relay"
 
@@ -403,5 +403,64 @@ describe("createApprovalRelayDoor", () => {
     const door = createApprovalRelayDoor({ agentName: "door", agentRoot, runtime: { relayDeny } })
     await expect(door.start()).resolves.toBeUndefined()
     await door.stop()
+  })
+})
+
+describe("approvalRelayRequestFor", () => {
+  const NOW = new Date("2026-11-23T01:40:00.000Z")
+  const held = { relayToken: RELAY_TOKEN, prompt: "Restart\nplex?", expiresAt: NOW.getTime() + 300_000 }
+  const request = (options: { routeDid?: string | undefined; transport?: { approvalRelayRequest?: () => typeof held | undefined } | undefined; switchDid?: string | null } = {}) => {
+    const { agentRoot, slugger } = setup({ switchDid: options.switchDid === undefined ? undefined : options.switchDid })
+    const transport = "transport" in options ? options.transport : { approvalRelayRequest: vi.fn(() => held) }
+    return { slugger, result: approvalRelayRequestFor({
+      agentRoot, routeDid: () => ("routeDid" in options ? options.routeDid : slugger.did), approvalId: "approval-1",
+      transport: transport as never, now: () => NOW, randomBytes: () => Uint8Array.from([0, 1, 2, 3]),
+    }), transport }
+  }
+
+  it("builds the v1 request when the switch is on and names the route", () => {
+    const { result, transport, slugger } = request()
+    expect(result).toEqual({ relayToken: RELAY_TOKEN, code: "ABCD", actionLine: "Restart plex?", decisions: ["deny"], expiresAt: "2026-11-23T01:45:00.000Z" })
+    expect(transport!.approvalRelayRequest).toHaveBeenCalledWith({ approvalId: "approval-1", routeDid: slugger.did })
+  })
+
+  it("builds nothing, and reads no route, with the switch off", () => {
+    const routeDid = vi.fn(() => "did:key:z")
+    const { agentRoot } = setup({ switchDid: null })
+    expect(approvalRelayRequestFor({ agentRoot, routeDid, approvalId: "approval-1", transport: undefined })).toBeUndefined()
+    expect(routeDid).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["no owner route", { routeDid: undefined }],
+    ["a route the switch doesn't name", { routeDid: "did:key:z6MkSomeoneElse" }],
+    ["no transport", { transport: undefined }],
+    ["a transport without the method", { transport: {} }],
+    ["no decision token held", { transport: { approvalRelayRequest: () => undefined } }],
+    ["an already expired card", { transport: { approvalRelayRequest: () => ({ ...held, expiresAt: NOW.getTime() }) } }],
+  ])("builds nothing with %s", (_label, options) => {
+    expect(request(options as never).result).toBeUndefined()
+  })
+
+  it("builds nothing, and still lets the card go, when agent.json can't be read", () => {
+    const { agentRoot } = setup()
+    expect(approvalRelayRequestFor({ agentRoot, routeDid: () => { throw new Error("bad json") }, approvalId: "approval-1", transport: { approvalRelayRequest: () => held } })).toBeUndefined()
+  })
+
+  it("draws a real random code by default", () => {
+    const { agentRoot, slugger } = setup()
+    const result = approvalRelayRequestFor({ agentRoot, routeDid: () => slugger.did, approvalId: "approval-1", transport: { approvalRelayRequest: () => ({ ...held, expiresAt: Date.now() + 300_000 }) } })
+    expect(result?.code).toMatch(/^[A-HJ-NP-Z2-9]{4}$/)
+  })
+
+  it("reads the owner route from agent.json", () => {
+    const { agentRoot, slugger } = setup()
+    const name = path.basename(agentRoot, ".ouro")
+    expect(ownerRouteDid(name, agentRoot)).toBeUndefined()
+    const configPath = path.join(agentRoot, "agent.json")
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"))
+    config.senses = { ...config.senses, telegram: { ...config.senses?.telegram, enabled: true, ownerNoticesTo: { cardUrl: "https://slugger.example/.well-known/agent-card.json", did: slugger.did } } }
+    fs.writeFileSync(configPath, JSON.stringify(config))
+    expect(ownerRouteDid(name, agentRoot)).toBe(slugger.did)
   })
 })

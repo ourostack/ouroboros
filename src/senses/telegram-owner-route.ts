@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 
-import { cardDid, fetchA2AAgentCard, sendSealedA2AChat } from "../a2a/client"
+import type { ApprovalRequestPayload } from "../a2a/approval-request-wire"
+import { cardDid, fetchA2AAgentCard, sendSealedA2AChat, sendSealedApprovalRequest } from "../a2a/client"
 import { loadSelfA2AIdentity } from "../a2a/identity"
 import { loadAgentConfig } from "../heart/identity"
 import type { DidKeyIdentity } from "@ouro.bot/friends/a2a-client"
@@ -21,13 +22,23 @@ export interface OwnerRouteItem {
   urgency: OwnerRouteUrgency
   /** One per condition, so a re-fire updates the peer's item instead of adding one. */
   dedupeKey: string
+  /**
+   * With the approval relay on, the request the peer's harness takes instead of the text: it is sent sealed in its own
+   * part, and no text goes with it, so the token, code and action line never reach the peer's model.
+   */
+  approvalRequest?: ApprovalRequestPayload
 }
 
 export type OwnerRouteOutcome = { status: "delivered" } | { status: "unreachable"; detail: string }
 export type OwnerRoute = ((item: OwnerRouteItem) => Promise<OwnerRouteOutcome>) & {
   /** Checks that the peer answers as itself, sending nothing. */
   probe?: () => Promise<OwnerRouteOutcome>
+  /** The peer's pinned DID, which the approval relay's switch must name. */
+  peerDid?: string
 }
+
+/** A route send that takes longer than this is abandoned, so Ari gets the card well inside its 5-minute window. */
+export const OWNER_ROUTE_SEND_TIMEOUT_MS = 15_000
 
 /** How often the Butler checks the peer, and how many failed checks in a row (15 minutes) count as down. */
 export const OWNER_ROUTE_WATCH_INTERVAL_MS = 5 * 60_000
@@ -95,37 +106,47 @@ export function createA2AOwnerRoute(options: {
   loadIdentity: () => Promise<DidKeyIdentity>
   fetchCard?: typeof fetchA2AAgentCard
   send?: typeof sendSealedA2AChat
+  sendRequest?: typeof sendSealedApprovalRequest
+  /** Tests: how long one send may take. */
+  timeoutMs?: number
 }): OwnerRoute {
   const fetchCard = options.fetchCard ?? fetchA2AAgentCard
   const send = options.send ?? sendSealedA2AChat
+  const sendRequest = options.sendRequest ?? sendSealedApprovalRequest
   /** null when the card at the address serves the pinned DID; otherwise why not. */
-  const pinned = async (): Promise<string | null> => {
-    const served = cardDid(await fetchCard(options.cardUrl))
+  const pinned = async (signal?: AbortSignal): Promise<string | null> => {
+    const served = cardDid(await fetchCard(options.cardUrl, undefined, signal))
     if (served === options.did) return null
     emitNervesEvent({ level: "error", component: "senses", event: "senses.telegram_owner_route_pin_mismatch", message: "the owner route's peer card serves another DID", meta: { cardUrl: options.cardUrl, served: served ?? null, pinned: options.did } })
     return `the card at ${options.cardUrl} serves ${served}, not the pinned ${options.did}`
   }
   const probe = async (): Promise<OwnerRouteOutcome> => {
     try {
-      const detail = await pinned()
+      const detail = await pinned(AbortSignal.timeout(options.timeoutMs ?? OWNER_ROUTE_SEND_TIMEOUT_MS))
       return detail ? { status: "unreachable", detail } : { status: "delivered" }
     } catch (error) {
       return { status: "unreachable", detail: reason(error) }
     }
   }
   const route = async (item: OwnerRouteItem): Promise<OwnerRouteOutcome> => {
+    // One deadline covers the card check and the send, so a peer that hangs can't hold the card.
+    const signal = AbortSignal.timeout(options.timeoutMs ?? OWNER_ROUTE_SEND_TIMEOUT_MS)
     try {
-      const detail = await pinned()
+      const detail = await pinned(signal)
       if (detail) return { status: "unreachable", detail }
-      await send({ cardUrl: options.cardUrl, text: formatOwnerRouteMessage(item), identity: await options.loadIdentity() })
-      emitNervesEvent({ component: "senses", event: "senses.telegram_owner_route_delivered", message: "sent a self-started Butler message to the owner's primary agent", meta: { urgency: item.urgency, dedupeKey: item.dedupeKey } })
+      if (item.approvalRequest) {
+        await sendRequest({ cardUrl: options.cardUrl, peerDid: options.did, payload: item.approvalRequest, identity: await options.loadIdentity(), signal })
+      } else {
+        await send({ cardUrl: options.cardUrl, text: formatOwnerRouteMessage(item), identity: await options.loadIdentity(), signal })
+      }
+      emitNervesEvent({ component: "senses", event: "senses.telegram_owner_route_delivered", message: "sent a self-started Butler message to the owner's primary agent", meta: { urgency: item.urgency, dedupeKey: item.dedupeKey, relayed: item.approvalRequest !== undefined } })
       return { status: "delivered" }
     } catch (error) {
       emitNervesEvent({ level: "warn", component: "senses", event: "senses.telegram_owner_route_unreachable", message: "the owner's primary agent could not be reached", meta: { urgency: item.urgency, dedupeKey: item.dedupeKey, error: reason(error) } })
       return { status: "unreachable", detail: reason(error) }
     }
   }
-  return Object.assign(route, { probe })
+  return Object.assign(route, { probe, peerDid: options.did })
 }
 
 /** The owner route `agent.json` names (`senses.telegram.ownerNoticesTo`), signing as this agent's A2A identity; none when unset. */

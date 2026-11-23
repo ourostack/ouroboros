@@ -1145,7 +1145,7 @@ describe("media MCP — media_fill_missing", () => {
     expect(calls.find((c) => c.method === "POST" && c.url.includes("/release"))?.body).toMatchObject({ guid: "g-2020", episodeIds: [14472, 14473, 14474, 14475, 14476] })
     expect(out.blocklisted_matches).toBeUndefined()
     expect(blocklist.map((b) => b.id)).toEqual([78])
-    expect(out.summary).toContain("no seeders: it waits for peers and may never finish")
+    expect(out.summary).toContain("no seeders: it waits for peers and may not finish")
     expect(out.next_step).toContain("await_condition")
   })
 
