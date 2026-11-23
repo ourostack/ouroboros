@@ -12,7 +12,7 @@ import { declaredTools } from "../repertoire/skill-summaries";
 import { APPROVAL_UNAVAILABLE_REJECTION, classifyApprovalForInvocation, executeTool, preflightToolCall, summarizeArgs, buildToolResultSummary, restTool, selectToolsForChannel, reduceToolSelection, ToolSelectionError, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
 import type { HabitSessionToolContext, ToolContext, ToolResultImage, ToolRiskProfile, ToolSelection } from "../repertoire/tools-base";
 import { withCode } from "../repertoire/tools-base";
-import { FLOW_TOOL_REFUSALS } from "../repertoire/tools-flow";
+import { FLOW_TOOL_REFUSALS, SETTLE_CHECK_BACK_CADENCE } from "../repertoire/tools-flow";
 import { buildToolImagesMessage, canModelSeeToolImages, toolImagesNote, type ToolCallImages } from "./tool-images";
 import { digestJson, validateAdvertisedToolArguments } from "../repertoire/tool-arguments";
 import type { ValidatedToolArguments } from "../repertoire/tool-arguments";
@@ -2779,7 +2779,47 @@ export async function runAgent(
             )
           const validDirectReply = mustResolveBeforeHandoffActive && intent === "direct_reply" && sawSteeringFollowUp;
 
-          if (retryError === null) {
+          // A check-back is filed only once every gate has passed, through await_condition itself, so it is bound and
+          // permitted exactly as that tool would be. If it can't be filed, nothing is sent and the model is told why.
+          let checkBackError: string | null = null
+          let checkBackFiled: { name: string; at: string } | null = null
+          if (retryError === null && (settleArgs.check_back_at !== undefined || settleArgs.condition !== undefined)) {
+            // The schema gate has already made both strings when present.
+            const at = (settleArgs.check_back_at ?? "").trim()
+            const condition = (settleArgs.condition ?? "").trim()
+            if (!at || !condition) {
+              checkBackError = FLOW_TOOL_REFUSALS.settleCheckBackIncomplete
+            } else {
+              const awaitArgs = { name: `check-back-${Date.now().toString(36)}`, condition, cadence: SETTLE_CHECK_BACK_CADENCE, wake_at: at }
+              let filedText: string
+              try {
+                if (options?.execTool && !relationship) {
+                  filedText = await options.execTool("await_condition", awaitArgs, trustedToolContext)
+                } else {
+                  // A failed execution's text is its error, which reads below as the reason.
+                  filedText = (await executeTool("await_condition", awaitArgs, augmentedToolContext, options?.execTool)).text
+                }
+              } catch (error) {
+                filedText = JSON.stringify({ error: error instanceof Error ? error.message : String(error) })
+              }
+              let parsed: { filed?: unknown; error?: unknown } = {}
+              try { parsed = JSON.parse(filedText) as typeof parsed } catch { parsed = { error: filedText } }
+              if (parsed.filed === awaitArgs.name) {
+                checkBackFiled = { name: awaitArgs.name, at }
+              } else {
+                checkBackError = FLOW_TOOL_REFUSALS.settleCheckBackNotFiled(typeof parsed.error === "string" ? parsed.error : "await_condition gave no receipt")
+              }
+            }
+            emitNervesEvent({
+              level: checkBackError ? "warn" : "info",
+              component: "engine",
+              event: "engine.settle_check_back",
+              message: "settle asked to leave a check-back",
+              meta: { filed: checkBackFiled !== null },
+            })
+          }
+
+          if (retryError === null && checkBackError === null) {
             const finalAnswer = replacement ?? deliveredAnswer
             const rewritten = replacement !== null
             try {
@@ -2811,7 +2851,7 @@ export async function runAgent(
               pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: resumeWork });
               providerRuntime.appendToolOutput(result.toolCalls[0].id, resumeWork);
             } else {
-              const delivered = "(delivered)";
+              const delivered = checkBackFiled ? `(delivered; check-back ${checkBackFiled.name} filed for ${checkBackFiled.at})` : "(delivered)";
               pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: delivered });
               providerRuntime.appendToolOutput(result.toolCalls[0].id, delivered);
               outcome = intent === "blocked" ? "blocked" : "settled";
@@ -2823,7 +2863,7 @@ export async function runAgent(
             streamCallbackBuffer?.discard();
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs, toolSelection), false);
             callbacks.onClearText?.();
-            rejectToolBatch(msg, [retryError]);
+            rejectToolBatch(msg, [(retryError ?? checkBackError)!]);
           }
           continue;
         }
