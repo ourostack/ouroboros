@@ -1150,6 +1150,78 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
     expect(result.allowed).toBe(false)
   })
 
+  describe("the shell can't change the psyche for a turn that may not write it (0.1.0-alpha.1435 gate)", () => {
+    beforeEach(() => { vi.mocked(fs.existsSync).mockReturnValue(true) })
+    const peer = { agentRoot: "/bundle", trustLevel: "family" as const, friendId: "peer", friendKind: "agent" as const, channel: "a2a" }
+    const owner = { agentRoot: "/bundle", trustLevel: "family" as const, friendId: "ari", friendKind: "human" as const, channel: "telegram", isGroupChat: false }
+    const friend = { agentRoot: "/bundle", trustLevel: "friend" as const, friendId: "guest", friendKind: "human" as const, channel: "telegram", isGroupChat: false }
+    const own = { agentRoot: "/bundle", trustLevel: "family" as const, channel: "inner" }
+    const guard = async (command: string, context: Record<string, unknown>) => (await import("../../repertoire/guardrails")).guardInvocation("shell", { command }, context)
+
+    it.each([
+      "sed -i 's/jokes//' psyche/SOUL.md",
+      "cat > /bundle/psyche/SOUL.md <<'EOF'\nformal and flat\nEOF",
+      "cd /bundle/psyche && python3 -c \"open('SOUL.md','w').write('x')\"",
+      "cp /tmp/soul.md /bundle/psyche/SOUL.md",
+      "echo x >> psyche/IDENTITY.md",
+      "printf x | tee psyche/LORE.md",
+      "git -C /bundle checkout HEAD~1 -- psyche/SOUL.md",
+      "mv /tmp/a psyche/ASPIRATIONS.md",
+      "perl -pi -e 's/a/b/' SOUL.md",
+      "cat psyche/SOUL.md $(touch psyche/x)",
+    ])("refuses an A2A peer's shell write: %s", async (command) => {
+      expect(await guard(command, peer)).toMatchObject({ allowed: false, reason: "that file is part of me; I change it when my owner asks me in our own chat." })
+    })
+
+    it.each([
+      "cat /bundle/psyche/SOUL.md",
+      "grep -n jokes psyche/SOUL.md | head -5",
+      "git -C /bundle log -3 -- psyche/SOUL.md",
+      "git -c core.pager=cat diff HEAD~1 -- psyche",
+      "sed -n 1,20p psyche/SOUL.md",
+      "ls psyche 2>/dev/null",
+      "wc -l psyche/*.md 2>&1",
+    ])("lets an A2A peer's turn read the psyche from the shell: %s", async (command) => {
+      expect(await guard(command, peer)).toMatchObject({ allowed: true })
+    })
+
+    it("leaves commands that never name the psyche alone", async () => {
+      for (const command of ["gh pr ready 634 -R gim-home/CIT", "sed -i s/a/b/ src/mind/psyche.ts", "echo hi > /tmp/out.txt"]) {
+        expect(await guard(command, peer), command).toMatchObject({ allowed: true })
+      }
+    })
+
+    it("lets the owner change who he is from his own chat", async () => {
+      expect(await guard("sed -i 's/jokes//' psyche/SOUL.md", owner)).toMatchObject({ allowed: true })
+    })
+
+    it("keeps TACIT for family and his own turns, and refuses a friend's write with the TACIT reason", async () => {
+      expect(await guard("echo rule >> psyche/TACIT.md", peer)).toMatchObject({ allowed: true })
+      expect(await guard("echo rule >> psyche/TACIT.md", own)).toMatchObject({ allowed: true })
+      expect(await guard("echo rule >> psyche/TACIT.md", friend)).toMatchObject({ allowed: false, reason: expect.stringContaining("TACIT is written from my family") })
+      expect(await guard("echo rule >> psyche/SOUL.md", own)).toMatchObject({ allowed: false, reason: expect.stringContaining("that file is part of me") })
+    })
+
+    it("reads a bare TACIT.md as TACIT and git with no subcommand as a write", async () => {
+      expect(await guard("echo rule >> TACIT.md", friend)).toMatchObject({ allowed: false, reason: expect.stringContaining("TACIT is written from my family") })
+      expect(await guard("git -C /bundle/psyche", peer)).toMatchObject({ allowed: false })
+    })
+
+    it("counts a psyche path whose landing place can't be read as an identity file", async () => {
+      const errno = Object.assign(new Error("denied"), { code: "EACCES" })
+      const realpath = vi.spyOn(fs.realpathSync, "native").mockImplementation((() => { throw errno }) as typeof fs.realpathSync.native)
+      try {
+        expect(await guard("echo rule >> psyche/TACIT.md", friend)).toMatchObject({ allowed: false, reason: expect.stringContaining("that file is part of me") })
+      } finally {
+        realpath.mockRestore()
+      }
+    })
+
+    it("checks nothing without an agent root", async () => {
+      expect(await guard("sed -i x psyche/SOUL.md", { ...peer, agentRoot: undefined })).toMatchObject({ allowed: true })
+    })
+  })
+
   describe("the friends store is written by the harness, never by a model's file tools", () => {
     const ctx = (over: Record<string, unknown> = {}) => ({ readPaths: new Set(["/bundle/friends/peer.json"]), agentRoot: "/bundle", trustLevel: "family" as const, ...over })
     it.each(["/bundle/friends/peer.json", "friends/peer.json", "/bundle/friends/../friends/peer.json", "/bundle/friends"])("refuses write_file and edit_file to %s for everyone, family included", async (target) => {
@@ -1428,6 +1500,18 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
         "cat /bundle/psyche/SOUL.md & cp a /bundle/psyche/b", "FOO=1 cp a /bundle/psyche/b", "echo `cp a /bundle/psyche/b`", "cat /bundle/psyche/SOUL.md >/dev/null",
         "X=/bundle/psyche/SOUL.md; cat psyche/LORE.md $X", "cat psyche/SOUL.md $TARGET", "cat psyche/SOUL.md ${TARGET}", "cat psyche/SOUL.md $_",
       ]
+      // cat only reads, whatever an unknown variable names.
+      const variableReads = ["cat psyche/SOUL.md $TARGET", "cat psyche/SOUL.md ${TARGET}", "cat psyche/SOUL.md $_"]
+      it.each(variableReads)("allows the read %s, which names an unknown variable", async (command) => {
+        const { guardInvocation } = await import("../../repertoire/guardrails")
+        vi.mocked(fs.existsSync).mockReturnValue(true)
+        expect(guardInvocation("shell", { command }, ctx({ readPaths: new Set() }))).toEqual({ allowed: true })
+      })
+      it.each(bypasses.filter((command) => !variableReads.includes(command)))("refuses %s from a turn that may not write the psyche (0.1.0-alpha.1435)", async (command) => {
+        const { guardInvocation } = await import("../../repertoire/guardrails")
+        vi.mocked(fs.existsSync).mockReturnValue(true)
+        expect(guardInvocation("shell", { command }, ctx({ readPaths: new Set() }))).toMatchObject({ allowed: false })
+      })
       it.each([
         "cat /bundle/psyche/SOUL.md", "ls -la /bundle/psyche", "head -n 5 psyche/LORE.md", "tail -f /bundle/psyche/LORE.md", "grep -rn Butler /bundle/psyche", "wc -l psyche/*.md",
         "sha256sum /bundle/psyche/LORE.md", "stat /bundle/psyche", "cd /bundle/psyche && ls && cat LORE.md | head -3", "cat \"/bundle/psyche/SOUL.md\"", "FOO=1 cat psyche/SOUL.md; pwd",
