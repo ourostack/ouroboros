@@ -1,0 +1,1 @@
+- When `npm publish` exits 0, the publish step's logged npm output now keeps the first 5 and last 15 lines of each stream. The first 20 lines of a large package's output are all file listing, which cut off npm's closing lines. Evidence only; not a fix for any cause.

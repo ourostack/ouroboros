@@ -654,13 +654,14 @@ export function toResponsesInput(
 
 export function toResponsesTools(
   ccTools: OpenAI.ChatCompletionFunctionTool[],
-): { type: "function"; name: string; description: string | null; parameters: Record<string, unknown> | null; strict: false }[] {
+): { type: "function"; name: string; description: string | null; parameters: Record<string, unknown> | null; strict: boolean }[] {
   return ccTools.map((t) => ({
     type: "function" as const,
     name: t.function.name,
     description: t.function.description ?? null,
     parameters: (t.function.parameters as Record<string, unknown>) ?? null,
-    strict: false as const,
+    // A tool that asks for strict schemas keeps it; every other tool is sent non-strict, as before.
+    strict: t.function.strict ?? false,
   }));
 }
 

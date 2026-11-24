@@ -1,0 +1,1 @@
+The daemon now checks every hour that launchd still has the unattended updater, and loads its plist again if launchd has lost it. A run whose HOME isn't the account's own home (a test's throwaway HOME) no longer touches the machine-wide `bot.ouro.updater` label.

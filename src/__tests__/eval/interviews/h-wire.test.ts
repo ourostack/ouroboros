@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest"
 import type { ProviderRuntime, ProviderTurnRequest } from "../../../heart/core"
 import type { TurnResult } from "../../../heart/streaming"
+import { toResponsesTools } from "../../../heart/streaming"
 import { createWire, responsesEvents, responsesRequest, serveWire, sse } from "../../../eval/interviews/guest/h/wire"
+import codexTools from "./fixtures/codex-tools-227fa4e.json"
 
 const PREFIX = [{ role: "user" as const, content: "Morning." }, { role: "assistant" as const, content: "Morning, Ari." }]
 
@@ -62,6 +64,8 @@ describe("the H wire's Responses translation", () => {
         { type: "function", function: { name: "u", description: "", strict: true, parameters: { type: "object", properties: {}, additionalProperties: false } } },
       ],
     })
+    // A schema of null is carried as null, not replaced with an empty one.
+    expect(responsesRequest({ input: [], tools: [{ type: "function", name: "t", parameters: null }] }, []).activeTools).toStrictEqual([{ type: "function", function: { name: "t", parameters: null } }])
     // A tool field the wire doesn't know would be dropped, so it is refused by name instead.
     expect(() => responsesRequest({ input: [], tools: [{ type: "function", name: "t", defer_loading: true }] }, [])).toThrow("the H wire can't carry a tool's defer_loading")
     // A call with no assistant text before it starts its own assistant message; no instructions and no tools are fine.
@@ -77,6 +81,34 @@ describe("the H wire's Responses translation", () => {
     expect(() => responsesRequest({ input: [{ type: "message", role: "critic", content: "x" }] }, [])).toThrow("the H wire can't carry a message from critic")
     expect(() => responsesRequest({ input: [{ type: "message", role: "user", content: [{ type: "input_image", image_url: "x" }] }] }, [])).toThrow("the H wire can't carry content of type input_image")
     expect(() => responsesRequest({ input: [{ type: "function_call_output", call_id: "c", output: 3 }] }, [])).toThrow("the H wire can't carry content of type number")
+    // Request fields outside what codex sends would be dropped, so they are refused by name; instructions among them,
+    // since the wire reads the harness's instructions from its developer messages only.
+    expect(() => responsesRequest({ input: [], instructions: "x" }, [])).toThrow("the H wire can't carry a request's instructions")
+    expect(() => responsesRequest({ input: [], previous_response_id: "r" }, [])).toThrow("the H wire can't carry a request's previous_response_id")
+    // The wire always streams and always lets the model call the tools, so any other setting is refused.
+    expect(() => responsesRequest({ input: [], stream: false }, [])).toThrow("the H wire can't carry a request's stream of false")
+    expect(() => responsesRequest({ input: [], tool_choice: "none" }, [])).toThrow("the H wire can't carry a request's tool_choice of \"none\"")
+    expect(responsesRequest({ input: [], stream: true, tool_choice: "auto" }, [])).toEqual({ messages: [], activeTools: [] })
+    // Tools that aren't a list, or a tool without a name, are refused rather than read as no tools.
+    expect(() => responsesRequest({ input: [], tools: { type: "function", name: "t" } }, [])).toThrow("the H wire can't carry a request's tools of type function")
+    expect(() => responsesRequest({ input: [], tools: null }, [])).toThrow("the H wire can't carry a request's tools of type null")
+    expect(() => responsesRequest({ input: [], tools: [{ type: "function" }] }, [])).toThrow("the H wire can't carry a tool's name of type undefined")
+    expect(() => responsesRequest({ input: [], tools: [{ type: "function", name: 7 }] }, [])).toThrow("the H wire can't carry a tool's name of type number")
+    // An item's fields beyond what the wire reads (its id and status are the client's own bookkeeping) are refused.
+    expect(() => responsesRequest({ input: [{ type: "message", role: "user", content: "x", encrypted_content: "e" }] }, [])).toThrow("the H wire can't carry a message's encrypted_content")
+    expect(() => responsesRequest({ input: [{ type: "message", role: "assistant", content: "x", phase: "final_answer" }] }, [])).toThrow("the H wire can't carry a message's phase")
+    expect(() => responsesRequest({ input: [{ type: "function_call", call_id: "c", name: "t", arguments: "{}", namespace: "n" }] }, [])).toThrow("the H wire can't carry a function_call's namespace")
+    expect(() => responsesRequest({ input: [{ type: "function_call_output", call_id: "c", output: "o", success: true }] }, [])).toThrow("the H wire can't carry a function_call_output's success")
+    expect(() => responsesRequest({ input: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "x", annotations: [] }] }] }, [])).toThrow("the H wire can't carry an output_text's annotations")
+    expect(() => responsesRequest({ input: [{ type: "function_call", call_id: "c" }] }, [])).toThrow("the H wire can't carry a function_call's name of type undefined")
+    expect(() => responsesRequest({ input: [{ type: "function_call", call_id: "c", name: null, arguments: "{}" }] }, [])).toThrow("the H wire can't carry a function_call's name of type null")
+    expect(() => responsesRequest({ input: [{ type: "function_call", call_id: "c", name: "t", arguments: {} }] }, [])).toThrow("the H wire can't carry a function_call's arguments of type object")
+    expect(() => responsesRequest({ input: [{ type: "function_call_output", call_id: 3, output: "o" }] }, [])).toThrow("the H wire can't carry a function_call_output's call_id of type number")
+    expect(responsesRequest({ input: [
+      { type: "message", id: "m", status: "completed", role: "user", content: "x" },
+      { type: "function_call", id: "f", status: "completed", call_id: "c", name: "t", arguments: "{}" },
+      { type: "function_call_output", id: "o", status: "completed", call_id: "c", output: "y" },
+    ] }, []).messages).toHaveLength(3)
     expect(() => responsesRequest({}, [])).toThrow("a Responses body needs an input list")
     expect(() => responsesRequest(null, [])).toThrow("a Responses body needs an input list")
     expect(() => responsesRequest({ input: [null] }, [])).toThrow("the H wire can't carry an input item of type null")
@@ -178,5 +210,29 @@ describe("the H wire", () => {
     } finally {
       await served.close()
     }
+  })
+})
+
+// codexTools is the tool list codex 227fa4e sent in a scripted run, captured in a container with no network
+// whose only endpoint was a local stub; the bundle folder in it is the arm's real one.
+describe("codex's captured tools", () => {
+  it("reach the model exactly as codex sent them, on both of the host's paths", () => {
+    expect(codexTools.map((tool) => tool.name)).toEqual(["exec_command", "write_stdin", "request_user_input", "get_goal", "create_goal", "update_goal"])
+    const { activeTools } = responsesRequest({ input: [], tools: codexTools }, [])
+    // A chat provider sends activeTools as they are: same names, words, schemas and strict flags, nothing added.
+    expect(activeTools).toStrictEqual(codexTools.map(({ type, ...fields }) => ({ type, function: fields })))
+    // A Responses provider turns them back into Responses tools; the result is codex's own list.
+    expect(toResponsesTools(activeTools as Parameters<typeof toResponsesTools>[0])).toStrictEqual(codexTools)
+    expect(JSON.stringify(activeTools)).not.toContain("MCP tool")
+    // A strict tool stays strict on the Responses path too.
+    const strict = { type: "function", name: "s", description: "d", parameters: { type: "object", properties: {}, additionalProperties: false }, strict: true }
+    expect(toResponsesTools(responsesRequest({ input: [], tools: [strict] }, []).activeTools as Parameters<typeof toResponsesTools>[0])).toStrictEqual([strict])
+  })
+})
+
+describe("the H wire's provider", () => {
+  it("refuses the Anthropic provider, which drops strict and schema combinators from a tool", () => {
+    const anthropic = { ...runtime([], []), id: "anthropic" as const }
+    expect(() => createWire({ runtime: anthropic, prefix: [] })).toThrow("the H wire can't carry an arm's tools to the anthropic provider")
   })
 })
