@@ -3,7 +3,7 @@ import path from "node:path"
 import { describe, expect, it } from "vitest"
 import type { ProviderRuntime, ProviderTurnRequest } from "../../../heart/core"
 import type { TurnResult } from "../../../heart/streaming"
-import { toResponsesTools } from "../../../heart/streaming"
+import { toResponsesInput, toResponsesTools } from "../../../heart/streaming"
 import { chatAnswer, chatRequest, createWire, responsesEvents, responsesRequest, serveWire, sse } from "../../../eval/interviews/guest/h/wire"
 import codexTools from "./fixtures/codex-tools-227fa4e.json"
 
@@ -80,41 +80,53 @@ describe("the H wire's Responses translation", () => {
     })
   })
 
-  it("sends codex's reasoning items back unchanged, ciphertext included, on the assistant output that follows them", () => {
+  it("sends codex's reasoning items back unchanged, ciphertext included, each in its place", () => {
     // Real codex sends its reasoning back between calls; the harness's Responses path puts an assistant message's
     // `_reasoning_items` back into the input before its text and calls, as the ouro arm's own turn does.
     const r1 = { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "Find it first." }], content: null, encrypted_content: "gAAAA1+x/GPT=" }
     const r2 = { type: "reasoning", id: "rs_2", summary: [], encrypted_content: "gAAAA2==" }
     const r3 = { type: "reasoning", id: "rs_3", summary: [], encrypted_content: "gAAAA3==" }
     const r4 = { type: "reasoning", id: "rs_4", summary: [], encrypted_content: "gAAAA4==" }
-    const out = streamed({ input: [
+    const r5 = { type: "reasoning", id: "rs_5", summary: [], encrypted_content: "gAAAA5==" }
+    const r6 = { type: "reasoning", id: "rs_6", summary: [], encrypted_content: "gAAAA6==" }
+    const call = (id: string) => ({ type: "function_call", call_id: id, name: "exec_command", arguments: "{}" })
+    const input = [
       { type: "message", role: "user", content: "Remove the bad copy." },
-      r1,
-      { type: "function_call", call_id: "c1", name: "exec_command", arguments: "{}" },
+      r1, call("c1"),
       { type: "function_call_output", call_id: "c1", output: "187" },
       r2, r3,
       { type: "message", role: "assistant", content: "Checking." },
-      r4,
-      { type: "function_call", call_id: "c2", name: "exec_command", arguments: "{}" },
+      r4, call("c2"), call("c3"),
       { type: "function_call_output", call_id: "c2", output: "ok" },
-    ] }, [])
+      { type: "function_call_output", call_id: "c3", output: "ok" },
+      // A turn that gave only reasoning, then the owner's next message, then reasoning at the very end.
+      r5,
+      { type: "message", role: "user", content: "And?" },
+      r6,
+    ]
+    const asCall = (id: string) => ({ id, type: "function", function: { name: "exec_command", arguments: "{}" } })
+    const out = streamed({ input }, [])
     expect(out.messages).toStrictEqual([
       { role: "user", content: "Remove the bad copy." },
-      { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "exec_command", arguments: "{}" } }], _reasoning_items: [r1] },
+      { role: "assistant", content: null, _reasoning_items: [r1], tool_calls: [asCall("c1")] },
       { role: "tool", tool_call_id: "c1", content: "187" },
-      // A call that joins the assistant message before it brings its reasoning to that message too.
-      { role: "assistant", content: "Checking.", _reasoning_items: [r2, r3, r4], tool_calls: [{ id: "c2", type: "function", function: { name: "exec_command", arguments: "{}" } }] },
+      { role: "assistant", content: "Checking.", _reasoning_items: [r2, r3] },
+      // Reasoning between a message and a call opens a message of its own, so it isn't put before "Checking.".
+      { role: "assistant", content: null, _reasoning_items: [r4], tool_calls: [asCall("c2"), asCall("c3")] },
       { role: "tool", tool_call_id: "c2", content: "ok" },
+      { role: "tool", tool_call_id: "c3", content: "ok" },
+      { role: "assistant", content: null, _reasoning_items: [r5] },
+      { role: "user", content: "And?" },
+      { role: "assistant", content: null, _reasoning_items: [r6] },
     ])
     // Each item is passed as codex sent it, not copied into a new shape.
     expect((out.messages[1] as { _reasoning_items: unknown[] })._reasoning_items[0]).toBe(r1)
-    // Reasoning between an assistant message with none of its own and the call that joins it goes on that message.
-    expect(streamed({ input: [{ type: "message", role: "assistant", content: "Hm." }, r2, { type: "function_call", call_id: "c3", name: "t", arguments: "{}" }] }, []).messages).toStrictEqual([
-      { role: "assistant", content: "Hm.", _reasoning_items: [r2], tool_calls: [{ id: "c3", type: "function", function: { name: "t", arguments: "{}" } }] },
-    ])
-    // Reasoning with no assistant output after it has nothing to travel with, so it is refused, never dropped.
-    expect(() => streamed({ input: [{ type: "message", role: "user", content: "x" }, r1] }, [])).toThrow("the H wire can't carry a reasoning item with no assistant output after it")
-    expect(() => streamed({ input: [r1, { type: "message", role: "user", content: "x" }] }, [])).toThrow("the H wire can't carry a reasoning item with no assistant output after it")
+    // What the host's Responses path sends the provider is codex's input in codex's order, each reasoning item the
+    // very object codex sent.
+    const sent = toResponsesInput(out.messages).input as Array<Record<string, unknown>>
+    const shape = (item: Record<string, unknown>) => item.type === "reasoning" ? item : item.type ?? `${String(item.role)}:${String(item.content)}`
+    expect(sent.map(shape)).toEqual(input.map((item) => item.type === "reasoning" ? item : item.type === "message" ? `${item.role}:${item.content}` : item.type))
+    for (const reasoning of [r1, r2, r3, r4, r5, r6]) expect(sent).toContain(reasoning)
   })
 
   it("refuses what it can't carry faithfully, naming it", () => {

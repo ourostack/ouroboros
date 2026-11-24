@@ -187,7 +187,7 @@ describe("the guarded runtime", () => {
   })
 
   it("leaves a provider's encrypted reasoning out of the scan and the rewrite, and scans and rewrites everything else, summaries included", async () => {
-    // Encrypted reasoning is opaque base64 that the model never reads as text, and its letters can spell a brand word
+    // Encrypted reasoning is opaque base64 the scan can't read, and its letters can spell a brand word
     // by chance: the 2026-11-23 H pilot was voided on "GPT" inside one.
     const blob = "x9hJJLGPTyhe+OURO/Claude0wDl="
     const withReasoning = (summary: unknown[], ask = "find the almanac"): ProviderTurnRequest => ({ ...request(ask), messages: [
@@ -224,6 +224,10 @@ describe("the guarded runtime", () => {
     expect(beside.inner.sent).toBe(0)
     // Only a string under encrypted_content is opaque: any other value there is scanned as it is.
     expect(brandHits(scannedText({ encrypted_content: { text: "gpt" } }))).toEqual(["gpt"])
+    // A reasoning item's id is the provider's opaque handle too (Copilot's run to 456 base64 characters), while any
+    // other id, a call's included, is scanned.
+    expect(brandHits(scannedText([{ type: "reasoning", id: "rs+GPTx/Ouro==", summary: [] }]))).toEqual([])
+    expect(brandHits(scannedText([{ type: "function_call", id: "fc_gpt", call_id: "call_ouro" }, { role: "assistant", id: "msg_claude" }]))).toEqual(["gpt", "ouro", "claude"])
   })
 
   it("scans the system prompt, tools, deferred tools and messages", () => {

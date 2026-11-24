@@ -41,8 +41,8 @@ export function replace(text: string, list: readonly Replacement[], counts?: Rew
 function deep<T>(value: T, list: readonly Replacement[], counts: RewriteCounts): T {
   if (typeof value === "string") return replace(value, list, counts) as T
   if (Array.isArray(value)) return value.map((item: unknown) => deep(item, list, counts)) as T
-  // A provider's ciphertext is kept as it was returned: rewriting letters in it would corrupt it (`isOpaque`).
-  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, isOpaque(key, item) ? item : deep(item, list, counts)])) as T
+  // A provider's opaque string (ciphertext, a reasoning id) is kept as it was returned: rewriting it would corrupt it.
+  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, isOpaque(key, item, value) ? item : deep(item, list, counts)])) as T
   return value
 }
 

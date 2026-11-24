@@ -79,8 +79,8 @@ describe("an arm's replacement list", () => {
   })
 
   it("leaves a provider's encrypted reasoning as it was returned, and rewrites the readable summary beside it", () => {
-    // Rewriting letters inside ciphertext would corrupt it, and the model never reads it as text.
-    const item = { type: "reasoning", id: "rs_1", encrypted_content: "q8AcmEzeta+/x=", summary: [{ type: "summary_text", text: "Asking Acme." }] }
+    // Rewriting letters inside ciphertext would corrupt it.
+    const item = { type: "reasoning", id: "rs+Acme/1=", encrypted_content: "q8AcmEzeta+/x=", summary: [{ type: "summary_text", text: "Asking Acme." }] }
     const assistant = { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "acme_shell", arguments: "{}" } }], _reasoning_items: [item] }
     const { request: out, rewrites } = rewriteRequest(request({ systemPrompt: undefined, activeTools: [], messages: [assistant] as never }), LIST)
     expect((out.messages[0] as unknown as { _reasoning_items: unknown[] })._reasoning_items).toEqual([{ ...item, summary: [{ type: "summary_text", text: "Asking agent." }] }])

@@ -117,7 +117,8 @@ const RESPONSES_FIELDS = new Set([
  * assistant message before it, and each output becomes its tool result. Reasoning items go back as real codex sends
  * them: each one, unchanged and ciphertext included, rides on the assistant output after it as `_reasoning_items`,
  * which the host's Responses path puts back into the input before that message's text and calls (as for the ouro
- * arm's own turn). A reasoning item with no assistant output after it is refused.
+ * arm's own turn), so every item keeps its place. Reasoning with no assistant output after it rides on an assistant
+ * message with no text. On a chat-completions target the provider returns no reasoning, so there is none to send back.
  */
 export function responsesRequest(body: unknown, prefix: Message[]): WireRequest {
   if (!isRecord(body) || !Array.isArray(body.input)) throw new Error("a Responses body needs an input list")
@@ -129,13 +130,12 @@ export function responsesRequest(body: unknown, prefix: Message[]): WireRequest 
   const rest: Message[] = []
   let prefixed = false
   let reasoning: unknown[] = []
-  /** The reasoning items waiting for the next assistant output, taken once. */
+  /** The reasoning items waiting for the assistant output after them, taken once. */
   const takeReasoning = (): { _reasoning_items?: unknown[] } => {
     const taken = reasoning
     reasoning = []
     return taken.length > 0 ? { _reasoning_items: taken } : {}
   }
-  const strandedReasoning = new Error("the H wire can't carry a reasoning item with no assistant output after it")
   for (const item of body.input as unknown[]) {
     const type = typeOf(item)
     const value = item as Record<string, unknown>
@@ -143,8 +143,10 @@ export function responsesRequest(body: unknown, prefix: Message[]): WireRequest 
       reasoning.push(item)
       continue
     }
+    // Reasoning with no assistant output after it (a turn that produced only reasoning) goes on an assistant message
+    // of its own, as the harness keeps such a turn, so it is sent back in its place.
     const assistantOutput = type === "function_call" || (type === "message" && value.role === "assistant")
-    if (reasoning.length > 0 && !assistantOutput) throw strandedReasoning
+    if (reasoning.length > 0 && !assistantOutput) rest.push({ role: "assistant", content: null, ...takeReasoning() } as Message)
     if (Object.hasOwn(ITEM_FIELDS, type)) checkFields(type, value, ITEM_FIELDS[type]!)
     if (type === "message") {
       const role = String(value.role)
@@ -164,10 +166,10 @@ export function responsesRequest(body: unknown, prefix: Message[]): WireRequest 
     } else if (type === "function_call") {
       const call = { id: stringField(type, value, "call_id"), type: "function" as const, function: { name: stringField(type, value, "name"), arguments: stringField(type, value, "arguments") } }
       const last = rest[rest.length - 1]
-      if (last?.role === "assistant") {
-        const own = last as Message & { _reasoning_items?: unknown[] }
-        const taken = takeReasoning()._reasoning_items
-        if (taken) own._reasoning_items = [...own._reasoning_items ?? [], ...taken]
+      // A call joins the assistant message before it, unless reasoning came between them: the host's Responses path
+      // puts a message's reasoning before its text and calls, so that reasoning opens a message of its own and keeps
+      // its place.
+      if (last?.role === "assistant" && reasoning.length === 0) {
         last.tool_calls = [...last.tool_calls ?? [], call]
       } else {
         rest.push({ role: "assistant", content: null, ...takeReasoning(), tool_calls: [call] } as Message)
@@ -178,7 +180,7 @@ export function responsesRequest(body: unknown, prefix: Message[]): WireRequest 
       throw new Error(`the H wire can't carry an input item of type ${type}`)
     }
   }
-  if (reasoning.length > 0) throw strandedReasoning
+  if (reasoning.length > 0) rest.push({ role: "assistant", content: null, ...takeReasoning() } as Message)
   const tools = (body.tools ?? []) as unknown[]
   for (const tool of tools) {
     if (typeOf(tool) !== "function") throw new Error(`the H wire can't carry a tool of type ${typeOf(tool)}`)

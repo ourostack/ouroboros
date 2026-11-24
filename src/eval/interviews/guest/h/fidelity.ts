@@ -12,7 +12,7 @@ export const H_OURO_FIDELITY: readonly string[] = [
   "every arm's list rewrites the container's user name (ouro) and real paths in what the model sees, tool results included, so a rewritten name that is no path (the user agent, AGENT_HOME, ~/.agent) finds nothing when the model types it, nor does an id or file name with a brand word inside it; model names are in no list, so the host's scan voids a session that shows one",
   "the neutral home is a real folder under /tmp in every arm, with the bundle linked at /tmp/agent/AgentBundles/sanctuary.agent; in the ouro arm, the real home's entries are linked into it when the arm starts, and one the turn makes later is not",
   "skills aren't listed in the prompt: a skill reaches the model only when the agent reads its file, while the other arms list each skill's name and when-line",
-  "in every arm, the host's brand scan, the leak check and the replacement lists leave a provider's encrypted reasoning (each encrypted_content string) as it is, since it is ciphertext the model never reads as text; a reasoning item's summary and every other field are scanned and rewritten",
+  "in every arm, the host's brand scan, the leak check and the replacement lists leave a provider's encrypted reasoning (each encrypted_content string, and a reasoning item's id, which Copilot also returns as opaque base64) as it is, since the scan can't read ciphertext and changing it would corrupt it; the provider decrypts it for the model, so a brand word in that reasoning goes unchecked, while its summary and every other field are scanned and rewritten",
 ]
 
 export const H_CODEX_FIDELITY: readonly string[] = [
@@ -26,7 +26,7 @@ export const H_CODEX_FIDELITY: readonly string[] = [
   "bundled skills are off ([skills.bundled] enabled = false): they are about codex itself, not the household",
   "analytics, the otel exporters (exporter, trace_exporter and metrics_exporter) and check_for_update_on_startup are off: the sandbox has no route off the host; the model sees no difference",
   "the request's own settings (tool_choice, parallel_tool_calls, reasoning, include, store, prompt_cache_key and the like) are not passed on: the host's runtime sets the model's settings, as it does for the ouro arm",
-  "codex's reasoning items go back to the model between calls as codex sends them, ciphertext included, on the assistant output after them, as the ouro arm's own reasoning does; a reasoning item with no assistant output after it is refused, never dropped",
+  "on a Responses API target (Copilot), codex's reasoning items go back to the model between calls as codex sends them, ciphertext included and each in its place, as the ouro arm's own reasoning does; a chat-completions target (MiniMax) returns none, in every arm",
   "codex's leading developer messages become one system message, joined with a blank line, and a message's text parts are joined with a newline, since the harness's messages carry one string each",
   "codex doesn't know the model's name, so it runs as for any unknown model: its generic base prompt, no apply_patch tool, and output of each tool call cut at 10,000 bytes",
   "codex's base prompt is rewritten before the call reaches the model: its first sentences say a coding agent running in a terminal-based coding assistant, and the line on what Codex refers to is removed",
@@ -42,7 +42,7 @@ export const H_OPENHANDS_FIDELITY: readonly string[] = [
   "the agent's tools are the terminal and the file editor, as pre-registration v2 names, plus the SDK's own finish tool and, when a skill is installed, its invoke_skill tool; the SDK's default preset also gives the task tracker and the browser, and the browser couldn't reach anything in the sandbox",
   "no condenser: the default preset summarises a long history with extra model calls; these conversations are short",
   "load_user_skills = True: the bundle's skills are installed as user skills and listed in the prompt's skills block, as codex lists them; the default preset loads none",
-  "the model's reasoning is not sent back between calls: chat completions carry none, where the ouro and codex arms send theirs back",
+  "the model's reasoning is not sent back between calls: the H wire's chat answer carries none, while on a Responses API target (Copilot) the ouro and codex arms send theirs back",
   "the model is called through chat completions without streaming (api_mode chat, stream False), since the H wire answers chat only whole",
   "the request's own settings (max_completion_tokens, prompt_cache_key) are not passed on: the host's runtime sets the model's settings, as it does for the ouro arm",
   "the SDK doesn't know the model's name (openai/model), so it uses its defaults for an unknown model; LITELLM_LOCAL_MODEL_COST_MAP = True makes LiteLLM read the cost map it ships with instead of fetching one",
