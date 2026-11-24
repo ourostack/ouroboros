@@ -1,8 +1,9 @@
 /**
  * The Butler stays the sandbox's default agent, byte for byte. Each recording under `fixtures/` was taken from
  * `runSandboxed` before agent profiles existed (origin/main 3245e9b92): every `docker` command line of a run, and
- * every file the agent container could read with its write and run bits and sha256. A run that names no agent must
- * hand Docker exactly the same, for the replay eval's Telegram guest and for the interviews' guest.
+ * every file the agent container could read with its write and run bits and sha256. A run that names no agent, and
+ * one that names the Butler's profile, must hand Docker exactly the same, for the replay eval's Telegram guest and for
+ * the interviews' guest. Another agent's run differs only where its name and writable paths do.
  */
 import fs from "node:fs"
 import os from "node:os"
@@ -10,6 +11,7 @@ import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { ProviderRuntime } from "../../../heart/core"
 import type { Case } from "../../../eval/domain/case"
+import { sanctuaryProfile } from "../../../eval/sandbox/agent-profile"
 import { runSandboxed } from "../../../eval/sandbox/docker"
 import type { runTelegramTurn } from "../../../eval/transport/telegram-turn"
 import { normalized, recordingDocker, sha } from "./sandbox-recording"
@@ -82,5 +84,31 @@ describe("the Butler as the sandbox's default agent", () => {
   it("hands Docker the same commands and files for an interview guest", async () => {
     const guest = { entry: "interview-guest-entry.js" as const, turn: { prefix: [], userText: "job" } }
     expect(await record({ guest })).toBe(golden("sanctuary-interview-run.txt"))
+  })
+
+  it("hands Docker the same when the Butler's profile is named", async () => {
+    const profile = sanctuaryProfile({ bundleDir, seedBundleDir })
+    expect(await record({ profile })).toBe(golden("sanctuary-telegram-run.txt"))
+    const guest = { entry: "interview-guest-entry.js" as const, turn: { prefix: [], userText: "job" } }
+    expect(await record({ profile, guest })).toBe(golden("sanctuary-interview-run.txt"))
+  })
+
+  it("puts another agent's bundle at its own path, with only its own writable paths, and starts it by name", async () => {
+    const profile = { ...sanctuaryProfile({ bundleDir, seedBundleDir }), agent: "evalbot", writable: ["books/work", "books/ledger.ndjson", "state"] }
+    const expected = golden("sanctuary-telegram-run.txt")
+      .replaceAll("/home/ouro/AgentBundles/sanctuary.ouro", "/home/ouro/AgentBundles/evalbot.ouro")
+      .replace("\"--agent\",\"sanctuary\"", "\"--agent\",\"evalbot\"")
+      .replace(/,"-v","<work>\/bundle\/books\/removed:[^"]*"/, "")
+      .replace(/,"-v","<work>\/bundle\/(friends|arc|desk\/_record):[^"]*"/g, "")
+      // Paths it may not write keep the projection's own bits.
+      .replace(/^(\/home\/ouro\/AgentBundles\/evalbot\.ouro\/(books\/removed|friends|arc|desk\/_record[^ ]*)\/) wx folder$/gm, "$1 -x folder")
+    expect(await record({ profile })).toBe(expected)
+  })
+
+  it("refuses a profile it could not mount safely before it starts anything", async () => {
+    const { docker, recorded } = recordingDocker(reply)
+    const profile = { ...sanctuaryProfile({ bundleDir, seedBundleDir }), writable: ["state:/etc"] }
+    await expect(runSandboxed({ case: testCase(), bundleDir, seedBundleDir, host: hostRuntime(), budget: { take: () => true }, docker, workRoot: root, profile })).rejects.toThrow(/inside the bundle/)
+    expect(recorded.calls).toEqual([])
   })
 })
