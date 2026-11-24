@@ -445,6 +445,27 @@ describe("context-loss Sentinel lock left by a dead process", () => {
 })
 
 describe("context-loss Sentinel core", () => {
+  it("names the signals that blocked it instead of claiming recovery failed", async () => {
+    const agentRoot = makeAgentRoot()
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:10:00.000Z"),
+      createReceiptId: () => "sentinel-blocked-by-health",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: [
+        ...okHealth().filter((result) => result.name !== "disk-space"),
+        { name: "disk-space", status: "critical", message: "disk space critical (2.1 GB free, 99% used)" },
+      ],
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(receipt.verdict).toBe("blocked")
+    expect(receipt.summary).toBe(
+      "blocked by daemon:disk-space (disk space critical (2.1 GB free, 99% used)); repair it or continue from latest-ready",
+    )
+    expect(receipt.summary).not.toContain("deterministic recovery failed")
+  })
+
   it("persists latest, history, receipt files, and latest-ready for a ready deterministic refresh", async () => {
     const agentRoot = makeAgentRoot()
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {

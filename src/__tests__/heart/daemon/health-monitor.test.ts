@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { HealthMonitor, readDiskUsagePercent } from "../../../heart/daemon/health-monitor"
+import { HealthMonitor, readDiskFreeBytes, readDiskUsagePercent } from "../../../heart/daemon/health-monitor"
 
 describe("HealthMonitor", () => {
   it("reports all checks as ok when snapshots, jobs, and disk usage are healthy", async () => {
@@ -757,6 +757,54 @@ describe("HealthMonitor", () => {
       expect(probeResult).toBeDefined()
       expect(probeResult!.name).toBe("sense-probe:my-custom-sense")
     })
+  })
+})
+
+describe("disk-space check on a large volume", () => {
+  const GB = 1_000_000_000
+
+  function diskResult(percent: number | null, freeBytes: number | null | undefined) {
+    const monitor = new HealthMonitor({
+      processManager: { listAgentSnapshots: () => [] },
+      scheduler: { listJobs: () => [] },
+      diskUsagePercent: () => percent,
+      ...(freeBytes === undefined ? {} : { diskFreeBytes: () => freeBytes }),
+    } as never)
+    return monitor.runChecks().then((results) => results.find((result) => result.name === "disk-space"))
+  }
+
+  it("warns, not critical, at 91% used with 42 GB still free", async () => {
+    expect(await diskResult(91, 42 * GB)).toEqual({ name: "disk-space", status: "warn", message: "disk usage high (91%, 42.0 GB free)" })
+  })
+
+  it("is critical once free space drops under 5 GB, whatever the percent", async () => {
+    expect(await diskResult(99, 2.1 * GB)).toEqual({ name: "disk-space", status: "critical", message: "disk space critical (2.1 GB free, 99% used)" })
+    expect(await diskResult(70, 4 * GB)).toEqual({ name: "disk-space", status: "critical", message: "disk space critical (4.0 GB free, 70% used)" })
+  })
+
+  it("names free space when healthy", async () => {
+    expect(await diskResult(40, 300 * GB)).toEqual({ name: "disk-space", status: "ok", message: "disk usage healthy (40%, 300.0 GB free)" })
+  })
+
+  it("falls back to the percent rule when free space can't be read", async () => {
+    expect((await diskResult(95, null))?.status).toBe("critical")
+    expect((await diskResult(95, undefined))?.status).toBe("critical")
+  })
+})
+
+describe("readDiskFreeBytes", () => {
+  it("is the bytes available to this user", () => {
+    expect(readDiskFreeBytes("/bundles", () => ({ bavail: 10, bsize: 4096 }))).toBe(40960)
+  })
+
+  it("is null when the volume can't be read", () => {
+    expect(readDiskFreeBytes("/missing", () => { throw new Error("ENOENT") })).toBeNull()
+    expect(readDiskFreeBytes("/bundles", () => ({ bavail: -1, bsize: 4096 }))).toBeNull()
+    expect(readDiskFreeBytes("/bundles", () => ({ bavail: 1, bsize: 0 }))).toBeNull()
+  })
+
+  it("reads the real volume", () => {
+    expect(readDiskFreeBytes(process.cwd())).toBeGreaterThan(0)
   })
 })
 
