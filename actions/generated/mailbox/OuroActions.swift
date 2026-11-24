@@ -31,22 +31,205 @@ public struct OuroActionNotBound: Error, Sendable, Equatable {
 /// The "mailbox" action set.
 public enum OuroActions {
     public static let consent: [String: OuroActionConsent] = [
+        "mailbox_send": .write,
         "mailbox_list": .read,
+        "mailbox_read": .read,
+        "mailbox_wait": .read,
+        "mailbox_withdraw": .write,
+        "mailbox_deliver": .write,
+        "mailbox_answer": .personOnly,
     ]
 
     /// The refusal for a person-only action, by its id, kebab or camel name; nil for any other action.
     public static func refusal(for action: String) -> OuroActionRefusal? {
         switch action {
+        case "mailbox_answer", "mailbox-answer", "mailboxAnswer":
+            return OuroActionRefusal(thing: "mailbox answer", problem: "You can't answer a letter for the person; only they can. Ask the person, who does it by replying to the letter in their chat, such as \"L7 2\"", message: "Answer a letter: You can't answer a letter for the person; only they can. Ask the person, who does it by replying to the letter in their chat, such as \"L7 2\".", reason: "You can't answer a letter for the person; only they can", how: "by replying to the letter in their chat, such as \"L7 2\"")
         default:
             return nil
         }
     }
 }
 
+// MARK: mailbox_send (write)
+
+public enum MailboxSendKindValue: String, Codable, Sendable, Hashable, CaseIterable, AppEnum {
+    case decide = "decide"
+    case `do` = "do"
+    case accept = "accept"
+    case know = "know"
+    public static let typeDisplayRepresentation: TypeDisplayRepresentation = "Kind"
+    public static let caseDisplayRepresentations: [MailboxSendKindValue: DisplayRepresentation] = [
+        .decide: "decide",
+        .`do`: "do",
+        .accept: "accept",
+        .know: "know",
+    ]
+}
+
+public enum MailboxSendUrgencyValue: String, Codable, Sendable, Hashable, CaseIterable, AppEnum {
+    case now = "now"
+    case today = "today"
+    case whenever = "whenever"
+    public static let typeDisplayRepresentation: TypeDisplayRepresentation = "Urgency"
+    public static let caseDisplayRepresentations: [MailboxSendUrgencyValue: DisplayRepresentation] = [
+        .now: "now",
+        .today: "today",
+        .whenever: "whenever",
+    ]
+}
+
+public struct MailboxSendInput: Codable, Sendable, Hashable {
+    public var kind: MailboxSendKindValue
+    public var subject: String
+    public var whyOnlyYou: String?
+    public var body: String?
+    public var dedupeKey: String?
+    public var urgency: MailboxSendUrgencyValue?
+    public var holdUntil: String?
+    public var expiresAt: String?
+    public var lane: String?
+    public init(kind: MailboxSendKindValue, subject: String, whyOnlyYou: String? = nil, body: String? = nil, dedupeKey: String? = nil, urgency: MailboxSendUrgencyValue? = nil, holdUntil: String? = nil, expiresAt: String? = nil, lane: String? = nil) {
+        self.kind = kind
+        self.subject = subject
+        self.whyOnlyYou = whyOnlyYou
+        self.body = body
+        self.dedupeKey = dedupeKey
+        self.urgency = urgency
+        self.holdUntil = holdUntil
+        self.expiresAt = expiresAt
+        self.lane = lane
+    }
+}
+
+public struct MailboxSendOutput: Codable, Sendable, Hashable {
+    public var outcome: String
+    public var id: String
+    public var code: String
+    public var state: String
+    public var message: String
+    public init(outcome: String, id: String, code: String, state: String, message: String) {
+        self.outcome = outcome
+        self.id = id
+        self.code = code
+        self.state = state
+        self.message = message
+    }
+}
+
+/// Write a letter: File a letter only your person can answer.
+@MainActor
+public enum MailboxSendAction {
+    public static let id = "mailbox_send"
+    /// The app's handler; every door calls it.
+    public static var perform: (@MainActor @Sendable (MailboxSendInput) async throws -> MailboxSendOutput)?
+    /// What Siri and Shortcuts say when the App Intent finishes or fails: the result in words, or an error turned into
+    /// words (rethrow to let the system show it). Unset, the intent says "Done." and a failure throws.
+    public static var dialog: (@MainActor @Sendable (MailboxSendInput, Result<MailboxSendOutput, any Error>) async throws -> IntentDialog)?
+
+    public static func run(_ input: MailboxSendInput) async throws -> MailboxSendOutput {
+        guard let perform else { throw OuroActionNotBound(action: id) }
+        return try await perform(input)
+    }
+}
+
+public struct MailboxSendIntent: AppIntent {
+    public static let title: LocalizedStringResource = "Write a letter"
+    public static let description = IntentDescription("File a letter only your person can answer.")
+
+    @Parameter(title: "Kind", description: "decide: pick one of 2 to 5 options; do: a task only they can do; accept: approve finished work; know: something they should know.")
+    public var kind: MailboxSendKindValue
+    @Parameter(title: "Subject", description: "What is asked, in one line of at most 80 characters.")
+    public var subject: String
+    @Parameter(title: "Why only you", description: "Why only the person can answer, at most 200 characters; required unless kind is know.")
+    public var whyOnlyYou: String?
+    @Parameter(title: "Details", description: "What the person needs to answer, in Markdown, at most 4,000 characters. It may run over several lines.", inputOptions: String.IntentInputOptions(multiline: true))
+    public var body: String?
+    @Parameter(title: "Urgency", description: "How soon it matters.")
+    public var urgency: MailboxSendUrgencyValue?
+    @Parameter(title: "Hold until", description: "\"interactive\" to hold it for a session with the person, or an ISO time.")
+    public var holdUntil: String?
+    @Parameter(title: "Expires", description: "An ISO time after which the question is moot, such as 2026-12-01T17:00:00Z.")
+    public var expiresAt: String?
+    @Parameter(title: "Lane", description: "Where you ask from, such as a desk task path, so the person knows who waits.")
+    public var lane: String?
+
+    public init() {}
+
+    public init(_ input: MailboxSendInput) {
+        self.init()
+        self.kind = input.kind
+        self.subject = input.subject
+        self.whyOnlyYou = input.whyOnlyYou
+        self.body = input.body
+        self.urgency = input.urgency
+        self.holdUntil = input.holdUntil
+        self.expiresAt = input.expiresAt
+        self.lane = input.lane
+    }
+
+    public var input: MailboxSendInput {
+        MailboxSendInput(kind: kind, subject: subject, whyOnlyYou: whyOnlyYou, body: body, urgency: urgency, holdUntil: holdUntil, expiresAt: expiresAt, lane: lane)
+    }
+
+    @MainActor
+    public func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
+        let input = self.input
+        let result: Result<MailboxSendOutput, any Error>
+        do { result = .success(try await MailboxSendAction.run(input)) } catch { result = .failure(error) }
+        let said: IntentDialog = try await MailboxSendAction.dialog?(input, result) ?? "Done."
+        return .result(value: try result.get().id, dialog: said)
+    }
+}
+
+/// The control for mailbox_send: Button(_:intent:), the same intent Siri and Shortcuts run.
+@available(iOS 17.0, macOS 14.0, watchOS 10.0, tvOS 17.0, *)
+public struct MailboxSendButton<Label: View>: View {
+    public let input: MailboxSendInput
+    let label: Label
+
+    public init(_ input: MailboxSendInput, @ViewBuilder label: () -> Label) {
+        self.input = input
+        self.label = label()
+    }
+
+    public var body: some View {
+        Button(intent: MailboxSendIntent(input)) { label }
+            .accessibilityHint(Text(verbatim: "File a letter only your person can answer."))
+    }
+}
+
+@available(iOS 17.0, macOS 14.0, watchOS 10.0, tvOS 17.0, *)
+extension MailboxSendButton where Label == Text {
+    public init(_ input: MailboxSendInput) {
+        self.init(input) { Text(verbatim: "Write a letter") }
+    }
+}
+
 // MARK: mailbox_list (read)
 
+public enum MailboxListKindValue: String, Codable, Sendable, Hashable, CaseIterable, AppEnum {
+    case decide = "decide"
+    case `do` = "do"
+    case accept = "accept"
+    case know = "know"
+    public static let typeDisplayRepresentation: TypeDisplayRepresentation = "Kind"
+    public static let caseDisplayRepresentations: [MailboxListKindValue: DisplayRepresentation] = [
+        .decide: "decide",
+        .`do`: "do",
+        .accept: "accept",
+        .know: "know",
+    ]
+}
+
 public struct MailboxListInput: Codable, Sendable, Hashable {
-    public init() {
+    public var all: Bool?
+    public var mine: Bool?
+    public var kind: MailboxListKindValue?
+    public init(all: Bool? = nil, mine: Bool? = nil, kind: MailboxListKindValue? = nil) {
+        self.all = all
+        self.mine = mine
+        self.kind = kind
     }
 }
 
@@ -81,14 +264,24 @@ public struct MailboxListIntent: AppIntent {
     public static let title: LocalizedStringResource = "Letters"
     public static let description = IntentDescription("List the letters waiting for you.")
 
+    @Parameter(title: "All", description: "List answered, withdrawn and expired letters too.")
+    public var all: Bool?
+    @Parameter(title: "Mine", description: "Only the letters this agent filed.")
+    public var mine: Bool?
+    @Parameter(title: "Kind", description: "Only letters of this kind.")
+    public var kind: MailboxListKindValue?
+
     public init() {}
 
     public init(_ input: MailboxListInput) {
         self.init()
+        self.all = input.all
+        self.mine = input.mine
+        self.kind = input.kind
     }
 
     public var input: MailboxListInput {
-        MailboxListInput()
+        MailboxListInput(all: all, mine: mine, kind: kind)
     }
 
     @MainActor
@@ -123,5 +316,431 @@ public struct MailboxListButton<Label: View>: View {
 extension MailboxListButton where Label == Text {
     public init(_ input: MailboxListInput) {
         self.init(input) { Text(verbatim: "Letters") }
+    }
+}
+
+// MARK: mailbox_read (read)
+
+public struct MailboxReadInput: Codable, Sendable, Hashable {
+    public var letter: String
+    public init(letter: String) {
+        self.letter = letter
+    }
+}
+
+public struct MailboxReadOutput: Codable, Sendable, Hashable {
+    public var outcome: String
+    public var state: String
+    public var letter: String
+    public var events: String
+    public init(outcome: String, state: String, letter: String, events: String) {
+        self.outcome = outcome
+        self.state = state
+        self.letter = letter
+        self.events = events
+    }
+}
+
+/// Read a letter: Read one letter and what has happened to it.
+@MainActor
+public enum MailboxReadAction {
+    public static let id = "mailbox_read"
+    /// The app's handler; every door calls it.
+    public static var perform: (@MainActor @Sendable (MailboxReadInput) async throws -> MailboxReadOutput)?
+    /// What Siri and Shortcuts say when the App Intent finishes or fails: the result in words, or an error turned into
+    /// words (rethrow to let the system show it). Unset, the intent says "Done." and a failure throws.
+    public static var dialog: (@MainActor @Sendable (MailboxReadInput, Result<MailboxReadOutput, any Error>) async throws -> IntentDialog)?
+
+    public static func run(_ input: MailboxReadInput) async throws -> MailboxReadOutput {
+        guard let perform else { throw OuroActionNotBound(action: id) }
+        return try await perform(input)
+    }
+}
+
+public struct MailboxReadIntent: AppIntent {
+    public static let title: LocalizedStringResource = "Read a letter"
+    public static let description = IntentDescription("Read one letter and what has happened to it.")
+
+    @Parameter(title: "Letter", description: "The letter's id (ltr_…) or its code (L7).")
+    public var letter: String
+
+    public init() {}
+
+    public init(_ input: MailboxReadInput) {
+        self.init()
+        self.letter = input.letter
+    }
+
+    public var input: MailboxReadInput {
+        MailboxReadInput(letter: letter)
+    }
+
+    @MainActor
+    public func perform() async throws -> some IntentResult & ProvidesDialog {
+        let input = self.input
+        let result: Result<MailboxReadOutput, any Error>
+        do { result = .success(try await MailboxReadAction.run(input)) } catch { result = .failure(error) }
+        if let dialog = MailboxReadAction.dialog { return .result(dialog: try await dialog(input, result)) }
+        _ = try result.get()
+        return .result(dialog: "Done.")
+    }
+}
+
+/// The control for mailbox_read: Button(_:intent:), the same intent Siri and Shortcuts run.
+@available(iOS 17.0, macOS 14.0, watchOS 10.0, tvOS 17.0, *)
+public struct MailboxReadButton<Label: View>: View {
+    public let input: MailboxReadInput
+    let label: Label
+
+    public init(_ input: MailboxReadInput, @ViewBuilder label: () -> Label) {
+        self.input = input
+        self.label = label()
+    }
+
+    public var body: some View {
+        Button(intent: MailboxReadIntent(input)) { label }
+            .accessibilityHint(Text(verbatim: "Read one letter and what has happened to it."))
+    }
+}
+
+@available(iOS 17.0, macOS 14.0, watchOS 10.0, tvOS 17.0, *)
+extension MailboxReadButton where Label == Text {
+    public init(_ input: MailboxReadInput) {
+        self.init(input) { Text(verbatim: "Read a letter") }
+    }
+}
+
+// MARK: mailbox_wait (read)
+
+public struct MailboxWaitInput: Codable, Sendable, Hashable {
+    public var letter: String
+    public var cursor: Int?
+    public var timeout: Int?
+    public init(letter: String, cursor: Int? = nil, timeout: Int? = nil) {
+        self.letter = letter
+        self.cursor = cursor
+        self.timeout = timeout
+    }
+}
+
+public struct MailboxWaitOutput: Codable, Sendable, Hashable {
+    public var outcome: String
+    public var state: String
+    public var cursor: Int
+    public init(outcome: String, state: String, cursor: Int) {
+        self.outcome = outcome
+        self.state = state
+        self.cursor = cursor
+    }
+}
+
+/// Wait for an answer: Wait until a letter is answered or closed.
+@MainActor
+public enum MailboxWaitAction {
+    public static let id = "mailbox_wait"
+    /// The app's handler; every door calls it.
+    public static var perform: (@MainActor @Sendable (MailboxWaitInput) async throws -> MailboxWaitOutput)?
+    /// What Siri and Shortcuts say when the App Intent finishes or fails: the result in words, or an error turned into
+    /// words (rethrow to let the system show it). Unset, the intent says "Done." and a failure throws.
+    public static var dialog: (@MainActor @Sendable (MailboxWaitInput, Result<MailboxWaitOutput, any Error>) async throws -> IntentDialog)?
+
+    public static func run(_ input: MailboxWaitInput) async throws -> MailboxWaitOutput {
+        guard let perform else { throw OuroActionNotBound(action: id) }
+        return try await perform(input)
+    }
+}
+
+public struct MailboxWaitIntent: AppIntent {
+    public static let title: LocalizedStringResource = "Wait for an answer"
+    public static let description = IntentDescription("Wait until a letter is answered or closed.")
+
+    @Parameter(title: "Letter", description: "The letter's id (ltr_…) or its code (L7).")
+    public var letter: String
+    @Parameter(title: "Cursor", description: "The cursor the last wait returned; events after it count.")
+    public var cursor: Int?
+    @Parameter(title: "Timeout", description: "Seconds to wait, 1 to 300.")
+    public var timeout: Int?
+
+    public init() {}
+
+    public init(_ input: MailboxWaitInput) {
+        self.init()
+        self.letter = input.letter
+        self.cursor = input.cursor
+        self.timeout = input.timeout
+    }
+
+    public var input: MailboxWaitInput {
+        MailboxWaitInput(letter: letter, cursor: cursor, timeout: timeout)
+    }
+
+    @MainActor
+    public func perform() async throws -> some IntentResult & ProvidesDialog {
+        let input = self.input
+        let result: Result<MailboxWaitOutput, any Error>
+        do { result = .success(try await MailboxWaitAction.run(input)) } catch { result = .failure(error) }
+        if let dialog = MailboxWaitAction.dialog { return .result(dialog: try await dialog(input, result)) }
+        _ = try result.get()
+        return .result(dialog: "Done.")
+    }
+}
+
+/// The control for mailbox_wait: Button(_:intent:), the same intent Siri and Shortcuts run.
+@available(iOS 17.0, macOS 14.0, watchOS 10.0, tvOS 17.0, *)
+public struct MailboxWaitButton<Label: View>: View {
+    public let input: MailboxWaitInput
+    let label: Label
+
+    public init(_ input: MailboxWaitInput, @ViewBuilder label: () -> Label) {
+        self.input = input
+        self.label = label()
+    }
+
+    public var body: some View {
+        Button(intent: MailboxWaitIntent(input)) { label }
+            .accessibilityHint(Text(verbatim: "Wait until a letter is answered or closed."))
+    }
+}
+
+@available(iOS 17.0, macOS 14.0, watchOS 10.0, tvOS 17.0, *)
+extension MailboxWaitButton where Label == Text {
+    public init(_ input: MailboxWaitInput) {
+        self.init(input) { Text(verbatim: "Wait for an answer") }
+    }
+}
+
+// MARK: mailbox_withdraw (write)
+
+public struct MailboxWithdrawInput: Codable, Sendable, Hashable {
+    public var letter: String
+    public var reason: String
+    public init(letter: String, reason: String) {
+        self.letter = letter
+        self.reason = reason
+    }
+}
+
+public struct MailboxWithdrawOutput: Codable, Sendable, Hashable {
+    public var outcome: String
+    public var state: String
+    public init(outcome: String, state: String) {
+        self.outcome = outcome
+        self.state = state
+    }
+}
+
+/// Withdraw a letter: Take back a letter you filed.
+@MainActor
+public enum MailboxWithdrawAction {
+    public static let id = "mailbox_withdraw"
+    /// The app's handler; every door calls it.
+    public static var perform: (@MainActor @Sendable (MailboxWithdrawInput) async throws -> MailboxWithdrawOutput)?
+    /// What Siri and Shortcuts say when the App Intent finishes or fails: the result in words, or an error turned into
+    /// words (rethrow to let the system show it). Unset, the intent says "Done." and a failure throws.
+    public static var dialog: (@MainActor @Sendable (MailboxWithdrawInput, Result<MailboxWithdrawOutput, any Error>) async throws -> IntentDialog)?
+
+    public static func run(_ input: MailboxWithdrawInput) async throws -> MailboxWithdrawOutput {
+        guard let perform else { throw OuroActionNotBound(action: id) }
+        return try await perform(input)
+    }
+}
+
+public struct MailboxWithdrawIntent: AppIntent {
+    public static let title: LocalizedStringResource = "Withdraw a letter"
+    public static let description = IntentDescription("Take back a letter you filed.")
+
+    @Parameter(title: "Letter", description: "The letter's id (ltr_…) or its code (L7).")
+    public var letter: String
+    @Parameter(title: "Reason", description: "Why it no longer needs an answer, in one line.")
+    public var reason: String
+
+    public init() {}
+
+    public init(_ input: MailboxWithdrawInput) {
+        self.init()
+        self.letter = input.letter
+        self.reason = input.reason
+    }
+
+    public var input: MailboxWithdrawInput {
+        MailboxWithdrawInput(letter: letter, reason: reason)
+    }
+
+    @MainActor
+    public func perform() async throws -> some IntentResult & ProvidesDialog {
+        let input = self.input
+        let result: Result<MailboxWithdrawOutput, any Error>
+        do { result = .success(try await MailboxWithdrawAction.run(input)) } catch { result = .failure(error) }
+        if let dialog = MailboxWithdrawAction.dialog { return .result(dialog: try await dialog(input, result)) }
+        _ = try result.get()
+        return .result(dialog: "Done.")
+    }
+}
+
+/// The control for mailbox_withdraw: Button(_:intent:), the same intent Siri and Shortcuts run.
+@available(iOS 17.0, macOS 14.0, watchOS 10.0, tvOS 17.0, *)
+public struct MailboxWithdrawButton<Label: View>: View {
+    public let input: MailboxWithdrawInput
+    let label: Label
+
+    public init(_ input: MailboxWithdrawInput, @ViewBuilder label: () -> Label) {
+        self.input = input
+        self.label = label()
+    }
+
+    public var body: some View {
+        Button(intent: MailboxWithdrawIntent(input)) { label }
+            .accessibilityHint(Text(verbatim: "Take back a letter you filed."))
+    }
+}
+
+@available(iOS 17.0, macOS 14.0, watchOS 10.0, tvOS 17.0, *)
+extension MailboxWithdrawButton where Label == Text {
+    public init(_ input: MailboxWithdrawInput) {
+        self.init(input) { Text(verbatim: "Withdraw a letter") }
+    }
+}
+
+// MARK: mailbox_deliver (write)
+
+public struct MailboxDeliverInput: Codable, Sendable, Hashable {
+    public var letter: String
+    public init(letter: String) {
+        self.letter = letter
+    }
+}
+
+public struct MailboxDeliverOutput: Codable, Sendable, Hashable {
+    public var outcome: String
+    public var state: String
+    public init(outcome: String, state: String) {
+        self.outcome = outcome
+        self.state = state
+    }
+}
+
+/// Deliver a letter: Send a letter to your chat now.
+@MainActor
+public enum MailboxDeliverAction {
+    public static let id = "mailbox_deliver"
+    /// The app's handler; every door calls it.
+    public static var perform: (@MainActor @Sendable (MailboxDeliverInput) async throws -> MailboxDeliverOutput)?
+    /// What Siri and Shortcuts say when the App Intent finishes or fails: the result in words, or an error turned into
+    /// words (rethrow to let the system show it). Unset, the intent says "Done." and a failure throws.
+    public static var dialog: (@MainActor @Sendable (MailboxDeliverInput, Result<MailboxDeliverOutput, any Error>) async throws -> IntentDialog)?
+
+    public static func run(_ input: MailboxDeliverInput) async throws -> MailboxDeliverOutput {
+        guard let perform else { throw OuroActionNotBound(action: id) }
+        return try await perform(input)
+    }
+}
+
+public struct MailboxDeliverIntent: AppIntent {
+    public static let title: LocalizedStringResource = "Deliver a letter"
+    public static let description = IntentDescription("Send a letter to your chat now.")
+
+    @Parameter(title: "Letter", description: "The letter's id (ltr_…) or its code (L7).")
+    public var letter: String
+
+    public init() {}
+
+    public init(_ input: MailboxDeliverInput) {
+        self.init()
+        self.letter = input.letter
+    }
+
+    public var input: MailboxDeliverInput {
+        MailboxDeliverInput(letter: letter)
+    }
+
+    @MainActor
+    public func perform() async throws -> some IntentResult & ProvidesDialog {
+        let input = self.input
+        let result: Result<MailboxDeliverOutput, any Error>
+        do { result = .success(try await MailboxDeliverAction.run(input)) } catch { result = .failure(error) }
+        if let dialog = MailboxDeliverAction.dialog { return .result(dialog: try await dialog(input, result)) }
+        _ = try result.get()
+        return .result(dialog: "Done.")
+    }
+}
+
+/// The control for mailbox_deliver: Button(_:intent:), the same intent Siri and Shortcuts run.
+@available(iOS 17.0, macOS 14.0, watchOS 10.0, tvOS 17.0, *)
+public struct MailboxDeliverButton<Label: View>: View {
+    public let input: MailboxDeliverInput
+    let label: Label
+
+    public init(_ input: MailboxDeliverInput, @ViewBuilder label: () -> Label) {
+        self.input = input
+        self.label = label()
+    }
+
+    public var body: some View {
+        Button(intent: MailboxDeliverIntent(input)) { label }
+            .accessibilityHint(Text(verbatim: "Send a letter to your chat now."))
+    }
+}
+
+@available(iOS 17.0, macOS 14.0, watchOS 10.0, tvOS 17.0, *)
+extension MailboxDeliverButton where Label == Text {
+    public init(_ input: MailboxDeliverInput) {
+        self.init(input) { Text(verbatim: "Deliver a letter") }
+    }
+}
+
+// MARK: mailbox_answer (person-only)
+
+public struct MailboxAnswerInput: Codable, Sendable, Hashable {
+    public var letter: String
+    public var option: String
+    public init(letter: String, option: String) {
+        self.letter = letter
+        self.option = option
+    }
+}
+
+public struct MailboxAnswerOutput: Codable, Sendable, Hashable {
+    public var outcome: String
+    public init(outcome: String) {
+        self.outcome = outcome
+    }
+}
+
+/// Answer a letter: Answer a letter by picking one of its options.
+@MainActor
+public enum MailboxAnswerAction {
+    public static let id = "mailbox_answer"
+    /// The app's handler; every door calls it.
+    public static var perform: (@MainActor @Sendable (MailboxAnswerInput) async throws -> MailboxAnswerOutput)?
+    /// Called with the error when the person's press fails, since a plain button has nowhere to show it.
+    public static var failed: (@MainActor @Sendable (any Error) -> Void)?
+
+    public static func run(_ input: MailboxAnswerInput) async throws -> MailboxAnswerOutput {
+        guard let perform else { throw OuroActionNotBound(action: id) }
+        return try await perform(input)
+    }
+}
+
+/// The control for mailbox_answer: a plain Button, since no agent may start it.
+@available(iOS 17.0, macOS 14.0, watchOS 10.0, tvOS 17.0, *)
+public struct MailboxAnswerButton<Label: View>: View {
+    public let input: MailboxAnswerInput
+    let label: Label
+
+    public init(_ input: MailboxAnswerInput, @ViewBuilder label: () -> Label) {
+        self.input = input
+        self.label = label()
+    }
+
+    public var body: some View {
+        Button { Task { do { _ = try await MailboxAnswerAction.run(input) } catch { MailboxAnswerAction.failed?(error) } } } label: { label }
+            .accessibilityHint(Text(verbatim: "Answer a letter by picking one of its options."))
+    }
+}
+
+@available(iOS 17.0, macOS 14.0, watchOS 10.0, tvOS 17.0, *)
+extension MailboxAnswerButton where Label == Text {
+    public init(_ input: MailboxAnswerInput) {
+        self.init(input) { Text(verbatim: "Answer a letter") }
     }
 }

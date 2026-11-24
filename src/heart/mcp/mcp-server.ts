@@ -13,7 +13,13 @@ import { resolveFeedbackOrigin } from "../../senses/shepherd/feedback-source"
 import type { FeedbackCommand } from "../../senses/shepherd/feedback-submit"
 import { redactSecrets } from "../../senses/shepherd/redact"
 import { toolCandidates } from "../../repertoire/tool-candidates"
-import { MailboxDoorError, mailboxMcpSchema, mailboxMcpSchemas, runMailboxAction } from "../letters/doors"
+import { MailboxDoorError, mailboxMcpSchema, mailboxMcpSchemas, readMailboxDoors, runMailboxAction } from "../letters/doors"
+
+/** The codes the mailbox doors answer a refusal with: the doors' own checks and the daemon's letters writer. */
+export const MAILBOX_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  "daemon-down", "unknown-input", "bad-input", "no-agent", "not-found",
+  "invalid-letter", "no-person", "not-sender", "not-waiting", "no-answering-handle",
+])
 
 export const SENSE_TURN_MAX_RETRIES = 3
 export const SENSE_TURN_RETRY_DELAYS_MS = [1000, 2000, 4000]
@@ -476,6 +482,14 @@ export function createMcpServer(options: McpServerOptions): McpServer {
    * An `isError` result in the tool's own card's words: `[code] means`, the detail when there is one, then `Fix: fix`.
    * Every code a call path raises is on that tool's card; the census checks each card code is raised in this file.
    */
+  /**
+   * Whether a mailbox refusal's code is one this server answers as a refusal: one the mailbox doors raise (the daemon's
+   * writer or the doors' own checks), and on the tool's card. Any other code is answered as a failure.
+   */
+  function mailboxRefusalCarded(toolName: string, code: string): boolean {
+    return MAILBOX_REFUSAL_CODES.has(code) && getToolSchemas().find((schema) => schema.name === toolName)!.ax.errors.some((error) => error.code === code)
+  }
+
   function writeToolError(request: JsonRpcRequest, toolName: string, code: string, detail?: string): void {
     const card = getToolSchemas().find((schema) => schema.name === toolName)!.ax.errors.find((error) => error.code === code)!
     const text = [`[${code}] ${card.means}`, ...(detail ? [detail] : []), `Fix: ${card.fix}`].join("\n")
@@ -559,6 +573,14 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     const toolArgs = (params.arguments ?? {}) as Record<string, unknown>
     /* v8 ignore stop */
 
+    // A person-only action is no tool, but a call to it gets the person-only refusal ouro-actions generated for it.
+    const { refusals } = readMailboxDoors()
+    const personOnly = typeof toolName === "string" && Object.hasOwn(refusals, toolName) ? refusals[toolName] : undefined
+    if (personOnly) {
+      writeResponse({ jsonrpc: "2.0", id: request.id!, result: { content: [{ type: "text", text: `[person-only] ${personOnly.summary}` }], structuredContent: personOnly, isError: true } })
+      return
+    }
+
     // An error in finding the tool is a protocol error, not a tool result (MCP 2025-11-25, CallToolResult.isError).
     const names = getToolSchemas().map((schema) => schema.name)
     if (typeof toolName !== "string" || !names.includes(toolName)) {
@@ -591,15 +613,15 @@ export function createMcpServer(options: McpServerOptions): McpServer {
       return
     }
 
-    // ── Mailbox tools: generated doors, run here without the daemon ──
+    // ── Mailbox tools: generated doors; the daemon's single writer runs them over the socket ──
     if (mailboxMcpSchemas().some((schema) => schema.name === toolName)) {
       try {
-        const result = runMailboxAction(toolName, toolArgs)
+        const result = await runMailboxAction(toolName, toolArgs, { agent, socketPath })
         writeResponse({ jsonrpc: "2.0", id: request.id!, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: false } })
       } catch (error) {
-        // A listed tool's action exists, so its one refusal is unknown-input. Anything else is a failure, not bad
-        // input: it is answered as a JSON-RPC internal error, since nothing above handleRequest catches a throw.
-        if (error instanceof MailboxDoorError) writeToolError(request, toolName, "unknown-input", error.message)
+        // A refusal answers with its card's code. Anything else is a failure, not bad input: it is answered as a
+        // JSON-RPC internal error, since nothing above handleRequest catches a throw.
+        if (error instanceof MailboxDoorError && mailboxRefusalCarded(toolName, error.code)) writeToolError(request, toolName, error.code, error.message)
         else writeResponse({ jsonrpc: "2.0", id: request.id!, error: { code: -32603, message: `${toolName} failed: ${(error as Error).message}` } })
       }
       return
@@ -772,11 +794,16 @@ function readErrors(tool: string, what: string): McpErrorCard[] {
 }
 
 /**
- * Returns the list of MCP tool schemas for all 18 agent tools (17 written here, the mailbox group generated), each with its Ouro AX card (`ax`).
+ * Returns the list of MCP tool schemas for all 23 agent tools (17 written here, the mailbox group's 6 generated), each with its Ouro AX card (`ax`).
  * Each schema follows JSON Schema for inputSchema as required by MCP.
  */
 export function getToolSchemas(): McpToolSchema[] {
+  const mailboxSend = mailboxMcpSchema("mailbox_send")
   const mailboxList = mailboxMcpSchema("mailbox_list")
+  const mailboxRead = mailboxMcpSchema("mailbox_read")
+  const mailboxWait = mailboxMcpSchema("mailbox_wait")
+  const mailboxWithdraw = mailboxMcpSchema("mailbox_withdraw")
+  const mailboxDeliver = mailboxMcpSchema("mailbox_deliver")
   return [
     {
       name: "shepherd_feedback",
@@ -977,7 +1004,12 @@ export function getToolSchemas(): McpToolSchema[] {
     },
     // The mailbox group's tools, generated by ouro-actions from actions/mailbox.actions.mts. Each is named here, where
     // the census places MCP doors; mailboxMcpSchema reads the rest from mcp.json and fails on a name it doesn't list.
+    { ...mailboxSend, name: "mailbox_send", inputSchema: mailboxSend.inputSchema },
     { ...mailboxList, name: "mailbox_list", inputSchema: mailboxList.inputSchema },
+    { ...mailboxRead, name: "mailbox_read", inputSchema: mailboxRead.inputSchema },
+    { ...mailboxWait, name: "mailbox_wait", inputSchema: mailboxWait.inputSchema },
+    { ...mailboxWithdraw, name: "mailbox_withdraw", inputSchema: mailboxWithdraw.inputSchema },
+    { ...mailboxDeliver, name: "mailbox_deliver", inputSchema: mailboxDeliver.inputSchema },
   ]
 }
 // MCP server v0.1.0-alpha.140

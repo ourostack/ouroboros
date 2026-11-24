@@ -105,7 +105,7 @@ describe("MCP mailbox tools, served from the generated mcp.json", () => {
   it("lists mailbox_list with the generated schema and the annotations its card gives", async () => {
     const response = await call("tools/list", {})
     const tool = response.result.tools.find((t: { name: string }) => t.name === "mailbox_list")
-    const generated = (await import("../../../../actions/generated/mailbox/mcp.json")).tools[0]
+    const generated = (await import("../../../../actions/generated/mailbox/mcp.json")).tools.find((t: { name: string }) => t.name === "mailbox_list")!
     expect(tool.inputSchema).toEqual(generated.inputSchema)
     expect(tool.annotations).toEqual({ ...generated.annotations, idempotentHint: true })
     expect(tool.description).toContain(generated.description)
@@ -120,17 +120,49 @@ describe("MCP mailbox tools, served from the generated mcp.json", () => {
     }
   })
 
-  it("runs mailbox_list without the daemon and returns the empty pile as structured content", async () => {
+  it("runs mailbox_list through the daemon for the server's agent, and returns its result as structured content", async () => {
+    mockSendDaemonCommand.mockResolvedValue({ ok: true, data: { outcome: "done", count: 0, listing: "" } })
     const response = await call("tools/call", { name: "mailbox_list", arguments: {} })
     expect(response.result.isError).toBe(false)
     expect(response.result.structuredContent).toEqual({ outcome: "done", count: 0, listing: "" })
     expect(JSON.parse(response.result.content[0].text)).toEqual({ outcome: "done", count: 0, listing: "" })
+    expect(mockSendDaemonCommand).toHaveBeenCalledWith("/tmp/test.sock", { kind: "letters.action", agent: "test-agent", action: "mailbox_list", input: {} }, { timeoutMs: 30_000 })
+  })
+
+  it("answers a refusal from the daemon with that code's card", async () => {
+    mockSendDaemonCommand.mockRejectedValue(Object.assign(new Error("connect ENOENT"), { code: "ENOENT" }))
+    const down = await call("tools/call", { name: "mailbox_list", arguments: {} })
+    expect(down.result.isError).toBe(true)
+    expect(down.result.content[0].text).toMatch(/^\[daemon-down\] /)
+    mockSendDaemonCommand.mockResolvedValue({ ok: false, error: "No letter is L9.", data: { code: "not-found", message: "No letter is L9." } })
+    const missing = await call("tools/call", { name: "mailbox_read", arguments: { letter: "L9" } })
+    expect(missing.result.content[0].text).toMatch(/^\[not-found\] No letter has that id or code\.\nNo letter is L9\.\nFix: /)
+  })
+
+  it("answers as a refusal every code the generated cards give, and any other code as a failure", async () => {
+    const { MAILBOX_REFUSAL_CODES } = await import("../../../heart/mcp/mcp-server")
+    const { mailboxMcpSchemas } = await import("../../../heart/letters/doors")
+    const carded = new Set(mailboxMcpSchemas().flatMap((schema) => schema.ax.errors.map((error) => error.code)))
+    expect([...MAILBOX_REFUSAL_CODES].sort()).toEqual([...carded].sort())
+    mockSendDaemonCommand.mockResolvedValue({ ok: false, error: "Only the sender may.", data: { code: "not-sender", message: "Only the sender may." } })
+    const offCard = await call("tools/call", { name: "mailbox_read", arguments: { letter: "L1" } })
+    expect(offCard.error).toEqual({ code: -32603, message: "mailbox_read failed: Only the sender may." })
+    mockSendDaemonCommand.mockResolvedValue({ ok: false, error: "Odd.", data: { code: "odd", message: "Odd." } })
+    const unknown = await call("tools/call", { name: "mailbox_read", arguments: { letter: "L1" } })
+    expect(unknown.error).toEqual({ code: -32603, message: "mailbox_read failed: Odd." })
+  })
+
+  it("answers a call to the person-only mailbox_answer with its generated refusal", async () => {
+    const response = await call("tools/call", { name: "mailbox_answer", arguments: { letter: "L1", option: "2" } })
+    expect(response.result.isError).toBe(true)
+    expect(response.result.structuredContent).toEqual(expect.objectContaining({ state: "refused", error: expect.objectContaining({ code: "person-only" }) }))
+    expect(response.result.content[0].text).toMatch(/^\[person-only\] Answer a letter: /)
     expect(mockSendDaemonCommand).not.toHaveBeenCalled()
   })
 
   it("answers a failure inside the action as a JSON-RPC internal error, never as bad input", async () => {
     const doors = await import("../../../heart/letters/doors")
-    const spy = vi.spyOn(doors, "runMailboxAction").mockImplementation(() => { throw new Error("disk gone") })
+    const spy = vi.spyOn(doors, "runMailboxAction").mockRejectedValue(new Error("disk gone"))
     const response = await call("tools/call", { name: "mailbox_list", arguments: {} })
     spy.mockRestore()
     expect(response.result).toBeUndefined()
@@ -138,9 +170,9 @@ describe("MCP mailbox tools, served from the generated mcp.json", () => {
   })
 
   it("refuses an input mailbox_list doesn't take with its card's code", async () => {
-    const response = await call("tools/call", { name: "mailbox_list", arguments: { all: true } })
+    const response = await call("tools/call", { name: "mailbox_list", arguments: { to: "friend-x" } })
     expect(response.result.isError).toBe(true)
     expect(response.result.content[0].text).toMatch(/^\[unknown-input\] /)
-    expect(response.result.content[0].text).toContain("doesn't take all")
+    expect(response.result.content[0].text).toContain("doesn't take to")
   })
 })
