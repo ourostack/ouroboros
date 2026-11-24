@@ -51,6 +51,8 @@ const REQUIRED_PACKAGE_ASSET_PATHS = [
   "deploy/unraid/sanctuary.ouro/psyche/LORE.md",
   "deploy/unraid/sanctuary.ouro/psyche/SOUL.md",
   "deploy/unraid/sanctuary.ouro/psyche/TACIT.md",
+  // The mailbox doors ouro-actions generated, copied beside the code that reads them (scripts/copy-action-doors.cjs).
+  ...require("./copy-action-doors.cjs").SHIPPED_ACTION_DOOR_PATHS,
   // The built-in Desk (desk.lock.json), which every agent's daemon runs (src/repertoire/desk-mcp.ts).
   "desk.lock.json",
   "vendor/desk/.ouro-desk.json",
@@ -62,6 +64,8 @@ const REQUIRED_PACKAGE_ASSET_SOURCES = {
   "dist/heart/daemon/sanctuary-authority-root-lifecycle.js": "src/heart/daemon/sanctuary-authority-root-lifecycle.ts",
   "dist/heart/daemon/sanctuary-telegram-authority-entry.js": "src/heart/daemon/sanctuary-telegram-authority-entry.ts",
   "dist/heart/daemon/sanctuary-host-supervisor-entry.js": "src/heart/daemon/sanctuary-host-supervisor-entry.ts",
+  // The build copies the generated mailbox doors into dist (scripts/copy-action-doors.cjs).
+  ...require("./copy-action-doors.cjs").ACTION_DOOR_SOURCES,
   // The build vendors the Desk release the lock pins (scripts/desk-vendor.cjs).
   "vendor/desk/.ouro-desk.json": "desk.lock.json",
   "vendor/desk/mcp/bootstrap.cjs": "desk.lock.json",

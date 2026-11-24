@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import * as fs from "fs"
 import * as path from "path"
 import { execFileSync } from "child_process"
+import { MAILBOX_CLI_WORDS } from "../heart/daemon/cli-parse"
 
 // The old Ouro Mailbox (an agent-inspector page on a fixed loopback port) was removed so a fresh Mailbox can be built
 // in its place. This guard keeps its code, build steps, commands and names from coming back in tracked files, and
@@ -31,6 +32,9 @@ const ALLOWED_FILES: Record<string, string> = {
   "src/__tests__/scripts/sanctuary-deployment-target.test.ts": "tests that allowance",
 }
 
+const NEW_MAILBOX_WORDS = [...Object.keys(MAILBOX_CLI_WORDS).flatMap((word) => [`${word}\\b`, `<${word}\\b`]), "<word>", "\\$\\{(sub|MAILBOX_USAGE_WORDS)\\}"].join("|")
+const OLD_COMMAND = new RegExp(`ouro outlook\\b|ouro mailbox\\b(?! (${NEW_MAILBOX_WORDS}))`)
+
 const PATTERNS: { id: string; regex: RegExp }[] = [
   { id: "old server module", regex: /heart\/mailbox\b/ },
   { id: "old UI package", regex: /mailbox-ui\b/ },
@@ -40,7 +44,9 @@ const PATTERNS: { id: string; regex: RegExp }[] = [
   { id: "old state folder", regex: /state\/mailbox\b/ },
   { id: "old Outlook name", regex: /outlook-ui|heart\/outlook\b/ },
   { id: "old page name", regex: /Ouro Mailbox/ },
-  { id: "old command", regex: /ouro (mailbox|outlook)\b/ },
+  // `ouro outlook` is gone for good. `ouro mailbox` is allowed again only before a word the new, generated mailbox group
+  // declares (or the placeholder or template that stands for one); the old command took none.
+  { id: "old command", regex: OLD_COMMAND },
   { id: "old status field", regex: /mailboxUrl|outlookUrl/ },
   { id: "old port", regex: /\b6876\b/ },
 ]
@@ -70,6 +76,15 @@ describe("the old Ouro Mailbox is gone", () => {
       })
     }
     expect(findings).toEqual([])
+  })
+
+  it("still catches the old commands, and lets the new mailbox group's words through", () => {
+    for (const old of ["ouro outlook", "ouro outlook --open", "ouro mailbox", "ouro mailbox --agent slugger", "run `ouro mailbox`.", "ouro mailbox open", "ouro mailbox listing", "ouro mailbox ${url}"]) {
+      expect(OLD_COMMAND.test(old), old).toBe(true)
+    }
+    for (const fresh of ["ouro mailbox list [--json]", "`ouro mailbox <word>`: each word", "ouro mailbox ${sub} takes"]) {
+      expect(OLD_COMMAND.test(fresh), fresh).toBe(false)
+    }
   })
 
   it("tracks no file in the old UI package or server folder", () => {

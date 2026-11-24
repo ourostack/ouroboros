@@ -19,6 +19,11 @@ function buildSteps(repoRoot, deps = defaultDeps()) {
       args: [deps.resolveTypeScriptTsc()],
     },
     {
+      label: "copy the generated action doors into dist",
+      command: deps.execPath,
+      args: [deps.join(repoRoot, "scripts", "copy-action-doors.cjs"), repoRoot],
+    },
+    {
       label: "smoke Sanctuary health acceptance probe entry",
       command: deps.execPath,
       args: [deps.join(repoRoot, "scripts", "sanctuary-health-acceptance-probe-entry-smoke.cjs")],
