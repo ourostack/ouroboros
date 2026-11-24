@@ -1,0 +1,1 @@
+State retention now deletes a gzipped local mail copy once Blob is proven to hold the same mail: under the same key, Blob's message records the same raw size and SHA-256, and its raw object exists. A copy whose upload it can't confirm stays, and the daemon logs counts only (`daemon.state_retention_mailroom_proven_copies`).
