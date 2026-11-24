@@ -2281,6 +2281,9 @@ export async function drainAndSendPendingTeams(
       sessionKey: key,
       text: messageText,
       intent: "generic_outreach",
+      // Stable per file: a pending file that reappears (a restored checkout, a failed unlink) is recognised by the
+      // session and not recorded into the conversation a second time.
+      deliveryId: `pending:${createHash("sha256").update(path.relative(root, filePath)).digest("hex").slice(0, 32)}`,
     }, {
       botApi,
       store,
