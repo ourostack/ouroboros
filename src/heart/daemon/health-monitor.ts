@@ -24,6 +24,8 @@ export interface HealthMonitorOptions {
   }
   alertSink?: (message: string) => Promise<void> | void
   diskUsagePercent?: () => number | null
+  /** Bytes free on the bundles volume. With it, disk space is critical only when little is actually left. */
+  diskFreeBytes?: () => number | null
   sentinelChecker?: (resultsSoFar: DaemonHealthResult[]) => Promise<DaemonHealthResult[]> | DaemonHealthResult[]
   /** Reports bundles whose git sync keeps failing or skips oversized files. */
   bundleSyncChecker?: () => DaemonHealthResult[]
@@ -44,11 +46,30 @@ export function readDiskUsagePercent(dir: string, statfs: (dir: string) => { blo
   }
 }
 
+/** Bytes available to this user on the volume holding `dir`, or null when it can't be read. */
+export function readDiskFreeBytes(dir: string, statfs: (dir: string) => { bavail: number; bsize: number } = fs.statfsSync): number | null {
+  try {
+    const { bavail, bsize } = statfs(dir)
+    if (!(bavail >= 0) || !(bsize > 0)) return null
+    return bavail * bsize
+  } catch {
+    return null
+  }
+}
+
+// Under this much free space, writes (sessions, the Sentinel's own receipts) are at real risk.
+const DISK_CRITICAL_FREE_BYTES = 5_000_000_000
+
+function gigabytes(bytes: number): string {
+  return `${(bytes / 1_000_000_000).toFixed(1)} GB`
+}
+
 export class HealthMonitor {
   private readonly processManager: HealthMonitorOptions["processManager"]
   private readonly scheduler: HealthMonitorOptions["scheduler"]
   private readonly alertSink: (message: string) => Promise<void> | void
   private readonly diskUsagePercent: () => number | null
+  private readonly diskFreeBytes: () => number | null
   private readonly sentinelChecker: (resultsSoFar: DaemonHealthResult[]) => Promise<DaemonHealthResult[]> | DaemonHealthResult[]
   private readonly bundleSyncChecker: () => DaemonHealthResult[]
   private readonly onCriticalAgent: (agentName: string) => void
@@ -63,6 +84,7 @@ export class HealthMonitor {
     this.scheduler = options.scheduler
     this.alertSink = options.alertSink ?? (() => undefined)
     this.diskUsagePercent = options.diskUsagePercent ?? (() => 0)
+    this.diskFreeBytes = options.diskFreeBytes ?? (() => null)
     this.sentinelChecker = options.sentinelChecker ?? (() => [])
     this.bundleSyncChecker = options.bundleSyncChecker ?? (() => [])
     this.onCriticalAgent = options.onCriticalAgent ?? (() => undefined)
@@ -172,7 +194,17 @@ export class HealthMonitor {
     }
 
     const diskPercent = this.diskUsagePercent()
-    if (diskPercent === null) {
+    const diskFree = this.diskFreeBytes()
+    // 91% of a 460 GB disk is 42 GB free: high, not critical. Judge by what is left when it can be read.
+    if (diskPercent !== null && diskFree !== null) {
+      if (diskFree < DISK_CRITICAL_FREE_BYTES) {
+        results.push({ name: "disk-space", status: "critical", message: `disk space critical (${gigabytes(diskFree)} free, ${diskPercent}% used)` })
+      } else if (diskPercent >= 80) {
+        results.push({ name: "disk-space", status: "warn", message: `disk usage high (${diskPercent}%, ${gigabytes(diskFree)} free)` })
+      } else {
+        results.push({ name: "disk-space", status: "ok", message: `disk usage healthy (${diskPercent}%, ${gigabytes(diskFree)} free)` })
+      }
+    } else if (diskPercent === null) {
       results.push({
         name: "disk-space",
         status: "warn",

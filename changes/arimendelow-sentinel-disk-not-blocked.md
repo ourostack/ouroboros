@@ -1,0 +1,1 @@
+Disk space is critical in daemon health only when under 5 GB is free; a high percent with room left is a warning, and every disk message says how much is free. A blocked context-loss Sentinel receipt now names the signals that blocked it instead of saying "deterministic recovery failed".
