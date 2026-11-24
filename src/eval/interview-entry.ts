@@ -23,6 +23,7 @@ import { resolveTarget } from "./targets"
 import { parseInterviewArgs, runInterviews, X_KIT } from "./interviews/runner"
 import { U_KIT } from "./interviews/u/kit"
 import { H_KIT } from "./interviews/h/kit"
+import { monthLedger } from "./month-ledger"
 
 const REPO = path.resolve(__dirname, "../..")
 
@@ -93,7 +94,7 @@ async function main(): Promise<number> {
   if (hostLock.rest.length !== tags.rest.length) {
     if (!hostLock.value || hostLock.value.startsWith("--")) throw new Error("--host-lock needs a holder, such as eval:<your run>")
     // The holder goes to the host through ssh's remote shell, as in `run-command`.
-    if (!/^[\w.:@+-]+$/.test(hostLock.value)) throw new Error("--host-lock takes one word of letters, digits and . : @ + - _ (it is sent over ssh)")
+    if (!/^eval[\w.:@+-]*$/.test(hostLock.value)) throw new Error("--host-lock takes one word starting with eval, of letters, digits and . : @ + - _ (it is sent over ssh, and eval:stop frees only eval holders)")
     if (!ssh.value) throw new Error("--host-lock needs --sandbox-ssh")
   }
   const images = tags.value === undefined ? undefined : parseSandboxImages(tags.value)
@@ -152,6 +153,7 @@ async function interviews(args: ReturnType<typeof parseInterviewArgs>, deps: { r
     openLog: openPrivateLog,
     started: deps.started,
     print: (text) => { process.stdout.write(`${text}\n`) },
+    monthLedger: monthLedger(),
   })
   return exitCode
 }

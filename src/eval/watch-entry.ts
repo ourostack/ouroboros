@@ -15,7 +15,7 @@ const code = watchCli(process.argv.slice(2), {
   stderr: (text) => process.stderr.write(text),
   homedir: os.homedir(),
 })
-// stderr's last line names the failure for a script: 2 bad arguments, 1 a run that was refused or failed.
-if (code !== 0) process.stderr.write(`code: ${code === 2 ? "usage" : "watch-failed"}\n`)
+// stderr's last line names the failure for a script: 2 bad arguments, 3 the kill switch, 1 a run refused or failed.
+if (code !== 0) process.stderr.write(`code: ${code === 2 ? "usage" : code === 3 ? "stopped" : "watch-failed"}\n`)
 emitNervesEvent({ component: "eval", event: "eval.watch_entry_exit", message: "Watch's command finished", meta: { code } })
 process.exitCode = code
