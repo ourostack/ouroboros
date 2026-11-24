@@ -59,6 +59,7 @@ describe("renderWhereAmI", () => {
     const rich = { id: "f", name: "w", state: "working", desk: { track: "t", slug: "s", status: "processing", repo: "o/r", branch: "b", url: "https://x/pull/1", session: "sid", file: "/d/t/s/task.md", updatedAt: "2026-11-10T03:00:00.000Z" } }
     expect(render([rich as never])).toContain("  - w (working), desk card t/s [processing]; o/r@b; pr https://x/pull/1; session sid; log /d/t/s/task.md (updated 60 min ago)")
     expect(render([{ id: "g", desk: { track: "t", branch: "b", file: "/f" } } as never])).toContain("repo?@b; log /f\n")
+    expect(render([{ id: "h", desk: { track: "t", repo: "o/r" } } as never])).toContain("o/r@branch?")
     const second = render(sessions.slice(0, 2))
     expect(second).not.toContain("and 2 more")
     expect(second).toContain("  - work 1")
