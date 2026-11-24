@@ -74,6 +74,23 @@ describe("budget ledger", () => {
     expect(hold.release()).toEqual({ premium: 0, credits: 40 })
   })
 
+  it("refuses every reservation and the next call once the kill switch is set, and keeps that reason", () => {
+    let set: string | undefined
+    let asked = 0
+    const ledger = createBudgetLedger({ premium: 100 }, { killSwitch: () => { asked += 1; return set } })
+    const hold = ledger.reserve("run", { calls: 3, perCall: { premium: 2, credits: 0 }, pricing })
+    if ("refused" in hold) throw new Error(hold.refused)
+    expect(hold.take()).toBe(true)
+    set = "the kill switch /x/STOP is set"
+    expect(hold.take()).toBe(false)
+    expect(ledger.stopped()).toBe("the kill switch /x/STOP is set")
+    expect(ledger.reserve("next", { calls: 1, perCall: { premium: 1, credits: 0 }, pricing })).toEqual({ refused: "stopped: the kill switch /x/STOP is set" })
+    const before = asked
+    set = undefined
+    expect(hold.take()).toBe(false)
+    expect(asked).toBe(before)
+  })
+
   it("rejects a negative or non-finite cap or worst case", () => {
     expect(() => createBudgetLedger({ premium: -1 })).toThrow(/premium cap/)
     const ledger = createBudgetLedger({})

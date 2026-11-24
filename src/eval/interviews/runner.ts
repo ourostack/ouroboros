@@ -16,6 +16,8 @@ import type { ProviderRuntime, ProviderTurnRequest } from "../../heart/core"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { evaluate } from "../assertions"
 import { createBudgetLedger, type Cost, type Pricing } from "../budget"
+import { stopRequested } from "../kill-switch"
+import type { MonthLedger } from "../month-ledger"
 import type { Case, Observation, TraceCall } from "../domain/case"
 import { gradeRun } from "../report"
 import type { GuestChoice, RunCase, SandboxRun } from "../sandbox/remote"
@@ -147,6 +149,10 @@ export type InterviewDeps = {
   print(text: string): void
   /** The sessions ever started, in an append-only record kept beside the reports: a session starts once, ever. */
   started: { has(id: string): boolean; add(id: string): void }
+  /** Why every reservation and call must stop now (the `~/.ouro-eval/STOP` file by default, `kill-switch.ts`). */
+  killSwitch?: () => string | undefined
+  /** Told what each session spent, as the interviews' share of the month (`month-ledger.ts`); never asked to allow one. */
+  monthLedger?: Pick<MonthLedger, "add">
   /** The registered versions' Appendix B SHA-256s; the real ones unless a test gives its own table. */
   allocations?: Readonly<Record<string, number>>
 }
@@ -373,7 +379,10 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
   if (args.budgetCredits === undefined && (target.account === null || before.tokenBased !== false)) {
     throw new Error(`${args.target} is billed by the token (or not known not to be); pass --budget-credits with --price-in, --price-out and --reserve-credits-per-call`)
   }
-  const ledger = createBudgetLedger({ premium: args.budgetPremium, ...(args.budgetCredits !== undefined ? { credits: args.budgetCredits } : {}) })
+  const ledger = createBudgetLedger(
+    { premium: args.budgetPremium, ...(args.budgetCredits !== undefined ? { credits: args.budgetCredits } : {}) },
+    { killSwitch: deps.killSwitch ?? (() => stopRequested()) },
+  )
   const pricing: Pricing = { premiumPerCall: target.unitCost, creditsPerMillionInput: args.priceIn ?? 0, creditsPerMillionOutput: args.priceOut ?? 0 }
   let perCallCredits = args.reserveCreditsPerCall ?? 0
   const interviewLatch = createInterviewLatch({ ledger, pricing, perCall: () => ({ premium: target.unitCost, credits: perCallCredits }) })
@@ -417,6 +426,12 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
       record = { ...notRun(messageOf(error)), status: "crashed", voidedBy: latch.voided(), calls: latch.calls(), spent: latch.release() }
     }
     records.push(record)
+    // The month ledger only hears what the session spent: it never blocks or stops the study, whose pre-registered
+    // caps govern it, and a ledger that fails costs the study nothing.
+    await deps.monthLedger?.add(record.spent, "interviews").catch((error: unknown) => {
+      emitNervesEvent({ component: "eval", level: "warn", event: "eval.interview_month_ledger_failed", message: "couldn't add an interview session's spend to the month ledger", meta: { session: session.id, error: messageOf(error) } })
+      deps.print(`month ledger: couldn't add ${session.id}'s spend (${messageOf(error)})`)
+    })
     perCallCredits = Math.max(perCallCredits, latch.hold.maxCall())
     if (ledger.stopped()) stopped = ledger.stopped()!
   }

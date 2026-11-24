@@ -7,7 +7,7 @@ import { PassThrough } from "node:stream"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { ProviderRuntime } from "../../../heart/core"
 import type { Case } from "../../../eval/domain/case"
-import { buildSandboxImage, dockerCli, HOUSEHOLD_IMAGE, INTERVIEW_GUEST_ENTRIES, runSandboxed, SANDBOX_IMAGE, splitTurns, type Docker, type DockerProcess } from "../../../eval/sandbox/docker"
+import { buildSandboxImage, dockerCli, EVAL_LABEL, HOUSEHOLD_IMAGE, INTERVIEW_GUEST_ENTRIES, runSandboxed, SANDBOX_IMAGE, splitTurns, type Docker, type DockerProcess } from "../../../eval/sandbox/docker"
 import { agentImageOf, parseSandboxImages } from "../../../eval/sandbox/images"
 import { runGuest } from "../../../eval/sandbox/guest"
 import type { runTelegramTurn } from "../../../eval/transport/telegram-turn"
@@ -573,6 +573,13 @@ describe("dockerCli", () => {
     await buildSandboxImage({ repoRoot: "/repo", images: { agent: "ouro-eval-a:1", household: "ouro-eval-h:1" }, docker })
     const build = (target: string, tag: string) => ["build", "--file", "/repo/deploy/eval/Dockerfile", "--target", target, "--tag", tag, "/repo"]
     expect(calls).toEqual([build("agent", SANDBOX_IMAGE), build("household", HOUSEHOLD_IMAGE), build("agent", "ouro-eval-a:1"), build("household", "ouro-eval-h:1")])
+  })
+
+  it("labels both images ouro.eval=1, so eval:stop can find and remove them", () => {
+    const dockerfile = fs.readFileSync(path.resolve(__dirname, "../../../../deploy/eval/Dockerfile"), "utf8")
+    const stages = dockerfile.split(/^FROM /m).slice(1)
+    expect(stages.map((stage) => stage.split("\n")[0])).toEqual(["node:22-bookworm-slim AS agent", "debian:bookworm-slim AS household"])
+    for (const stage of stages) expect(stage).toMatch(new RegExp(`^LABEL ${EVAL_LABEL}$`, "m"))
   })
 
   it("keeps every interview guest entry, and the folders their code is in, in the agent image", () => {
