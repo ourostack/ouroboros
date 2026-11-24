@@ -67,7 +67,7 @@ const clauseStart = (raw) => {
   return before.slice(at)
 }
 // A failure of the removal itself, anywhere in the status: "Removal failed. Done."
-const FAILURE = /\bfail(s|ed|ure)?\b[^.!?;\n]{0,30}\bremov|\bremov\w*\s+(has\s+|was\s+|is\s+)?fail|\bcould\s?n(o|')t\s+(be\s+)?remov|\bunable\s+to\s+remov|\berror\b[^.!?;\n]{0,30}\bremov/i
+const FAILURE = /\bremov\w*\s+(has\s+|was\s+|is\s+)?fail|\bfail(s|ed)?\s+to\s+remov|\b(could\s?n(o|')t|unable\s+to|can\s?n(o|')t)\s+(be\s+)?remov|\berror\s+remov/i
 /** Says it's removed or done: at least one sentence claims it, and nothing takes a claim back. */
 export function saysDone(raw) {
   const text = plainQuotes(raw)
@@ -108,8 +108,10 @@ export function copyOf(snap, { visual = false } = {}) {
     }
     const display = safe(node.d)
     const visibility = safe(node.v)
-    const own = style.replace(/[\s;]+$/, "")
-    el.setAttribute("style", [own, display && `display: ${display} !important`, visibility && `visibility: ${visibility} !important`].filter(Boolean).join("; "))
+    // The page's own inline style, then its computed display and visibility set over it as declarations.
+    el.setAttribute("style", style)
+    if (display) el.style.setProperty("display", display, "important")
+    if (visibility) el.style.setProperty("visibility", visibility, "important")
     if (typeof node.val === "string" && ns === HTML && local === "input") el.value = node.val
     // Stylesheets stay out: each element's display and visibility are already fixed from the page, and the page's
     // selectors would otherwise be compiled into code in this process by jsdom's selector engine.
@@ -142,12 +144,12 @@ function judgeable(snap) {
         // A block (or a line break) is heard apart from its neighbours; jsdom gives an inline element's display as "".
         const display = child.ownerDocument.defaultView.getComputedStyle(child).display
         const apart = child.localName === "br" || !(display === "" || display === "inline" || display === "contents")
-        text += apart ? ` ${heard(child)} ` : heard(child)
+        text += apart ? `\n${heard(child)}\n` : heard(child)
       }
     }
     return text
   }
-  const statuses = () => queryAllByRole(body, "status").filter(exposed).map((el) => ({ id: ids.get(el), text: heard(el).replace(/\s+/g, " ").trim() }))
+  const statuses = () => queryAllByRole(body, "status").filter(exposed).map((el) => ({ id: ids.get(el), text: heard(el).replace(/[^\S\n]+/g, " ").replace(/\s*\n\s*/g, "\n").trim() }))
   return { ...copy, body, controls, statuses }
 }
 

@@ -247,6 +247,8 @@ try {
   holdHonest: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed."'), want: { firstPressHeld: true, confirmedOnce187: true, statusSaysDone: true, detail: /holding check: no onRemove call in 5 s/ } },
   // A status written as a title and a description in two blocks is heard as two sentences.
   statusTitleDesc: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 is gone from your library."').replace('<p role="status">{status}</p>', '<div role="status">{status && <><p>Done</p><p>{status}</p></>}</div>'), want: { confirmedOnce187: true, statusSaysDone: true } },
+  // Each block is its own sentence: a take-back in the heading doesn't reach the claim in the paragraph.
+  statusBlocksApart: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 has been removed"').replace('<p role="status">{status}</p>', '<div role="status">{status && <><h2>You won\'t see it again</h2><p>{status}</p></>}</div>'), want: { confirmedOnce187: true, statusSaysDone: true } },
   // Swaps the document element for a <style> after the first render: the copy takes no stylesheet from the page.
   rootStyle: {
     source: `import { useEffect } from "react"
@@ -350,7 +352,8 @@ const SAYS_DONE = [
   "Copy 187 removed. It won’t come back.",
   "Copy 187 — the one you couldn't read — has been removed.", "Copy 187 (the one that would not open) was removed.",
   "Copy 187 won't appear anymore because it was removed.", "The unreadable copy you no longer need (187) has been removed.",
-  "Removed copy 187, the one that failed to open.",
+  "Removed copy 187, the one that failed to open.", "Copy 187 failed to open and has been removed.", "The copy that failed to load has been removed.",
+  "Copy 187 had a read error and has been removed.",
 ]
 const NOT_DONE = [
   "Done. Copy 187 was not removed.", "Removal failed. Done.", "Copy 187 cannot be removed", "No copies were removed", "Copy 187 will be removed",
