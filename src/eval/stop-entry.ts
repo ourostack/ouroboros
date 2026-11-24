@@ -19,21 +19,25 @@ function sshRun(host: string): HostRun {
 }
 
 // stderr's last line names the failure its Ouro AX card lists (cli-commands/entry-points.ts).
+const USAGE = "usage"
+const INCOMPLETE = "stop-incomplete"
+const FAILED = "stop-failed"
+
 async function main(): Promise<number> {
   let target
   try {
     target = parseStopArgs(process.argv.slice(2))
   } catch (error) {
-    process.stderr.write(`${(error as Error).message}\ncode: usage\n`)
+    process.stderr.write(`${(error as Error).message}\ncode: ${USAGE}\n`)
     return 2
   }
   try {
     const { exitCode } = await runStopCommand(target, sshRun(target.host), (text) => { process.stdout.write(`${text}\n`) })
-    if (exitCode !== 0) process.stderr.write("code: stop-incomplete\n")
+    if (exitCode !== 0) process.stderr.write(`code: ${INCOMPLETE}\n`)
     return exitCode
   } catch (error) {
     emitNervesEvent({ component: "eval", level: "error", event: "eval.stop_entry_error", message: "eval:stop failed", meta: { error: (error as Error).message } })
-    process.stderr.write(`eval:stop: ${(error as Error).message}\ncode: stop-failed\n`)
+    process.stderr.write(`eval:stop: ${(error as Error).message}\ncode: ${FAILED}\n`)
     return 1
   }
 }
