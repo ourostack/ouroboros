@@ -1,4 +1,4 @@
-ok   wording (34 statuses, 24 confirm names)
+ok   wording (68 statuses, 33 confirm names)
 ok   pass
 ok   armThenConfirm
 ok   noConfirm
@@ -40,6 +40,16 @@ ok   statusCannot
 ok   framesAndHead
 ok   upperStyle
 ok   xmpContent
+ok   svgIcon
+ok   colonAttr
+ok   curlyDecline
+ok   holdLate1700
+ok   holdLate4000
+ok   holdHonest
+ok   statusTitleDesc
+ok   statusBlocksApart
+ok   rootStyle
+ok   holdStatusFails
 ok   wrongCopy
 ok   calledTwice
 ok   noStatus
