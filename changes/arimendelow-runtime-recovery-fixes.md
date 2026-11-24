@@ -1,3 +1,4 @@
 - Bundle sync no longer fails with "git: 'remote-https' is not a git command" when the daemon runs under a PATH whose first `git` is the Copilot app's relocatable build without its `GIT_EXEC_PATH`: sync now picks a git that can reach a remote and drops a stale `GIT_EXEC_PATH`.
 - Peers whose presence record is more than 45 minutes old are marked STALE in "where i am" and `ouro presence status`, so a stale view of what runs on which machine is never read as current.
 - Forwarded Teams messages and pending proactive messages older than 6 hours are dropped (quarantined, for the forwarded outbox) instead of being sent late and repeated in the session.
+- A pending Teams message that is sent again (a file that reappears) is now recorded in the conversation once, so the same old proactive message no longer piles up in the agent's context.

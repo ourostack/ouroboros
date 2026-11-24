@@ -114,7 +114,7 @@ describe("renderWhereAmI", () => {
     const hoursAgo = renderWhereAmI(readPresence(three, true, [
       { machineId: LAPTOP, version: V, seenAt: "2026-11-10T01:00:00.000Z", appSessions: { at: "x", counts: {} } },
     ]), mini, NOW)
-    expect(hoursAgo).toContain("last seen 3 h ago on 0.1.0-alpha.1003 [STALE: this record is old, so its sessions, counts and ownership may be out of date; verify the machine is reachable and check bundle sync before routing work to it]\n")
+    expect(hoursAgo).toContain("last seen 3 h ago on 0.1.0-alpha.1003 [STALE: this record is old, so its sessions, counts and ownership may be out of date; its newest data is the bundle's presence/<machineId>.json, which only arrives through git sync, so run `ouro presence status` and check `ouro status` sync health before routing work to it]\n")
     expect(hoursAgo).toContain("until aris-mac-mini, c publish a current presence record")
     const daysAgo = renderWhereAmI(readPresence(agentJson, true, [{ machineId: LAPTOP, version: V, seenAt: "2026-11-05T04:00:00.000Z" }]), mini, NOW)
     expect(daysAgo).toContain("last seen 5 days ago")

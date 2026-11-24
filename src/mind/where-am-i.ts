@@ -42,7 +42,7 @@ function ago(seenAt: string, nowMs: number): string {
 }
 
 function staleNote(seenAt: string, nowMs: number): string {
-  return isStaleSeenAt(seenAt, nowMs) ? " [STALE: this record is old, so its sessions, counts and ownership may be out of date; verify the machine is reachable and check bundle sync before routing work to it]" : ""
+  return isStaleSeenAt(seenAt, nowMs) ? " [STALE: this record is old, so its sessions, counts and ownership may be out of date; its newest data is the bundle's presence/<machineId>.json, which only arrives through git sync, so run `ouro presence status` and check `ouro status` sync health before routing work to it]" : ""
 }
 
 function sessionCounts(record: PeerRecord | undefined): string {

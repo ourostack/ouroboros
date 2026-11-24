@@ -307,7 +307,7 @@ describe("presence roster commands", () => {
       expect(renderPresenceStatus({ agent: "slugger", presence: all, flagEnabled: true, machineId: LAPTOP, now })).toBe([
         "slugger is present on 2 machines:",
         `- Aris-MacBook-Pro (this machine): laptop; ${V}, seen just now`,
-        `- aris-mac-mini: always-on; ${V}, seen 60 min ago [STALE: verify before routing work here]`,
+        `- aris-mac-mini: always-on; ${V}, seen 60 min ago [STALE: bundle sync has not delivered a newer presence record; check sync health before routing work here]`,
         "owners:",
         "- teams: aris-mac-mini",
         "- telegram: aris-mac-mini",
