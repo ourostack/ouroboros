@@ -745,9 +745,9 @@ jobs:
       - publish
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.publish.outputs.release == 'true'
     runs-on: ubuntu-latest
-    # Room for the two version waits (20 min each at most), the two latest-tag waits (10 min each), the tarball
-    # wait (about 21 min), the install and the smoke.
-    timeout-minutes: 90
+    # Room for the two exact-version waits (60 min each at most), the two latest-tag waits (10 min each), the
+    # tarball wait (about 21 min), the install and the smoke: 120 + 20 + 21 + 5 = 166 min, 14 min of slack.
+    timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -776,13 +776,14 @@ jobs:
           # fails the GitHub release that follows.
           PROPAGATION_DEADLINE_SECONDS=600
 
-          # The exact-version window is longer, as a mitigation budget and not a known
-          # registry limit. For 0.1.0-alpha.1445 the exact-version query answered E404 for
-          # all 601s after a publish that exited 0; a later, different read (the container
-          # run's version-list poll) saw it 13m46s after that publish. The cause is not
-          # established, and that list reading is not a measurement of when the exact query
-          # would have recovered.
-          export VERSION_DEADLINE_SECONDS=1200
+          # The exact-version window is longer, as a mitigation budget and not a registry
+          # guarantee. For 0.1.0-alpha.1519 the exact-version endpoint answered 404 on every 30 s
+          # read until 12:22:01Z and 200 at 12:22:31Z, about 55 minutes after its publish job
+          # ended, and the packument then listed it; the same gap appears in the registry's own
+          # `time` for 1476, 1488 and 1493 (issue 1740, comment 7131366023). 3600 s is that
+          # observation plus about 5 minutes of chosen headroom. The cause of the delay is not
+          # established.
+          export VERSION_DEADLINE_SECONDS=3600
 
           # Checks the exact version this run published, never the moving dist-tag:
           # the tag can lag the version by minutes (alpha.1161 was up while latest
