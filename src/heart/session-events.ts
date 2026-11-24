@@ -1267,7 +1267,7 @@ export function projectedSessionEventIds(envelope: SessionEnvelope): string[] {
 export const PROACTIVE_REPLAY_MAX_AGE_MS = 6 * 60 * 60_000
 
 function isDeadProactiveNotice(event: SessionEvent, nowMs: number): boolean {
-  if (event.provenance?.outbound?.origin !== "proactive") return false
+  if (event.provenance.outbound?.origin !== "proactive") return false
   return nowMs - Date.parse(bestEventTimestamp(event)) > PROACTIVE_REPLAY_MAX_AGE_MS
 }
 
