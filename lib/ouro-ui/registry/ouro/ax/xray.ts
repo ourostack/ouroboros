@@ -250,6 +250,28 @@ function usageForms(cmd: Pick<CliCommand, "usage">): string[] {
 }
 
 /**
+ * The `<...>` words in a usage slice, in order, marked optional when found inside a `[...]` group (at any nesting
+ * depth), bracket or not. A `|` choice inside one group, such as `[<version> | latest | <dmg or zip>]`, names
+ * alternative values for a single optional word, so an alternative later in the group stays optional too.
+ */
+function foundWords(slice: string): { name: string; optional: boolean }[] {
+  const found: { name: string; optional: boolean }[] = [];
+  let depth = 0;
+  for (let i = 0; i < slice.length; i++) {
+    const ch = slice[i];
+    if (ch === "[") depth++;
+    else if (ch === "]") depth = Math.max(0, depth - 1);
+    else if (ch === "<") {
+      const end = slice.indexOf(">", i);
+      if (end === -1) break;
+      found.push({ name: slice.slice(i + 1, end).replace(/\.\.\.$/, ""), optional: depth > 0 });
+      i = end;
+    }
+  }
+  return found;
+}
+
+/**
  * Returns the problems with a command's words, as lines with their fixes, and the count of words in its busiest usage
  * line. Words come in the order the command reads them: an optional word, bracketed in usage, comes after the required
  * ones. A schema default is a string of the word's values, not on a required word, and usage shows it as `[<name>=<value>]`.
@@ -268,7 +290,7 @@ function wordProblems(cmd: CliCommand): { words: number; problems: string[] } {
     // A default's value is no word: it leaves the line first, and the words end at the first flag.
     const bare = u.replace(/=(?:"[^"]*"|'[^']*'|[^\]\s]*)/g, "");
     const cut = bare.search(/(?:^| |\[)--/);
-    const found = [...(cut === -1 ? bare : bare.slice(0, cut)).matchAll(/(\[)?<([^<>]+?)>/g)].map((m) => ({ name: m[2]!.replace(/\.\.\.$/, ""), optional: m[1] !== undefined }));
+    const found = foundWords(cut === -1 ? bare : bare.slice(0, cut));
     words = Math.max(words, found.length);
     const at = found.findIndex((w) => w.optional);
     const late = at === -1 ? undefined : found.slice(at + 1).find((w) => !w.optional);
