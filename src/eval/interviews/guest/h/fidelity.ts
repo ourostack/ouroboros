@@ -46,5 +46,7 @@ export const H_OPENHANDS_FIDELITY: readonly string[] = [
   "the shell can still show the brand: the tmux socket and session names in TMUX, the ~/.openhands folder, and the LITELLM_LOCAL_MODEL_COST_MAP variable; none is in the prompt. AI_AGENT is set to a neutral name, where the SDK would set its own",
   "the SDK runs on the uv-managed Python 3.13 and uv 0.13.7 its own agent-server image uses, with bytecode compiled at build time because the image is read-only when the arm runs",
   "runs from a neutral home under /tmp (the agent container is read-only elsewhere), with the bundle linked at /tmp/agent/AgentBundles/sanctuary.agent",
-  "the supervisor process, and with it the whole conversation, is killed at 540 seconds, inside the host's 600-second guest deadline",
+  "the supervisor process is killed at 540 seconds, inside the host's 600-second guest deadline; the terminal's tmux and anything it started stop when the host removes the container at the guest's end",
+  "SHELL is /bin/bash: tmux runs its session through SHELL, and the image's user has no login shell to fall back on",
+  "the supervisor's stdout carries only its status lines; anything the SDK or LiteLLM prints goes to stderr",
 ]
