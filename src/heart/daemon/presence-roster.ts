@@ -260,7 +260,7 @@ export function renderPresenceStatus(options: {
   for (const machine of presence.block.machines) {
     const record: PeerRecord | undefined = presence.peers.find((peer) => peer.machineId === machine.machineId)
     const me = machine.machineId === machineId ? " (this machine)" : ""
-    const stale = record && isStaleSeenAt(record.seenAt, now.getTime()) ? " [STALE: verify before routing work here]" : ""
+    const stale = record && isStaleSeenAt(record.seenAt, now.getTime()) ? " [STALE: bundle sync has not delivered a newer presence record; check sync health before routing work here]" : ""
     const seen = record ? `${record.version}, seen ${ago(record.seenAt, now)}${stale}` : "no presence record yet"
     const legacy = presence.legacy.includes(machine.machineId) ? "; may run a home-only daemon" : ""
     lines.push(`- ${machine.name}${me}: ${machine.role}; ${seen}${legacy}`)

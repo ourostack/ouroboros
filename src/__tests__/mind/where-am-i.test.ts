@@ -46,6 +46,21 @@ describe("renderWhereAmI", () => {
     ].join("\n"))
   })
 
+  it("lists the app sessions a peer published, capped, over two refreshes", () => {
+    const sessions = Array.from({ length: 10 }, (_, i) => ({ id: `s${i}`, ...(i === 0 ? {} : { name: `work ${i}` }), ...(i === 1 ? {} : { state: "working" }) }))
+    const render = (list: typeof sessions) => renderWhereAmI(readPresence(agentJson, true, [
+      { machineId: LAPTOP, version: V, seenAt: "2026-11-10T03:57:00.000Z", appSessions: { at: "2026-11-10T03:55:00.000Z", counts: {}, sessions: list } },
+      { machineId: MINI, version: V, seenAt: "2026-11-10T04:00:00.000Z" },
+    ]), mini, NOW)
+    const first = render(sessions)
+    expect(first).toContain("  its copilot app sessions as of 5 min ago:\n  - s0 (working)\n  - work 1\n  - work 2 (working)")
+    expect(first).toContain("  - and 2 more")
+    const second = render(sessions.slice(0, 2))
+    expect(second).not.toContain("and 2 more")
+    expect(second).toContain("  - work 1")
+    expect(render([])).not.toContain("its copilot app sessions")
+  })
+
   it("flags a peer record as stale until a fresh one arrives, over two sync cycles", () => {
     const render = (seenAt: string) => renderWhereAmI(readPresence(agentJson, true, [
       { machineId: LAPTOP, version: V, seenAt, owns: ["telegram"] },
@@ -114,7 +129,7 @@ describe("renderWhereAmI", () => {
     const hoursAgo = renderWhereAmI(readPresence(three, true, [
       { machineId: LAPTOP, version: V, seenAt: "2026-11-10T01:00:00.000Z", appSessions: { at: "x", counts: {} } },
     ]), mini, NOW)
-    expect(hoursAgo).toContain("last seen 3 h ago on 0.1.0-alpha.1003 [STALE: this record is old, so its sessions, counts and ownership may be out of date; verify the machine is reachable and check bundle sync before routing work to it]\n")
+    expect(hoursAgo).toContain("last seen 3 h ago on 0.1.0-alpha.1003 [STALE: this record is old, so its sessions, counts and ownership may be out of date; its newest data is the bundle's presence/<machineId>.json, which only arrives through git sync, so run `ouro presence status` and check `ouro status` sync health before routing work to it]\n")
     expect(hoursAgo).toContain("until aris-mac-mini, c publish a current presence record")
     const daysAgo = renderWhereAmI(readPresence(agentJson, true, [{ machineId: LAPTOP, version: V, seenAt: "2026-11-05T04:00:00.000Z" }]), mini, NOW)
     expect(daysAgo).toContain("last seen 5 days ago")
