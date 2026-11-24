@@ -53,6 +53,8 @@ describe("the codex arm's setup", () => {
     expect(toml).toContain("developer_instructions = \"I am the Butler.\\n\\nSay \\\"hi\\\" \\\\ bye.\"")
     expect(toml).toContain("[model_providers.eval]\nname = \"eval\"\nbase_url = \"http://127.0.0.1:4000/v1\"\nwire_api = \"responses\"\nrequest_max_retries = 0\nstream_max_retries = 0")
     expect(toml).toContain("[features]\nview_image = false\nmulti_agent = false\nunbounded_connection_retries = false\nplugins = false\napps = false")
+    // multi_agent is deprecated at this commit; [agents] enabled is what turns sub-agent tools off.
+    expect(toml).toContain("[agents]\nenabled = false")
     // TOML forbids a raw DEL and a lone surrogate's escape, both of which JSON allows.
     expect(codexConfig({ baseUrl: "u", developerInstructions: "a\u007fb\uD800c\uDC00d😀" })).toContain("developer_instructions = \"a\\u007Fb�c�d😀\"")
     expect(toml).toContain("web_search = \"disabled\"")
