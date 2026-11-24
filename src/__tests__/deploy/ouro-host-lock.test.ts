@@ -141,6 +141,33 @@ describe("release, heldBy and blocker", () => {
   })
 })
 
+describe("eval:stop's free-eval and status", () => {
+  it("frees a live eval's lock whatever its token, and reads back free", () => {
+    expect(lock.stopStatus(dir, io())).toEqual({ state: "free" })
+    lock.tryAcquire(dir, { holder: "eval minimax", ttlMs: 60_000, pid: null }, io())
+    expect(lock.stopStatus(dir, io())).toEqual({ state: "eval", owner: expect.objectContaining({ holder: "eval minimax" }) })
+    expect(lock.freeEval(dir, io())).toEqual({ freed: true, owner: expect.objectContaining({ holder: "eval minimax" }) })
+    expect(fs.existsSync(dir)).toBe(false)
+    expect(lock.stopStatus(dir, io())).toEqual({ state: "free" })
+    expect(lock.freeEval(dir, io())).toEqual({ freed: false })
+  })
+
+  it("never frees a Butler's or a person's lock, or one whose owner isn't written yet, and counts a stale lock as free", () => {
+    lock.tryAcquire(dir, { holder: "butler:ship 1.0.0", ttlMs: 60_000, pid: null }, io())
+    expect(lock.stopStatus(dir, io())).toEqual({ state: "other", owner: expect.objectContaining({ holder: "butler:ship 1.0.0" }) })
+    expect(lock.freeEval(dir, io())).toEqual({ freed: false, owner: expect.objectContaining({ holder: "butler:ship 1.0.0" }) })
+    expect(fs.existsSync(dir)).toBe(true)
+    expect(lock.stopStatus(dir, io({ now: () => T0 + 60_000 }))).toEqual({ state: "free" })
+    fs.rmSync(dir, { recursive: true })
+    lock.tryAcquire(dir, { holder: "ari manual upgrade", ttlMs: 60_000, pid: null }, io())
+    expect(lock.freeEval(dir, io())).toEqual({ freed: false, owner: expect.objectContaining({ holder: "ari manual upgrade" }) })
+    fs.rmSync(path.join(dir, "owner.json"))
+    expect(lock.stopStatus(dir, io())).toEqual({ state: "other", owner: expect.objectContaining({ unreadable: true }) })
+    expect(lock.freeEval(dir, io())).toEqual({ freed: false, owner: expect.objectContaining({ unreadable: true }) })
+    expect(fs.existsSync(dir)).toBe(true)
+  })
+})
+
 // The command line, as the eval (hold) and butler:ship (acquire, release) run it over ssh.
 function cli(args: string[], env: Record<string, string> = {}) {
   const child = spawn(process.execPath, [SCRIPT, ...args], { env: { ...process.env, OURO_HOST_LOCK_DIR: dir, ...env }, stdio: ["pipe", "pipe", "pipe"] })
@@ -212,6 +239,27 @@ describe("command line", () => {
     await h.line(/@@LOCK acquired/)
     h.child.stdin.end()
     expect(await h.exited).toBe(0)
+  })
+
+  it("status and free-eval print where the lock stands, freeing only an eval's", async () => {
+    const free = cli(["status"])
+    expect(await free.exited).toBe(0)
+    expect(free.out()).toBe("@@LOCK free\n")
+    expect(await cli(["acquire", "--holder", "butler:ship 1.0.0", "--ttl", "600"]).exited).toBe(0)
+    const kept = cli(["free-eval"])
+    expect(await kept.exited).toBe(0)
+    expect(kept.out()).toMatch(/^@@LOCK kept butler:ship 1\.0\.0 /)
+    const butler = cli(["status"])
+    expect(await butler.exited).toBe(0)
+    expect(butler.out()).toMatch(/^@@LOCK other butler:ship 1\.0\.0 /)
+    fs.rmSync(dir, { recursive: true })
+    expect(await cli(["acquire", "--holder", "eval minimax", "--ttl", "600"]).exited).toBe(0)
+    const freed = cli(["free-eval"])
+    expect(await freed.exited).toBe(0)
+    expect(freed.out()).toMatch(/^@@LOCK freed eval minimax /)
+    const none = cli(["free-eval"])
+    expect(await none.exited).toBe(0)
+    expect(none.out()).toBe("@@LOCK free\n")
   })
 
   it("refuses a command it does not know, and a missing holder or ttl", async () => {

@@ -12,6 +12,8 @@
 import fs from "node:fs"
 import path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
+import { billingRefusal } from "./billing-guard"
+import { monthLedger } from "./month-ledger"
 import { parseEvalArgs, runEvalCommand, type EvalArgs } from "./run-command"
 import { writePrivateReport } from "./report"
 import { dockerCli, HOUSEHOLD_IMAGE, runSandboxed } from "./sandbox/docker"
@@ -64,6 +66,8 @@ async function main(): Promise<number> {
       outputExists: (file) => fs.existsSync(file),
       writeReport: writePrivateReport,
       print: (text) => { process.stdout.write(`${text}\n`) },
+      monthLedger: monthLedger(),
+      billingGuard: billingRefusal,
     })
     return exitCode
   } finally {
