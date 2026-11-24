@@ -1067,10 +1067,16 @@ function sentinelVerdict(signals: ContextLossSentinelSignal[]): ContextLossSenti
   return "ready"
 }
 
-function summaryForVerdict(verdict: ContextLossSentinelVerdict): string {
+// A blocked receipt names what blocked it: a daemon health check (a full disk, a down sense) blocks too, and
+// "deterministic recovery failed" sent operators looking for a recovery failure that never happened.
+function summaryForVerdict(verdict: ContextLossSentinelVerdict, signals: ContextLossSentinelSignal[]): string {
   if (verdict === "ready") return "ready: deterministic recovery state is current and last-known-good is safe"
   if (verdict === "watch") return "watch: deterministic recovery can continue, but one or more signals need attention"
-  return "blocked: deterministic recovery failed and must use latest-ready or repair before continuing"
+  const blockers = signals
+    .filter((entry) => entry.verdictImpact === "blocked")
+    .map((entry) => `${entry.id} (${entry.summary})`)
+    .join("; ")
+  return `blocked by ${blockers}; repair it or continue from latest-ready`
 }
 
 function gauntletSummary(report: ContextLossGauntletReport): ContextLossSentinelGauntletSummary {
@@ -1196,7 +1202,7 @@ function makeReceipt(
     trigger: options.trigger,
     generatedAt,
     verdict,
-    summary: summaryForVerdict(verdict),
+    summary: summaryForVerdict(verdict, signals),
     receiptLocator: receiptLocator(receiptId),
     latestReadyLocator: readyLocator,
     recoveryAnchor: anchorFromResume(recoverySource.anchorKind, recoverySource.resume),
