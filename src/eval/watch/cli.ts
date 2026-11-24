@@ -6,6 +6,7 @@
 import os from "node:os"
 import path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { stopFile, stopRequested } from "../kill-switch"
 import { createGuardedFs } from "./guarded-fs"
 import { runWatch, type WatchOptions } from "./run-watch"
 
@@ -22,8 +23,15 @@ function argument(args: readonly string[], name: string): string | undefined {
   return index >= 0 ? args[index + 1] : undefined
 }
 
-/** Runs Watch once and returns the exit code: 0 on success, 2 for bad arguments, 1 for any other failure. */
+/**
+ * Runs Watch once and returns the exit code: 0 on success, 2 for bad arguments, 3 when the kill switch
+ * (`~/.ouro-eval/STOP`) is set, which it checks before reading anything, and 1 for any other failure.
+ */
 export function watchCli(args: readonly string[], io: CliIo, extra: Partial<WatchOptions> = {}): number {
+  if (stopRequested(stopFile(io.homedir)) !== undefined) {
+    io.stderr("Watch stopped: the eval kill switch ~/.ouro-eval/STOP is set, so nothing was read.\n")
+    return 3
+  }
   const agentRootArg = argument(args, "--agent-root")
   if (!agentRootArg) {
     io.stderr(USAGE)

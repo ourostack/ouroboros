@@ -14,10 +14,12 @@ import {
   effectiveOwner,
   enabledSharedSenses,
   isRosterMember,
+  isStaleSeenAt,
   senseEnabled,
   readLocalPresenceSettings,
   readPresenceForAgent,
   rosterMachine,
+  type PeerAppSession,
   type PeerRecord,
   type Presence,
 } from "../heart/daemon/presence"
@@ -40,11 +42,37 @@ function ago(seenAt: string, nowMs: number): string {
   return hours < 48 ? `${hours} h ago` : `${Math.round(hours / 24)} days ago`
 }
 
+function staleNote(seenAt: string, nowMs: number): string {
+  return isStaleSeenAt(seenAt, nowMs) ? " [STALE: this record is old, so its sessions, counts and ownership may be out of date; its newest data is the bundle's presence/<machineId>.json, which only arrives through git sync, so run `ouro presence status` and check `ouro status` sync health before routing work to it]" : ""
+}
+
 function sessionCounts(record: PeerRecord | undefined): string {
   const counts = record?.appSessions?.counts
   if (!counts) return ""
   const parts = Object.entries(counts).filter(([, count]) => typeof count === "number").map(([state, count]) => `${count} ${state}`)
   return parts.length > 0 ? `; copilot app sessions: ${parts.join(", ")}` : ""
+}
+
+const PEER_SESSIONS_SHOWN = 8
+
+/** Where a peer's work can be followed passively: its desk card, the repository branch and pull request the card names, and when the card last changed. */
+function deskPointers(desk: PeerAppSession["desk"], nowMs: number): string {
+  if (!desk?.track) return ""
+  const parts = [`desk card ${desk.track}/${desk.slug ?? "?"}${desk.status ? ` [${desk.status}]` : ""}`]
+  if (desk.repo || desk.branch) parts.push(`${desk.repo ?? "repo?"}@${desk.branch ?? "branch?"}`)
+  if (desk.url) parts.push(`pr ${desk.url}`)
+  if (desk.session) parts.push(`session ${desk.session}`)
+  if (desk.file) parts.push(`log ${desk.file}${desk.deskRepo ? ` in ${desk.deskRepo}` : ""}${desk.updatedAt ? ` (updated ${ago(desk.updatedAt, nowMs)})` : ""}`)
+  return `, ${parts.join("; ")}`
+}
+
+/** The Copilot app sessions a peer last published, so work running there is visible without reaching the machine. */
+function peerSessionLines(record: PeerRecord | undefined, nowMs: number): string[] {
+  const sessions = record?.appSessions?.sessions ?? []
+  if (!record?.appSessions || sessions.length === 0) return []
+  const shown = sessions.slice(0, PEER_SESSIONS_SHOWN).map((session) => `  - ${session.name ?? session.id}${session.state ? ` (${session.state})` : ""}${deskPointers(session.desk, nowMs)}`)
+  const more = sessions.length > shown.length ? [`  - and ${sessions.length - shown.length} more`] : []
+  return [`  its copilot app sessions as of ${ago(record.appSessions.at, nowMs)}:`, ...shown, ...more]
 }
 
 /** Senses every presence runs for its own machine. */
@@ -67,8 +95,9 @@ export function renderWhereAmI(presence: Presence | null, self: MachineInfo, now
     for (const peer of peers) {
       const record = presence.peers.find((candidate) => candidate.machineId === peer.machineId)
       const facts = [peer.role, record?.os, record?.location].filter(Boolean).join(", ")
-      const seen = record ? `last seen ${ago(record.seenAt, nowMs)} on ${record.version}${sessionCounts(record)}` : "not seen yet (no presence record)"
+      const seen = record ? `last seen ${ago(record.seenAt, nowMs)} on ${record.version}${sessionCounts(record)}${staleNote(record.seenAt, nowMs)}` : "not seen yet (no presence record)"
       lines.push(`- ${peer.name} (${facts}): ${seen}`)
+      lines.push(...peerSessionLines(record, nowMs))
     }
   }
   // Only senses agent.json turns on: a disabled sense runs on no machine, whatever the roster's owners say.
@@ -89,7 +118,7 @@ export function renderWhereAmI(presence: Presence | null, self: MachineInfo, now
     lines.push(`shared senses that run on a peer, not here: ${elsewhere.map((sense) => {
       const owner = effectiveOwner(presence, sense)
       const record = presence.peers.find((peer) => peer.machineId === owner)
-      const shown = record?.owns?.includes(sense) ? `its record from ${ago(record.seenAt, nowMs)} says it runs it` : "its last record does not show it running"
+      const shown = record?.owns?.includes(sense) ? `its record from ${ago(record.seenAt, nowMs)} says it runs it${staleNote(record.seenAt, nowMs)}` : "its last record does not show it running"
       return `${sense} (${machineName(owner)}; ${shown})`
     }).join(", ")}.`)
   }

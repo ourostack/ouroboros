@@ -13,23 +13,36 @@
  */
 import type { ProviderTurnRequest } from "../../heart/core"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { isOpaque } from "./protocol"
 
 /** One replacement; the pattern must be global, so every match is replaced, not only the first. */
-export type Replacement = { pattern: RegExp; with: string }
+/**
+ * `tier` names the replacement's place in the list ("sentence", "path", "word"); the matches each tier rewrote are
+ * counted per request, so an arm that needs far more rewriting than another shows it. No tier counts as "list".
+ */
+export type Replacement = { pattern: RegExp; with: string; tier?: string }
 
-/** Applies the list in order to one text. */
-export function replace(text: string, list: readonly Replacement[]): string {
-  return list.reduce((out, { pattern, with: by }) => {
+/** Matches rewritten, by tier; a tier that matched nothing is absent. */
+export type RewriteCounts = Record<string, number>
+
+/** Applies the list in order to one text, adding each replacement's matches to `counts` when given. */
+export function replace(text: string, list: readonly Replacement[], counts?: RewriteCounts): string {
+  return list.reduce((out, { pattern, with: by, tier = "list" }) => {
     if (!pattern.global) throw new Error(`replacement ${String(pattern)} must be global (the g flag)`)
+    if (counts) {
+      const matches = out.match(pattern)?.length ?? 0
+      if (matches > 0) counts[tier] = (counts[tier] ?? 0) + matches
+    }
     return out.replace(pattern, by)
   }, text)
 }
 
 /** Every string in a plain value rewritten; anything else as it is. */
-function deep<T>(value: T, list: readonly Replacement[]): T {
-  if (typeof value === "string") return replace(value, list) as T
-  if (Array.isArray(value)) return value.map((item: unknown) => deep(item, list)) as T
-  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, deep(item, list)])) as T
+function deep<T>(value: T, list: readonly Replacement[], counts: RewriteCounts): T {
+  if (typeof value === "string") return replace(value, list, counts) as T
+  if (Array.isArray(value)) return value.map((item: unknown) => deep(item, list, counts)) as T
+  // A provider's opaque string (ciphertext, a reasoning id) is kept as it was returned: rewriting it would corrupt it.
+  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, isOpaque(key, item, value) ? item : deep(item, list, counts)])) as T
   return value
 }
 
@@ -37,14 +50,15 @@ function deep<T>(value: T, list: readonly Replacement[]): T {
  * The request as the model is sent it, and the harness's own name for each tool the model may call by its rewritten
  * name. The harness's own fields (callbacks, signal) are passed through untouched.
  */
-export function rewriteRequest(request: ProviderTurnRequest, list: readonly Replacement[]): { request: ProviderTurnRequest; toolName(name: string): string } {
+export function rewriteRequest(request: ProviderTurnRequest, list: readonly Replacement[]): { request: ProviderTurnRequest; toolName(name: string): string; rewrites: RewriteCounts } {
+  const rewrites: RewriteCounts = {}
   const rewritten: ProviderTurnRequest = {
     ...request,
-    messages: deep(request.messages, list),
-    activeTools: deep(request.activeTools, list),
-    ...(request.deferredTools ? { deferredTools: deep(request.deferredTools, list) } : {}),
-    ...(request.systemPrompt ? { systemPrompt: deep(request.systemPrompt, list) } : {}),
-    ...(request.traceId !== undefined ? { traceId: replace(request.traceId, list) } : {}),
+    messages: deep(request.messages, list, rewrites),
+    activeTools: deep(request.activeTools, list, rewrites),
+    ...(request.deferredTools ? { deferredTools: deep(request.deferredTools, list, rewrites) } : {}),
+    ...(request.systemPrompt ? { systemPrompt: deep(request.systemPrompt, list, rewrites) } : {}),
+    ...(request.traceId !== undefined ? { traceId: replace(request.traceId, list, rewrites) } : {}),
   }
   const back = new Map<string, string>()
   for (const tool of [...request.activeTools, ...request.deferredTools ?? []]) {
@@ -57,5 +71,5 @@ export function rewriteRequest(request: ProviderTurnRequest, list: readonly Repl
     }
     back.set(sent, own)
   }
-  return { request: rewritten, toolName: (name) => back.get(name) ?? name }
+  return { request: rewritten, toolName: (name) => back.get(name) ?? name, rewrites }
 }

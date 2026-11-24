@@ -31,6 +31,15 @@ describe("Watch's command line", () => {
     expect([...out, ...err].join("")).not.toContain(CANARY)
   })
 
+  it("exits before reading anything while the kill switch is set", () => {
+    fs.mkdirSync(path.join(home, ".ouro-eval"))
+    fs.writeFileSync(path.join(home, ".ouro-eval", "STOP"), "")
+    expect(watchCli(["--agent-root", root], io())).toBe(3)
+    expect(err.join("")).toMatch(/kill switch/)
+    expect(out).toEqual([])
+    expect(fs.existsSync(path.join(home, ".ouro-eval", "watch"))).toBe(false)
+  })
+
   it("asks for the agent's folder", () => {
     expect(watchCli([], io())).toBe(2)
     expect(err.join("")).toMatch(/usage/)

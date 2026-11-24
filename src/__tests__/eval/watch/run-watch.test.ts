@@ -161,13 +161,17 @@ describe("runWatch", () => {
   })
 
   it("imports nothing that can reach the network or start a process", () => {
-    const allowed = new Set(["node:crypto", "node:fs", "node:os", "node:path", "node:zlib", "../../nerves/runtime", "../../heart/turn-summary", "../../heart/identity", "./guarded-fs", "./log-reader", "./rows", "./run-watch"])
+    const allowed = new Set(["node:crypto", "node:fs", "node:os", "node:path", "node:zlib", "../../nerves/runtime", "../../heart/turn-summary", "../../heart/identity", "./guarded-fs", "./log-reader", "./rows", "./run-watch", "../kill-switch"])
     const dir = path.join(__dirname, "../../../eval/watch")
     for (const name of fs.readdirSync(dir)) {
       const source = fs.readFileSync(path.join(dir, name), "utf8")
       for (const [, from] of source.matchAll(/from "([^"]+)"/g)) expect(allowed, `${name} imports ${from}`).toContain(from)
       expect(source).not.toMatch(/require\(|import\(/)
     }
+    // The kill switch Watch checks first reaches only the file system and nerves too.
+    const killSwitch = fs.readFileSync(path.join(dir, "../kill-switch.ts"), "utf8")
+    expect([...killSwitch.matchAll(/from "([^"]+)"/g)].map(([, from]) => from)).toEqual(["node:fs", "node:os", "node:path", "../nerves/runtime"])
+    expect(killSwitch).not.toMatch(/require\(|import\(/)
   })
 
   it("makes no network call and starts no process", () => {
