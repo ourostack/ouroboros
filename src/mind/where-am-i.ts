@@ -14,6 +14,7 @@ import {
   effectiveOwner,
   enabledSharedSenses,
   isRosterMember,
+  isStaleSeenAt,
   senseEnabled,
   readLocalPresenceSettings,
   readPresenceForAgent,
@@ -38,6 +39,10 @@ function ago(seenAt: string, nowMs: number): string {
   if (minutes < 90) return `${minutes} min ago`
   const hours = Math.round(minutes / 60)
   return hours < 48 ? `${hours} h ago` : `${Math.round(hours / 24)} days ago`
+}
+
+function staleNote(seenAt: string, nowMs: number): string {
+  return isStaleSeenAt(seenAt, nowMs) ? " [STALE: this record is old, so its sessions, counts and ownership may be out of date; verify the machine is reachable and check bundle sync before routing work to it]" : ""
 }
 
 function sessionCounts(record: PeerRecord | undefined): string {
@@ -67,7 +72,7 @@ export function renderWhereAmI(presence: Presence | null, self: MachineInfo, now
     for (const peer of peers) {
       const record = presence.peers.find((candidate) => candidate.machineId === peer.machineId)
       const facts = [peer.role, record?.os, record?.location].filter(Boolean).join(", ")
-      const seen = record ? `last seen ${ago(record.seenAt, nowMs)} on ${record.version}${sessionCounts(record)}` : "not seen yet (no presence record)"
+      const seen = record ? `last seen ${ago(record.seenAt, nowMs)} on ${record.version}${sessionCounts(record)}${staleNote(record.seenAt, nowMs)}` : "not seen yet (no presence record)"
       lines.push(`- ${peer.name} (${facts}): ${seen}`)
     }
   }
@@ -89,7 +94,7 @@ export function renderWhereAmI(presence: Presence | null, self: MachineInfo, now
     lines.push(`shared senses that run on a peer, not here: ${elsewhere.map((sense) => {
       const owner = effectiveOwner(presence, sense)
       const record = presence.peers.find((peer) => peer.machineId === owner)
-      const shown = record?.owns?.includes(sense) ? `its record from ${ago(record.seenAt, nowMs)} says it runs it` : "its last record does not show it running"
+      const shown = record?.owns?.includes(sense) ? `its record from ${ago(record.seenAt, nowMs)} says it runs it${staleNote(record.seenAt, nowMs)}` : "its last record does not show it running"
       return `${sense} (${machineName(owner)}; ${shown})`
     }).join(", ")}.`)
   }

@@ -46,6 +46,20 @@ describe("renderWhereAmI", () => {
     ].join("\n"))
   })
 
+  it("flags a peer record as stale until a fresh one arrives, over two sync cycles", () => {
+    const render = (seenAt: string) => renderWhereAmI(readPresence(agentJson, true, [
+      { machineId: LAPTOP, version: V, seenAt, owns: ["telegram"] },
+      { machineId: MINI, version: V, seenAt: "2026-11-10T04:00:00.000Z" },
+    ]), mini, NOW)
+    const week = "2026-11-03T04:00:00.000Z"
+    expect(render(week)).toContain("last seen 7 days ago on 0.1.0-alpha.1003 [STALE:")
+    expect(render(week)).toContain("telegram (Aris-MacBook-Pro; its record from 7 days ago says it runs it [STALE:")
+    expect(render("2026-11-10T03:58:00.000Z")).not.toContain("STALE")
+    expect(render(week)).toContain("[STALE:")
+    expect(render("2026-11-10T03:59:00.000Z")).not.toContain("STALE")
+    expect(render("not-a-date")).toContain("[STALE:")
+  })
+
   it("names only the senses agent.json turns on, and says the rest run nowhere", () => {
     const senses = { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: false }, mail: { enabled: false }, voice: { enabled: false }, a2a: { enabled: false }, telegram: { enabled: false }, shepherd: { enabled: false }, "app-sessions": { enabled: true } }
     const records: PeerRecord[] = [
@@ -100,7 +114,7 @@ describe("renderWhereAmI", () => {
     const hoursAgo = renderWhereAmI(readPresence(three, true, [
       { machineId: LAPTOP, version: V, seenAt: "2026-11-10T01:00:00.000Z", appSessions: { at: "x", counts: {} } },
     ]), mini, NOW)
-    expect(hoursAgo).toContain("last seen 3 h ago on 0.1.0-alpha.1003\n")
+    expect(hoursAgo).toContain("last seen 3 h ago on 0.1.0-alpha.1003 [STALE: this record is old, so its sessions, counts and ownership may be out of date; verify the machine is reachable and check bundle sync before routing work to it]\n")
     expect(hoursAgo).toContain("until aris-mac-mini, c publish a current presence record")
     const daysAgo = renderWhereAmI(readPresence(agentJson, true, [{ machineId: LAPTOP, version: V, seenAt: "2026-11-05T04:00:00.000Z" }]), mini, NOW)
     expect(daysAgo).toContain("last seen 5 days ago")
