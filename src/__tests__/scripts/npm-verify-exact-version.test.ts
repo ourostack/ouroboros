@@ -13,7 +13,7 @@ afterEach(() => {
 
 // A fake npm: `version` answers come from a queue (an empty one means E404); `versions`, `dist-tags` and
 // `config` reads can be made to fail.
-function run(options: { versionAnswers?: string[]; listFails?: boolean; listed?: string[]; deadline?: number }) {
+function run(options: { versionAnswers?: string[]; listFails?: boolean; listed?: string[]; deadline?: number; fakeClock?: { appearsAfter: number } }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "verify-exact-"))
   dirs.push(dir)
   fs.writeFileSync(path.join(dir, "answers"), (options.versionAnswers ?? []).join("\n"))
@@ -34,9 +34,21 @@ case "$1:$3" in
   "config:registry") ${options.listFails ? 'exit 1' : 'echo https://registry.npmjs.org/'} ;;
 esac
 `, { mode: 0o755 })
+  if (options.fakeClock) {
+    // Time only moves when the script sleeps, so a one-hour window runs instantly and deterministically.
+    fs.writeFileSync(path.join(dir, "elapsed"), "0")
+    fs.writeFileSync(path.join(dir, "sleep"), `#!/usr/bin/env bash
+echo $(( $(cat "${dir}/elapsed") + $1 )) > "${dir}/elapsed"
+`, { mode: 0o755 })
+    fs.writeFileSync(path.join(dir, "date"), `#!/usr/bin/env bash
+if [ "$1" = "+%s" ]; then echo $(( 1000000 + $(cat "${dir}/elapsed") )); else exec /bin/date "$@"; fi
+`, { mode: 0o755 })
+    const gate = `if [ "$(cat "${dir}/elapsed")" -ge ${options.fakeClock.appearsAfter} ]; then echo 0.1.0-alpha.9; exit 0; fi`
+    fs.writeFileSync(path.join(dir, "npm"), fs.readFileSync(path.join(dir, "npm"), "utf8").replace("    next=$(head", `    ${gate}\n    next=$(head`), { mode: 0o755 })
+  }
   const result = spawnSync("bash", [script, "@ouro.bot/cli", "0.1.0-alpha.9"], {
     encoding: "utf8",
-    env: { PATH: `${dir}:${process.env.PATH}`, VERSION_DEADLINE_SECONDS: String(options.deadline ?? 2), POLL_INTERVAL_SECONDS: "1" },
+    env: { PATH: `${dir}:${process.env.PATH}`, VERSION_DEADLINE_SECONDS: String(options.deadline ?? 2), POLL_INTERVAL_SECONDS: options.fakeClock ? "30" : "1" },
   })
   const calls = fs.readFileSync(path.join(dir, "calls"), "utf8").trim().split("\n").filter(Boolean)
   return { ...result, calls }
@@ -71,5 +83,24 @@ describe("npm-verify-exact-version", () => {
     const result = run({ deadline: 1, listed: ["0.1.0-alpha.8", "0.1.0-alpha.9"] })
     expect(result.status).toBe(1)
     expect(result.stdout).toContain("version list: includes 0.1.0-alpha.9")
+  })
+
+  it("succeeds when the version becomes readable after 20 minutes and before the 3600 s bound", () => {
+    const result = run({ deadline: 3600, fakeClock: { appearsAfter: 20 * 60 } })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("verified at 0.1.0-alpha.9 after 1200s")
+  })
+
+  it("succeeds for a version readable at about 55 minutes, as observed for 1519", () => {
+    const result = run({ deadline: 3600, fakeClock: { appearsAfter: 55 * 60 } })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("verified at 0.1.0-alpha.9 after 3300s")
+  })
+
+  it("fails explicitly at the 3600 s bound when the version never becomes readable", () => {
+    const result = run({ deadline: 3600, fakeClock: { appearsAfter: 99 * 3600 } })
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain("::error::@ouro.bot/cli@0.1.0-alpha.9 serves missing, expected 0.1.0-alpha.9 after 3600s")
+    expect(result.stdout).toContain("version list: does not include 0.1.0-alpha.9")
   })
 })
