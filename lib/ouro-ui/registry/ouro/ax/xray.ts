@@ -1597,11 +1597,15 @@ function rpcClient(line: string, env: Record<string, string>, timeoutMs: number)
 
 /**
  * Words that promise a stream: an MCP tool call here answers once per call, over JSON-RPC, so no tool's description
- * can honestly make this promise, whatever the command behind it does on its own CLI.
+ * can honestly make this promise, whatever the command behind it does on its own CLI. Only a promise that the tool
+ * itself streams counts: a description that names a stream as a thing (a channel's streaming capability, which stream
+ * to read) promises nothing.
  *
  * @claim "an MCP tool call here answers once per call, over JSON-RPC, so no tool's description can honestly make this promise" registry/ouro/ax/xray.test.mts verify:testExists(registry/ouro/ax/xray.test.mts::an MCP tool whose description promises a stream fails: this transport answers once per call, never a stream)
+ * @claim "a description that names a stream as a thing (a channel's streaming capability, which stream to read) promises nothing" registry/ouro/ax/xray.test.mts verify:testExists(registry/ouro/ax/xray.test.mts::an MCP tool that only names a stream as a thing, such as a channel's streaming capability, is no stream promise)
  */
-const STREAM_LANGUAGE = /\bstream(s|ing)?\b|\bas (it|they) happen[s]?\b|\bcontinuously\b/i;
+const STREAM_LANGUAGE =
+  /^\s*streams?\b|\bstreams?\s+(back|out|in|new|live|the|its|their|every|each|all|updates?|results?|events?|lines?|messages?|output|logs?|changes?|tokens?|progress|data)\b|\b(a|the)\s+stream\s+of\b|\bstreaming\s+(back|out|updates?|results?|events?|lines?|messages?|output|logs?|changes?|tokens?|progress|responses?|data)\b|\bas (it|they) happens?\b|\bcontinuously\b/i;
 
 async function checkMcp(ctx: Context) {
   const { rec, opts } = ctx;
