@@ -64,7 +64,7 @@ const toolName = (cli: Pick<Cli, "name" | "defaultCommand">, cmd: CommandDef) =>
 
 function toolsOf(options: McpOptions): CommandDef[] {
   const include = options.include ?? ((c: CommandDef) => !c.hidden);
-  return options.cli.commands.filter((c) => !c.loose && include(c));
+  return options.cli.commands.filter((c) => !c.loose && !c.streams && include(c));
 }
 
 function mcpTools(options: McpOptions): McpTool[] {
