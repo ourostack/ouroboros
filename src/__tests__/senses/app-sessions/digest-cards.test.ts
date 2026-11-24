@@ -82,7 +82,13 @@ describe("readCard", () => {
     fs.mkdirSync(path.join(stateDir, "a", "eng", "kernel"), { recursive: true })
     fs.mkdirSync(path.join(stateDir, "b", "eng", "kernel"), { recursive: true })
     fs.writeFileSync(path.join(stateDir, "b", "eng", "kernel", "task.md"), card("'Kernel work'", "processing", "**Next step:** Land the **parser** change and `verify` it.\n"))
-    expect(readCard([path.join(stateDir, "a"), path.join(stateDir, "b")], "eng", "kernel")).toMatchObject({ track: "eng", slug: "kernel", title: "Kernel work", status: "processing", next: "Land the parser change and verify it.", file: path.join(stateDir, "b", "eng", "kernel", "task.md") })
+    expect(readCard([path.join(stateDir, "a"), path.join(stateDir, "b")], "eng", "kernel")).toMatchObject({ track: "eng", slug: "kernel", title: "Kernel work", status: "processing", next: "Land the parser change and verify it.", file: "eng/kernel/task.md" })
+    expect(readCard([path.join(stateDir, "a"), path.join(stateDir, "b")], "eng", "kernel")).not.toHaveProperty("deskRepo")
+    fs.mkdirSync(path.join(stateDir, "b", ".git"), { recursive: true })
+    fs.writeFileSync(path.join(stateDir, "b", ".git", "config"), '[core]\n\tbare = false\n[remote "origin"]\n\turl = https://github.com/o/desk.git\n\tfetch = x\n')
+    expect(readCard([path.join(stateDir, "b")], "eng", "kernel")).toMatchObject({ deskRepo: "https://github.com/o/desk.git" })
+    fs.writeFileSync(path.join(stateDir, "b", ".git", "config"), "[core]\n")
+    expect(readCard([path.join(stateDir, "b")], "eng", "kernel")).not.toHaveProperty("deskRepo")
   })
 
   it("cuts a long next step, and falls back to the slug, an unknown status and no next step", () => {

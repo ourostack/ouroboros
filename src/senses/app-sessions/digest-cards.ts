@@ -29,6 +29,8 @@ export interface CardFacts {
   session?: string
   /** The card file and when it last changed, so a reader can open the desk log and judge its age. */
   file: string
+  /** The shared desk repository (its remote URL) the relative `file` lives in, when the desk root is a git checkout with a remote. */
+  deskRepo?: string
   updatedAt: string | null
 }
 
@@ -203,6 +205,16 @@ function pointers(front: string, body: string, field: (name: string) => string |
   return { ...(repo ? { repo } : {}), ...(branch ? { branch } : {}), ...(pr ? { pr } : {}), ...(session ? { session } : {}) }
 }
 
+/** The origin URL of the desk root's git checkout, or null when it has no remote. */
+function deskRemote(root: string): string | null {
+  try {
+    const config = fs.readFileSync(path.join(root, ".git", "config"), "utf-8")
+    return /\[remote "origin"\][^[]*?\burl\s*=\s*(\S+)/.exec(config)?.[1] ?? null
+  } catch {
+    return null
+  }
+}
+
 /** The card at `<root>/<track>/<slug>/task.md`, or archived beside it, in the first desk root that has it: its title, status and next step. */
 export function readCard(roots: string[], track: string, slug: string): CardFacts | null {
   for (const root of roots) {
@@ -228,7 +240,8 @@ export function readCard(roots: string[], track: string, slug: string): CardFact
       status: field("status") ?? "unknown",
       next: next ? (next.length > NEXT_MAX_CHARS ? `${next.slice(0, NEXT_MAX_CHARS - 1)}…` : next) : null,
       ...pointers(front, body, field),
-      file: found.file,
+      file: path.relative(root, found.file).split(path.sep).join("/"),
+      ...(deskRemote(root) ? { deskRepo: deskRemote(root)! } : {}),
       updatedAt: found.updatedAt,
     }
   }

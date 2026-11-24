@@ -9,7 +9,7 @@ import * as path from "node:path"
 const SNAPSHOT_MAX_AGE_MS = 10 * 60_000
 const DIGEST_MAX_AGE_MS = 60 * 60_000
 
-interface DigestCard { track: string; slug: string; status: string; repo?: string; branch?: string; pr?: string; session?: string; file?: string; updatedAt?: string | null }
+interface DigestCard { track: string; slug: string; status: string; repo?: string; branch?: string; pr?: string; session?: string; file?: string; deskRepo?: string; updatedAt?: string | null }
 
 function readJson<T>(file: string): T | null {
   try {
@@ -28,6 +28,7 @@ function deskPointer(card: DigestCard): NonNullable<PeerAppSessionDesk> {
     ...(card.branch ? { branch: card.branch } : {}),
     ...(card.session ? { session: card.session } : {}),
     ...(card.file ? { file: card.file } : {}),
+    ...(card.deskRepo ? { deskRepo: card.deskRepo } : {}),
     ...(card.updatedAt ? { updatedAt: card.updatedAt } : {}),
   }
 }

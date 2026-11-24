@@ -62,7 +62,7 @@ function deskPointers(desk: PeerAppSession["desk"], nowMs: number): string {
   if (desk.repo || desk.branch) parts.push(`${desk.repo ?? "repo?"}@${desk.branch ?? "branch?"}`)
   if (desk.url) parts.push(`pr ${desk.url}`)
   if (desk.session) parts.push(`session ${desk.session}`)
-  if (desk.file) parts.push(`log ${desk.file}${desk.updatedAt ? ` (updated ${ago(desk.updatedAt, nowMs)})` : ""}`)
+  if (desk.file) parts.push(`log ${desk.file}${desk.deskRepo ? ` in ${desk.deskRepo}` : ""}${desk.updatedAt ? ` (updated ${ago(desk.updatedAt, nowMs)})` : ""}`)
   return `, ${parts.join("; ")}`
 }
 

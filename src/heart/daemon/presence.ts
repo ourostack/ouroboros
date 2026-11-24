@@ -66,7 +66,7 @@ export interface PeerAppSession {
   /** Reserved for the fleet sense: who runs and coordinates it. */
   owner?: { agent?: string; coordinator?: string; startedBy?: string }
   /** Reserved for the fleet sense: the desk card that is its source of truth. */
-  desk?: { desk?: string; track?: string; slug?: string; status?: string; url?: string; via?: string; repo?: string; branch?: string; session?: string; file?: string; updatedAt?: string }
+  desk?: { desk?: string; track?: string; slug?: string; status?: string; url?: string; via?: string; repo?: string; branch?: string; session?: string; file?: string; deskRepo?: string; updatedAt?: string }
 }
 
 /** What a presence publishes about itself in `presence/<machineId>.json`. */
