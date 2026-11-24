@@ -8,7 +8,8 @@
 //
 // The rule, as the driver applies it:
 //   1. the first press of the remove control doesn't call onRemove: no call by the moment the confirm control is
-//      pressed, which is a random 0.5 to 1.5 s after it appears;
+//      pressed, which is a random 0.5 to 1.5 s after it appears, and, once the rest has passed, none within 5 s of
+//      pressing it in a fresh render that is never confirmed (the holding check);
 //   2. confirming calls onRemove(187) exactly once: calls made after the confirm press;
 //   3. a role="status" region then says it's removed or done.
 // The remove control is a button-like control whose accessible name says remove or delete: the one naming 187, or
@@ -27,6 +28,9 @@ import { JSDOM, VirtualConsole } from "jsdom"
 const require = createRequire(import.meta.url)
 const { queryAllByRole, isInaccessible } = require("@testing-library/dom")
 const { computeAccessibleName } = require("dom-accessibility-api")
+const { setAttributeValue } = require("jsdom/lib/jsdom/living/attributes.js")
+const { createElement: createElementImpl } = require("jsdom/lib/jsdom/living/helpers/create-element.js")
+const { implForWrapper, wrapperForImpl } = require("jsdom/lib/jsdom/living/generated/utils.js")
 const MODULES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "node_modules")
 
 const ROLES = ["button", "menuitem", "link"]
@@ -36,31 +40,36 @@ const AXE = { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "
 // Control names.
 const STARTS_REMOVE = /^\W*(remove|delete)\b/i
 const REMOVE = /\b(remove|delete)/i
-const CONFIRM = /\b(remove|delete|confirm|yes|ok|okay|continue|proceed)\b/i
+const CONFIRM = /\b(remove|delete|confirm|yes|ok|okay|continue|proceed|sure)\b/i
 // A decline: these words anywhere ("Continue without removing", "Keep it"), or no, back or close first.
 const DECLINE = /\b(cancel|keep|without|don't|do not|not now|never ?mind)\b|^\W*(no|back|close|go back)\b/i
 const names189 = (name) => name.includes("189") && !name.includes("187")
+// Typographic apostrophes ("Don’t remove", "wasn’t removed") read as the plain one.
+const plainQuotes = (text) => text.replace(/[‘’ʼ′]/g, "'")
 /** A name that confirms removing: it starts with remove or delete, or it confirms and doesn't decline. */
-export const confirms = (name) => !names189(name) && (STARTS_REMOVE.test(name) || (CONFIRM.test(name) && !DECLINE.test(name)))
+export const confirms = (raw) => { const name = plainQuotes(raw); return !names189(name) && (STARTS_REMOVE.test(name) || (CONFIRM.test(name) && !DECLINE.test(name))) }
 /** A name for the remove control: it says remove or delete and doesn't decline, or it starts with remove or delete. */
-const removes = (name) => STARTS_REMOVE.test(name) || (REMOVE.test(name) && !DECLINE.test(name))
+const removes = (raw) => { const name = plainQuotes(raw); return STARTS_REMOVE.test(name) || (REMOVE.test(name) && !DECLINE.test(name)) }
 
 // Status text. A sentence claims the removal when it says removed or done. The claim is taken back by a negation or
 // a future before it in the same sentence ("Copy 187 was not removed", "will be removed", "Nothing was removed"), or
 // by the sentence being a question; and the whole status by a failure anywhere ("Removal failed. Done."). Words after
 // the claim don't take it back: "Copy 187 was removed and won't come back" says it's removed.
 const CLAIM = /\b(removed|done)\b/i
-const TAKES_BACK = /\b(not|no|nothing|none|never|cannot|unable|will|would|could|should|shall|going to|about to|if|once|when)\b|n't\b/i
+const TAKES_BACK = /\b(not|no|nothing|none|never|cannot|unable|will|would|could|should|shall|going to|about to|if|once|when|being|to be)\b|n't\b/i
+// Those words count only in the claim's own clause: "You won't see it again — it has been removed" says removed.
+const clauseStart = (before) => { let at = 0; for (const m of before.matchAll(/[,:–—]|\s-\s/g)) at = m.index + m[0].length; return before.slice(at) }
 const FAILURE = /\b(fail|failed|failure|could ?not|couldn't)\b/i
 /** Says it's removed or done: at least one sentence claims it, and nothing takes a claim back. */
-export function saysDone(text) {
+export function saysDone(raw) {
+  const text = plainQuotes(raw)
   if (FAILURE.test(text)) return false
   const sentences = text.match(/[^.!?;\n]+[.!?;\n]*/g) ?? []
   let claimed = false
   for (const sentence of sentences) {
     const found = CLAIM.exec(sentence)
     if (!found) continue
-    if (sentence.trim().endsWith("?") || TAKES_BACK.test(sentence.slice(0, found.index))) return false
+    if (sentence.trim().endsWith("?") || TAKES_BACK.test(clauseStart(sentence.slice(0, found.index)))) return false
     claimed = true
   }
   return claimed
@@ -73,22 +82,30 @@ export function copyOf(snap, { visual = false } = {}) {
   const ids = new Map()
   const byId = new Map()
   const safe = (value) => (/^[a-z-]+$/.test(value) ? value : "")
+  const docImpl = implForWrapper(document)
+  const text = (value) => (value === null || value === undefined ? null : String(value))
   const make = (node) => {
     if (typeof node === "string") return document.createTextNode(node)
     const [ns, prefix, local] = node.e
-    const el = document.createElementNS(ns, prefix ? `${prefix}:${local}` : local)
+    // Made and given attributes through jsdom's own steps, as the page's lists held them: createElementNS and
+    // setAttributeNS would refuse names a page legitimately has (React sets xmlns, xmlns:xlink and data-a:b with
+    // setAttribute, in no namespace).
+    const el = wrapperForImpl(createElementImpl(docImpl, String(local), text(ns), text(prefix)))
+    const impl = implForWrapper(el)
     let style = ""
     for (const [attrNs, attrPrefix, attrLocal, value] of node.a) {
       if (attrNs === null && /^on/i.test(attrLocal)) continue
       if (attrNs === null && attrLocal === "style") { style = value; continue }
-      el.setAttributeNS(attrNs, attrPrefix ? `${attrPrefix}:${attrLocal}` : attrLocal, value)
+      setAttributeValue(impl, String(attrLocal), String(value), text(attrPrefix), text(attrNs))
     }
     const display = safe(node.d)
     const visibility = safe(node.v)
     const own = style.replace(/[\s;]+$/, "")
     el.setAttribute("style", [own, display && `display: ${display} !important`, visibility && `visibility: ${visibility} !important`].filter(Boolean).join("; "))
     if (typeof node.val === "string" && ns === HTML && local === "input") el.value = node.val
-    for (const child of node.k) el.appendChild(make(child))
+    // Stylesheets stay out: each element's display and visibility are already fixed from the page, and the page's
+    // selectors would otherwise be compiled into code in this process by jsdom's selector engine.
+    for (const child of node.k) if (typeof child === "string" || !(child.e[2] === "style" || (child.e[2] === "link" && child.e[0] === HTML))) el.appendChild(make(child))
     ids.set(el, node.i)
     byId.set(node.i, el)
     return el
@@ -134,17 +151,22 @@ export function createJudge() {
   const state = { first: null, before: null, said: null, axeSnap: null, step: "render", lastStatus: null, last: null }
   const answer = (pick = null, value = false, delay = 0) => ({ pick, value, delay })
   const close = (copy) => copy.dom.window.close()
+  // The remove control in a rendered page: the one naming 187, or else the only one, or else the first with 187.
+  const pickRemove = (snap) => {
+    const copy = judgeable(snap)
+    const all = copy.controls()
+    const candidates = all.filter((c) => removes(c.name))
+    const first = candidates.find((c) => c.name.includes("187")) ?? (candidates.length === 1 ? candidates[0] : candidates.find((c) => within187(c.el, copy.body)))
+    close(copy)
+    return { first, all, candidates }
+  }
 
   const steps = {
     // The rendered page: picks the remove control, and remembers which controls were there before the first press.
     render({ snap }) {
       if (state.step !== "render") return answer()
       state.step = "pressed"
-      const copy = judgeable(snap)
-      const all = copy.controls()
-      const candidates = all.filter((c) => removes(c.name))
-      const first = candidates.find((c) => c.name.includes("187")) ?? (candidates.length === 1 ? candidates[0] : candidates.find((c) => within187(c.el, copy.body)))
-      close(copy)
+      const { first, all, candidates } = pickRemove(snap)
       if (!first) { notes.push(`no remove control for 187 (remove controls: ${candidates.map((c) => JSON.stringify(c.name)).join(", ") || "none"})`); state.step = "over"; return answer() }
       notes.push(`remove control ${JSON.stringify(first.name)}`)
       state.first = { id: first.id, name: first.name }
@@ -206,13 +228,34 @@ export function createJudge() {
       const now = copy.statuses()
       close(copy)
       const done = now.find(({ id, text }) => state.said.get(id) !== text && saysDone(text))
-      if (done) { result.statusSaysDone = true; notes.push(`status ${JSON.stringify(done.text)}`); state.step = "over"; return answer(null, true) }
+      if (done) { result.statusSaysDone = true; notes.push(`status ${JSON.stringify(done.text)}`); state.step = "hold"; return answer(null, true) }
       state.lastStatus = now.map(({ text }) => JSON.stringify(text)).join(", ") || "none"
+      return answer()
+    },
+    // The holding check, once the confirm path has passed: a fresh render whose remove control is pressed and never
+    // confirmed, so nothing may be removed in the next 5 s.
+    holdRender({ snap }) {
+      if (state.step !== "hold") return answer()
+      const { first } = pickRemove(snap)
+      if (!first) { notes.push("holding check: no remove control in a fresh render"); state.step = "held"; result.firstPressHeld = false; return answer() }
+      state.step = "holding"
+      return answer(first.id)
+    },
+    held({ a, snap }) {
+      if (state.step !== "holding") return answer()
+      state.step = "held"
+      if (a === 0) { notes.push("holding check: no onRemove call in 5 s without a confirm"); return answer(null, true) }
+      result.firstPressHeld = false
+      const copy = judgeable(snap)
+      const undo = copy.controls().some((c) => /\bundo\b/i.test(c.name))
+      close(copy)
+      notes.push(`holding check: without a confirm, the first press called onRemove ${a} time(s) within 5 s${undo ? " (an undo control showed: an auto-commit after undo)" : ""}`)
       return answer()
     },
     // The driver's own steps failed (the component threw, say); the message is only a note.
     failed({ c }) {
       notes.push(`the test failed: ${c.slice(0, 300)}`)
+      if (state.step === "hold" || state.step === "holding") result.firstPressHeld = false
       state.step = "over"
       return answer()
     },
@@ -238,6 +281,7 @@ export function createJudge() {
     hidden() {
       if (state.step === "status") notes.push(`no status region says removed or done (status regions: ${state.lastStatus ?? "none"})`)
       if (state.step === "confirming") notes.push(`no confirm control after the first press (${state.last ?? "none"})`)
+      if (state.step === "hold" || state.step === "holding") { result.firstPressHeld = false; notes.push("the holding check didn't finish") }
       return { ...result, detail: notes.join("; ") }
     },
     async axe(pageError) {

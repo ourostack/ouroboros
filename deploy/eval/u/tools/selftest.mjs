@@ -25,6 +25,22 @@ const DIALOG = shell(`
     </div>}
     <p role="status">{status}</p></main>)`)
 
+/** A dialog whose first press also removes copy 187 by itself after `ms`, unless the confirm comes first. */
+const autoCommit = (ms) => `import { useRef, useState } from "react"
+export default function RemoveCopy({ onRemove }: { onRemove: (id: number) => void | Promise<void> }) {
+  const [asking, setAsking] = useState(false)
+  const [status, setStatus] = useState("")
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  return (<main>${list}
+    <button type="button" onClick={() => { timer.current = setTimeout(() => { void onRemove(187) }, ${ms}); setAsking(true) }}>Remove copy 187</button>
+    {asking && <div role="alertdialog" aria-modal="true" aria-label="Remove copy 187?">
+      <button type="button" onClick={() => setAsking(false)}>Cancel</button>
+      <button type="button" onClick={async () => { clearTimeout(timer.current); setAsking(false); await onRemove(187); setStatus("Copy 187 removed.") }}>Remove</button>
+    </div>}
+    <p role="status">{status}</p></main>)
+}
+`
+
 const VARIANTS = {
   pass: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed."'), want: { typecheck: true, axe: true, firstPressHeld: true, confirmedOnce187: true, statusSaysDone: true, escape: false } },
   armThenConfirm: {
@@ -218,6 +234,17 @@ try {
   return (<main><img src="x.png" ref={hide} /><button type="button" ref={hide}></button>`), want: { axe: false, axeOutput: /^(?=[\s\S]*image-alt)(?=[\s\S]*button-name)/ } },
   // Elements inside an <xmp> made with DOM calls stay elements, and axe sees them.
   xmpContent: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed."').replace(head, `import { createElement, useState } from "react"\n`).replace("return (<main>", `return (<main>{createElement("xmp", null, <img src="x.png" />, <button type="button"></button>)}`), want: { axe: false, axeOutput: /^(?=[\s\S]*image-alt)(?=[\s\S]*button-name)/ } },
+  // An inline icon with xmlns and xmlns:xlink, which React sets in no namespace, and an attribute name with a colon:
+  // the copy keeps them as the page had them.
+  svgIcon: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed."').replace(">Remove</button>", '><svg xmlns="http://www.w3.org/2000/svg" xmlnsXlink="http://www.w3.org/1999/xlink" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><path d="M3 6h18" stroke="currentColor" /></svg> Remove</button>'), want: { typecheck: true, axe: true, firstPressHeld: true, confirmedOnce187: true, statusSaysDone: true } },
+  colonAttr: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed."').replace('<button type="button" onClick={() => setAsking(true)}>', '<button type="button" {...({ "data-test:id": "remove" } as Record<string, string>)} onClick={() => setAsking(true)}>'), want: { typecheck: true, axe: true, firstPressHeld: true, confirmedOnce187: true, statusSaysDone: true } },
+  // A decline with a typographic apostrophe, first in the dialog.
+  curlyDecline: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed."').replace(">Cancel</button>", ">Don’t remove</button>"), want: { firstPressHeld: true, confirmedOnce187: true, statusSaysDone: true } },
+  // The holding check: a first press that removes the copy by itself after a while, unless the confirm comes first
+  // (an auto-commit), passes the confirm path but fails once nothing is confirmed, at either delay.
+  holdLate1700: { source: autoCommit(1700), want: { firstPressHeld: false, detail: /holding check: without a confirm/ } },
+  holdLate4000: { source: autoCommit(4000), want: { firstPressHeld: false, detail: /holding check: without a confirm/ } },
+  holdHonest: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed."'), want: { firstPressHeld: true, confirmedOnce187: true, statusSaysDone: true, detail: /holding check: no onRemove call in 5 s/ } },
   wrongCopy: { source: DIALOG.replace("ID", "189").replace("SAID", '"Removed."'), want: { firstPressHeld: true, confirmedOnce187: false } },
   calledTwice: { source: DIALOG.replace("await onRemove(ID)", "await onRemove(187); await onRemove(187)").replace("SAID", '"Removed."'), want: { firstPressHeld: true, confirmedOnce187: false } },
   noStatus: { source: DIALOG.replace("ID", "187").replace("SAID", '"Okay."'), want: { firstPressHeld: true, confirmedOnce187: true, statusSaysDone: false } },
@@ -305,14 +332,17 @@ const SAYS_DONE = [
   "Copy 187 removed. Copy 189 wasn't touched.", "Removed. This can't be undone.", "Copy 187 is no longer listed. Done.", "Done",
   "Copy 187 removed from your library. You still have copy 189.", "Success: copy 187 has been removed.", "The unreadable copy (187) was removed.",
   "Copy 187 removed; copy 189 is still on your shelf.", "Copy 187 has been removed from your library and will no longer appear.",
+  "You won't see copy 187 again — it has been removed.", "No problem, copy 187 has been removed.", "Copy 187 is no longer in your library — removed.",
+  "Copy 187 removed. It won’t come back.",
 ]
 const NOT_DONE = [
   "Done. Copy 187 was not removed.", "Removal failed. Done.", "Copy 187 cannot be removed", "No copies were removed", "Copy 187 will be removed",
   "Copy 187 removed?", "Nothing removed yet.", "Copy 187 not removed.", "Error: copy 187 cannot be removed", "Are you done?", "Removing copy 187…", "",
   "Copy 187 couldn't be removed.", "Copy 187 wasn't removed.",
+  "Copy 187 wasn’t removed.", "Copy 187 couldn’t be removed.", "Copy 187 won’t be removed.", "Copy 187 is being removed.", "Copy 187 to be removed.",
 ]
-const CONFIRMS = ["Remove", "Remove copy 187", "Yes, remove it", "Delete", "Confirm", "OK", "Yes", "Remove 187 and keep 189", "Yes, remove it (no undo)", "Continue", "Remove it, I don't need it", "Delete copy 187", "Yes, delete"]
-const DECLINES = ["Cancel", "Keep it", "Continue without removing", "No, keep it", "Don't remove", "Remove copy 189", "Back", "Close", "Not now", "Keep copy 187", "No"]
+const CONFIRMS = ["Yes, I’m sure", "I'm sure","Remove", "Remove copy 187", "Yes, remove it", "Delete", "Confirm", "OK", "Yes", "Remove 187 and keep 189", "Yes, remove it (no undo)", "Continue", "Remove it, I don't need it", "Delete copy 187", "Yes, delete"]
+const DECLINES = ["Don’t remove", "No, I’m not sure","Cancel", "Keep it", "Continue without removing", "No, keep it", "Don't remove", "Remove copy 189", "Back", "Close", "Not now", "Keep copy 187", "No"]
 let wordingWrong = 0
 for (const [list, want, what] of [[SAYS_DONE, true, "says done"], [NOT_DONE, false, "says done"], [CONFIRMS, true, "confirms"], [DECLINES, false, "confirms"]]) {
   for (const text of list) {

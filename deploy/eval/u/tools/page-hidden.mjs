@@ -45,9 +45,24 @@ async function main() {
   if (!(await step("confirmed", after.length, firstArg, stringify(after.map((args) => args.map((arg) => (typeof arg === "number" || typeof arg === "string" ? arg : typeof arg))))))) return
 
   for (let i = 0; i < 40; i += 1) {
-    if (await step("status")) return
+    if (await step("status")) { await hold(user, root, RemoveCopy); return }
     await wait(50)
   }
+}
+
+// The holding check: a fresh render, its remove control pressed and never confirmed; nothing may be removed in 5 s.
+async function hold(user, root, RemoveCopy) {
+  root.unmount()
+  const calls = []
+  const onRemove = (...args) => { calls.push(args); return Promise.resolve() }
+  const fresh = createRoot(document.getElementById("root"))
+  flushSync(() => fresh.render(createElement(RemoveCopy, { onRemove })))
+  await wait(50)
+  const first = await step("holdRender")
+  if (!first) return
+  await user.click(first)
+  await wait(5000)
+  await step("held", calls.length)
 }
 
 main().catch((error) => step("failed", 0, 0, String(error && error.message || error))).finally(() => report())
