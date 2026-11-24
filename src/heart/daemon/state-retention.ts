@@ -253,16 +253,9 @@ export async function runAgentStateRetention(input: RunAgentStateRetentionInput)
         ? await (await import("./mailroom-copy-proof")).pruneProvenMailroomCopies({
           mailroomRoot: path.join(input.bundlesRoot, `${agent}.ouro`, "state", "mailroom"),
           hosted,
+          agent,
         })
         : null
-      if (mailroomCopies) {
-        emitNervesEvent({
-          component: "daemon",
-          event: "daemon.state_retention_mailroom_proven_copies",
-          message: "deleted gzipped local mail copies that Blob is proven to hold",
-          meta: { agent, ...mailroomCopies },
-        })
-      }
       results.push({ agent, sessionArchives, mailroom, mailroomCopies })
     } catch (error) {
       emitNervesEvent({

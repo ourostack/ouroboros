@@ -4,6 +4,7 @@ import * as path from "path"
 import * as zlib from "zlib"
 
 import type { HostedMailCopies } from "../../mailroom/blob-store"
+import { emitNervesEvent } from "../../nerves/runtime"
 import { hostedMessageStorageId, type MailEnvelopeInput } from "../../mailroom/core"
 
 export type { HostedMailCopies, HostedMailMessageRecord } from "../../mailroom/blob-store"
@@ -37,6 +38,8 @@ export interface ProvenMailroomCopiesResult {
 export interface PruneProvenMailroomCopiesInput {
   mailroomRoot: string
   hosted: HostedMailCopies
+  /** The agent whose mailroom this is, for the counts-only event. */
+  agent?: string
   /** Most copies checked in one pass; the rest wait for the next. Default: 5000. */
   maxPerPass?: number
 }
@@ -158,5 +161,11 @@ export async function pruneProvenMailroomCopies(input: PruneProvenMailroomCopies
     result.deleted += 1
     result.bytesFreed += copy.rawStat.size + copy.messageStat.size
   }
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.state_retention_mailroom_proven_copies",
+    message: "deleted gzipped local mail copies that Blob is proven to hold",
+    meta: { ...(input.agent ? { agent: input.agent } : {}), ...result },
+  })
   return result
 }
