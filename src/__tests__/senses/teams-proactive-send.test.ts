@@ -9,6 +9,12 @@ vi.mock("../../nerves/runtime", async () => {
   return { ...actual, emitNervesEvent: vi.fn((event: Parameters<typeof actual.emitNervesEvent>[0]) => actual.emitNervesEvent(event)) }
 })
 
+const heldReturns = vi.hoisted(() => ({ queue: vi.fn() }))
+vi.mock("../../mind/pending", async (original) => ({
+  ...await original<typeof import("../../mind/pending")>(),
+  queuePendingMessage: heldReturns.queue,
+}))
+
 const outbound = vi.hoisted(() => ({ record: vi.fn(() => "recorded"), drain: vi.fn(() => 0) }))
 vi.mock("../../mind/outbound-record", async (original) => ({
   ...await original<typeof import("../../mind/outbound-record")>(),
@@ -190,6 +196,19 @@ describe("drainAndSendPendingTeams", () => {
         text: "hey Alice, check this out!",
       }),
     )
+  })
+
+  it("holds a pending verification chore and returns it to the agent's private runtime", async () => {
+    const friendStore = { get: vi.fn().mockResolvedValue(makeFriend()), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn(), hasAnyFriends: vi.fn(), listAll: vi.fn() }
+    const botApi = makeBotApi()
+    const teams = await loadTeams()
+    const text = "Could you open #5312 on your phone and tell me if the pictures show?"
+    const file = writePendingFile(pendingRoot, "friend-uuid-1", "session", { from: "testagent", friendId: "friend-uuid-1", channel: "teams", key: "session", content: text, timestamp: Date.now() })
+    const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
+    expect(result).toEqual({ sent: 0, skipped: 1, failed: 0 })
+    expect(botApi._mocks.activityCreate).not.toHaveBeenCalled()
+    expect(fs.existsSync(file)).toBe(false)
+    expect(heldReturns.queue).toHaveBeenCalledWith(expect.stringContaining("self"), expect.objectContaining({ channel: "inner", content: expect.stringContaining(text) }))
   })
 
   it("drops a pending message that sat unsent past the expiry, on two consecutive drains", async () => {
