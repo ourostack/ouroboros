@@ -96,7 +96,7 @@ it("sends the run's named agent images with every job, beside the agent's and ho
 })
 
 it("refuses a --host-lock with no holder, or one that isn't a single safe word, before taking anything", async () => {
-  for (const flags of [[...REMOTE, "--host-lock"], [...REMOTE, "--host-lock", "--reduced"], [...REMOTE, "--host-lock", "eval; rm -rf /"]]) {
+  for (const flags of [[...REMOTE, "--host-lock"], [...REMOTE, "--host-lock", "--reduced"], [...REMOTE, "--host-lock", "eval; rm -rf /"], [...REMOTE, "--host-lock", "butler:ship"]]) {
     vi.resetModules()
     expect((await run(flags)).stderr[0]).toMatch(/^interviews: --host-lock (needs a holder|takes one word)/)
   }
