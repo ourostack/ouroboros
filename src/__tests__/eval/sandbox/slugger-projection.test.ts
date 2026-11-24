@@ -12,6 +12,7 @@ import { checkProfile } from "../../../eval/sandbox/agent-profile"
 import {
   archiveBundle,
   leakLint,
+  placeholder,
   projectAgentConfig,
   projectSlugger,
   readLeakPatterns,
@@ -135,8 +136,74 @@ describe("Slugger's projection", () => {
     expect(fs.existsSync(path.join(out, "agent.json"))).toBe(false)
   })
 
-  it("stops on a leak pattern, in any case, in a file's contents or its name, and leaves no projection", async () => {
-    write(repo, "skills/notes.md", "ask ZEPHYRINE first")
+  it("replaces private strings in contents with a placeholder per pattern, the same in every file", async () => {
+    write(repo, "eval/leak-patterns.json", JSON.stringify({ literals: ["Zephyrine", "zz-handle", "zephyrine@example.org", "Zephyrine Quill"] }))
+    write(repo, "skills/notes.md", "Ask ZEPHYRINE first; zephyrine's list.\nZephyrines and xzephyrine stay. Mail zephyrine@example.org.")
+    write(repo, "psyche/IDENTITY.md", "Zephyrine Quill and zz-handle, then zephyrine.")
+    commit = commitAll(repo, "names")
+    const dir = await archive()
+    const out = path.join(root, "out")
+    const { gaps } = projectSlugger({ archive: dir, include: INCLUDE, out, fakes: {} })
+    expect(fs.readFileSync(path.join(out, "skills/notes.md"), "utf8")).toBe(
+      "Ask Member A first; Member A's list.\nZephyrines and xzephyrine stay. Mail member-c@example.invalid.",
+    )
+    expect(fs.readFileSync(path.join(out, "psyche/IDENTITY.md"), "utf8")).toBe("Member D and Member B, then Member A.")
+    expect(gaps).toContain("6 private strings replaced with placeholders in 2 files")
+    expect(fs.readFileSync(path.join(out, "skills/cooking.md"), "utf8")).toBe("use the recipe tools")
+  })
+
+  it("matches next to digits, underscores and curly quotes, across line breaks, literally, and in any script", async () => {
+    write(repo, "eval/leak-patterns.json", JSON.stringify({ literals: ["Zephyrine", "z.q", "Zephyrine Quill", "@zz-handle", "ゼフィ"] }))
+    write(repo, "skills/notes.md", "zephyrine99 zephyrine_q zephyrine’s Zephyrine\n  Quill zxq z.q @zz-handle 私はゼフィです")
+    commit = commitAll(repo, "edges")
+    const dir = await archive()
+    const out = path.join(root, "out")
+    const { gaps } = projectSlugger({ archive: dir, include: INCLUDE, out, fakes: {} })
+    expect(fs.readFileSync(path.join(out, "skills/notes.md"), "utf8")).toBe("Member A99 Member A_q Member A’s Member C zxq Member B @member-d 私はMember Eです")
+    expect(gaps).toContain("7 private strings replaced with placeholders in 1 file")
+  })
+
+  it("leaves a file that isn't UTF-8 untouched, so the lint refuses it when it holds a pattern", async () => {
+    const dir = await archive()
+    const binary = Buffer.concat([Buffer.from([0xff, 0xfe, 0x00]), Buffer.from("zephyrine")])
+    fs.writeFileSync(path.join(dir, "skills/photo.bin"), binary)
+    const out = path.join(root, "out")
+    expect(() => projectSlugger({ archive: dir, include: INCLUDE, out, fakes: {} })).toThrow(/1 projected path\(s\) or gap\(s\) hold a leak pattern/)
+    fs.writeFileSync(path.join(dir, "skills/photo.bin"), Buffer.from([0xff, 0xfe, 0x00, 0x41]))
+    projectSlugger({ archive: dir, include: INCLUDE, out, fakes: {} })
+    expect(fs.readFileSync(path.join(out, "skills/photo.bin"))).toEqual(Buffer.from([0xff, 0xfe, 0x00, 0x41]))
+  })
+
+  it("refuses when a file can't be rewritten, without naming it", async () => {
+    write(repo, "skills/notes.md", "zephyrine")
+    commit = commitAll(repo, "one")
+    const dir = await archive()
+    const writes = vi.spyOn(fs, "writeFileSync").mockImplementation((file) => {
+      if (String(file).endsWith("notes.md")) throw new Error(`EACCES ${String(file)}`)
+    })
+    try {
+      expect(() => projectSlugger({ archive: dir, include: ["skills"], out: path.join(root, "out"), fakes: {} })).toThrow(/^Slugger projection: a projected file couldn't be rewritten with placeholders$/)
+    } finally {
+      writes.mockRestore()
+    }
+  })
+
+  it("makes placeholders by the pattern's place in the list", () => {
+    expect(placeholder(0, "x")).toBe("Member A")
+    expect(placeholder(25, "x")).toBe("Member Z")
+    expect(placeholder(26, "x")).toBe("Member AA")
+    expect(placeholder(52, "a@b")).toBe("member-ba@example.invalid")
+    expect(placeholder(1, "@handle")).toBe("@member-b")
+  })
+
+  it("adds no redaction gap when nothing matched", async () => {
+    const dir = await archive()
+    const { gaps } = projectSlugger({ archive: dir, include: INCLUDE, out: path.join(root, "out"), fakes: {} })
+    expect(gaps.some((gap) => gap.includes("placeholders"))).toBe(false)
+  })
+
+  it("stops on a leak pattern in a file's or folder's name, in any case, and leaves no projection", async () => {
+    write(repo, "skills/ZEPHYRINE-notes.md", "plain")
     commit = commitAll(repo, "leak")
     const dir = await archive()
     const out = path.join(root, "out")
@@ -147,6 +214,10 @@ describe("Slugger's projection", () => {
     fs.mkdirSync(path.join(named, "skills/Zephyrine"))
     expect(leakLint(named, ["zz-handle", "zephyrine"])).toEqual(["skills/Zephyrine/", "skills/zz-handle.md"])
     expect(leakLint(named, ["nothing-here"])).toEqual([])
+    // A gap that holds a pattern only inside a longer word is no match either.
+    expect(leakLint(named, ["handles"])).toEqual([])
+    // Whole words only: a pattern inside a longer word is no match.
+    expect(leakLint(named, ["zz-hand", "zephyr"])).toEqual([])
   })
 
   it("stops on a leak pattern in a gap, such as a left-out server's or link's name", async () => {
