@@ -156,6 +156,7 @@ import { parseOuroCommand, inferAgentNameFromRemote } from "./cli-parse"
 import { isAgentProvider, usage } from "./cli-parse"
 import { getGroupedHelp, getCommandHelp } from "./cli-help"
 import { cliHelpJson } from "./cli-manifest"
+import { runMailboxAction } from "../letters/doors"
 import {
   executePluginInstall,
   executePluginList,
@@ -2084,7 +2085,7 @@ async function installPortableGitForCli(deps: OuroCliDeps, force: boolean): Prom
 // ── toDaemonCommand ──
 
 function toDaemonCommand(command: Exclude<OuroCliCommand, import("../shepherd/operations").ShepherdOperation | { kind: "shepherd.chat" }
- | { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | GatewayServeCliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | DeskAdminCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | SyncCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "mail.sweep-orphans" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" } | { kind: "presence.join" } | { kind: "presence.handoff" } | { kind: "presence.status" } | { kind: "presence.failover" } | { kind: "presence.location" } | { kind: "sanctuary.git-exclude" } | { kind: "service.install" } | { kind: "service.uninstall" } | { kind: "self-update.enable" } | { kind: "self-update.disable" } | { kind: "self-update.status" } | { kind: "git.install" } | { kind: "git.status" }>): DaemonCommand {
+ | { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | GatewayServeCliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | DeskAdminCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | SyncCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "mail.sweep-orphans" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" } | { kind: "presence.join" } | { kind: "presence.handoff" } | { kind: "presence.status" } | { kind: "presence.failover" } | { kind: "presence.location" } | { kind: "sanctuary.git-exclude" } | { kind: "service.install" } | { kind: "service.uninstall" } | { kind: "self-update.enable" } | { kind: "self-update.disable" } | { kind: "self-update.status" } | { kind: "git.install" } | { kind: "git.status" } | { kind: "mailbox.action" }>): DaemonCommand {
   if (command.kind === "habit.probe") {
     return {
       kind: "habit.probe",
@@ -10155,6 +10156,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       deps.writeStdout(message)
       return message
     }
+  }
+
+  // ── mailbox (local: each command runs the action ouro-actions generated it from) ──
+  if (command.kind === "mailbox.action") {
+    const result = runMailboxAction(command.action, {})
+    const message = command.json ? JSON.stringify(result) : result.count === 0 ? "No letters are waiting." : result.listing
+    deps.writeStdout(message)
+    return message
   }
 
   // ── changelog (local, no daemon socket needed) ──
