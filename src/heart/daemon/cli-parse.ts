@@ -26,6 +26,7 @@ import type { HabitRunTrigger } from "../../arc/flight-recorder"
 import type { HabitSummaryWhich } from "../habits/habit-session-summary"
 import { DEFAULT_NERVES_PROCESS } from "../../nerves/review/core"
 import { isSafePrunableAgentName } from "./prunable-bundle"
+import type { MailboxActionId } from "../letters/doors"
 import {
   isVaultItemTemplate,
   normalizePorkbunOpsAccount,
@@ -412,6 +413,7 @@ export function usage(): string {
     "  ouro shepherd reconcile --agent <name> --expected-revision <n> --request-id <id> --id <id> --resolution retired|delivered [--json]",
     "  ouro shepherd maintenance --agent <name> --expected-revision <n> --request-id <id> --destination <path> [--json]",
     "  ouro session list [--agent <name>]",
+    "  ouro mailbox list [--json]",
     "  ouro mcp list",
     "  ouro mcp call <server> <tool> [--args '{...}']",
     "  ouro mcp doctor --agent <name> [--json]",
@@ -575,6 +577,29 @@ function parsePokeCommand(args: string[]): OuroCliCommand {
   if (trigger) throw new Error(`Usage\n${usage()}`)
   if (!taskId) throw new Error(`Usage\n${usage()}`)
   return { kind: "task.poke", agent, taskId }
+}
+
+/**
+ * The words of the mailbox group (`ouro mailbox <word>`), each the generated action it runs. They are written out here because the AX census
+ * reads a parser's words from its own syntax; doors.test.ts holds them equal to actions/generated/mailbox.
+ */
+export const MAILBOX_CLI_WORDS = { list: "mailbox_list" } as const satisfies Record<string, MailboxActionId>
+const MAILBOX_USAGE_WORDS = Object.keys(MAILBOX_CLI_WORDS).join("|")
+
+/**
+ * `ouro mailbox <word>`: each word is a command ouro-actions generated for the mailbox group
+ * (actions/generated/mailbox/commands.json), and runs that command's action (src/heart/letters/doors.ts).
+ */
+function parseMailboxCommand(args: string[]): OuroCliCommand {
+  const { rest } = extractAgentFlag(args)
+  const sub = rest[0]
+  if (sub === undefined || !Object.hasOwn(MAILBOX_CLI_WORDS, sub)) {
+    throw new Error(`Usage: ouro mailbox ${MAILBOX_USAGE_WORDS} [--json]`)
+  }
+  const extra = rest.slice(1).filter((token) => token !== "--json")
+  if (extra.length > 0) throw new Error(`ouro mailbox ${sub} takes no words after it: ${extra.join(" ")}`)
+  const action = MAILBOX_CLI_WORDS[sub as keyof typeof MAILBOX_CLI_WORDS]
+  return { kind: "mailbox.action", action, ...(rest.includes("--json") ? { json: true as const } : {}) }
 }
 
 function parseHabitCommand(args: string[]): OuroCliCommand {
@@ -3119,6 +3144,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "connect") return parseConnectCommand(args.slice(1))
   if (head === "vault") return parseVaultCommand(args.slice(1))
   if (head === "habit") return parseHabitCommand(args.slice(1))
+  if (head === "mailbox") return parseMailboxCommand(args.slice(1))
   if (head === "desk") return parseDeskCommand(args.slice(1))
   if (head === "task") return parseTaskAliasCommand(args.slice(1))
   if (head === "migrate-to-desk") return parseMigrateToDeskCommand(args.slice(1))

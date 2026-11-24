@@ -12,7 +12,7 @@ import { activateVersion, getCurrentVersion, getOuroCliHome, pruneOldVersions, v
 import { installRelease, lookupLatestRelease, selfUpdateE2eOverrides, type ReleaseSourceDeps } from "./release-sources"
 import type { SelfUpdateDeps } from "./self-update"
 import { readUpdateState, writeUpdateState } from "./update-state"
-import { chooseUpdaterNodePath, ensureUpdaterAgent, UPDATER_PLIST_LABEL, type UpdaterAgentResult } from "./updater-launchd"
+import { chooseUpdaterNodePath, ensureUpdaterAgent, isHostUserHome, restoreUpdaterAgentIfMissing, UPDATER_PLIST_LABEL, type UpdaterAgentRestoreResult, type UpdaterAgentResult } from "./updater-launchd"
 import { readVersionIntent, writeVersionIntent } from "./version-intent"
 import { DEFAULT_SELF_UPDATE_MIN_MEM_AVAILABLE_MB, gentleUpdaterCommand, memAvailableBytes, readHostSelfUpdateConfig } from "./host-self-update"
 
@@ -325,6 +325,8 @@ export function ensureDefaultUpdaterAgent(options: { homeDir?: string } = {}): U
   // a real launch agent on the host.
   if (process.platform !== "darwin" || process.env.OURO_SELF_UPDATE_E2E === "1") return null
   const homeDir = options.homeDir ?? os.homedir()
+  // A throwaway HOME (integration tests, synthetic bundles) must never touch the machine-wide label.
+  if (!isHostUserHome(homeDir, os.userInfo().homedir)) return null
   const result = ensureUpdaterAgent({
     homeDir,
     userUid: os.userInfo().uid,
@@ -349,6 +351,20 @@ export function ensureDefaultUpdaterAgent(options: { homeDir?: string } = {}): U
     meta: { result },
   })
   return result
+}
+
+/** The daemon's hourly check that launchd still has the updater; see restoreUpdaterAgentIfMissing. */
+export function restoreDefaultUpdaterAgentIfMissing(options: { homeDir?: string } = {}): UpdaterAgentRestoreResult | null {
+  if (process.platform !== "darwin" || process.env.OURO_SELF_UPDATE_E2E === "1") return null
+  const homeDir = options.homeDir ?? os.homedir()
+  if (!isHostUserHome(homeDir, os.userInfo().homedir)) return null
+  return restoreUpdaterAgentIfMissing({
+    homeDir,
+    userUid: os.userInfo().uid,
+    fileExists: (filePath) => fs.existsSync(filePath),
+    exec: (command) => { require("child_process").execSync(command, { stdio: "ignore", timeout: 10_000 }) },
+    updateInProgress: () => isSelfUpdateLockHeld(getOuroCliHome(homeDir)),
+  })
 }
 
 export function isDefaultUpdaterAgentInstalled(options: { homeDir?: string } = {}): boolean | null {

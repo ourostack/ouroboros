@@ -31,25 +31,54 @@ type WireRequest = { messages: Message[]; activeTools: Tool[] }
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value)
 const typeOf = (value: unknown): string => value === null ? "null" : isRecord(value) && typeof value.type === "string" ? value.type : typeof value
 
-/** The text of a message's or an output's content: a string, or text parts. */
+const owner = (kind: string): string => `${/^[aeiou]/.test(kind) ? "an" : "a"} ${kind}'s`
+
+/** Refuses a field the wire would otherwise drop, naming it and whose it is. */
+function checkFields(kind: string, value: Record<string, unknown>, allowed: ReadonlySet<string>): void {
+  for (const key of Object.keys(value)) if (!allowed.has(key)) throw new Error(`the H wire can't carry ${owner(kind)} ${key}`)
+}
+
+/** A field that must be a string, refused by name otherwise rather than sent as the text "undefined". */
+function stringField(kind: string, value: Record<string, unknown>, key: string): string {
+  const field = value[key]
+  if (typeof field !== "string") throw new Error(`the H wire can't carry ${owner(kind)} ${key} of type ${field === null ? "null" : typeof field}`)
+  return field
+}
+
+/** The fields of each input item the wire reads. An item's id and status are the client's own bookkeeping. */
+const ITEM_FIELDS: Record<string, ReadonlySet<string>> = {
+  message: new Set(["type", "id", "status", "role", "content"]),
+  function_call: new Set(["type", "id", "status", "call_id", "name", "arguments"]),
+  function_call_output: new Set(["type", "id", "status", "call_id", "output"]),
+}
+const PART_FIELDS: ReadonlySet<string> = new Set(["type", "text"])
+
+/**
+ * The text of a message's or an output's content: a string, or text parts. Parts are joined with a newline, as the
+ * harness's messages carry one string each (a fidelity note for the arms).
+ */
 function textOf(content: unknown): string {
   if (typeof content === "string") return content
   if (!Array.isArray(content)) throw new Error(`the H wire can't carry content of type ${typeOf(content)}`)
   return content.map((part) => {
-    if (isRecord(part) && ["input_text", "output_text", "text"].includes(String(part.type)) && typeof part.text === "string") return part.text
+    if (isRecord(part) && ["input_text", "output_text", "text"].includes(String(part.type)) && typeof part.text === "string") {
+      checkFields(String(part.type), part, PART_FIELDS)
+      return part.text
+    }
     throw new Error(`the H wire can't carry content of type ${typeOf(part)}`)
   }).join("\n")
 }
 
 /** A function tool the arm declares, as its request carries it. */
-type ArmTool = { name: string; description?: string; parameters?: JsonObject; strict?: boolean }
+type ArmTool = { name: string; description?: string; parameters?: JsonObject | null; strict?: boolean }
 
 /** The fields of an arm's function tool the wire carries; any other is refused, never dropped. */
 const TOOL_FIELDS = new Set(["type", "name", "description", "parameters", "strict"])
 
-/** Refuses a tool with a field the wire would otherwise drop. */
+/** Refuses a tool with a field the wire would otherwise drop, or with no name. */
 export function checkToolFields(tool: Record<string, unknown>): void {
-  for (const key of Object.keys(tool)) if (!TOOL_FIELDS.has(key)) throw new Error(`the H wire can't carry a tool's ${key}`)
+  checkFields("tool", tool, TOOL_FIELDS)
+  stringField("tool", tool, "name")
 }
 
 /**
@@ -67,10 +96,21 @@ function wireTools(tools: ArmTool[]): Tool[] {
     if (sent.description === undefined) delete schema.function.description
     else schema.function.description = sent.description
     if (sent.parameters === undefined) delete schema.function.parameters
+    else schema.function.parameters = sent.parameters as JsonObject
     if (sent.strict !== undefined) schema.function.strict = sent.strict
     return schema
   })
 }
+
+/**
+ * The request fields codex 227fa4e sends. Its settings (model, reasoning and the rest) are left to the host's runtime,
+ * as for the ouro arm; any other field is refused rather than dropped. The wire always streams and always lets the
+ * model call the tools, so `stream` and `tool_choice` may only say so.
+ */
+const RESPONSES_FIELDS = new Set([
+  "model", "input", "tools", "stream", "tool_choice", "parallel_tool_calls", "reasoning", "store", "include", "prompt_cache_key", "client_metadata",
+])
+const FIXED_SETTINGS: Record<string, unknown> = { stream: true, tool_choice: "auto" }
 
 /**
  * A Responses body as the harness's request. The harness's instructions (its leading developer and system messages)
@@ -79,6 +119,11 @@ function wireTools(tools: ArmTool[]): Tool[] {
  */
 export function responsesRequest(body: unknown, prefix: Message[]): WireRequest {
   if (!isRecord(body) || !Array.isArray(body.input)) throw new Error("a Responses body needs an input list")
+  checkFields("request", body, RESPONSES_FIELDS)
+  for (const [key, fixed] of Object.entries(FIXED_SETTINGS)) {
+    if (key in body && body[key] !== fixed) throw new Error(`the H wire can't carry a request's ${key} of ${JSON.stringify(body[key])}`)
+  }
+  if ("tools" in body && !Array.isArray(body.tools)) throw new Error(`the H wire can't carry a request's tools of type ${typeOf(body.tools)}`)
   const leading: string[] = []
   const rest: Message[] = []
   let prefixed = false
@@ -86,6 +131,7 @@ export function responsesRequest(body: unknown, prefix: Message[]): WireRequest 
     const type = typeOf(item)
     const value = item as Record<string, unknown>
     if (type === "reasoning") continue
+    if (ITEM_FIELDS[type]) checkFields(type, value, ITEM_FIELDS[type])
     if (type === "message") {
       const role = String(value.role)
       const text = textOf(value.content)
@@ -102,7 +148,7 @@ export function responsesRequest(body: unknown, prefix: Message[]): WireRequest 
         throw new Error(`the H wire can't carry a message from ${role}`)
       }
     } else if (type === "function_call") {
-      const call = { id: String(value.call_id), type: "function" as const, function: { name: String(value.name), arguments: String(value.arguments) } }
+      const call = { id: stringField(type, value, "call_id"), type: "function" as const, function: { name: stringField(type, value, "name"), arguments: stringField(type, value, "arguments") } }
       const last = rest[rest.length - 1]
       if (last?.role === "assistant") {
         last.tool_calls = [...last.tool_calls ?? [], call]
@@ -110,12 +156,12 @@ export function responsesRequest(body: unknown, prefix: Message[]): WireRequest 
         rest.push({ role: "assistant", content: null, tool_calls: [call] })
       }
     } else if (type === "function_call_output") {
-      rest.push({ role: "tool", tool_call_id: String(value.call_id), content: textOf(value.output) })
+      rest.push({ role: "tool", tool_call_id: stringField(type, value, "call_id"), content: textOf(value.output) })
     } else {
       throw new Error(`the H wire can't carry an input item of type ${type}`)
     }
   }
-  const tools = Array.isArray(body.tools) ? body.tools as unknown[] : []
+  const tools = (body.tools ?? []) as unknown[]
   for (const tool of tools) {
     if (typeOf(tool) !== "function") throw new Error(`the H wire can't carry a tool of type ${typeOf(tool)}`)
     checkToolFields(tool as Record<string, unknown>)
@@ -224,6 +270,9 @@ export type Wire = {
 const errorAnswer = (status: number, message: string): WireAnswer => ({ status, contentType: "application/json", body: JSON.stringify({ error: { message } }) })
 
 export function createWire(input: { runtime: ProviderRuntime; prefix: Message[] }): Wire {
+  // The Anthropic provider rebuilds each tool and drops `strict` and schema combinators (oneOf, allOf, anyOf), so an
+  // arm's tools wouldn't reach the model as sent. The study's providers (Copilot and MiniMax) pass them through.
+  if (input.runtime.id === "anthropic") throw new Error("the H wire can't carry an arm's tools to the anthropic provider")
   const timeline: Array<TraceCall | TraceReply> = []
   const pending = new Map<string, TraceCall>()
   let calls = 0
