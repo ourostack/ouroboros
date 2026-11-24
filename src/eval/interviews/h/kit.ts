@@ -40,7 +40,8 @@ const CODEX: readonly Replacement[] = [
   sentence("You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project led by OpenAI.", "You are a coding agent running in a terminal-based coding assistant."),
   sentence("Within this context, Codex refers to the open-source agentic coding interface (not the old Codex language model built by OpenAI).\n\n", ""),
   ...PATHS,
-  { pattern: /CODEX_HOME/g, with: "AGENT_HOME", tier: "word" },
+  // The variables codex puts in the shell (CODEX_HOME, CODEX_THREAD_ID, CODEX_SESSION_ID, CODEX_CI).
+  { pattern: /CODEX_/g, with: "AGENT_", tier: "word" },
   { pattern: /codex/gi, with: "agent", tier: "word" },
   ...OURO_WORDS,
 ]

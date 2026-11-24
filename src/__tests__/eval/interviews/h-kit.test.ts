@@ -70,6 +70,8 @@ describe("the H kit's replacement lists", () => {
       expect(replace(shown, listOf(arm))).toBe("uid=10001(agent) gid=10001(agent)\n/tmp/agent/AgentBundles/sanctuary.agent\ndrwx------ agent agent /tmp/agent/.cache")
     }
     expect(replace("CODEX_HOME=/tmp/agent/.state codex: error", listOf("codex"))).toBe("AGENT_HOME=/tmp/agent/.state agent: error")
+    // Every variable codex puts in the shell keeps the shape of a variable's name.
+    expect(replace("CODEX_THREAD_ID=t CODEX_SESSION_ID=s CODEX_CI=1", listOf("codex"))).toBe("AGENT_THREAD_ID=t AGENT_SESSION_ID=s AGENT_CI=1")
     expect(replace("TMUX=/tmp/tmux-10001/openhands-1a2b,77,0 ~/.openhands all-hands", listOf("openhands"))).toBe("TMUX=/tmp/tmux-10001/agent-1a2b,77,0 ~/.agent agent")
     expect(replace("an Ouroboros harness", listOf("ouro"))).toBe("an agent harness")
     // The home path is rewritten only as a whole folder name.

@@ -58,15 +58,18 @@ describe("the codex arm's setup", () => {
     // TOML forbids a raw DEL and a lone surrogate's escape, both of which JSON allows.
     expect(codexConfig({ baseUrl: "u", developerInstructions: "a\u007fb\uD800c\uDC00d😀" })).toContain("developer_instructions = \"a\\u007Fb�c�d😀\"")
     expect(toml).toContain("web_search = \"disabled\"")
-    // Every setting the config turns off is a fidelity note, named by its key or its section.
+    // Every setting the config turns off is a fidelity note, named by its own key as a whole word (or its plural); a
+    // section's `enabled` is named by the section's own name, so one note can't stand for a whole section.
     let section = ""
     const off: string[] = []
+    const named = (word: string) => new RegExp(`(?<![\\w.])${word.replace(/\./g, "\\.")}s?(?![\\w])`)
     for (const line of toml.split("\n")) {
       const header = /^\[(.+)\]$/.exec(line)
       if (header) section = header[1]!
       const setting = /^(\w+) = (false|0|"disabled"|"none")$/.exec(line)
       if (setting) off.push(setting[1]!)
-      if (setting && !H_CODEX_FIDELITY.some((note) => note.includes(setting[1]!) || (section !== "" && note.includes(section)))) {
+      const word = setting?.[1] === "enabled" ? section.split(".").at(-1)! : setting?.[1]
+      if (setting && !H_CODEX_FIDELITY.some((note) => named(word!).test(note))) {
         throw new Error(`no fidelity note names ${section ? `[${section}] ` : ""}${setting[1]}`)
       }
     }

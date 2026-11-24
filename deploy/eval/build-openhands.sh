@@ -22,10 +22,18 @@ mkdir -p "$WORK/bin"
 # The uv and the Python the SDK's own agent-server image uses at this commit (openhands-agent-server's Dockerfile):
 # uv 0.13.7 and a uv-managed Python 3.13. `--frozen` installs exactly the locked versions.
 UV_VERSION=0.13.7
-if [ ! -x "$WORK/bin/uv" ] || ! "$WORK/bin/uv" --version | grep -q " $UV_VERSION"; then
+# The SHA-256 sums uv publishes beside each 0.13.7 release tarball.
+case "$(uname -m)" in
+  x86_64) UV_SHA256=c5221ff41b7892bfc223543883600125f6a47fe845093e0f5bdff4f359196d83 ;;
+  aarch64) UV_SHA256=71279f8d3c67241e807b9d8db872d1bf541579fb9f08b7d1eb1682196d1e57dc ;;
+  *) echo "no pinned uv for $(uname -m)" >&2; exit 1 ;;
+esac
+if [ ! -x "$WORK/bin/uv" ] || [ "$("$WORK/bin/uv" --version | cut -d' ' -f2)" != "$UV_VERSION" ]; then
   curl -fsSL "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$(uname -m)-unknown-linux-gnu.tar.gz" -o "$WORK/uv.tar.gz"
+  echo "$UV_SHA256  $WORK/uv.tar.gz" | sha256sum -c -
   tar -xzf "$WORK/uv.tar.gz" -C "$WORK/bin" --strip-components 1
 fi
+[ "$("$WORK/bin/uv" --version | cut -d' ' -f2)" = "$UV_VERSION" ] || { echo "uv is not $UV_VERSION" >&2; exit 1; }
 "$WORK/bin/uv" --version
 
 if [ ! -d "$WORK/sdk-src/.git" ]; then

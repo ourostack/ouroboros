@@ -47,11 +47,10 @@ afterEach(() => {
 })
 
 /** A stand-in supervisor: for each message, posts the given chat bodies to the wire, then reports a status line. */
-function fakeSupervisor(script: Array<{ bodies: unknown[]; line: { status?: string; error?: string } | null }>, started: Array<{ spec: Record<string, unknown>; env: NodeJS.ProcessEnv; cwd: string }>, exit = { code: 0, stderr: "" }) {
+function fakeSupervisor(script: Array<{ bodies: unknown[]; line: { status?: string; error?: string } | null }>, started: Array<{ spec: Record<string, unknown>; env: NodeJS.ProcessEnv; cwd: string }>, exit = { code: 0, stderr: "" }, sent: string[] = []) {
   return (specFile: string, options: { cwd: string; env: NodeJS.ProcessEnv }): Supervisor => {
     const spec = JSON.parse(fs.readFileSync(specFile, "utf8")) as Record<string, unknown>
     started.push({ spec, env: options.env, cwd: options.cwd })
-    const sent: string[] = []
     return {
       send: async (message) => {
         sent.push(message)
@@ -83,7 +82,8 @@ describe("the openhands arm", () => {
         { role: "tool", tool_call_id: "c1", content: "187" },
       ] },
     ]
-    const start = fakeSupervisor([{ bodies: job, line: { status: "finished" } }, { bodies: [{ messages: [{ role: "user", content: "How did it go?" }] }], line: { status: "finished" } }], started)
+    const sent: string[] = []
+    const start = fakeSupervisor([{ bodies: job, line: { status: "finished" } }, { bodies: [{ messages: [{ role: "user", content: "How did it go?" }] }], line: { status: "finished" } }], started, undefined, sent)
     const workdir = path.join(home, "AgentBundles", "sanctuary.agent")
     const result = await openhandsArm({ start, home, workdir })({ turn: TURN, bundle, providerRuntime })
     expect(result).toEqual({
@@ -96,6 +96,8 @@ describe("the openhands arm", () => {
       turns: [{ start: 0, finalReply: "Removed it.", outcome: "settled", calls: 2 }, { start: 2, finalReply: "6", outcome: "settled", calls: 1 }],
     })
     expect(started).toHaveLength(1)
+    // One supervisor got the job and then each follow-up, in order.
+    expect(sent).toStrictEqual([TURN.userText, ...TURN.followUps])
     expect(started[0]!.cwd).toBe(workdir)
     expect(started[0]!.spec).toEqual({ baseUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/v1$/), workdir, systemSuffix: "I am the Butler.\n\nYou are working in environment Z." })
     // PWD keeps the neutral path if the SDK falls back to a plain shell; AI_AGENT keeps the SDK's brand out of the shell.
