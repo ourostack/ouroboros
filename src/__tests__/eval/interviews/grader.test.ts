@@ -86,6 +86,11 @@ describe("the grader", () => {
       { session: "X-3", kind: "job", sent: true, body: "clean" },
     ]
     expect(gradeStudy({ design: sessions, records, requests, reduced: false }).leak).toEqual({ requests: 4, matches: 4, outsideVoid: 1, sessions: ["X-1", "X-2"] })
+    // A provider's encrypted reasoning in a logged body is opaque, so letters in it that spell a brand word are no leak;
+    // a readable field beside it still is.
+    const cipher = (text: string) => JSON.stringify({ messages: [{ role: "assistant", content: text, _reasoning_items: [{ type: "reasoning", encrypted_content: "x9hJJLGPTyhe+OURO=" }] }] })
+    expect(gradeStudy({ design: sessions, records, requests: [{ session: "X-3", kind: "job", sent: true, body: cipher("clean") }], reduced: false }).leak).toEqual({ requests: 1, matches: 0, outsideVoid: 0, sessions: [] })
+    expect(gradeStudy({ design: sessions, records, requests: [{ session: "X-3", kind: "job", sent: true, body: cipher("ask gpt") }], reduced: false }).leak).toEqual({ requests: 1, matches: 1, outsideVoid: 1, sessions: ["X-3"] })
     expect(() => gradeStudy({ design: sessions, records: [records[1]!, records[1]!], requests, reduced: false })).toThrow("session X-2 is in the reports twice")
     expect(gradeStudy({ design: [], records: [], requests: [], reduced: false }).products).toEqual([])
     expect(formatGrade(gradeStudy({ design: [sessions[0]!, sessions[1]!], records: [], requests: [], reduced: false }), false)).toContain("share 0.0%")
