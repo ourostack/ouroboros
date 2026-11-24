@@ -110,7 +110,6 @@ function wireTools(tools: ArmTool[]): Tool[] {
 const RESPONSES_FIELDS = new Set([
   "model", "input", "tools", "stream", "tool_choice", "parallel_tool_calls", "reasoning", "store", "include", "prompt_cache_key", "client_metadata",
 ])
-const FIXED_SETTINGS: Record<string, unknown> = { stream: true, tool_choice: "auto" }
 
 /**
  * A Responses body as the harness's request. The harness's instructions (its leading developer and system messages)
@@ -120,9 +119,8 @@ const FIXED_SETTINGS: Record<string, unknown> = { stream: true, tool_choice: "au
 export function responsesRequest(body: unknown, prefix: Message[]): WireRequest {
   if (!isRecord(body) || !Array.isArray(body.input)) throw new Error("a Responses body needs an input list")
   checkFields("request", body, RESPONSES_FIELDS)
-  for (const [key, fixed] of Object.entries(FIXED_SETTINGS)) {
-    if (key in body && body[key] !== fixed) throw new Error(`the H wire can't carry a request's ${key} of ${JSON.stringify(body[key])}`)
-  }
+  if (body.stream !== true) throw new Error(`the H wire can't carry a request's stream of ${JSON.stringify(body.stream) ?? "undefined"}`)
+  if ("tool_choice" in body && body.tool_choice !== "auto") throw new Error(`the H wire can't carry a request's tool_choice of ${JSON.stringify(body.tool_choice)}`)
   if ("tools" in body && !Array.isArray(body.tools)) throw new Error(`the H wire can't carry a request's tools of type ${typeOf(body.tools)}`)
   const leading: string[] = []
   const rest: Message[] = []
@@ -131,7 +129,7 @@ export function responsesRequest(body: unknown, prefix: Message[]): WireRequest 
     const type = typeOf(item)
     const value = item as Record<string, unknown>
     if (type === "reasoning") continue
-    if (ITEM_FIELDS[type]) checkFields(type, value, ITEM_FIELDS[type])
+    if (Object.hasOwn(ITEM_FIELDS, type)) checkFields(type, value, ITEM_FIELDS[type]!)
     if (type === "message") {
       const role = String(value.role)
       const text = textOf(value.content)
