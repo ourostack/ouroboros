@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest"
 import type { ProviderRuntime, ProviderTurnRequest } from "../../../heart/core"
 import type { TurnResult } from "../../../heart/streaming"
+import { toResponsesTools } from "../../../heart/streaming"
 import { createWire, responsesEvents, responsesRequest, serveWire, sse } from "../../../eval/interviews/guest/h/wire"
+import codexTools from "./fixtures/codex-tools-227fa4e.json"
 
 const PREFIX = [{ role: "user" as const, content: "Morning." }, { role: "assistant" as const, content: "Morning, Ari." }]
 
@@ -77,6 +79,10 @@ describe("the H wire's Responses translation", () => {
     expect(() => responsesRequest({ input: [{ type: "message", role: "critic", content: "x" }] }, [])).toThrow("the H wire can't carry a message from critic")
     expect(() => responsesRequest({ input: [{ type: "message", role: "user", content: [{ type: "input_image", image_url: "x" }] }] }, [])).toThrow("the H wire can't carry content of type input_image")
     expect(() => responsesRequest({ input: [{ type: "function_call_output", call_id: "c", output: 3 }] }, [])).toThrow("the H wire can't carry content of type number")
+    // Request fields outside what codex sends would be dropped, so they are refused by name; instructions among them,
+    // since the wire reads the harness's instructions from its developer messages only.
+    expect(() => responsesRequest({ input: [], instructions: "x" }, [])).toThrow("the H wire can't carry a request's instructions")
+    expect(() => responsesRequest({ input: [], previous_response_id: "r" }, [])).toThrow("the H wire can't carry a request's previous_response_id")
     expect(() => responsesRequest({}, [])).toThrow("a Responses body needs an input list")
     expect(() => responsesRequest(null, [])).toThrow("a Responses body needs an input list")
     expect(() => responsesRequest({ input: [null] }, [])).toThrow("the H wire can't carry an input item of type null")
@@ -178,5 +184,19 @@ describe("the H wire", () => {
     } finally {
       await served.close()
     }
+  })
+})
+
+// codexTools is the tool list codex 227fa4e sent in a scripted run, captured in a container with no network
+// whose only endpoint was a local stub; the bundle folder in it is the arm's real one.
+describe("codex's captured tools", () => {
+  it("reach the model exactly as codex sent them, on both of the host's paths", () => {
+    expect(codexTools.map((tool) => tool.name)).toEqual(["exec_command", "write_stdin", "request_user_input", "get_goal", "create_goal", "update_goal"])
+    const { activeTools } = responsesRequest({ input: [], tools: codexTools }, [])
+    // A chat provider sends activeTools as they are: same names, words, schemas and strict flags, nothing added.
+    expect(activeTools).toStrictEqual(codexTools.map(({ type, ...fields }) => ({ type, function: fields })))
+    // A Responses provider turns them back into Responses tools; the result is codex's own list.
+    expect(toResponsesTools(activeTools as Parameters<typeof toResponsesTools>[0])).toStrictEqual(codexTools)
+    expect(JSON.stringify(activeTools)).not.toContain("MCP tool")
   })
 })

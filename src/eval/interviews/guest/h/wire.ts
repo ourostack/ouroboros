@@ -73,12 +73,21 @@ function wireTools(tools: ArmTool[]): Tool[] {
 }
 
 /**
+ * The request fields codex 227fa4e sends. Its settings (model, tool_choice, reasoning and the rest) are left to the
+ * host's runtime, as for the ouro arm; any other field is refused rather than dropped.
+ */
+const RESPONSES_FIELDS = new Set([
+  "model", "input", "tools", "stream", "tool_choice", "parallel_tool_calls", "reasoning", "store", "include", "prompt_cache_key", "client_metadata",
+])
+
+/**
  * A Responses body as the harness's request. The harness's instructions (its leading developer and system messages)
  * become the one system message; the case's conversation goes before the first user message; a call joins the
  * assistant message before it, and each output becomes its tool result. Reasoning items are not sent back.
  */
 export function responsesRequest(body: unknown, prefix: Message[]): WireRequest {
   if (!isRecord(body) || !Array.isArray(body.input)) throw new Error("a Responses body needs an input list")
+  for (const key of Object.keys(body)) if (!RESPONSES_FIELDS.has(key)) throw new Error(`the H wire can't carry a request's ${key}`)
   const leading: string[] = []
   const rest: Message[] = []
   let prefixed = false
