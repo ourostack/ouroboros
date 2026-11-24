@@ -42,7 +42,7 @@ function ago(seenAt: string, nowMs: number): string {
 }
 
 function staleNote(seenAt: string, nowMs: number): string {
-  return isStaleSeenAt(seenAt, nowMs) ? " [STALE: this record is old, so its sessions, counts and ownership may be out of date; verify the machine is reachable and check bundle sync before routing work to it]" : ""
+  return isStaleSeenAt(seenAt, nowMs) ? " [STALE: this record is old, so its sessions, counts and ownership may be out of date; its newest data is the bundle's presence/<machineId>.json, which only arrives through git sync, so run `ouro presence status` and check `ouro status` sync health before routing work to it]" : ""
 }
 
 function sessionCounts(record: PeerRecord | undefined): string {
@@ -50,6 +50,17 @@ function sessionCounts(record: PeerRecord | undefined): string {
   if (!counts) return ""
   const parts = Object.entries(counts).filter(([, count]) => typeof count === "number").map(([state, count]) => `${count} ${state}`)
   return parts.length > 0 ? `; copilot app sessions: ${parts.join(", ")}` : ""
+}
+
+const PEER_SESSIONS_SHOWN = 8
+
+/** The Copilot app sessions a peer last published, so work running there is visible without reaching the machine. */
+function peerSessionLines(record: PeerRecord | undefined, nowMs: number): string[] {
+  const sessions = record?.appSessions?.sessions ?? []
+  if (!record?.appSessions || sessions.length === 0) return []
+  const shown = sessions.slice(0, PEER_SESSIONS_SHOWN).map((session) => `  - ${session.name ?? session.id}${session.state ? ` (${session.state})` : ""}${session.desk?.track ? `, desk card ${session.desk.track}/${session.desk.slug ?? "?"}${session.desk.status ? ` [${session.desk.status}]` : ""}` : ""}`)
+  const more = sessions.length > shown.length ? [`  - and ${sessions.length - shown.length} more`] : []
+  return [`  its copilot app sessions as of ${ago(record.appSessions.at, nowMs)}:`, ...shown, ...more]
 }
 
 /** Senses every presence runs for its own machine. */
@@ -74,6 +85,7 @@ export function renderWhereAmI(presence: Presence | null, self: MachineInfo, now
       const facts = [peer.role, record?.os, record?.location].filter(Boolean).join(", ")
       const seen = record ? `last seen ${ago(record.seenAt, nowMs)} on ${record.version}${sessionCounts(record)}${staleNote(record.seenAt, nowMs)}` : "not seen yet (no presence record)"
       lines.push(`- ${peer.name} (${facts}): ${seen}`)
+      lines.push(...peerSessionLines(record, nowMs))
     }
   }
   // Only senses agent.json turns on: a disabled sense runs on no machine, whatever the roster's owners say.

@@ -208,6 +208,23 @@ describe("drainAndSendPendingTeams", () => {
     expect(vi.mocked(emitNervesEvent)).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.teams_pending_expired" }))
   })
 
+  it("gives a pending file the same delivery id every time it is sent, so the session records it once", async () => {
+    const friendStore = { get: vi.fn().mockResolvedValue(makeFriend()), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn(), hasAnyFriends: vi.fn(), listAll: vi.fn() }
+    const botApi = makeBotApi()
+    const teams = await loadTeams()
+    outbound.record.mockClear()
+    const content = { from: "testagent", friendId: "friend-uuid-1", channel: "teams", key: "session", content: "heads up", timestamp: Date.now() }
+    const file = writePendingFile(pendingRoot, "friend-uuid-1", "session", content)
+    const body = fs.readFileSync(file, "utf-8")
+    await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
+    fs.writeFileSync(file, body)
+    await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
+    const ids = (outbound.record.mock.calls as unknown as Array<[{ deliveryId: string }]>).map(([input]) => input.deliveryId)
+    expect(ids).toHaveLength(2)
+    expect(ids[0]).toMatch(/^pending:[0-9a-f]{32}$/)
+    expect(ids[1]).toBe(ids[0])
+  })
+
   it("deletes the pending file after successful send", async () => {
     const friend = makeFriend()
     const friendStore = {
