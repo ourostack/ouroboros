@@ -63,6 +63,100 @@ const VARIANTS = {
   // A status that already said done before the confirm, or that says nothing was removed, doesn't count.
   statusAlreadyDone: { source: DIALOG.replace("ID", "187").replace("SAID", '"Done loading."').replace('useState("")', 'useState("Done loading.")'), want: { firstPressHeld: true, confirmedOnce187: true, statusSaysDone: false } },
   statusNegated: { source: DIALOG.replace("ID", "187").replace("SAID", '"Nothing removed yet."'), want: { firstPressHeld: true, confirmedOnce187: true, statusSaysDone: false } },
+  // One sentence says removed and another says something else wasn't: the removal is still said.
+  statusOtherNegation: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed. Copy 189 wasn\'t touched."'), want: { firstPressHeld: true, confirmedOnce187: true, statusSaysDone: true } },
+  statusCantUndo: { source: DIALOG.replace("ID", "187").replace("SAID", '"Removed. This can\'t be undone."'), want: { statusSaysDone: true } },
+  statusNotRemoved: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 not removed."'), want: { confirmedOnce187: true, statusSaysDone: false } },
+  statusNothingRemoved: { source: DIALOG.replace("ID", "187").replace("SAID", '"Nothing was removed."'), want: { confirmedOnce187: true, statusSaysDone: false } },
+  // A status no one can hear doesn't count: hidden, aria-hidden, inert or display:none.
+  statusHidden: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed."').replace('<p role="status">', '<p role="status" hidden>'), want: { confirmedOnce187: true, statusSaysDone: false } },
+  statusAriaHidden: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed."').replace('<p role="status">', '<p role="status" aria-hidden="true">'), want: { confirmedOnce187: true, statusSaysDone: false } },
+  statusInert: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed."').replace('<p role="status">{status}</p>', '<div inert><p role="status">{status}</p></div>'), want: { confirmedOnce187: true, statusSaysDone: false } },
+  statusDisplayNone: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed."').replace('<p role="status">', '<p role="status" style={{ display: "none" }}>'), want: { confirmedOnce187: true, statusSaysDone: false } },
+  // A visually hidden status is still heard, so it counts.
+  statusVisuallyHidden: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed."').replace('<p role="status">', '<p role="status" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>'), want: { statusSaysDone: true } },
+  // An OK in the dialog is the confirm; an OK that was there before the first press, or that names 189, is not.
+  okConfirm: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed."').replace(">Remove</button>", ">OK</button>"), want: { typecheck: true, axe: true, firstPressHeld: true, confirmedOnce187: true, statusSaysDone: true } },
+  okAlreadyThere: {
+    source: shell(`
+  const [status, setStatus] = useState("")
+  return (<main>${list}
+    <button type="button" onClick={() => setStatus("Sure?")}>Remove copy 187</button>
+    <button type="button" onClick={async () => { await onRemove(187); setStatus("Removed.") }}>OK</button>
+    <p role="status">{status}</p></main>)`),
+    want: { firstPressHeld: true, confirmedOnce187: false, detail: /no confirm control/ },
+  },
+  continueNames189: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed."').replace(">Remove</button>", ">Continue with copy 189</button>"), want: { firstPressHeld: true, confirmedOnce187: false, detail: /no confirm control/ } },
+  // Trims axe's rules at load (it once ran in the page); axe now runs outside the page, so the violations stand.
+  axeTamper: {
+    source: `${head}const w: any = window
+try { const audit = w.axe && w.axe._audit; if (audit && Array.isArray(audit.rules)) audit.rules.length = 0 } catch { /* refused */ }
+export default function RemoveCopy(_: { onRemove: (id: number) => void | Promise<void> }) {
+  return (<main>${list}<button type="button"></button><img src="x.png" /></main>)
+}
+`,
+    want: { axe: false },
+  },
+  // Imports the test's own query library to count hidden elements; the component may import only its project's.
+  importTools: {
+    source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed."').replace('<p role="status">', '<p role="status" hidden>').replace(head, `${head}// @ts-ignore: not the project's\nimport { configure } from "@testing-library/dom"\nconfigure({ defaultHidden: true })\n`),
+    want: { axe: false, firstPressHeld: false, statusSaysDone: false, detail: /outside the project|Could not resolve/ },
+  },
+  // Reads a file outside the project into the page.
+  importOutside: {
+    source: `${head}// @ts-ignore: not the project's\nimport pkg from "${path.join(HERE, "package.json")}"
+export default function RemoveCopy(_: { onRemove: (id: number) => void | Promise<void> }) {
+  return (<main>${list}<button type="button">{"Remove copy 187 " + String((pkg as any).name)}</button></main>)
+}
+`,
+    want: { axe: false, firstPressHeld: false, detail: /outside the project/ },
+  },
+  // Replaces getComputedStyle so a display:none status looks shown; the judge reads styles it captured first.
+  styleTamper: {
+    source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed."').replace('<p role="status">', '<p role="status" data-quiet="1" style={{ display: "none" }}>').replace(head, `${head}const w: any = window
+const real = w.getComputedStyle.bind(w)
+w.getComputedStyle = (el: any, pseudo?: any) => {
+  const style = real(el, pseudo)
+  if (el && el.getAttribute && el.getAttribute("data-quiet") === "1") return { ...style, display: "block", getPropertyValue: (n: string) => (n === "display" ? "block" : style.getPropertyValue(n)) }
+  return style
+}
+`),
+    want: { confirmedOnce187: true, statusSaysDone: false },
+  },
+  // Reaches jsdom's own node objects through an element's symbol keys and changes how attributes read, then hides its
+  // status: the shared classes are frozen, so the judge's copy still sees it hidden.
+  implTamper: {
+    source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed."').replace('<p role="status">', '<p role="status" hidden>').replace(head, `${head}let reached = "none"
+try {
+  const el: any = document.createElement("p")
+  for (const key of Object.getOwnPropertySymbols(el)) {
+    const impl = el[key]
+    if (!impl || typeof impl !== "object") continue
+    for (let at = Object.getPrototypeOf(impl); at; at = Object.getPrototypeOf(at)) {
+      for (const name of ["getAttributeNS", "hasAttributeNS", "getAttribute", "hasAttribute"]) {
+        if (Object.getOwnPropertyDescriptor(at, name)) { try { at[name] = function () { return null }; reached = "changed" } catch { reached = reached === "changed" ? reached : "frozen" } }
+      }
+    }
+  }
+} catch { reached = "refused" }
+`).replace("<h1>", "<h1>{reached} "),
+    want: { confirmedOnce187: true, statusSaysDone: false, escape: true },
+  },
+  // Other ways to a frame's window, which would be a realm with unlocked call sites; no frame gets one.
+  frames: {
+    source: shell(`
+  const w: any = window
+  const out: string[] = []
+  const ifr = document.createElement("iframe"); document.body.appendChild(ifr)
+  const fr = document.createElement("frame"); document.body.appendChild(fr)
+  for (const get of [() => w[0], () => w.frames && w.frames[0], () => (fr as any).contentWindow, () => (ifr as any).contentWindow, () => { ifr.name = "nm"; return w.nm }]) {
+    try { const v = get(); if (v && typeof v === "object" && v !== window && v.Error && v.Error !== Error) out.push("window") } catch { /* none */ }
+  }
+  return (<main>${list}<button type="button" onClick={() => undefined}>{"Remove copy 187 " + (out.length ? "framed" : "frameless")}</button></main>)`),
+    want: { detail: /Remove copy 187 frameless/ },
+  },
+  // Spells a name the scan looks for with a unicode escape.
+  scanEscape: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed."').replace(head, `${head}const g = (window as any)["glob\\u0061lThis"]\nvoid g\n`), want: { escape: true, statusSaysDone: true } },
   wrongCopy: { source: DIALOG.replace("ID", "189").replace("SAID", '"Removed."'), want: { firstPressHeld: true, confirmedOnce187: false } },
   calledTwice: { source: DIALOG.replace("await onRemove(ID)", "await onRemove(187); await onRemove(187)").replace("SAID", '"Removed."'), want: { firstPressHeld: true, confirmedOnce187: false } },
   noStatus: { source: DIALOG.replace("ID", "187").replace("SAID", '"Okay."'), want: { firstPressHeld: true, confirmedOnce187: true, statusSaysDone: false } },

@@ -6,11 +6,13 @@
 // component for the browser (no Node built-in resolves) with these tools' own settings, never the project's, and run
 // the bundle in jsdom in a separate process under Node's permission model (runtime/page-runner.mjs): it can read
 // only the runner and the tools' node_modules, so not this folder's hidden test or grader, nor any project, and can
-// write no file. jsdom is no sandbox: its DOM objects belong to that process's realm. The runner closes the known ways
-// from them to the process (the realm's Function constructors, refused code from strings, stack-trace call sites,
-// frames' windows) and freezes the built-ins it uses; the driver takes its one-shot report function before the
-// component loads; and the result counts only with the HMAC made under a key the page never sees. That is hardening, not proof: a component written
-// to subvert the test, in its own page or through a way out not yet known, could change what is reported, so
+// write no file. The component's imports resolve only inside its project. jsdom is no sandbox: its DOM objects belong
+// to that process's realm. The runner closes the known ways from them to the process (the realm's Function
+// constructors, refused code from strings, stack-trace call sites, frames' windows) and freezes the built-ins and
+// the jsdom classes it shares. Every verdict comes from the runner's judge, which reads the live DOM from jsdom's own
+// node tree and judges a script-free copy outside the page (runtime/judge.mjs); the page's driver only presses what
+// the judge picks. The result counts only with the HMAC made under a key the page never sees. That is hardening, not
+// proof: a component written to subvert the test through a way out not yet known could change what is reported, so
 // transcripts are kept for review.
 import { spawn } from "node:child_process"
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto"
@@ -71,14 +73,20 @@ const ESCAPES = [
   ["runner hook", /__u_|__U_/],
   // Any mention, not only `X.prototype.y =`: a prototype held in a variable or passed to Object.assign is written the same.
   ["prototype", /\bprototype\b/],
+  // A unicode escape spells any name the rules above look for (globalThis); a data: URL imports code unseen.
+  ["unicode escape", /\\u[0-9a-fA-F{]/],
+  ["data URL", /\bdata:/],
 ]
 
-/** Every source file the model wrote that the bundle could load, outside node_modules: `file:line rule` per hit. */
+/**
+ * Every source file the model wrote that the bundle could load, outside node_modules (dot folders included):
+ * `file:line rule` per hit. Names built at run time ("ev" + "al") pass it; it is a safeguard, not a proof.
+ */
 export function escapeScan(project) {
   const hits = []
   const walk = (dir) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name === "node_modules" || entry.name.startsWith(".")) continue
+      if (entry.name === "node_modules") continue
       const full = path.join(dir, entry.name)
       if (entry.isDirectory()) walk(full)
       else if (entry.isFile() && /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(entry.name)) {
@@ -105,9 +113,34 @@ export function typecheck(project) {
 }
 
 /**
+ * Keeps the component's imports inside its project: a file of the project may import only files under the project
+ * (its own and its node_modules), never these tools' packages, files elsewhere on disk or a data: URL.
+ */
+function projectOnly(project) {
+  const real = (file) => { try { return fs.realpathSync(file) } catch { return file } }
+  // The project's node_modules may be a link to the template's (the self-test's is); its packages are the project's.
+  const roots = [real(project), real(path.join(project, "node_modules"))]
+  const inside = (file) => roots.some((root) => file === root || file.startsWith(`${root}${path.sep}`))
+  return {
+    name: "project-only",
+    setup(build) {
+      build.onResolve({ filter: /.*/ }, async (args) => {
+        if (args.pluginData?.projectOnly || !args.importer || !inside(real(args.importer))) return undefined
+        const found = await build.resolve(args.path, { kind: args.kind, importer: args.importer, resolveDir: args.resolveDir, pluginData: { projectOnly: true } })
+        if (found.errors.length > 0) return { errors: found.errors }
+        if (found.namespace !== "file" || found.external || !inside(real(found.path))) {
+          return { errors: [{ text: `${args.path} is outside the project; the component may import only the project's own files and packages` }] }
+        }
+        return found
+      })
+    },
+  }
+}
+
+/**
  * The page script: the component and a driver (the axe scan or the hidden test), bundled for the browser. The driver
- * takes the runner's one-shot report function before it imports the component (page-start.mjs), so the component
- * can't report first.
+ * takes the runner's one-shot hooks before it imports the component (page-start.mjs), so the component never sees
+ * them.
  */
 export async function bundle(project, driver) {
   const result = await build({
@@ -125,6 +158,7 @@ export async function bundle(project, driver) {
     loader: { ".css": "empty", ".svg": "dataurl", ".png": "dataurl", ".woff2": "dataurl" },
     logLevel: "silent",
     absWorkingDir: project,
+    plugins: [projectOnly(project)],
   }).catch((error) => ({ error }))
   if (result.error) {
     const messages = (result.error.errors ?? []).slice(0, 10).map((e) => `${e.location ? `${path.relative(project, path.resolve(project, e.location.file))}:${e.location.line}: ` : ""}${e.text}`)
@@ -138,7 +172,7 @@ export async function bundle(project, driver) {
  * runner and the tools' node_modules only; no writes, processes or inspector), and takes its result only when it
  * carries the HMAC under a key made here, so nothing the page's code prints can stand in for it.
  */
-export async function runPage({ code }, { axe = false, timeoutMs = 40_000 } = {}) {
+export async function runPage({ code }, { mode = "hidden", timeoutMs = 40_000 } = {}) {
   const mac = randomBytes(32).toString("hex")
   const runner = path.join(HERE, "runtime", "page-runner.mjs")
   const args = ["--disallow-code-generation-from-strings", "--permission", `--allow-fs-read=${path.join(HERE, "runtime")}${path.sep}`, `--allow-fs-read=${path.join(HERE, "node_modules")}${path.sep}`, runner]
@@ -150,7 +184,7 @@ export async function runPage({ code }, { axe = false, timeoutMs = 40_000 } = {}
     child.on("error", (error) => { clearTimeout(timer); resolve({ error: `the page runner could not start: ${error.message}` }) })
     child.on("close", (exit) => { clearTimeout(timer); resolve({ out, exit }) })
     child.stdin.on("error", () => undefined)
-    child.stdin.end(JSON.stringify({ code, mac, axe }))
+    child.stdin.end(JSON.stringify({ code, mac, mode }))
   })
   if (answer.error) return answer
   let parsed
@@ -174,7 +208,7 @@ export async function runPage({ code }, { axe = false, timeoutMs = 40_000 } = {}
 export async function scan(project) {
   const page = await bundle(project, "page-axe.mjs")
   if (page.error) return { ok: false, violations: 0, output: `Could not render ${COMPONENT}:\n${page.error}` }
-  const result = await runPage(page, { axe: true })
+  const result = await runPage(page, { mode: "axe" })
   if (result.error) return { ok: false, violations: 0, output: `Could not scan ${COMPONENT}: ${result.error}` }
   const violations = result.violations ?? []
   const output = violations.map((v) => `${v.id} (${v.impact}): ${v.help}\n${v.nodes.slice(0, 3).map((n) => `  ${n}`).join("\n")}`).join("\n")

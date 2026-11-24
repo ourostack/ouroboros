@@ -13,7 +13,8 @@ pnpm_at() { version=$1; shift; npm exec --yes "pnpm@$version" -- "$@"; }
 rm -rf /work/out/u-tools
 cp -r /build/tools /work/out/u-tools
 cd /work/out/u-tools
-if [ -f package-lock.json ]; then npm ci --no-audit --no-fund --loglevel=error; else npm install --no-audit --no-fund --loglevel=error; fi
+[ -f package-lock.json ] || { echo "the checking tools have no lockfile" >&2; exit 1; }
+npm ci --no-audit --no-fund --loglevel=error
 cp package-lock.json "$R/u-tools-package-lock.json"
 TOOLS=/work/out/u-tools/node_modules
 
