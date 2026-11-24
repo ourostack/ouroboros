@@ -13,8 +13,8 @@ import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
 import {
   completeHabitRun,
   createHabitSessionPaths,
-  filterHabitToolsForEnvelope,
   normalizeHabitPermissionEnvelope,
+  noteHabitRunBlocked,
 } from "../heart/habits/habit-session"
 import {
   createHabitRunId,
@@ -24,11 +24,8 @@ import {
 import { readHabitSessionSummary } from "../heart/habits/habit-session-summary"
 import { FileFriendStore } from "@ouro.bot/friends"
 import type { UsageData } from "../mind/context"
-import { baseToolDefinitions, type HabitSessionToolContext, type ToolDefinition, type ToolRiskProfile } from "../repertoire/tools-base"
-import { surfaceToolDefinition } from "../repertoire/tools-surface"
-import { riskProfileForTool } from "../repertoire/tools"
+import type { HabitSessionToolContext } from "../repertoire/tools-base"
 import {
-  RSVP_HABIT_ALLOWED_TOOLS,
   isRsvpHabitName,
   rsvpHabitRuntimePolicy,
   type RsvpHabitRuntimePolicy,
@@ -41,7 +38,7 @@ import {
   usageMetadataFromUsageData,
   type RunLedgerLifecycle,
 } from "../heart/run-ledger"
-import { recordAutonomyFailure, reserveAutonomyBudget, resolveAutonomyBudgetPolicy, type AutonomyBudgetDecision, type AutonomyStormInput } from "../heart/autonomy-budget"
+import { recordAutonomyFailure, reserveAutonomyBudget, type AutonomyBudgetDecision, type AutonomyStormInput } from "../heart/autonomy-budget"
 import { privateRuntimeHabitRejectionReason } from "./habit-lifecycle-guard"
 
 export type PrivateRuntimeWorkerReason = "boot" | "habit" | "instinct" | "await"
@@ -132,7 +129,6 @@ interface PreparedHabitRun {
   priorSessionSummary?: PriorHabitSessionSummaryInfo
   paths: ReturnType<typeof createHabitSessionPaths>
   permissionEnvelope: HabitRunReceipt["permissionEnvelope"]
-  toolPolicy: HabitRunReceipt["toolPolicy"]
   rsvpPolicy?: RsvpHabitRuntimePolicy
   blockedReason?: string
   friendStore: FileFriendStore
@@ -225,35 +221,10 @@ function recordHabitRunLedger(
   }
 }
 
-function reserveHabitAutonomyBudget(habitRun: PreparedHabitRun, nowIso: string): AutonomyBudgetDecision {
-  const target: Record<string, unknown> = {
-    habitName: habitRun.habit.name,
-    runId: habitRun.runId,
-    trigger: habitRun.trigger,
-    operationId: habitRun.operationId,
-  }
-  if (habitRun.rsvpPolicy) {
-    target.rsvpSnapshotRef = habitRun.rsvpPolicy.snapshotRef
-    target.rsvpBudgetRef = habitRun.rsvpPolicy.budgetRef
-    target.rsvpIdempotencyRef = habitRun.rsvpPolicy.idempotencyRef
-  }
-  const agentName = getAgentName()
-  return reserveAutonomyBudget(habitRun.agentRoot, {
-    agent: agentName,
-    triggerType: "habit",
-    sourceKind: "private-runtime",
-    senseOrHabit: habitRun.habit.name,
-    target,
-    idempotencyKey: `habit:${habitRun.habit.name}:${habitRun.runId}`,
-    now: nowIso,
-  }, resolveAutonomyBudgetPolicy(habitRun.agentRoot, agentName))
-}
-
 /**
- * External-event turns are paid model work, so they draw on their own daily allowance (the agent's
- * habitPaidTurnsPerDay, counted under the "external-events" name so a busy event day cannot starve a
- * habit) and share one storm breaker: three failed event turns within ten minutes pause event turns
- * for thirty minutes.
+ * External-event turns are paid model work, so they count against the agent's shared proactive
+ * allowance and share one storm breaker: three failed event turns within ten minutes pause event
+ * turns for thirty minutes. Habits draw on no allowance of their own: their cadence is their pace.
  */
 const EXTERNAL_EVENT_BUDGET_NAME = "external-events"
 
@@ -289,12 +260,12 @@ function reserveExternalEventAutonomyBudget(event: ExternalEventLeaseContext, no
     idempotencyKey: `event:${event.recordPath}:${event.generation}:${event.claimOwner}`,
     now: nowIso,
     storm: externalEventStorm(agentName),
-  }, resolveAutonomyBudgetPolicy(agentRoot, agentName))
+  })
 }
 
 function recordExternalEventTurnFailure(nowIso: string): void {
   const agentRoot = getAgentRoot()
-  recordAutonomyFailure(agentRoot, { ...externalEventStorm(getAgentName()), occurredAt: nowIso }, resolveAutonomyBudgetPolicy(agentRoot, getAgentName()))
+  recordAutonomyFailure(agentRoot, { ...externalEventStorm(getAgentName()), occurredAt: nowIso })
 }
 
 /**
@@ -440,13 +411,6 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
   const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
   const permissionEnvelope = await normalizeHabitPermissionEnvelope(habit, { agentRoot, friendStore })
   const rsvpPolicy = habit.rsvp ? rsvpHabitRuntimePolicy(habit.rsvp) : undefined
-  const requestedTools = blockedReason ? [] : habit.rsvp ? [...RSVP_HABIT_ALLOWED_TOOLS] : habit.tools ?? null
-  const toolPolicy = filterHabitToolsForEnvelope(
-    [...baseToolDefinitions, surfaceToolDefinition],
-    requestedTools,
-    permissionEnvelope,
-    riskProfileForHabitPolicy,
-  )
   return {
     agentRoot,
     habit,
@@ -457,7 +421,6 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
     priorSessionSummary,
     paths,
     permissionEnvelope,
-    toolPolicy,
     ...(rsvpPolicy ? { rsvpPolicy } : {}),
     ...(blockedReason ? { blockedReason } : {}),
     friendStore,
@@ -466,11 +429,6 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
     producedRefs: [],
     surfaceAttempts: [],
   }
-}
-
-function riskProfileForHabitPolicy(definition: ToolDefinition, name: string): ToolRiskProfile {
-  const probeArgs: Record<string, string> = name === "shell" ? { command: "touch /tmp/habit-policy-probe" } : {}
-  return riskProfileForTool(definition, name, probeArgs)
 }
 
 function readPriorSessionSummary(agentRoot: string, operationId: string | null): PriorHabitSessionSummaryInfo | undefined {
@@ -527,12 +485,12 @@ export function createPrivateRuntimeWorker(
       endedAt,
       operationId: habitRun.operationId,
       permissionEnvelope: habitRun.permissionEnvelope,
-      toolPolicy: habitRun.toolPolicy,
       producedRefs: habitRun.producedRefs,
       surfaceAttempts: habitRun.surfaceAttempts,
       errors: habitRun.errors,
       summarySnapshot: deriveHabitSummarySnapshot(habitRun),
     })
+    noteHabitRunBlocked(habitRun.agentRoot, getAgentName(), habitRun.habit.name, habitRun.blockedReason ?? null)
   }
 
   function clearHeartbeatRestShield(): void {
@@ -692,9 +650,7 @@ export function createPrivateRuntimeWorker(
         let blockedAutonomyTurn = false
         try {
           const turnStartedAt = new Date(nowSource()).toISOString()
-          const autonomyDecision = currentHabitRun && !currentHabitRun.blockedReason
-            ? reserveHabitAutonomyBudget(currentHabitRun, turnStartedAt)
-            : currentExternalEvent
+          const autonomyDecision = currentExternalEvent
             ? reserveExternalEventAutonomyBudget(currentExternalEvent, turnStartedAt)
             : null
           if (currentHabitRun) recordHabitStartIfNeeded(currentHabitRun)
@@ -739,7 +695,6 @@ export function createPrivateRuntimeWorker(
                     sessionPath: currentHabitRun.paths.sessionPath,
                     pendingDir: currentHabitRun.paths.pendingDir,
                     permissionEnvelope: currentHabitRun.permissionEnvelope,
-                    toolPolicy: currentHabitRun.toolPolicy,
                     ...(currentHabitRun.rsvpPolicy ? { rsvpPolicy: currentHabitRun.rsvpPolicy } : {}),
                     friendStore: currentHabitRun.friendStore,
                     recordProducedRef: (ref) => { currentHabitRun.producedRefs.push(ref) },

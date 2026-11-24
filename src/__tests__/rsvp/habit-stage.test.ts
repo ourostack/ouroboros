@@ -64,7 +64,6 @@ describe("RSVP native habit staging", () => {
         title: "RSVP Updates",
         cadence: "0 10 * * *",
         status: "active",
-        tools: ["rsvp_query", "rsvp_summary"],
         continuity: { mode: "stateful" },
         rsvp: {
           policyVersion: "rsvp-habit/v1",
@@ -133,7 +132,7 @@ describe("RSVP native habit staging", () => {
       expect(result.mode).toBe("live")
       expect(content).toMatch(/created: \d{4}-\d{2}-\d{2}T/)
       expect(content).toContain("mode: live")
-      expect(content).toContain("tools: [rsvp_query, rsvp_summary]")
+      expect(content).not.toContain("tools:")
     } finally {
       tmp.cleanup()
     }

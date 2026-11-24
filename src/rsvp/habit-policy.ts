@@ -2,7 +2,6 @@ import { emitNervesEvent } from "../nerves/runtime"
 
 export const RSVP_HABIT_POLICY_VERSION = "rsvp-habit/v1" as const
 export const DEFAULT_RSVP_HABIT_NAME = "rsvp-updates" as const
-export const RSVP_HABIT_ALLOWED_TOOLS = ["rsvp_query", "rsvp_summary"] as const
 
 export type RsvpHabitMode = "shadow" | "live"
 export type RsvpHabitSense = "bluebubbles"

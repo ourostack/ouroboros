@@ -927,12 +927,6 @@ describe("Arc flight recorder", () => {
         deniedTools: [],
         warnings: [],
       },
-      toolPolicy: {
-        requestedTools: null,
-        grantedTools: ["read_file", "surface"],
-        deniedTools: ["shell"],
-        outwardMessagingAllowed: true,
-      },
       producedRefs: [{ kind: "surface", locator: "state/pending/ari/cli/main" }],
       surfaceAttempts: [{
         recipient: "ari",
@@ -985,7 +979,7 @@ describe("Arc flight recorder", () => {
       errors: ["legacy warning"],
     }), "utf-8")
     fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "wrong-envelope.json"), JSON.stringify({ ...first, runId: "wrong-envelope", permissionEnvelope: [] }), "utf-8")
-    fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "wrong-policy.json"), JSON.stringify({ ...first, runId: "wrong-policy", toolPolicy: [] }), "utf-8")
+    fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "old-tool-policy.json"), JSON.stringify({ ...first, runId: "old-tool-policy", toolPolicy: { requestedTools: null, grantedTools: [], deniedTools: ["shell"], outwardMessagingAllowed: false } }), "utf-8")
     fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "wrong-operation-id.json"), JSON.stringify({ ...first, runId: "wrong-operation-id", operationId: 42 }), "utf-8")
     fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "missing-operation-id.json"), JSON.stringify({ ...first, runId: "missing-operation-id", operationId: undefined }), "utf-8")
     fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "wrong-attempts.json"), JSON.stringify({ ...first, runId: "wrong-attempts", surfaceAttempts: {} }), "utf-8")
@@ -1019,7 +1013,8 @@ describe("Arc flight recorder", () => {
       errors: ["legacy warning"],
     })
     expect(recorder.readHabitRunReceipt(agentRoot, "wrong-envelope")).toBeNull()
-    expect(recorder.readHabitRunReceipt(agentRoot, "wrong-policy")).toBeNull()
+    // Receipts written before habits lost their tool policy still read.
+    expect(recorder.readHabitRunReceipt(agentRoot, "old-tool-policy")).toMatchObject({ runId: "old-tool-policy" })
     expect(recorder.readHabitRunReceipt(agentRoot, "wrong-operation-id")).toBeNull()
     expect(recorder.readHabitRunReceipt(agentRoot, "missing-operation-id")).toMatchObject({
       runId: "missing-operation-id",
@@ -1030,9 +1025,9 @@ describe("Arc flight recorder", () => {
     expect(recorder.readHabitRunReceipt(agentRoot, "wrong-produced-entry")).toBeNull()
 
     const listed = recorder.listHabitRunReceipts(agentRoot, { limit: 10 })
-    expect(listed.map((receipt: { runId: string }) => receipt.runId)).toEqual(["missing-operation-id", second.runId, first.runId, "old-schema"])
-    expect(recorder.listHabitRunReceipts(agentRoot).map((receipt: { runId: string }) => receipt.runId)).toEqual(["missing-operation-id", second.runId, first.runId, "old-schema"])
-    expect(recorder.listHabitRunReceipts(agentRoot, { limit: -1 }).map((receipt: { runId: string }) => receipt.runId)).toEqual(["missing-operation-id", second.runId, first.runId, "old-schema"])
+    expect(listed.map((receipt: { runId: string }) => receipt.runId)).toEqual(["old-tool-policy", "missing-operation-id", second.runId, first.runId, "old-schema"])
+    expect(recorder.listHabitRunReceipts(agentRoot).map((receipt: { runId: string }) => receipt.runId)).toEqual(["old-tool-policy", "missing-operation-id", second.runId, first.runId, "old-schema"])
+    expect(recorder.listHabitRunReceipts(agentRoot, { limit: -1 }).map((receipt: { runId: string }) => receipt.runId)).toEqual(["old-tool-policy", "missing-operation-id", second.runId, first.runId, "old-schema"])
     fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "partial-snapshot.json"), JSON.stringify({
       ...first,
       runId: "partial-snapshot",
@@ -1122,12 +1117,6 @@ describe("Arc flight recorder", () => {
         deniedTools: [],
         warnings: [],
       },
-      toolPolicy: {
-        requestedTools: ["send_message", "surface"],
-        grantedTools: ["send_message", "surface"],
-        deniedTools: [],
-        outwardMessagingAllowed: true,
-      },
       producedRefs: [
         { kind: "arc", locator: "arc/claims/claim-1.json" },
         { kind: "desk_task", locator: "desk/task" },
@@ -1181,12 +1170,6 @@ describe("Arc flight recorder", () => {
         returnRoutes: [{ kind: "originator", recipient: "ari", status: "allowed", friendId: "ari", channel: "bluebubbles", key: "chat" }],
         deniedTools: [],
         warnings: [],
-      },
-      toolPolicy: {
-        requestedTools: null,
-        grantedTools: ["surface", "send_message"],
-        deniedTools: [],
-        outwardMessagingAllowed: true,
       },
       producedRefs: [{ kind: "surface", locator: "surface/ari/bluebubbles" }],
       surfaceAttempts: [{
@@ -1345,12 +1328,6 @@ describe("Arc flight recorder", () => {
           returnRoutes: [],
           deniedTools: ["send_message", "surface"],
           warnings: [],
-        },
-        toolPolicy: {
-          requestedTools: null,
-          grantedTools: [],
-          deniedTools: ["send_message", "surface"],
-          outwardMessagingAllowed: false,
         },
         producedRefs: [],
         surfaceAttempts: [],

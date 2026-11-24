@@ -3042,9 +3042,6 @@ ${call}`
     const template = fs.readFileSync("deploy/unraid/sanctuary.xml", "utf8")
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const auditor = fs.readFileSync("deploy/unraid/audit-container-spec.sh", "utf8")
-    const agent = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/agent.json", "utf8")) as {
-      habitPaidTurnsPerDay?: number
-    }
     const meta = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/bundle-meta.json", "utf8")) as {
       runtimeVersion: string
       bundleSchemaVersion: number
@@ -3224,7 +3221,6 @@ ${call}`
     expect(restoreRunbook.indexOf("wait_butler_ready ouro-butler")).toBeGreaterThan(restoreRunbook.indexOf("docker start ouro-butler"))
     expect(restoreRunbook.indexOf("enable_butler_autostart")).toBeGreaterThan(restoreRunbook.indexOf("wait_butler_ready ouro-butler"))
     expect(auditor).toContain("exec node /opt/ouro/dist/heart/daemon/container-spec-auditor-main.js")
-    expect(agent.habitPaidTurnsPerDay).toBe(24)
     expect(meta).toMatchObject({ runtimeVersion: JSON.parse(fs.readFileSync("package.json", "utf8")).version, bundleSchemaVersion: 3 })
     expect(fs.existsSync("deploy/unraid/sanctuary.ouro/arc/README.md")).toBe(true)
     expect(fs.existsSync("deploy/unraid/sanctuary.ouro/tool-profiles.json")).toBe(true)

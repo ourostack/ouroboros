@@ -1115,7 +1115,6 @@ function buildHabitSurfacePolicy(origin: HabitOrigin | null, surface: HabitSurfa
   lines.push("this habit runs privately, but it may message outward when it needs input, has a useful answer, is blocked, or should report status.")
   if (surface.family) lines.push("- family recipients are allowed by default.")
   if (surface.originator && origin) lines.push(`- the originator is allowed: ${origin.friendId} via ${origin.channel}/${origin.key}.`)
-  if (surface.originator && !origin) lines.push("- originator messaging is enabled, but this habit has no origin metadata.")
   if (surface.extra.length > 0) lines.push(`- extra allowed recipients: ${surface.extra.join(", ")}.`)
   lines.push("- use send_message for intentional contact; use surface only for a held return tied to an existing return obligation.")
   return lines.join("\n")
@@ -1124,13 +1123,6 @@ function buildHabitSurfacePolicy(origin: HabitOrigin | null, surface: HabitSurfa
 function reduceHabitSessionToNoSend(
   habitSession: HabitSessionToolContext | undefined,
 ): HabitSessionToolContext {
-  const deniedTools = new Set([
-    ...(habitSession?.permissionEnvelope.deniedTools ?? []),
-    ...(habitSession?.toolPolicy.grantedTools ?? []),
-    ...(habitSession?.toolPolicy.deniedTools ?? []),
-    "send_message",
-    "surface",
-  ])
   return {
     ...habitSession,
     noSend: true,
@@ -1138,14 +1130,8 @@ function reduceHabitSessionToNoSend(
       schemaVersion: 1,
       canMessageOutward: false,
       returnRoutes: [],
-      deniedTools: [...deniedTools],
+      deniedTools: ["send_message", "surface"],
       warnings: [...(habitSession?.permissionEnvelope.warnings ?? [])],
-    },
-    toolPolicy: {
-      requestedTools: habitSession?.toolPolicy.requestedTools ?? null,
-      grantedTools: [],
-      deniedTools: [...deniedTools],
-      outwardMessagingAllowed: false,
     },
   }
 }
@@ -1215,8 +1201,6 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
 
   // ── Adapter concern: build user message ──────────────────────────
   let userContent: string
-  let habitTools: string[] | undefined
-  let habitParsedSuccessfully = false
   let parsedAwait: AwaitFile | null = null
   const isPayloadSpecificWake =
     !!options?.taskId
@@ -1289,7 +1273,6 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
       habitBody = executableHabit.body || undefined
       habitTitle = executableHabit.title || habitName
       habitLastRun = executableHabit.lastRun
-      habitTools = executableHabit.tools
       habitOrigin = executableHabit.origin
       habitSurface = executableHabit.surface
 
@@ -1297,7 +1280,6 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
       if (habitBody === undefined && habitTitle === habitName) {
         userContent = `habit "${habitName}" could not be read (file not found or unreadable). check habits/${habitName}.md exists.`
       } else {
-        habitParsedSuccessfully = true
         // Unified path: gather context for ALL habits (heartbeat included)
         const obligations = listActiveReturnObligations(agentName)
         const nowMs = now().getTime()
@@ -1545,32 +1527,8 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
   if (externalEventRelationship) userContent = `${userContent}\n\n${externalEventRelationship.ownerPresentationPreferences}`
   const userMessage: OpenAI.ChatCompletionMessageParam = { role: "user", content: userContent }
 
-  // ── Habit tool enforcement ───────────────────────────────────────
-  let habitToolsResolved: OpenAI.ChatCompletionFunctionTool[] | undefined
-  if (habitTools !== undefined) {
-    const fullTools = getToolsForChannel(innerCapabilities)
-    habitToolsResolved = fullTools.filter((t) => habitTools!.includes(t.function.name))
-    emitNervesEvent({
-      event: "habit.tools_restricted",
-      component: "senses",
-      message: "habit running with restricted tools",
-      meta: {
-        habitName: options?.habitName,
-        declared: habitTools,
-        resolved: habitToolsResolved.map((t) => t.function.name),
-      },
-    })
-  } else if (reason === "habit" && options?.habitName && habitParsedSuccessfully) {
-    emitNervesEvent({
-      event: "habit.tools_unrestricted",
-      component: "senses",
-      message: "habit running with full tool repertoire",
-      meta: { habitName: options.habitName },
-    })
-  }
-  if (options?.noSend === true) {
-    habitToolsResolved = []
-  }
+  // A no-send habit turn gets no tools: it may only think and rest.
+  const noSendTools: OpenAI.ChatCompletionFunctionTool[] | undefined = options?.noSend === true ? [] : undefined
   const externalEventExcludedTools = new Set(["rest", "settle", "speak"])
   const externalEventToolsResolved = options?.externalEvent
     ? getToolsForChannel(innerCapabilities, undefined, undefined, undefined, undefined, undefined, {
@@ -1696,7 +1654,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
       ...(options?.externalEvent
         ? { tools: externalEventToolsResolved }
         : relationshipAwaitToolsResolved !== undefined ? { tools: relationshipAwaitToolsResolved }
-        : habitToolsResolved !== undefined ? { tools: habitToolsResolved } : {}),
+        : noSendTools !== undefined ? { tools: noSendTools } : {}),
       toolContext: {
         signin: async () => undefined,
         delegatedOrigins: attentionQueue,

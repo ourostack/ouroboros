@@ -17,12 +17,24 @@ describe("chat action tools on the menu", () => {
     for (const channel of ["cli", "teams", "inner"]) expect(names(channel)).not.toContain("react")
     expect(names("telegram", { noSend: true })).not.toContain("react")
     expect(names("telegram", { autonomousTurnKind: "proactive" })).not.toContain("set_reply_target")
-    expect(names("bluebubbles", { habitSession: { toolPolicy: { outwardMessagingAllowed: true, grantedTools: [] } } })).not.toContain("react")
+    expect(names("bluebubbles", { habitSession: { permissionEnvelope: { schemaVersion: 1, canMessageOutward: true, returnRoutes: [], deniedTools: [], warnings: [] } } })).not.toContain("react")
   })
 
   it("offer send_file on every sense that takes files: iMessage, Telegram and Teams", () => {
     for (const channel of ["bluebubbles", "telegram", "teams"]) expect(names(channel)).toContain("send_file")
     for (const channel of ["cli", "inner"]) expect(names(channel)).not.toContain("send_file")
     expect(names("telegram", { noSend: true })).not.toContain("send_file")
+  })
+
+  it("give a habit's private-runtime turn send_message and surface only when it may message outward", () => {
+    const habitSession = (canMessageOutward: boolean) => ({
+      habitSession: { permissionEnvelope: { schemaVersion: 1, canMessageOutward, returnRoutes: [], deniedTools: [], warnings: [] } },
+    })
+    expect(names("inner", habitSession(true))).toEqual(expect.arrayContaining(["send_message", "surface", "shell"]))
+    const quiet = names("inner", habitSession(false))
+    expect(quiet).not.toContain("send_message")
+    expect(quiet).not.toContain("surface")
+    expect(quiet).toContain("shell")
+    expect(names("inner")).toContain("surface")
   })
 })

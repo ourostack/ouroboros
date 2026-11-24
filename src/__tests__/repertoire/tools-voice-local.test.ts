@@ -61,7 +61,7 @@ describe("voice_join_local_audio is offered only in a direct family text session
 
   it("is never offered to autonomous, delegated, external-event or relationship-scoped turns", () => {
     const context = resolved()
-    expect(names(context, { habitSession: { toolPolicy: { outwardMessagingAllowed: true, grantedTools: [] } } })).not.toContain(NAME)
+    expect(names(context, { habitSession: { permissionEnvelope: { schemaVersion: 1, canMessageOutward: true, returnRoutes: [], deniedTools: [], warnings: [] } } })).not.toContain(NAME)
     for (const kind of ["await", "habit", "external-event", "instinct", "scheduler"]) {
       expect(names(context, { autonomousTurnKind: kind }), kind).not.toContain(NAME)
     }

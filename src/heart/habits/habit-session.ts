@@ -16,14 +16,13 @@ import {
   type HabitRunTraceStep,
   type HabitRunTrigger,
   type HabitSurfaceAttempt,
-  type HabitToolPolicy,
 } from "../../arc/flight-recorder"
 import type { FriendStore, FriendRecord } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../../nerves/runtime"
-import type { ToolDefinition, ToolRiskProfile } from "../../repertoire/tools-base"
 import { nextCadenceRunAt } from "../daemon/cadence"
 import type { HabitFile } from "./habit-parser"
 import { recordHabitRun } from "./habit-runtime-state"
+import { getPrivateRuntimePendingDir, queuePendingMessageOnce } from "../../mind/pending"
 
 export { isSafeHabitRunId } from "../../arc/flight-recorder"
 
@@ -74,7 +73,6 @@ export interface BuildHabitRunReceiptInput {
   outcome: HabitRunOutcome
   operationId?: string | null
   permissionEnvelope: HabitPermissionEnvelope
-  toolPolicy: HabitToolPolicy
   producedRefs?: FlightRecorderProducedRef[]
   surfaceAttempts?: HabitSurfaceAttempt[]
   traceSteps?: HabitRunTraceStep[]
@@ -372,16 +370,11 @@ export async function normalizeHabitPermissionEnvelope(
     returnRoutes.push(allowedRoute("family", "family"))
   }
 
-  if (habit.surface.originator) {
-    if (habit.origin) {
-      const resolved = await resolveExactRoute("originator", habit.origin.friendId, habit.origin.channel, habit.origin.key, options)
-      returnRoutes.push(resolved.route)
-      if (resolved.warning) warnings.push(resolved.warning)
-    } else {
-      const warning = "originator route requested but habit has no origin"
-      returnRoutes.push(unresolvedRoute("originator", "originator", warning))
-      warnings.push(warning)
-    }
+  // A habit with no origin has no originator to return to, so it asks for no originator route.
+  if (habit.surface.originator && habit.origin) {
+    const resolved = await resolveExactRoute("originator", habit.origin.friendId, habit.origin.channel, habit.origin.key, options)
+    returnRoutes.push(resolved.route)
+    if (resolved.warning) warnings.push(resolved.warning)
   }
 
   for (const spec of habit.surface.extra) {
@@ -534,57 +527,6 @@ export async function resolveHabitReturnRoute(input: ResolveHabitReturnRouteInpu
   return deniedRoute(`no habit return route allows ${friend.id}/${target.channel}/${target.key}`)
 }
 
-function toolName(definition: ToolDefinition): string {
-  return definition.tool.function.name
-}
-
-function isOutwardMessagingTool(name: string): boolean {
-  return name === "send_message" || name === "surface"
-}
-
-function isHighRisk(profile: ToolRiskProfile): boolean {
-  return profile.risk === "high"
-}
-
-export function filterHabitToolsForEnvelope(
-  definitions: ToolDefinition[],
-  requestedTools: string[] | null,
-  envelope: HabitPermissionEnvelope,
-  riskClassifier: (definition: ToolDefinition, name: string) => ToolRiskProfile,
-): HabitToolPolicy {
-  const requested = requestedTools ? new Set(requestedTools) : null
-  const grantedTools: string[] = []
-  const deniedTools: string[] = []
-
-  for (const definition of definitions) {
-    const name = toolName(definition)
-    if (requested && !requested.has(name)) continue
-
-    const deniedByEnvelope = envelope.deniedTools.includes(name)
-    const profile = riskClassifier(definition, name)
-    const allowedOutward = isOutwardMessagingTool(name) && envelope.canMessageOutward && !deniedByEnvelope
-    if (deniedByEnvelope || (isHighRisk(profile) && !allowedOutward)) {
-      deniedTools.push(name)
-      continue
-    }
-    grantedTools.push(name)
-  }
-
-  const policy: HabitToolPolicy = {
-    requestedTools: requestedTools ? [...requestedTools] : null,
-    grantedTools,
-    deniedTools,
-    outwardMessagingAllowed: envelope.canMessageOutward,
-  }
-  emitNervesEvent({
-    component: "daemon",
-    event: "daemon.habit_tool_policy_filtered",
-    message: "habit tool policy filtered",
-    meta: { requested: requestedTools?.length ?? null, granted: grantedTools.length, denied: deniedTools.length },
-  })
-  return policy
-}
-
 function computeNextRunAt(habit: HabitFile, endedAt: string): string | null {
   if (habit.status !== "active" || !habit.cadence) return null
   const endedMs = Date.parse(endedAt)
@@ -644,7 +586,6 @@ export function buildHabitRunReceipt(input: BuildHabitRunReceiptInput): HabitRun
     operationId: input.operationId ?? null,
     nextRunAt: input.nextRunAt ?? computeNextRunAt(input.habit, input.endedAt),
     permissionEnvelope: input.permissionEnvelope,
-    toolPolicy: input.toolPolicy,
     summarySnapshot: input.summarySnapshot ?? defaultSummarySnapshot(input),
     producedRefs: input.producedRefs ?? [],
     surfaceAttempts: input.surfaceAttempts ?? [],
@@ -713,7 +654,6 @@ export function completeHabitRun(input: CompleteHabitRunInput): CompleteHabitRun
       outcome,
       operationId: input.operationId ?? null,
       permissionEnvelope: input.permissionEnvelope,
-      toolPolicy: input.toolPolicy,
       producedRefs,
       surfaceAttempts: input.surfaceAttempts,
       traceSteps: input.traceSteps,
@@ -756,5 +696,46 @@ export function completeHabitRun(input: CompleteHabitRunInput): CompleteHabitRun
       },
     })
     return { outcome, producedRefs, receiptWritten: true, runtimeStateRecorded: false }
+  }
+}
+
+/**
+ * Tell the agent once when a habit cannot run, instead of failing quietly on every tick. The note waits in the
+ * agent's private runtime queue; it is sent again only when the reason changes, and a run that is not blocked clears it.
+ */
+export function noteHabitRunBlocked(agentRoot: string, agentName: string, habitName: string, reason: string | null): void {
+  const markerPath = path.join(agentRoot, "state", "habits", `${habitName}.blocked-notice`)
+  try {
+    if (reason === null) {
+      fs.rmSync(markerPath, { force: true })
+      return
+    }
+    if (fs.existsSync(markerPath) && fs.readFileSync(markerPath, "utf-8") === reason) return
+    queuePendingMessageOnce(getPrivateRuntimePendingDir(agentName, agentRoot), {
+      from: agentName,
+      friendId: "self",
+      channel: "inner",
+      key: "dialog",
+      content: `my habit ${habitName} could not run: ${reason}. its definition is habits/${habitName}.md. i'll hear this once; it stays blocked until i fix it.`,
+      timestamp: Date.now(),
+      packetId: `habit-blocked:${habitName}:${reason}`,
+    })
+    fs.mkdirSync(path.dirname(markerPath), { recursive: true })
+    fs.writeFileSync(markerPath, reason, "utf-8")
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.habit_blocked_noted",
+      message: "blocked habit run told to the agent once",
+      meta: { agentRoot, habitName, reason },
+    })
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.habit_blocked_note_error",
+      message: "could not tell the agent about a blocked habit run",
+      meta: { agentRoot, habitName, error: String(error) },
+    })
   }
 }

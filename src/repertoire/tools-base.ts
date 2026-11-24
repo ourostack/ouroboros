@@ -2,7 +2,7 @@ import type OpenAI from "openai";
 import type { Integration, ResolvedContext, FriendStore } from "@ouro.bot/friends"
 import type { BridgeRecord, BridgeSessionRef } from "../heart/bridges/store";
 import type { ActiveWorkFrame } from "../heart/active-work";
-import type { FlightRecorderProducedRef, HabitPermissionEnvelope, HabitSurfaceAttempt, HabitToolPolicy } from "../arc/flight-recorder";
+import type { FlightRecorderProducedRef, HabitPermissionEnvelope, HabitSurfaceAttempt } from "../arc/flight-recorder";
 import type { RsvpHabitRuntimePolicy } from "../rsvp/habit-policy";
 import type { RoutineActionRequester } from "../heart/steward-policy";
 import type { ApprovalOwnerBinding } from "../heart/approval-store";
@@ -110,7 +110,6 @@ export interface HabitSessionToolContext {
   sessionPath?: string;
   pendingDir?: string;
   permissionEnvelope: HabitPermissionEnvelope;
-  toolPolicy: HabitToolPolicy;
   rsvpPolicy?: RsvpHabitRuntimePolicy;
   friendStore?: FriendStore;
   recordProducedRef?: (ref: FlightRecorderProducedRef) => void;

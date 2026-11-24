@@ -10,7 +10,6 @@ import { ensureRsvpOutboundState } from "./outbound-state"
 import { ensureRsvpSpendLedger } from "./spend-ledger"
 import {
   DEFAULT_RSVP_HABIT_NAME,
-  RSVP_HABIT_ALLOWED_TOOLS,
   RSVP_HABIT_POLICY_VERSION,
   isRsvpHabitName,
   type RsvpHabitMetadata,
@@ -99,7 +98,6 @@ export async function stageRsvpHabit(
     status: "active",
     cadence: input.cadence,
     created,
-    tools: [...RSVP_HABIT_ALLOWED_TOOLS],
     continuity: { mode: "stateful" },
     rsvp,
   }, stagedHabitBody())

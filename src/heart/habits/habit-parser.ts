@@ -2,7 +2,6 @@ import * as path from "path"
 import { parseFrontmatter } from "../../util/frontmatter"
 import { emitNervesEvent } from "../../nerves/runtime"
 import {
-  RSVP_HABIT_ALLOWED_TOOLS,
   parseRsvpHabitMetadata,
   rsvpHabitMetadataErrorDetail,
   type RsvpHabitMetadata,
@@ -41,7 +40,6 @@ interface HabitFileBase {
   cadence: string | null
   lastRun: string | null
   created: string | null
-  tools: string[] | undefined
   rsvp?: RsvpHabitMetadata
   origin: HabitOrigin | null
   surface: HabitSurface
@@ -61,21 +59,6 @@ export type HabitFile =
 
 function isHabitStatus(value: string): value is HabitStatus {
   return value === "active" || value === "paused" || value === "cancelled"
-}
-
-function parseToolsField(raw: unknown): string[] | undefined {
-  if (raw === undefined || raw === null) return undefined
-  // YAML dash-list: parseFrontmatter returns unknown[]
-  if (Array.isArray(raw)) {
-    return raw.filter((item): item is string => typeof item === "string")
-  }
-  // Inline bracket format: parseFrontmatter returns string like "[a, b, c]"
-  if (typeof raw === "string" && raw.startsWith("[") && raw.endsWith("]")) {
-    const inner = raw.slice(1, -1)
-    if (inner.trim().length === 0) return []
-    return inner.split(",").map((s) => s.trim()).filter(Boolean)
-  }
-  return undefined
 }
 
 function objectRecord(raw: unknown): Record<string, unknown> | null {
@@ -192,7 +175,6 @@ export function createDegradedHabitFile(
     degradedDetail,
     lastRun: null,
     created: null,
-    tools: undefined,
     origin: null,
     surface: { family: false, originator: false, extra: [] },
     continuity: { mode: "fresh" },
@@ -219,7 +201,6 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
       status: "active",
       lastRun: null,
       created: null,
-      tools: undefined,
       origin: null,
       surface: { family: true, originator: true, extra: [] },
       continuity: { mode: "fresh" },
@@ -262,7 +243,6 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
     const degradedDetail = rsvpHabitMetadataErrorDetail(error)
     return createDegradedHabitFile(filePath, "invalid_metadata", body, degradedDetail)
   }
-  const tools = rsvp ? [...RSVP_HABIT_ALLOWED_TOOLS] : parseToolsField(frontmatter.tools)
   const origin = parseOrigin(frontmatter.origin)
   const surface = parseSurface(frontmatter.surface)
   const continuity = parseContinuity(frontmatter.continuity)
@@ -274,7 +254,6 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
     status,
     lastRun,
     created,
-    tools,
     ...(rsvp ? { rsvp } : {}),
     origin,
     surface,

@@ -35,7 +35,6 @@ describe("parseHabitFile", () => {
       status: "active",
       lastRun: "2026-03-27T10:00:00.000Z",
       created: "2026-03-27",
-      tools: undefined,
       origin: null,
       surface: { family: true, originator: true, extra: [] },
       continuity: { mode: "fresh" },
@@ -270,7 +269,6 @@ describe("parseHabitFile", () => {
 
     expect(result.status).toBe("degraded")
     expect(degradedReason(result)).toBe("invalid_metadata")
-    expect(result.tools).toBeUndefined()
   })
 
   it("handles lastRun as null frontmatter value", () => {
@@ -305,7 +303,7 @@ describe("parseHabitFile", () => {
 
     const result: HabitFile = parseHabitFile(content, "/bundles/agent.ouro/habits/shape-test.md")
     const keys = Object.keys(result).sort()
-    expect(keys).toEqual(["body", "cadence", "continuity", "created", "lastRun", "name", "origin", "status", "surface", "title", "tools"])
+    expect(keys).toEqual(["body", "cadence", "continuity", "created", "lastRun", "name", "origin", "status", "surface", "title"])
   })
 
   it("parses habit origin and surface policy from nested frontmatter", () => {
@@ -442,190 +440,6 @@ describe("parseHabitFile", () => {
   })
 })
 
-describe("parseHabitFile — tools field", () => {
-  it("parses tools from YAML dash-list as string[]", () => {
-    const content = [
-      "---",
-      "title: With tools",
-      "cadence: 30m",
-      "status: active",
-      "tools:",
-      "  - read_file",
-      "  - web_fetch",
-      "  - shell",
-      "---",
-      "",
-      "Body.",
-    ].join("\n")
-
-    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/with-tools.md")
-    expect(result.tools).toEqual(["read_file", "web_fetch", "shell"])
-  })
-
-  it("parses tools from inline [a, b, c] format as string[]", () => {
-    const content = [
-      "---",
-      "title: Inline tools",
-      "cadence: 30m",
-      "status: active",
-      "tools: [read_file, web_fetch, shell]",
-      "---",
-      "",
-      "Body.",
-    ].join("\n")
-
-    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/inline-tools.md")
-    expect(result.tools).toEqual(["read_file", "web_fetch", "shell"])
-  })
-
-  it("defaults tools to undefined when not present", () => {
-    const content = [
-      "---",
-      "title: No tools",
-      "cadence: 30m",
-      "status: active",
-      "---",
-      "",
-      "Body.",
-    ].join("\n")
-
-    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/no-tools.md")
-    expect(result.tools).toBeUndefined()
-  })
-
-  it("parses empty tools: [] as empty array", () => {
-    const content = [
-      "---",
-      "title: Empty tools",
-      "cadence: 30m",
-      "status: active",
-      "tools: []",
-      "---",
-      "",
-      "Body.",
-    ].join("\n")
-
-    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/empty-tools.md")
-    expect(result.tools).toEqual([])
-  })
-
-  it("includes tools in HabitFile interface shape", () => {
-    const content = [
-      "---",
-      "title: Shape test",
-      "cadence: 5m",
-      "status: active",
-      "tools: [read_file]",
-      "---",
-      "",
-      "Body.",
-    ].join("\n")
-
-    const result: HabitFile = parseHabitFile(content, "/bundles/agent.ouro/habits/shape.md")
-    expect("tools" in result).toBe(true)
-  })
-
-  it("parses single-element inline array", () => {
-    const content = [
-      "---",
-      "title: Single tool",
-      "cadence: 30m",
-      "status: active",
-      "tools: [shell]",
-      "---",
-      "",
-      "Body.",
-    ].join("\n")
-
-    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/single-tool.md")
-    expect(result.tools).toEqual(["shell"])
-  })
-
-  it("handles inline format with extra whitespace", () => {
-    const content = [
-      "---",
-      "title: Whitespace tools",
-      "cadence: 30m",
-      "status: active",
-      "tools: [ read_file , web_fetch ]",
-      "---",
-      "",
-      "Body.",
-    ].join("\n")
-
-    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/ws-tools.md")
-    expect(result.tools).toEqual(["read_file", "web_fetch"])
-  })
-
-  it("treats tools: null as undefined", () => {
-    const content = [
-      "---",
-      "title: Null tools",
-      "cadence: 30m",
-      "status: active",
-      "tools: null",
-      "---",
-      "",
-      "Body.",
-    ].join("\n")
-
-    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/null-tools.md")
-    expect(result.tools).toBeUndefined()
-  })
-
-  it("treats non-bracket string tools value as undefined", () => {
-    const content = [
-      "---",
-      "title: Bad tools",
-      "cadence: 30m",
-      "status: active",
-      "tools: just_a_string",
-      "---",
-      "",
-      "Body.",
-    ].join("\n")
-
-    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/bad-tools.md")
-    expect(result.tools).toBeUndefined()
-  })
-
-  it("handles tools: [ ] (whitespace-only brackets) as empty array", () => {
-    const content = [
-      "---",
-      "title: WS brackets",
-      "cadence: 30m",
-      "status: active",
-      "tools: [ ]",
-      "---",
-      "",
-      "Body.",
-    ].join("\n")
-
-    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/ws-brackets.md")
-    expect(result.tools).toEqual([])
-  })
-
-  it("filters non-string items from YAML dash-list tools", () => {
-    // parseFrontmatter returns items via parseScalar which converts "null" to null
-    const content = [
-      "---",
-      "title: Mixed tools",
-      "cadence: 30m",
-      "status: active",
-      "tools:",
-      "  - read_file",
-      "  - null",
-      "  - web_fetch",
-      "---",
-      "",
-      "Body.",
-    ].join("\n")
-
-    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/mixed-tools.md")
-    expect(result.tools).toEqual(["read_file", "web_fetch"])
-  })
-})
-
 describe("renderHabitFile", () => {
   it("renders nested habit origin and surface frontmatter", () => {
     const rendered = renderHabitFile({
@@ -711,46 +525,34 @@ describe("renderHabitFile", () => {
     expect(reparsed.body).toBe(parsed.body)
   })
 
-  it("roundtrips tools through render and re-parse", () => {
-    const original = [
-      "---",
-      "title: Tools roundtrip",
-      "cadence: 30m",
-      "status: active",
-      "tools: [read_file, web_fetch]",
-      "---",
-      "",
-      "Body.",
-    ].join("\n")
-
-    const parsed = parseHabitFile(original, "/bundles/agent.ouro/habits/tools-rt.md")
-    expect(parsed.tools).toEqual(["read_file", "web_fetch"])
-
-    const rendered = renderHabitFile(
-      {
-        title: parsed.title,
-        cadence: parsed.cadence,
-        status: parsed.status,
-        lastRun: parsed.lastRun,
-        created: parsed.created,
-        tools: parsed.tools,
-      },
-      parsed.body,
-    )
-
-    const reparsed = parseHabitFile(rendered, "/bundles/agent.ouro/habits/tools-rt.md")
-    expect(reparsed.tools).toEqual(parsed.tools)
-  })
-
   it("renders array values in inline bracket format", () => {
     const frontmatter = {
       title: "Array render",
       cadence: "30m",
       status: "active",
-      tools: ["read_file", "web_fetch"],
+      tags: ["morning", "review"],
     }
 
     const result = renderHabitFile(frontmatter, "Body.")
-    expect(result).toContain("tools: [read_file, web_fetch]")
+    expect(result).toContain("tags: [morning, review]")
+  })
+})
+
+describe("parseHabitFile — dash lists in frontmatter", () => {
+  it("accepts a YAML dash list under any key and keeps the habit active", () => {
+    const result = parseHabitFile([
+      "---",
+      "title: Listed",
+      "cadence: 1h",
+      "status: active",
+      "notes:",
+      "  - first",
+      "  - second",
+      "---",
+      "",
+      "Body.",
+    ].join("\n"), "/bundles/agent.ouro/habits/listed.md")
+    expect(result.status).toBe("active")
+    expect(result.title).toBe("Listed")
   })
 })
