@@ -21,7 +21,7 @@ export const H_CODEX_FIDELITY: readonly string[] = [
   "web_search is disabled: it is a hosted tool the host's runtime can't run, and the sandbox has no route off the host",
   "plugins and apps are off, and with them tool suggestions: the sandbox has no route off the host",
   "bundled skills are off ([skills.bundled] enabled = false): they are about codex itself, not the household",
-  "analytics, the otel exporters (exporter, trace_exporter and metrics_exporter) and check_for_update_on_startup are off:the sandbox has no route off the host; the model sees no difference",
+  "analytics, the otel exporters (exporter, trace_exporter and metrics_exporter) and check_for_update_on_startup are off: the sandbox has no route off the host; the model sees no difference",
   "the request's own settings (tool_choice, parallel_tool_calls, reasoning, include, store, prompt_cache_key and the like) are not passed on: the host's runtime sets the model's settings, as it does for the ouro arm",
   "codex's leading developer messages become one system message, joined with a blank line, and a message's text parts are joined with a newline, since the harness's messages carry one string each",
   "codex doesn't know the model's name, so it runs as for any unknown model: its generic base prompt, no apply_patch tool, and output of each tool call cut at 10,000 bytes",
