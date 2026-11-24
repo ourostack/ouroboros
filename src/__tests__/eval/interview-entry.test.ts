@@ -87,6 +87,12 @@ it("sends the run's named agent images with every job, beside the agent's and ho
   expect(sandbox.remoteRunCase).toHaveBeenCalledWith(expect.objectContaining({
     paths: expect.objectContaining({ images: { agent: "ouro-eval-a:1", household: "ouro-eval-h:1", named: { "arm-a": "ouro-eval-arm-a:1" } } }),
   }))
+  // The runner is told which images the run names, so a kit that needs another refuses before any session; H is registered.
+  expect(runner.run).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ agentImages: ["arm-a"], kits: expect.objectContaining({ H: expect.objectContaining({ images: ["codex", "openhands"] }) }) }))
+  runner.run.mockClear()
+  vi.resetModules()
+  await run(REMOTE)
+  expect(runner.run).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ agentImages: [] }))
 })
 
 it("refuses a --host-lock with no holder, or one that isn't a single safe word, before taking anything", async () => {

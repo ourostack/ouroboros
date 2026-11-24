@@ -139,7 +139,7 @@ describe("the interview runner", () => {
     expect(JSON.parse(log[0]!)).toMatchObject({ session: "X-pilot", preregistrationVersion: 1, kind: "job", sent: true })
     expect(JSON.parse(log[2]!)).toMatchObject({ kind: "debrief" })
     expect(JSON.parse(log.at(-1)!)).toMatchObject({ kind: "identify" })
-    expect(printed[0]).toMatch(/^X-pilot complete ouro-first=yes jobs-passed=3\/3 calls=11 tokens-in=110000 tokens-out=5500 credits=3\.960 premium=11\nspent: 3\.960 credits, 11 premium requests$/)
+    expect(printed[0]).toMatch(/^X-pilot complete ouro-first=yes jobs-passed=3\/3 calls=11 tokens-in=110000 tokens-out=5500 credits=3\.960 premium=11 rewrites=ouro:none;cli-shell:none;mcp-plain:none\nspent: 3\.960 credits, 11 premium requests$/)
     expect(reports[0]).toMatchObject({ kind: "blind-interviews", stopped: null, fidelity: expect.objectContaining({ "X:all": expect.any(Array) }), sessions: [expect.objectContaining({ id: "X-pilot" })] })
   })
 
@@ -168,6 +168,9 @@ describe("the interview runner", () => {
     expect(sent.some((text) => /ouro/i.test(text))).toBe(false)
     // The debrief is still told from the job by the runner's own text, and counted as one.
     expect(record.arms[0]).toMatchObject({ label: "T", arm: "ouro", jobCalls: 2, debriefCalls: 1 })
+    // Each arm's matches, by tier, are in its record; an arm with no list rewrote nothing.
+    expect(record.arms[0]!.rewrites.list).toBeGreaterThan(0)
+    expect(record.arms.slice(1).map((arm) => arm.rewrites)).toEqual([{}, {}])
     expect(log.map((line) => (JSON.parse(line) as { kind: string }).kind).slice(0, 3)).toEqual(["job", "job", "debrief"])
   })
 
@@ -263,6 +266,11 @@ describe("the interview runner", () => {
     const { d } = deps(sandbox(() => ({})))
     await expect(runInterviews(args({ sessions: ["X-9"] }), d)).rejects.toThrow("no session X-9 in Appendix B")
     await expect(runInterviews(args({ sessions: ["H-1"] }), d)).rejects.toThrow("session H-1 is product H, which has no runner kit yet")
+    // A kit's own agent images must be among the run's, or no session starts.
+    const imaged = { ...d, kits: { X: { ...X_KIT, images: ["codex", "openhands"] } } }
+    await expect(runInterviews(args(), { ...imaged, agentImages: ["codex"] })).rejects.toThrow("session X-pilot needs the agent image openhands; name it in --images as openhands=<image>")
+    await expect(runInterviews(args(), imaged)).rejects.toThrow("session X-pilot needs the agent image codex; name it in --images as codex=<image>")
+    expect(d.started.has("X-pilot")).toBe(false)
     await expect(runInterviews(args(), { ...d, loadCases: () => [cases.get("unreadable-edition")!] })).rejects.toThrow(/needs case remove-bad-copy/)
     await expect(runInterviews(args(), { ...d, outputExists: (file) => file.endsWith(".ndjson") })).rejects.toThrow("/r/run.requests.ndjson already exists")
     await expect(runInterviews(args({ priceIn: undefined }), d)).rejects.toThrow(/needs --price-in/)
@@ -367,6 +375,14 @@ describe("scoring every arm the same way", () => {
 
   it("summarizes counts only", () => {
     expect(summarizeSessions([], { premium: 0, credits: 0 }, "the provider answered 429")).toBe("spent: 0.000 credits, 0 premium requests; stopped: the provider answered 429")
+    // Each arm's rewrites, by tier, so an arm that needs far more rewriting shows it.
+    const record = {
+      id: "H-1", status: "complete", ouroFirst: false, calls: [], spent: { premium: 0, credits: 0 },
+      arms: [{ arm: "codex", passed: true, rewrites: { sentence: 2, word: 5 } }, { arm: "ouro", passed: false, rewrites: {} }],
+    } as unknown as SessionRecord
+    expect(summarizeSessions([record], { premium: 0, credits: 0 }, null).split("\n")[0]).toBe(
+      "H-1 complete ouro-first=no jobs-passed=1/2 calls=0 tokens-in=0 tokens-out=0 credits=0.000 premium=0 rewrites=codex:sentence 2,word 5;ouro:none",
+    )
   })
 })
 

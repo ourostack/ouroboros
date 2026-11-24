@@ -9,13 +9,14 @@
  * model calls, as every interview guest gives it; the first turn's reply and outcome are the job's.
  */
 import fs from "node:fs"
+import path from "node:path"
 import type { Readable, Writable } from "node:stream"
 import type { ProviderRuntime } from "../../../../heart/core"
 import { emitNervesEvent } from "../../../../nerves/runtime"
 import type { Case } from "../../../domain/case"
 import { createProxyRuntime, createStreamChannel, type GuestOutcome } from "../../../transport/provider-proxy"
 import { runTelegramTurn } from "../../../transport/telegram-turn"
-import { codexArm } from "./codex"
+import { CODEX_HOME_DIR, codexArm } from "./codex"
 import { openhandsArm } from "./openhands"
 
 export type HTurnFile = {
@@ -30,15 +31,42 @@ export type HTurnFile = {
 /** One H arm's agent loop: the whole conversation, the job and then each follow-up, on the host's provider. */
 export type HArmRunner = (input: { turn: HTurnFile; bundle: string; providerRuntime: ProviderRuntime }) => Promise<unknown>
 
-/** The ouro arm: the harness's own turn, unchanged but for the label line and the later message. */
-export function ouroArm(runTurn: typeof runTelegramTurn = runTelegramTurn): HArmRunner {
-  return ({ turn, bundle, providerRuntime }) => runTurn({
-    agentRoot: bundle, prefix: turn.prefix, userText: turn.userText, providerRuntime, systemLine: turn.labelLine, followUps: turn.followUps,
-  })
+/**
+ * The neutral paths the H kit's lists show the model, made to exist in the ouro arm as they do in the others: a real
+ * neutral home (`/tmp/agent`, on the container's writable /tmp) with the bundle linked at
+ * `AgentBundles/sanctuary.agent`, and a link for each other entry the real home has now. The bundles folder beside the
+ * real bundle is the mount point Docker made, which the container's user can't write, so no link goes there. Entries
+ * that are already there are kept.
+ */
+export function linkNeutralPaths(bundle: string, neutral: string): void {
+  const bundles = path.dirname(bundle)
+  const home = path.dirname(bundles)
+  const exists = (file: string): boolean => { try { fs.lstatSync(file); return true } catch { return false } }
+  const named = path.join(neutral, path.basename(bundles), path.basename(bundle).replace(/\.ouro$/, ".agent"))
+  fs.mkdirSync(path.dirname(named), { recursive: true })
+  if (!exists(named)) fs.symlinkSync(bundle, named)
+  let linked = 0
+  for (const entry of fs.readdirSync(home)) {
+    if (entry === path.basename(bundles) || exists(path.join(neutral, entry))) continue
+    fs.symlinkSync(path.join(home, entry), path.join(neutral, entry))
+    linked += 1
+  }
+  emitNervesEvent({ component: "eval", event: "eval.h_neutral_links", message: "linked the ouro arm's neutral paths", meta: { neutral, linked } })
+}
+
+/**
+ * The ouro arm: the harness's own turn, unchanged but for the label line and the later message. With `neutral`, the
+ * neutral paths are linked first; the turn still runs from the bundle at its production path, where it reads it.
+ */
+export function ouroArm(runTurn: typeof runTelegramTurn = runTelegramTurn, neutral?: string): HArmRunner {
+  return ({ turn, bundle, providerRuntime }) => {
+    if (neutral !== undefined) linkNeutralPaths(bundle, neutral)
+    return runTurn({ agentRoot: bundle, prefix: turn.prefix, userText: turn.userText, providerRuntime, systemLine: turn.labelLine, followUps: turn.followUps })
+  }
 }
 
 /** The H arms this guest runs. */
-export const H_ARMS: Readonly<Record<string, HArmRunner>> = { ouro: ouroArm(), codex: codexArm(), openhands: openhandsArm() }
+export const H_ARMS: Readonly<Record<string, HArmRunner>> = { ouro: ouroArm(runTelegramTurn, CODEX_HOME_DIR), codex: codexArm(), openhands: openhandsArm() }
 
 function readTurnFile(file: string): HTurnFile {
   const value = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<HTurnFile>
