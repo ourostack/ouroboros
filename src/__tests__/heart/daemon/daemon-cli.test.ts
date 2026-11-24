@@ -246,7 +246,7 @@ describe("ouro CLI parsing", () => {
       agent: "Slugger",
     })
     // The old page's bare command no longer opens anything; the generated group asks for one of its words.
-    expect(() => parseOuroCommand(["mailbox"])).toThrow("Usage: ouro mailbox list [--json]")
+    expect(() => parseOuroCommand(["mailbox"])).toThrow("Usage: ouro mailbox send|list|read|wait|withdraw|deliver [--json]")
     expect(() => parseOuroCommand(["outlook", "--json"])).toThrow("Unknown command")
     expect(parseOuroCommand(["hatch"])).toEqual({ kind: "hatch.start" })
     expect(

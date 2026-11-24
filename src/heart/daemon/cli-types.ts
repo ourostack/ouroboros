@@ -86,7 +86,7 @@ export type OuroCliCommand =
   | { kind: "voice.leave"; agent: string }
   | { kind: "voice.status"; agent: string }
   | { kind: "session.list"; agent?: string }
-  | { kind: "mailbox.action"; action: import("../letters/doors").MailboxActionId; json?: true }
+  | { kind: "mailbox.action"; action: import("../letters/doors").MailboxActionId; input: Record<string, unknown>; agent?: string; json?: true; dryRun?: true }
   | { kind: "thoughts"; agent?: string; last?: number; json?: boolean; follow?: boolean }
   | { kind: "friend.list"; agent?: string }
   | { kind: "friend.show"; friendId: string; agent?: string }

@@ -173,7 +173,7 @@ describe("getCommandHelp()", () => {
   })
 
   it("has no help for the removed outlook alias, and mailbox help names only the generated words", () => {
-    expect(getCommandHelp("mailbox")).toContain("ouro mailbox <list> [--json]")
+    expect(getCommandHelp("mailbox")).toContain("ouro mailbox <send|list|read|wait|withdraw|deliver> [--json]")
     expect(getCommandHelp("mailbox")).not.toMatch(/--open|--port|browser/)
     expect(getCommandHelp("outlook")).toBeNull()
   })
@@ -525,7 +525,7 @@ describe("runOuroCli help execution", () => {
       errors: Array<{ code: string }>
     }
     // The old page's bare `mailbox` command is gone; `mailbox` now names the generated group, carded read-only.
-    expect(help.commands.find((command) => command.name === "mailbox")).toMatchObject({ consent: "read", errors: [expect.objectContaining({ code: "usage" }), expect.objectContaining({ code: "unknown-flag" })] })
+    expect(help.commands.find((command) => command.name === "mailbox")).toMatchObject({ consent: "read", errors: [expect.objectContaining({ code: "usage" }), expect.objectContaining({ code: "unknown-flag" }), expect.objectContaining({ code: "person-only" })] })
     expect(help.commands.find((command) => command.name === "check")).toMatchObject({ example: "ouro check --lane inner" })
     expect(help.entryPoints).toHaveLength(CLI_ENTRY_POINTS.length)
     expect(help.errors.map((error) => error.code)).toEqual(["unknown-door"])
