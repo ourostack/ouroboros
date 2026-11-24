@@ -12,11 +12,17 @@
  *   dot-file and dot-folder (`.git`, `.backup/`, ...) and every symbolic link.
  * - **Created empty:** every path Slugger's profile may write, so `books/` too, where the sandbox writes the books
  *   CLI's synthetic settings.
- * - **Leak lint.** The household's names, handles, emails and addresses are kept in his private bundle at
+ * - **Leak patterns.** The household's names, handles, emails and addresses are kept in his private bundle at
  *   `eval/leak-patterns.json` (`{ "literals": [...] }`) and never committed to the harness. They are read from the
- *   same commit as the rest, so an older commit is checked against the list it had then. Each one is matched, in any
- *   case, against every projected file's and folder's name, every file's contents and every gap before any model call.
- *   A match, or no pattern file, stops the projection and removes it; the error gives counts only, never a match.
+ *   same commit as the rest, so an older commit is checked against the list it had then. A pattern matches in any case
+ *   and as a whole word only: not inside a longer run of letters (digits don't count, so `name99` matches). One with a
+ *   letter outside basic Latin matches anywhere (see `wordPattern`).
+ * - **Redaction.** Every match in a copied file's contents is replaced with a placeholder fixed by the pattern's place
+ *   in the list, the same in every file: "Member A", "Member B", ..., or "member-a@example.invalid" for a pattern
+ *   holding `@`, or "@member-a" for a handle starting with it. Longer patterns are replaced first. A gap gives only how many strings and files were replaced.
+ * - **Leak lint.** After redaction the patterns are matched again against every projected file's and folder's name,
+ *   every file's contents and every gap, before any model call. A match, or no pattern file, stops the projection and
+ *   removes it; the error gives counts only, never a match.
  * `git archive` follows the bundle repository's `export-ignore` and `export-subst` attributes; a top-level entry left
  * out that way fails the archive's completeness check.
  * What differs from the live bundle comes back as `gaps`, which every report lists.
@@ -187,10 +193,75 @@ export function readLeakPatterns(archiveDir: string): string[] {
   return (literals as string[]).map((literal) => literal.trim().toLowerCase())
 }
 
+/**
+ * A pattern in any case, as a whole word: not next to another letter, so a name inside a longer word is no match, but
+ * a handle next to digits (`name99`) is. Words in a pattern match across any run of spaces or line breaks. A pattern
+ * with a letter outside basic Latin matches anywhere, since scripts such as Japanese don't separate words and Hebrew
+ * joins prefixes to names.
+ */
+function wordPattern(pattern: string): RegExp {
+  const body = pattern.split(/\s+/).map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+")
+  if (/[^\p{ASCII}]/u.test(pattern)) return new RegExp(body, "giu")
+  return new RegExp(`(?<![\\p{L}\\p{M}])${body}(?![\\p{L}\\p{M}])`, "giu")
+}
+
+const holdsAny = (text: string, patterns: string[]): boolean => patterns.some((pattern) => wordPattern(pattern).test(text))
+
+/**
+ * The placeholder for the pattern at `index`: "Member A" to "Member Z", then "Member AA"; an email's is an address
+ * and a handle's (`@name`) a handle. A pattern such as `member` or `example` would match its own placeholder, which the
+ * second lint then refuses.
+ */
+export function placeholder(index: number, pattern: string): string {
+  let letters = ""
+  for (let n = index + 1; n > 0; n = Math.floor((n - 1) / 26)) letters = String.fromCharCode(65 + ((n - 1) % 26)) + letters
+  if (pattern.startsWith("@")) return `@member-${letters.toLowerCase()}`
+  return pattern.includes("@") ? `member-${letters.toLowerCase()}@example.invalid` : `Member ${letters}`
+}
+
+const utf8 = new TextDecoder("utf-8", { fatal: true })
+
+function filesUnder(root: string): string[] {
+  const found: string[] = []
+  const walk = (relative: string): void => {
+    const full = path.join(root, relative)
+    if (fs.lstatSync(full).isDirectory()) for (const name of fs.readdirSync(full).sort()) walk(relative ? path.posix.join(relative, name) : name)
+    else found.push(relative)
+  }
+  walk("")
+  return found
+}
+
+/**
+ * Replaces every match in the contents of each file under `root` with its pattern's placeholder. A file that isn't
+ * UTF-8 text is left as it is, so the lint after this refuses it if it holds a pattern.
+ */
+export function redact(root: string, patterns: string[]): { strings: number; files: number } {
+  const order = patterns.map((pattern, index) => ({ pattern, index })).sort((a, b) => b.pattern.length - a.pattern.length || a.index - b.index)
+  let strings = 0
+  let files = 0
+  for (const relative of filesUnder(root)) {
+    const full = path.join(root, relative)
+    let text: string
+    try { text = utf8.decode(fs.readFileSync(full)) } catch { continue }
+    let here = 0
+    for (const { pattern, index } of order) {
+      text = text.replace(wordPattern(pattern), () => { here += 1; return placeholder(index, pattern) })
+    }
+    if (here > 0) {
+      // A failed write's error names the file, whose path the lint hasn't checked yet.
+      try { fs.writeFileSync(full, text) } catch { refuse("a projected file couldn't be rewritten with placeholders") }
+      strings += here
+      files += 1
+    }
+  }
+  return { strings, files }
+}
+
 /** Every file or folder under `root` whose path, or a file's contents, holds a pattern, by its path relative to `root`. */
 export function leakLint(root: string, patterns: string[]): string[] {
   const flagged: string[] = []
-  const holds = (text: string): boolean => patterns.some((pattern) => text.toLowerCase().includes(pattern))
+  const holds = (text: string): boolean => holdsAny(text, patterns)
   const walk = (relative: string): void => {
     const full = path.join(root, relative)
     if (fs.lstatSync(full).isDirectory()) {
@@ -218,6 +289,7 @@ export function projectSlugger(input: SluggerProjectionInput): { gaps: string[] 
   const patterns = readLeakPatterns(input.archive)
   fs.mkdirSync(input.out, { recursive: true, mode: 0o755 })
   const gaps: string[] = []
+  let redactedStrings = 0
   try {
     for (const include of input.include.filter((each) => each !== "agent.json")) {
       const parts = include.split("/")
@@ -241,14 +313,17 @@ export function projectSlugger(input: SluggerProjectionInput): { gaps: string[] 
       "friends, state, arc, desk and books: start empty",
       "browser: left out",
     )
+    const redacted = redact(input.out, patterns)
+    redactedStrings = redacted.strings
+    if (redacted.strings > 0) gaps.push(`${redacted.strings} private strings replaced with placeholders in ${redacted.files} ${redacted.files === 1 ? "file" : "files"}`)
     // Gaps go into every report, so they are checked like the files are.
-    const flagged = leakLint(input.out, patterns).length + gaps.filter((gap) => patterns.some((pattern) => gap.toLowerCase().includes(pattern))).length
+    const flagged = leakLint(input.out, patterns).length + gaps.filter((gap) => holdsAny(gap, patterns)).length
     if (flagged > 0) refuse(`${flagged} projected path(s) or gap(s) hold a leak pattern; nothing was run`)
   } catch (error) {
     fs.rmSync(input.out, { recursive: true, force: true })
     throw error
   }
-  emitNervesEvent({ component: "eval", event: "eval.slugger_projection", message: "projected Slugger's bundle", meta: { gaps: gaps.length } })
+  emitNervesEvent({ component: "eval", event: "eval.slugger_projection", message: "projected Slugger's bundle", meta: { gaps: gaps.length, redacted: redactedStrings } })
   return { gaps }
 }
 
