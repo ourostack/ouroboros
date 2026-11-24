@@ -19,6 +19,7 @@ import {
   readLocalPresenceSettings,
   readPresenceForAgent,
   rosterMachine,
+  type PeerAppSession,
   type PeerRecord,
   type Presence,
 } from "../heart/daemon/presence"
@@ -54,11 +55,22 @@ function sessionCounts(record: PeerRecord | undefined): string {
 
 const PEER_SESSIONS_SHOWN = 8
 
+/** Where a peer's work can be followed passively: its desk card, the repository branch and pull request the card names, and when the card last changed. */
+function deskPointers(desk: PeerAppSession["desk"], nowMs: number): string {
+  if (!desk?.track) return ""
+  const parts = [`desk card ${desk.track}/${desk.slug ?? "?"}${desk.status ? ` [${desk.status}]` : ""}`]
+  if (desk.repo || desk.branch) parts.push(`${desk.repo ?? "repo?"}@${desk.branch ?? "branch?"}`)
+  if (desk.url) parts.push(`pr ${desk.url}`)
+  if (desk.session) parts.push(`session ${desk.session}`)
+  if (desk.file) parts.push(`log ${desk.file}${desk.deskRepo ? ` in ${desk.deskRepo}` : ""}${desk.updatedAt ? ` (updated ${ago(desk.updatedAt, nowMs)})` : ""}`)
+  return `, ${parts.join("; ")}`
+}
+
 /** The Copilot app sessions a peer last published, so work running there is visible without reaching the machine. */
 function peerSessionLines(record: PeerRecord | undefined, nowMs: number): string[] {
   const sessions = record?.appSessions?.sessions ?? []
   if (!record?.appSessions || sessions.length === 0) return []
-  const shown = sessions.slice(0, PEER_SESSIONS_SHOWN).map((session) => `  - ${session.name ?? session.id}${session.state ? ` (${session.state})` : ""}${session.desk?.track ? `, desk card ${session.desk.track}/${session.desk.slug ?? "?"}${session.desk.status ? ` [${session.desk.status}]` : ""}` : ""}`)
+  const shown = sessions.slice(0, PEER_SESSIONS_SHOWN).map((session) => `  - ${session.name ?? session.id}${session.state ? ` (${session.state})` : ""}${deskPointers(session.desk, nowMs)}`)
   const more = sessions.length > shown.length ? [`  - and ${sessions.length - shown.length} more`] : []
   return [`  its copilot app sessions as of ${ago(record.appSessions.at, nowMs)}:`, ...shown, ...more]
 }
