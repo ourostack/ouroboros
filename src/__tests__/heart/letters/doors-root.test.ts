@@ -11,7 +11,7 @@ vi.mock("../../../heart/identity", async (importOriginal) => ({
 describe("the generated doors under a mocked repo root", () => {
   it("still reads the real generated files", async () => {
     const { readMailboxDoors } = await import("../../../heart/letters/doors")
-    expect(readMailboxDoors().commands.map((c) => c.name)).toEqual(["mailbox list"])
+    expect(readMailboxDoors().commands.map((c) => c.name)).toContain("mailbox list")
     const { CLI_COMMANDS } = await import("../../../heart/daemon/cli-manifest")
     expect(CLI_COMMANDS.map((c) => c.name)).toContain("mailbox list")
   })
@@ -34,7 +34,7 @@ describe("where the generated doors are read from", () => {
     try {
       const doors = await import("../../../heart/letters/doors")
       doors.resetMailboxDoorsForTest()
-      expect(doors.readMailboxDoors().mcpTools.map((t) => t.name)).toEqual(["mailbox_list"])
+      expect(doors.readMailboxDoors().mcpTools.map((t) => t.name)).toContain("mailbox_list")
     } finally {
       vi.doUnmock("fs")
     }

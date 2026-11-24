@@ -156,7 +156,13 @@ import { parseOuroCommand, inferAgentNameFromRemote } from "./cli-parse"
 import { isAgentProvider, usage } from "./cli-parse"
 import { getGroupedHelp, getCommandHelp } from "./cli-help"
 import { cliHelpJson } from "./cli-manifest"
-import { runMailboxAction } from "../letters/doors"
+import { MailboxDoorError, renderMailboxResult, runMailboxAction } from "../letters/doors"
+
+/** The codes the mailbox commands fail with: the doors' own checks and the daemon's letters writer. */
+export const MAILBOX_CLI_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  "daemon-down", "bad-input", "not-found",
+  "invalid-letter", "no-person", "not-sender", "not-waiting", "no-answering-handle",
+])
 import {
   executePluginInstall,
   executePluginList,
@@ -638,6 +644,7 @@ async function listCliAgents(deps: OuroCliDeps): Promise<string[]> {
 type AgentResolutionFailureMode = "throw" | "return-message"
 type MissingAgentResolvableKind =
   | "daemon.logs.prune"
+  | "mailbox.action"
   | "friend.list"
   | "friend.show"
   | "friend.create"
@@ -784,6 +791,7 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "a2a.serve":
     case "a2a.escalation":
     case "a2a.delegatedCommands":
+    case "mailbox.action":
       return "throw"
     case "provider.use":
     case "provider.check":
@@ -10160,8 +10168,16 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   // ── mailbox (local: each command runs the action ouro-actions generated it from) ──
   if (command.kind === "mailbox.action") {
-    const result = runMailboxAction(command.action, {})
-    const message = command.json ? JSON.stringify(result) : result.count === 0 ? "No letters are waiting." : result.listing
+    let result: Awaited<ReturnType<typeof runMailboxAction>>
+    try {
+      result = await runMailboxAction(command.action, command.input, { agent: command.agent, socketPath: deps.socketPath, ...(command.dryRun ? { dryRun: true } : {}) })
+    } catch (error) {
+      // A refusal fails the command with its card's code, which the CLI prints as its last stderr line; a code the
+      // mailbox commands don't answer with fails it as an error.
+      if (!(error instanceof MailboxDoorError)) throw error
+      throw MAILBOX_CLI_REFUSAL_CODES.has(error.code) ? Object.assign(new Error(error.message), { code: error.code }) : new Error(error.message)
+    }
+    const message = command.json ? JSON.stringify(result) : renderMailboxResult(command.action, result)
     deps.writeStdout(message)
     return message
   }
