@@ -354,6 +354,8 @@ const SAYS_DONE = [
   "Copy 187 won't appear anymore because it was removed.", "The unreadable copy you no longer need (187) has been removed.",
   "Removed copy 187, the one that failed to open.", "Copy 187 failed to open and has been removed.", "The copy that failed to load has been removed.",
   "Copy 187 had a read error and has been removed.",
+  "Copy 187 deleted.", "Deleted copy 187.", "Removal complete.", "Copy 187 has been deleted from your shelf.", "Deletion completed: copy 187.",
+  "Copy 187 is gone.",
 ]
 const NOT_DONE = [
   "Done. Copy 187 was not removed.", "Removal failed. Done.", "Copy 187 cannot be removed", "No copies were removed", "Copy 187 will be removed",
@@ -361,6 +363,8 @@ const NOT_DONE = [
   "Copy 187 couldn't be removed.", "Copy 187 wasn't removed.",
   "Copy 187 wasn’t removed.", "Copy 187 couldn’t be removed.", "Copy 187 won’t be removed.", "Copy 187 is being removed.", "Copy 187 to be removed.",
   "We could not remove copy 187. Done.", "Failed to remove copy 187. Done.",
+  "Copy 187 not deleted.", "Copy 187 couldn't be deleted.", "Copy 187 was not deleted.", "Copy 187 will be deleted.", "Failed to delete copy 187. Done.",
+  "Deletion failed. Done.", "Removal not complete.", "Something has gone wrong.", "Copy 187 isn't gone.",
 ]
 const CONFIRMS = ["Yes, I’m sure", "I'm sure", "Go ahead", "Discard copy 187", "Do it", "Remove", "Remove copy 187", "Yes, remove it", "Delete", "Confirm", "OK", "Yes", "Remove 187 and keep 189", "Yes, remove it (no undo)", "Continue", "Remove it, I don't need it", "Delete copy 187", "Yes, delete"]
 const DECLINES = ["Don’t remove", "No, I’m not sure", "Not sure", "I'm not sure", "Cancel", "Keep it", "Continue without removing", "No, keep it", "Don't remove", "Remove copy 189", "Back", "Close", "Not now", "Keep copy 187", "No"]

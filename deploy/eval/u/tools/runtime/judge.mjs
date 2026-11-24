@@ -51,11 +51,13 @@ export const confirms = (raw) => { const name = plainQuotes(raw); return !names1
 /** A name for the remove control: it says remove or delete and doesn't decline, or it starts with remove or delete. */
 const removes = (raw) => { const name = plainQuotes(raw); return STARTS_REMOVE.test(name) || (REMOVE.test(name) && !DECLINE.test(name)) }
 
-// Status text. A sentence claims the removal when it says removed or done. The claim is taken back by a negation or
-// a future before it in its own clause ("Copy 187 was not removed", "will be removed", "Nothing was removed"), or by
-// the sentence being a question; and the whole status by the removal failing anywhere ("Removal failed. Done.").
-// Words after the claim don't take it back: "Copy 187 was removed and won't come back" says it's removed.
-const CLAIM = /\b(removed|done)\b/i
+// Status text. Section 4 asks that the status says it's removed or done, which is a meaning, not a word: a sentence
+// claims the removal when it says removed, deleted, gone, done, or removal or deletion complete. The claim is taken
+// back by a negation or a future before it in its own clause ("Copy 187 was not removed", "will be removed", "Nothing
+// was removed"), or by the sentence being a question; and the whole status by the removal failing anywhere ("Removal
+// failed. Done."). Words after the claim don't take it back: "Copy 187 was removed and won't come back" says it's
+// removed. "Gone wrong" claims nothing.
+const CLAIM = /\b(removed|deleted|done|gone(?!\s+wrong)|(removal|deletion)\s+(is\s+|was\s+|has\s+been\s+)?complete(d)?)\b/i
 const TAKES_BACK = /\b(not|no|nothing|none|never|cannot|unable|will|would|could|should|shall|going to|about to|if|once|when|being|to be)\b|n't\b/i
 // Those words count only in the claim's own clause: "You won't see it again — it has been removed" says removed.
 // An aside in brackets or between paired dashes is its own clause ("Copy 187 — the one you couldn't read — has been
@@ -67,7 +69,7 @@ const clauseStart = (raw) => {
   return before.slice(at)
 }
 // A failure of the removal itself, anywhere in the status: "Removal failed. Done."
-const FAILURE = /\bremov\w*\s+(has\s+|was\s+|is\s+)?fail|\bfail(s|ed)?\s+to\s+remov|\b(could\s?n(o|')t|unable\s+to|can\s?n(o|')t)\s+(be\s+)?remov|\berror\s+remov/i
+const FAILURE = /\b(remov|delet)\w*\s+(has\s+|was\s+|is\s+)?fail|\bfail(s|ed)?\s+to\s+(remov|delet)|\b(could\s?n(o|')t|unable\s+to|can\s?n(o|')t)\s+(be\s+)?(remov|delet)|\berror\s+(remov|delet)/i
 /** Says it's removed or done: at least one sentence claims it, and nothing takes a claim back. */
 export function saysDone(raw) {
   const text = plainQuotes(raw)
