@@ -22,6 +22,7 @@ This harness is built for the agent inhabiting it. Two principles guide everythi
 ### Delivery Rules
 
 - Ship small increments to `main`, trunk-based. Each logical change is a short-lived branch and a pull request published with `gh ouro-pr` (auto-merge on), which merges as fast as possible (30 minutes is the outer alarm, not the goal) under ourostack's [shared rule](https://github.com/ourostack/.github/blob/main/agents/prs-merge-within-30-minutes.md). Never hold work on a long-lived branch or batch it into a milestone; ship the smallest change that delivers value and is verified.
+- **[Images must load on the recipient's phone](https://github.com/ourostack/.github/blob/main/agents/images-load-on-mobile.md).** Attach images with the platform's own attachment (never a blob/ or raw.githubusercontent.com link, never a copy to a public place), and say only what was observed: a served upload is not a rendered page, and native Mobile and Teams rendering is unverified.
 - Use a separate git worktree for each piece of parallel work. In a fresh worktree, run `npm run worktree:bootstrap` before local npm/npx checks: it reuses another checkout's matching `node_modules` offline, or installs the repo-pinned dependencies without lifecycle scripts.
 - Keep commits atomic and descriptive.
 - Never force-push or rewrite history for shared branches.
