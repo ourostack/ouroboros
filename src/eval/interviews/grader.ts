@@ -3,7 +3,8 @@
  * runner's private reports and request logs and Appendix B. It runs no model and sends nothing. Its result is counts
  * and labels only (no trace text, notes or reasons), so it can be committed as the study's result.
  *
- * Section 3: no leak (the brand pattern over every logged request body, zero matches outside void sessions); no
+ * Section 3: no leak (the brand pattern over every logged request body, its provider ciphertext left out as the latch's
+ * scan leaves it out, zero matches outside void sessions); no
  * identification (a session is broken when Q4 names the `ouro` label with a product matching /ouro/i); a valid count
  * (at most 3 of 18 broken, or 1 of 9 in the reduced design). Section 6: k of n sessions with `ouro` first, where every
  * session of the design counts and one that is void, crashed, missing or not run counts as `ouro` not first; the three
@@ -12,7 +13,7 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 import { wilsonInterval } from "../domain/stats"
 import type { Session } from "./allocation"
-import { ARMS, BRAND_PATTERN, type Product } from "./protocol"
+import { ARMS, BRAND_PATTERN, scannedText, type Product } from "./protocol"
 import type { SessionRecord } from "./runner"
 
 export type LoggedRequest = { session: string; kind: string; sent: boolean; body: string }
@@ -58,6 +59,19 @@ export type StudyGrade = {
 
 const brand = (): RegExp => new RegExp(BRAND_PATTERN, "gi")
 
+/** A logged body as the latch's scan read it: the provider's ciphertext left out of a JSON body; any other text as it is. */
+function readable(body: string): string {
+  let value: unknown
+  try {
+    value = JSON.parse(body)
+  } catch {
+    return body
+  }
+  return scannedText(value)
+}
+
+const brandMatches = (body: string): number => (readable(body).match(brand()) ?? []).length
+
 /** Q4's guess for `label`, whether the model keyed it `K`, ` k ` or `tool interface K`. */
 export function guessFor(guesses: Record<string, string> | null | undefined, label: string): string | undefined {
   const want = label.toLowerCase()
@@ -99,10 +113,10 @@ export function gradeStudy(input: { design: Session[]; records: SessionRecord[];
     if (record && JSON.stringify(record.labels) !== labels) throw new Error(`session ${session.id}'s report gives labels other than Appendix B's`)
   }
   const voids = new Set(input.records.filter((record) => record.status === "void").map((record) => record.id))
-  const leaking = input.requests.filter((request) => request.sent && (request.body.match(brand()) ?? []).length > 0)
+  const leaking = input.requests.filter((request) => request.sent && brandMatches(request.body) > 0)
   const leak = {
     requests: input.requests.length,
-    matches: input.requests.reduce((sum, request) => sum + (request.body.match(brand()) ?? []).length, 0),
+    matches: input.requests.reduce((sum, request) => sum + brandMatches(request.body), 0),
     outsideVoid: leaking.filter((request) => !voids.has(request.session)).length,
     sessions: [...new Set(leaking.map((request) => request.session))],
   }
