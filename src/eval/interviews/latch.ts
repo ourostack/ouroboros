@@ -14,7 +14,7 @@ import type { ProviderRuntime, ProviderTurnRequest } from "../../heart/core"
 import type { UsageData } from "../../heart/streaming"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { creditsOf, meteredRuntime, type BudgetLedger, type Cost, type Hold, type Pricing } from "../budget"
-import { brandHits } from "./protocol"
+import { brandHits, scannedText } from "./protocol"
 import { rewriteRequest, type Replacement, type RewriteCounts } from "./rewrite"
 
 /**
@@ -111,10 +111,14 @@ export class RefusedCall extends Error {
  * some providers send as metadata. The rest (reasoning effort, tool choice) are the provider's own fixed words.
  */
 export function requestText(request: ProviderTurnRequest): string {
-  return JSON.stringify({
+  return JSON.stringify(requestFields(request))
+}
+
+function requestFields(request: ProviderTurnRequest): Record<string, unknown> {
+  return {
     systemPrompt: request.systemPrompt ?? null, tools: request.activeTools, deferred: request.deferredTools ?? [], messages: request.messages,
     ...(request.traceId !== undefined ? { traceId: request.traceId } : {}),
-  })
+  }
 }
 
 /**
@@ -140,10 +144,12 @@ export function guardedRuntime(input: {
     const gate = input.gateFor(own)
     const rewritten = input.replacements ? rewriteRequest(own, input.replacements) : undefined
     const request = rewritten?.request ?? own
-    const body = requestText(request)
+    const fields = requestFields(request)
+    const body = JSON.stringify(fields)
     const counted = rewritten ? { rewrites: rewritten.rewrites } : {}
     if (rewritten && input.rewrites) for (const [tier, n] of Object.entries(rewritten.rewrites)) input.rewrites[tier] = (input.rewrites[tier] ?? 0) + n
-    const hits = brandHits(body)
+    // The log keeps the whole body; the scan reads it with the provider's ciphertext left out (`scannedText`).
+    const hits = brandHits(scannedText(fields))
     if (hits.length > 0) {
       latch._void(hits)
       input.log({ kind: gate.kind, sent: false, body, ...counted })
