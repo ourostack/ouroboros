@@ -266,6 +266,11 @@ describe("the interview runner", () => {
     const { d } = deps(sandbox(() => ({})))
     await expect(runInterviews(args({ sessions: ["X-9"] }), d)).rejects.toThrow("no session X-9 in Appendix B")
     await expect(runInterviews(args({ sessions: ["H-1"] }), d)).rejects.toThrow("session H-1 is product H, which has no runner kit yet")
+    // A kit's own agent images must be among the run's, or no session starts.
+    const imaged = { ...d, kits: { X: { ...X_KIT, images: ["codex", "openhands"] } } }
+    await expect(runInterviews(args(), { ...imaged, agentImages: ["codex"] })).rejects.toThrow("session X-pilot needs the agent image openhands; name it in --images as openhands=<image>")
+    await expect(runInterviews(args(), imaged)).rejects.toThrow("session X-pilot needs the agent image codex; name it in --images as codex=<image>")
+    expect(d.started.has("X-pilot")).toBe(false)
     await expect(runInterviews(args(), { ...d, loadCases: () => [cases.get("unreadable-edition")!] })).rejects.toThrow(/needs case remove-bad-copy/)
     await expect(runInterviews(args(), { ...d, outputExists: (file) => file.endsWith(".ndjson") })).rejects.toThrow("/r/run.requests.ndjson already exists")
     await expect(runInterviews(args({ priceIn: undefined }), d)).rejects.toThrow(/needs --price-in/)

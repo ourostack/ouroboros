@@ -77,6 +77,8 @@ export type ProductKit = {
    * brand scan. The final conversation is the runner's own text and is not rewritten.
    */
   replacements?(arm: string): readonly Replacement[] | undefined
+  /** The named agent images the kit's guests run in, each of which the run's `--images` must name. */
+  images?: readonly string[]
 }
 
 /** What a call the interface refused, before any books operation ran, is written as for scoring, in every arm. */
@@ -136,6 +138,8 @@ export type InterviewDeps = {
   resolveTarget(spec: string, creds: TargetCredentials): Promise<ResolvedTarget>
   runCase: RunCase
   kits: Partial<Record<Product, ProductKit>>
+  /** The agent images the run's `--images` names, besides the default one; none when it names none. */
+  agentImages?: readonly string[]
   outputExists(file: string): boolean
   writeReport(file: string, report: unknown): void
   /** Opens the private request log; each call appends one line. */
@@ -346,6 +350,10 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
   if (rerun) throw new Error(`session ${rerun.id}${version === 1 ? "" : ` of version ${version}`} has already started once; a session is never rerun`)
   const missingKit = chosen.find((session) => !deps.kits[session.product])
   if (missingKit) throw new Error(`session ${missingKit.id} is product ${missingKit.product}, which has no runner kit yet`)
+  for (const session of chosen) {
+    const missing = (deps.kits[session.product]!.images ?? []).find((name) => !(deps.agentImages ?? []).includes(name))
+    if (missing) throw new Error(`session ${session.id} needs the agent image ${missing}; name it in --images as ${missing}=<image>`)
+  }
   const fidelity = fidelityOf(deps.kits, chosen)
   const cases = new Map(deps.loadCases(args.cases).map((c) => [c.id, c]))
   const missingCase = chosen.find((session) => !caseOf(deps.kits[session.product]!, cases, session))
