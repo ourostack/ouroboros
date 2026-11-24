@@ -31,5 +31,7 @@ describe("appSessionsRecord", () => {
     expect(appSessionsRecord(root, NOW)).toEqual({})
     put(path.join(appSessionsStateDir(root), "snapshot.json"), { at: "2026-11-24T11:58:00.000Z", counts: {} })
     expect(appSessionsRecord(root, NOW).appSessions!.sessions).toEqual([])
+    snapshot("2026-11-24T11:58:00.000Z"); put(path.join(appSessionsStateDir(root), "digest.json"), { at: "2026-11-24T11:55:00.000Z" })
+    expect(appSessionsRecord(root, NOW).appSessions!.sessions![0]).not.toHaveProperty("desk")
   })
 })
