@@ -28,7 +28,7 @@ export async function cleanupFixtures(): Promise<void> {
   vi.restoreAllMocks()
   vi.useRealTimers()
   while (closers.length) await closers.pop()!()
-  while (dirs.length) await fs.rm(dirs.pop()!, { recursive: true, force: true })
+  while (dirs.length) await fs.rm(dirs.pop()!, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 }
 
 export async function fixture(overrides: Partial<TwilioPhoneBridgeOptions> = {}) {
