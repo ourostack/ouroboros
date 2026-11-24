@@ -7,6 +7,7 @@ import * as zlib from "zlib"
 
 import { emitNervesEvent } from "../../nerves/runtime"
 import { readRuntimeCredentialConfig } from "../runtime-credentials"
+import type { HostedMailCopies, ProvenMailroomCopiesResult } from "./mailroom-copy-proof"
 
 /**
  * Harness-side retention for an agent's `state/`. It never deletes data: it gzips files that nothing reads or writes
@@ -20,7 +21,8 @@ import { readRuntimeCredentialConfig } from "../runtime-credentials"
  * local. Once its mail is hosted (`mailroom.azureAccountUrl` in its runtime config, which is what makes
  * `mailroom/reader.ts` use Azure Blob), the files are left over from before and nothing reads them; the mail search
  * cache (`state/mail-search`) then comes from the hosted store. Slugger's were 8.6 GB. To use the file store again,
- * `gunzip` them back first.
+ * `gunzip` them back first. A gzipped copy is then deleted only once Blob is proven to hold the same mail
+ * (`mailroom-copy-proof.ts`); any copy whose upload can't be confirmed stays.
  */
 
 export interface SessionArchiveRetentionResult {
@@ -200,6 +202,8 @@ export interface AgentStateRetentionResult {
   agent: string
   sessionArchives: SessionArchiveRetentionResult
   mailroom: MailroomRetentionResult
+  /** Gzipped mail copies checked against Blob; null when mail isn't hosted or its container couldn't be opened. */
+  mailroomCopies: ProvenMailroomCopiesResult | null
 }
 
 export interface RunAgentStateRetentionInput {
@@ -209,6 +213,13 @@ export interface RunAgentStateRetentionInput {
   compactSessions?: (input: CompactLegacySessionArchivesInput) => Promise<SessionArchiveRetentionResult>
   /** Where each agent's mail lives. Default: the runtime config this process has loaded; "unknown" leaves mail alone. */
   mailroomStore?: (agent: string) => MailroomStore
+  /** Read-only lookups in each agent's hosted mail container. Default: opened from the agent's runtime config. */
+  hostedMailCopies?: (agent: string) => HostedMailCopies | null | Promise<HostedMailCopies | null>
+}
+
+// Loaded only for an agent whose mail is hosted, so the daemon's startup doesn't load the mail store.
+async function defaultHostedMailCopies(agent: string): Promise<HostedMailCopies | null> {
+  return (await import("../../mailroom/reader")).openHostedMailCopies(agent)
 }
 
 /** Runs retention for each agent in turn; one agent's failure doesn't stop the rest. Telemetry is counts only. */
@@ -237,7 +248,15 @@ export async function runAgentStateRetention(input: RunAgentStateRetentionInput)
         message: "gzipped the local mail file store once the agent's mail is hosted",
         meta: { agent, ...mailroom },
       })
-      results.push({ agent, sessionArchives, mailroom })
+      const hosted = store === "hosted" ? await (input.hostedMailCopies ?? defaultHostedMailCopies)(agent) : null
+      const mailroomCopies = hosted
+        ? await (await import("./mailroom-copy-proof")).pruneProvenMailroomCopies({
+          mailroomRoot: path.join(input.bundlesRoot, `${agent}.ouro`, "state", "mailroom"),
+          hosted,
+          agent,
+        })
+        : null
+      results.push({ agent, sessionArchives, mailroom, mailroomCopies })
     } catch (error) {
       emitNervesEvent({
         level: "warn",
