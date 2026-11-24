@@ -192,6 +192,22 @@ describe("drainAndSendPendingTeams", () => {
     )
   })
 
+  it("drops a pending message that sat unsent past the expiry, on two consecutive drains", async () => {
+    const friendStore = { get: vi.fn().mockResolvedValue(makeFriend()), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn(), hasAnyFriends: vi.fn(), listAll: vi.fn() }
+    const botApi = makeBotApi()
+    const teams = await loadTeams()
+    for (const text of ["old one", "old two"]) {
+      const file = writePendingFile(pendingRoot, "friend-uuid-1", "session", { from: "testagent", friendId: "friend-uuid-1", channel: "teams", key: "session", content: text, timestamp: 1 })
+      const old = new Date(Date.now() - 7 * 60 * 60_000)
+      fs.utimesSync(file, old, old)
+      const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
+      expect(result).toEqual({ sent: 0, skipped: 1, failed: 0 })
+      expect(fs.existsSync(file)).toBe(false)
+    }
+    expect(botApi._mocks.activityCreate).not.toHaveBeenCalled()
+    expect(vi.mocked(emitNervesEvent)).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.teams_pending_expired" }))
+  })
+
   it("deletes the pending file after successful send", async () => {
     const friend = makeFriend()
     const friendStore = {

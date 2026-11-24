@@ -4,6 +4,7 @@ import { createHash } from "crypto"
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
+import { gitRuntimeEnv, resolveGitBinary } from "./git-binary"
 import type { SyncConfig } from "./config"
 import type { SyncClassification } from "./sync-classification"
 import { parseBundleSyncFailure, type BundleSyncFailure } from "./sync-health"
@@ -240,7 +241,7 @@ function identityArgs(agentName: string): string[] {
 
 /** git's messages are matched in English, so the locale is pinned. */
 function gitEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-  return { ...process.env, GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", LANG: "C", ...extra }
+  return { ...gitRuntimeEnv(process.env), GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", LANG: "C", ...extra }
 }
 
 /**
@@ -255,9 +256,10 @@ export function syncNetworkEnv(): NodeJS.ProcessEnv {
 }
 
 function runGit(agentRoot: string, agentName: string, args: string[], env?: NodeJS.ProcessEnv, input?: string): GitRun {
-  const run = spawnSync("git", [...identityArgs(agentName), ...args], {
+  const runEnv = gitEnv(env)
+  const run = spawnSync(resolveGitBinary(runEnv), [...identityArgs(agentName), ...args], {
     cwd: agentRoot,
-    env: gitEnv(env),
+    env: runEnv,
     input,
     stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     timeout: SYNC_GIT_TIMEOUT_MS,
@@ -315,9 +317,10 @@ function runGitAsync(
   signal: AbortSignal | undefined,
 ): Promise<AsyncGitRun> {
   return new Promise((resolve) => {
-    const child = spawn("git", [...identityArgs(agentName), ...args], {
+    const childEnv = syncNetworkEnv()
+    const child = spawn(resolveGitBinary(childEnv), [...identityArgs(agentName), ...args], {
       cwd: agentRoot,
-      env: syncNetworkEnv(),
+      env: childEnv,
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
     })
