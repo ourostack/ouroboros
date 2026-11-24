@@ -65,6 +65,19 @@ describe("an arm's replacement list", () => {
     expect(toolName("plain")).toBe("plain")
   })
 
+  it("counts how many matches each tier of the list rewrote, in what the model is sent", () => {
+    const tiered: readonly Replacement[] = [
+      { pattern: /You are Acme, based on Zeta-5\./g, with: "You are a coding agent.", tier: "sentence" },
+      { pattern: /acme/gi, with: "agent", tier: "word" },
+      { pattern: /zeta/gi, with: "model", tier: "word" },
+    ]
+    // The sentence once; then "acme" ten times (the prompt twice, the tool three times, the messages five) and "zeta"
+    // once, in the tool result. The sentence's own words are gone before the word tier runs.
+    expect(rewriteRequest(request(), tiered).rewrites).toStrictEqual({ sentence: 1, word: 11 })
+    // A replacement with no tier counts as "list"; a tier that matched nothing is left out.
+    expect(rewriteRequest(request({ systemPrompt: undefined, activeTools: [], messages: [{ role: "user", content: "zeta" }] }), LIST).rewrites).toStrictEqual({ list: 1 })
+  })
+
   it("refuses a replacement that would rewrite only the first match, or two tools that would share a name", () => {
     expect(() => replace("acme acme", [{ pattern: /acme/i, with: "agent" }])).toThrow("replacement /acme/i must be global (the g flag)")
     const clash = request({ activeTools: [
