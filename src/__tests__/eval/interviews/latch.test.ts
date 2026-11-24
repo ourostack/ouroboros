@@ -237,7 +237,10 @@ describe("the guarded runtime", () => {
     for (const random of ["call_abGPTx9Ouro", "fc_8UstjClaude0Im", "resp_xRADIXq", "call_ouroboros2", "msg-gptz"]) expect(ids(random)).toEqual([])
     expect(ids("ouro_call_3")).toEqual(Array(6).fill("ouro"))
     expect(ids("gpt-5")).toEqual(Array(6).fill("gpt"))
-    for (const named of ["call.claude", "x:codex:1", "a/openhands/b", "ouroboros", "run_all-hands_2", "call_GPT"]) expect(ids(named)).toHaveLength(6)
+    for (const named of ["call.claude", "x:codex:1", "a/openhands/b", "ouroboros", "run_all-hands_2", "call_GPT", "run_mui_1", "x_mui", "mui_1"]) expect(ids(named)).toHaveLength(6)
+    expect(ids("call_xmuiz")).toEqual([])
+    // Only a string under an id key is an id: a schema property named id is scanned in full.
+    expect(brandHits(scannedText({ properties: { id: { type: "string", description: "the gptx handle" } } }))).toEqual(["gpt"])
     // A tool call's id in a chat message is an id too.
     expect(brandHits(scannedText({ tool_calls: [{ id: "call_k6upGPTffAT4", type: "function", function: { name: "shell", arguments: "{}" } }] }))).toEqual([])
     expect(brandHits(scannedText({ tool_calls: [{ id: "call_k6upGPTffAT4", type: "function", function: { name: "gptshell", arguments: "{}" } }] }))).toEqual(["gpt"])

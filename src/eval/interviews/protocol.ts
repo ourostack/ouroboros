@@ -104,7 +104,8 @@ export function isOpaque(key: string, value: unknown, holder: unknown): boolean 
  */
 export const ID_FIELDS: ReadonlySet<string> = new Set(["id", "call_id", "tool_call_id", "response_id", "previous_response_id", "item_id"])
 
-const segmentRegex = (): RegExp => new RegExp(`(?<=^|[_\\-.:/])(?:${BRAND_PATTERN})(?=$|[_\\-.:/])`, "gi")
+// The segment's own bounds stand in for the pattern's \b around mui, which fails beside "_" (a word character).
+const segmentRegex = (): RegExp => new RegExp(`(?<=^|[_\\-.:/])(?:${BRAND_PATTERN.replace("\\bmui\\b", "mui")})(?=$|[_\\-.:/])`, "gi")
 
 /**
  * `value` as the JSON the brand scan reads: every opaque string left out (as ""), each id as only the brand words that
