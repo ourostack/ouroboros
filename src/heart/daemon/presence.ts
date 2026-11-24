@@ -463,3 +463,11 @@ export function emitOwnershipChange(agent: string, sense: string, owns: boolean,
     meta: { agent, sense, owner },
   })
 }
+
+/** Peers publish every 15 min; three missed cycles means the record can no longer be trusted. */
+export const STALE_PEER_MS = 45 * 60_000
+
+export function isStaleSeenAt(seenAt: string, nowMs: number): boolean {
+  const ms = nowMs - Date.parse(seenAt)
+  return !Number.isFinite(ms) || ms > STALE_PEER_MS
+}

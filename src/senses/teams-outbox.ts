@@ -19,6 +19,9 @@ export const TEAMS_OUTBOX_DRAIN_INTERVAL_MS = 30_000
 /** A file that does not parse may still be arriving through a pull; it is quarantined only once it is this old. */
 export const TEAMS_OUTBOX_SETTLE_MS = 60_000
 
+/** A forwarded message this old is no longer news; sending it would replay a dead proactive message into Teams and the session. */
+export const TEAMS_OUTBOX_MAX_AGE_MS = 6 * 60 * 60_000
+
 export interface TeamsOutboxEntry {
   version: typeof TEAMS_OUTBOX_VERSION
   friendId: string
@@ -152,6 +155,11 @@ async function drainOnce(agentRoot: string, send: TeamsOutboxSend, options: Team
         continue
       }
       quarantine(agentRoot, name, "unreadable")
+      result.quarantined++
+      continue
+    }
+    if (now() - Date.parse(entry.createdAt) > TEAMS_OUTBOX_MAX_AGE_MS) {
+      quarantine(agentRoot, name, "expired", entry.friendId)
       result.quarantined++
       continue
     }

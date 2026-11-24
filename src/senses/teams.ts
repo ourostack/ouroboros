@@ -2224,6 +2224,9 @@ function scanPendingTeamsFiles(pendingRoot: string): Array<{
   return results
 }
 
+/** Matches the forwarded-outbox expiry in teams-outbox.ts. */
+export const TEAMS_PENDING_MAX_AGE_MS = 6 * 60 * 60_000
+
 export async function drainAndSendPendingTeams(
   store: FriendStore,
   botApi: TeamsBotApi,
@@ -2235,6 +2238,19 @@ export async function drainAndSendPendingTeams(
   const result: TeamsDrainAndSendResult = { sent: 0, skipped: 0, failed: 0 }
 
   for (const { friendId, key, filePath, content } of pendingFiles) {
+    // A pending message that has failed to send for hours is dead news; sending it now would replay it into the session.
+    if (Date.now() - fs.statSync(filePath).mtimeMs > TEAMS_PENDING_MAX_AGE_MS) {
+      result.skipped++
+      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.teams_pending_expired",
+        message: "dropped a pending Teams message too old to send",
+        meta: { friendId },
+      })
+      continue
+    }
     let parsed: { content?: string }
     try {
       parsed = JSON.parse(content) as { content?: string }
