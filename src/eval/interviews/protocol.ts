@@ -77,6 +77,48 @@ export function brandHits(text: string): string[] {
   return hits
 }
 
+/**
+ * Fields whose string value is a provider's ciphertext: `encrypted_content`, the encrypted reasoning a Responses
+ * provider returns and takes back. The scan can't read it (base64's letters spell a brand word only by chance: the
+ * 2026-11-23 H pilot was voided on "GPT" inside one), and changing a letter of it would corrupt it, so the brand scan
+ * and the leak check leave it out and no replacement list rewrites it. The provider decrypts it for the model, so a
+ * brand word in the reasoning itself goes unchecked; its readable summary, and every other field, is scanned. A
+ * reasoning item's `id` is the same kind of string: Copilot's are opaque base64 of 416 to 456 characters (the H pilot's
+ * second run), so it is left out too. Every other id, a call's included, is scanned.
+ */
+export const OPAQUE_FIELDS: ReadonlySet<string> = new Set(["encrypted_content"])
+
+/** Whether `holder[key]` is a provider's opaque string: an opaque field, or a reasoning item's id. */
+export function isOpaque(key: string, value: unknown, holder: unknown): boolean {
+  if (typeof value !== "string") return false
+  if (OPAQUE_FIELDS.has(key)) return true
+  return key === "id" && typeof holder === "object" && holder !== null && (holder as { type?: unknown }).type === "reasoning"
+}
+
+/**
+ * The fields that hold an id: a call's, an item's or a response's. Most are random (a call id is "call_" and 24 base64
+ * letters, about 45 a session), so a brand word spelled inside one is chance; an id an arm builds from its own name
+ * ("ouro_call_3") is not. In an id a brand word counts only as a whole segment, between the value's start or end and
+ * `_`, `-`, `.`, `:` or `/`, so "call_abGPTx9" passes and "ouro_call_3" and "gpt-5" do not. Readable fields keep the
+ * whole pattern.
+ */
+export const ID_FIELDS: ReadonlySet<string> = new Set(["id", "call_id", "tool_call_id", "response_id", "previous_response_id", "item_id"])
+
+// The segment's own bounds stand in for the pattern's \b around mui, which fails beside "_" (a word character).
+const segmentRegex = (): RegExp => new RegExp(`(?<=^|[_\\-.:/])(?:${BRAND_PATTERN.replace("\\bmui\\b", "mui")})(?=$|[_\\-.:/])`, "gi")
+
+/**
+ * `value` as the JSON the brand scan reads: every opaque string left out (as ""), each id as only the brand words that
+ * stand as whole segments of it, and everything else as it is.
+ */
+export function scannedText(value: unknown): string {
+  return JSON.stringify(value, function (this: unknown, key, item: unknown) {
+    if (isOpaque(key, item, this)) return ""
+    if (typeof item === "string" && ID_FIELDS.has(key)) return [...item.matchAll(segmentRegex())].map((match) => match[0]).join(" ")
+    return item
+  })
+}
+
 /** `text` with every brand word replaced by the product's neutral word. */
 export function scrubBrands(text: string, product: Product): string {
   return text.replace(brandRegex(), NEUTRAL_WORD[product])
