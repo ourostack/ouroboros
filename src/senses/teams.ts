@@ -20,7 +20,7 @@ import { createTraceId } from "../nerves"
 import { emitNervesEvent } from "../nerves/runtime"
 import { renderChatInteraction, resolveChatMessageRef, type ChatMessageRef } from "../heart/chat-interaction"
 import { recordSentMessage, sentMessageLookup } from "../heart/sent-message-ledger"
-import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked } from "./proactive-content-guard"
+import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked, isVerificationHoldReason, returnHeldProactiveMessage } from "./proactive-content-guard"
 import { createTurnCoordinator, type SteeringFollowUp } from "../heart/turn-coordinator"
 import { getAgentRoot, getAgentName } from "../heart/identity"
 import { teamsInboundText, type TeamsActivityAttachment } from "./teams-attachments"
@@ -2276,6 +2276,9 @@ export async function drainAndSendPendingTeams(
         reason: internalBlockReason,
         source: "pending_drain",
       })
+      if (isVerificationHoldReason(internalBlockReason)) {
+        await returnHeldProactiveMessage({ agentName: getAgentName(), friendId, text: messageText, reason: internalBlockReason })
+      }
       continue
     }
 

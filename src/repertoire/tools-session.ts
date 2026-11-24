@@ -1072,6 +1072,10 @@ export const sessionToolDefinitions: ToolDefinition[] = [
                 detail: "blocked: contains internal meta markers",
               } as const
             }
+            if (result.reason === "internal_content_blocked") {
+              const { getProactiveInternalContentBlockReason, proactiveContentBlockGuidance } = await import("../senses/proactive-content-guard")
+              return { status: "blocked", detail: proactiveContentBlockGuidance(getProactiveInternalContentBlockReason(request.content)) } as const
+            }
             if (result.reason === "send_error") {
               return {
                 status: "failed",
@@ -1138,6 +1142,10 @@ export const sessionToolDefinitions: ToolDefinition[] = [
                 status: "blocked",
                 detail: "teams could not resolve a routable target for that session",
               } as const
+            }
+            if (result.reason === "internal_content_blocked") {
+              const { getProactiveInternalContentBlockReason, proactiveContentBlockGuidance } = await import("../senses/proactive-content-guard")
+              return { status: "blocked", detail: proactiveContentBlockGuidance(getProactiveInternalContentBlockReason(request.content)) } as const
             }
             if (result.reason === "send_error") {
               return {

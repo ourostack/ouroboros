@@ -13194,6 +13194,24 @@ describe("drainAndSendPendingBlueBubbles", () => {
     }))
   })
 
+  it("holds a pending verification chore and returns it to the agent's private runtime", async () => {
+    const queue = vi.fn()
+    vi.doMock("../../../mind/pending", async (original) => ({ ...await original<typeof import("../../../mind/pending")>(), queuePendingMessage: queue }))
+    const friendStore = { get: vi.fn().mockResolvedValue(makeFriend()), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn(), hasAnyFriends: vi.fn(), listAll: vi.fn() }
+    const text = "Could you open #5312 on your phone and tell me if the pictures show?"
+    const file = writePendingFile("friend-uuid-1", "session", { from: "testagent", friendId: "friend-uuid-1", channel: "bluebubbles", key: "session", content: text, timestamp: Date.now() })
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.drainAndSendPendingBlueBubbles({
+      createClient: () => ({ sendText: mocks.sendText, editMessage: mocks.editMessage, setTyping: mocks.setTyping, markChatRead: mocks.markChatRead, repairEvent: mocks.repairEvent, getMessageText: mocks.getMessageText }),
+      createFriendStore: () => friendStore as any,
+    }, pendingRoot)
+    vi.doUnmock("../../../mind/pending")
+    expect(result.skipped).toBe(1)
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(fs.existsSync(file)).toBe(false)
+    expect(queue).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ channel: "inner", content: expect.stringContaining(text) }))
+  })
+
   it("deletes the pending file after successful send", async () => {
     const friend = makeFriend()
     const friendStore = {
