@@ -1,3 +1,4 @@
+ok   wording (34 statuses, 24 confirm names)
 ok   pass
 ok   armThenConfirm
 ok   noConfirm
@@ -25,6 +26,20 @@ ok   styleTamper
 ok   implTamper
 ok   frames
 ok   scanEscape
+ok   treeHook
+ok   implGetter
+ok   delayedFirstPress
+ok   noConfirmDelayed
+ok   noConfirmSlow
+ok   nestedStatus
+ok   visibleInHidden
+ok   statusHiddenChild
+ok   continueWithout
+ok   removeAndKeep
+ok   statusCannot
+ok   framesAndHead
+ok   upperStyle
+ok   xmpContent
 ok   wrongCopy
 ok   calledTwice
 ok   noStatus
