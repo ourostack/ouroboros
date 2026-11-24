@@ -1094,3 +1094,39 @@ export class AzureBlobMailroomStore implements MailroomStore {
 export function decryptBlobMessages(messages: StoredMailMessage[], privateKeys: Record<string, string>): DecryptedMailMessage[] {
   return messages.map((message) => readDecryptedMailMessage(message, privateKeys))
 }
+
+/** What Blob records about one message: enough to prove a local copy of it was uploaded. */
+export interface HostedMailMessageRecord {
+  rawSha256?: unknown
+  rawSize?: unknown
+  rawObject?: unknown
+}
+
+/** Read-only lookups against a hosted mail container, for retention's proof that a local copy is in Blob. */
+export interface HostedMailCopies {
+  /** Blob's `messages/<id>.json`, or null when it doesn't exist. Throws when Blob can't say. */
+  readMessage(id: string): Promise<HostedMailMessageRecord | null>
+  /** The raw object's size in bytes, or null when it doesn't exist. Throws when Blob can't say. */
+  rawObjectSize(name: string): Promise<number | null>
+}
+
+interface HostedMailCopiesContainer {
+  getBlockBlobClient(name: string): DownloadBlobClientLike & {
+    getProperties(options?: { abortSignal?: AbortSignal }): Promise<{ contentLength?: number }>
+  }
+}
+
+export function blobHostedMailCopies(container: HostedMailCopiesContainer, timeoutMs = DEFAULT_BLOB_OPERATION_TIMEOUT_MS): HostedMailCopies {
+  return {
+    readMessage: (id) => downloadJson<HostedMailMessageRecord>(container.getBlockBlobClient(`messages/${id}.json`), timeoutMs),
+    rawObjectSize: async (name) => {
+      try {
+        const properties = await withBlobOperationTimeout(timeoutMs, (abortSignal) => container.getBlockBlobClient(name).getProperties({ abortSignal }))
+        return typeof properties.contentLength === "number" ? properties.contentLength : null
+      } catch (error) {
+        if (isBlobNotFoundError(error)) return null
+        throw error
+      }
+    },
+  }
+}
