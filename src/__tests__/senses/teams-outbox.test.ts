@@ -13,6 +13,7 @@ vi.mock("../../nerves/runtime", async (original) => ({
 }))
 
 import {
+  TEAMS_OUTBOX_MAX_AGE_MS,
   TEAMS_OUTBOX_MAX_PER_DRAIN,
   TEAMS_OUTBOX_SETTLE_MS,
   drainTeamsOutbox,
@@ -26,6 +27,8 @@ import {
 
 const entry: TeamsOutboxNewEntry = { friendId: "ari", key: "chat-1", text: "The build is out.", origin: "send_message", fromMachineId: "laptop" }
 
+// Entries are written relative to now so the expiry never touches the tests that are not about it.
+const T0 = Date.now()
 let agentRoot: string
 
 beforeEach(() => {
@@ -114,8 +117,8 @@ describe("drainTeamsOutbox", () => {
 
   it("sends oldest first and deletes what was delivered", async () => {
     const authorizingSession = { friendId: "ari", channel: "cli", key: "session", trustLevel: "family" }
-    writeTeamsOutboxEntry(agentRoot, { ...entry, text: "second", intent: "explicit_cross_chat", authorizingSession }, 2_000)
-    writeTeamsOutboxEntry(agentRoot, { ...entry, text: "first" }, 1_000)
+    writeTeamsOutboxEntry(agentRoot, { ...entry, text: "second", intent: "explicit_cross_chat", authorizingSession }, T0 + 2_000)
+    writeTeamsOutboxEntry(agentRoot, { ...entry, text: "first" }, T0 + 1_000)
     writeRaw("ignored.tmp", "partial")
     const send = vi.fn().mockResolvedValue({ delivered: true })
     expect(await drainTeamsOutbox(agentRoot, send)).toEqual({ delivered: 2, quarantined: 0, kept: 0 })
@@ -131,9 +134,23 @@ describe("drainTeamsOutbox", () => {
     expect(JSON.stringify(mocks.events)).not.toContain("first")
   })
 
+  it("quarantines a message older than the expiry instead of replaying it, on two consecutive drains", async () => {
+    const send = vi.fn().mockResolvedValue({ delivered: true })
+    const now = T0 + TEAMS_OUTBOX_MAX_AGE_MS + 60_000
+    writeTeamsOutboxEntry(agentRoot, { ...entry, text: "dead news" }, T0)
+    expect(await drainTeamsOutbox(agentRoot, send, { now: () => now })).toEqual({ delivered: 0, quarantined: 1, kept: 0 })
+    writeTeamsOutboxEntry(agentRoot, { ...entry, text: "fresh" }, now - 1_000)
+    writeTeamsOutboxEntry(agentRoot, { ...entry, text: "dead again" }, T0 + 1)
+    expect(await drainTeamsOutbox(agentRoot, send, { now: () => now })).toEqual({ delivered: 1, quarantined: 1, kept: 0 })
+    expect(send.mock.calls.map(([request]) => request.text)).toEqual(["fresh"])
+    expect(failed()).toHaveLength(2)
+    expect(outbox()).toEqual([])
+    expect(eventsNamed("senses.teams_outbox_quarantined").map((e) => e.meta?.reason)).toEqual(["expired", "expired"])
+  })
+
   it("keeps a message Teams could not take this time", async () => {
-    writeTeamsOutboxEntry(agentRoot, entry, 1_000)
-    writeTeamsOutboxEntry(agentRoot, { ...entry, text: "two" }, 2_000)
+    writeTeamsOutboxEntry(agentRoot, entry, T0 + 1_000)
+    writeTeamsOutboxEntry(agentRoot, { ...entry, text: "two" }, T0 + 2_000)
     const send = vi.fn().mockResolvedValueOnce({ delivered: false, reason: "send_error" }).mockResolvedValueOnce({ delivered: false })
     expect(await drainTeamsOutbox(agentRoot, send)).toEqual({ delivered: 0, quarantined: 0, kept: 2 })
     expect(outbox()).toHaveLength(2)
@@ -141,7 +158,7 @@ describe("drainTeamsOutbox", () => {
   })
 
   it("moves a message Teams refused for good out of the outbox", async () => {
-    const target = writeTeamsOutboxEntry(agentRoot, entry, 1_000)
+    const target = writeTeamsOutboxEntry(agentRoot, entry, T0 + 1_000)
     const send = vi.fn().mockResolvedValue({ delivered: false, reason: "missing_target" })
     expect(await drainTeamsOutbox(agentRoot, send)).toEqual({ delivered: 0, quarantined: 1, kept: 0 })
     expect(outbox()).toEqual([])
@@ -165,7 +182,7 @@ describe("drainTeamsOutbox", () => {
   })
 
   it("stops when this machine has no Teams client, keeping the rest", async () => {
-    for (const at of [1_000, 2_000, 3_000]) writeTeamsOutboxEntry(agentRoot, { ...entry, text: `at ${at}` }, at)
+    for (const at of [T0 + 1_000, T0 + 2_000, T0 + 3_000]) writeTeamsOutboxEntry(agentRoot, { ...entry, text: `at ${at}` }, at)
     const send = vi.fn().mockResolvedValueOnce({ delivered: true }).mockResolvedValue(null)
     expect(await drainTeamsOutbox(agentRoot, send)).toEqual({ delivered: 1, quarantined: 0, kept: 2 })
     expect(send).toHaveBeenCalledTimes(2)
@@ -173,7 +190,7 @@ describe("drainTeamsOutbox", () => {
   })
 
   it("sends at most a capped number per drain", async () => {
-    for (let index = 0; index < TEAMS_OUTBOX_MAX_PER_DRAIN + 5; index++) writeTeamsOutboxEntry(agentRoot, { ...entry, text: `n${index}` }, 1_000 + index)
+    for (let index = 0; index < TEAMS_OUTBOX_MAX_PER_DRAIN + 5; index++) writeTeamsOutboxEntry(agentRoot, { ...entry, text: `n${index}` }, T0 + index)
     const send = vi.fn().mockResolvedValue({ delivered: true })
     expect(await drainTeamsOutbox(agentRoot, send)).toEqual({ delivered: TEAMS_OUTBOX_MAX_PER_DRAIN, quarantined: 0, kept: 5 })
     expect(outbox()).toHaveLength(5)
@@ -181,16 +198,16 @@ describe("drainTeamsOutbox", () => {
   })
 
   it("keeps a message whose send throws and goes on to the next", async () => {
-    writeTeamsOutboxEntry(agentRoot, entry, 1_000)
-    writeTeamsOutboxEntry(agentRoot, { ...entry, text: "two" }, 2_000)
-    writeTeamsOutboxEntry(agentRoot, { ...entry, text: "three" }, 3_000)
+    writeTeamsOutboxEntry(agentRoot, entry, T0 + 1_000)
+    writeTeamsOutboxEntry(agentRoot, { ...entry, text: "two" }, T0 + 2_000)
+    writeTeamsOutboxEntry(agentRoot, { ...entry, text: "three" }, T0 + 3_000)
     const send = vi.fn().mockRejectedValueOnce(new Error("socket closed")).mockRejectedValueOnce("offline").mockResolvedValue({ delivered: true })
     expect(await drainTeamsOutbox(agentRoot, send)).toEqual({ delivered: 1, quarantined: 0, kept: 2 })
     expect(eventsNamed("senses.teams_outbox_send_error").map((e) => e.meta?.error)).toEqual(["socket closed", "offline"])
   })
 
   it("never throws", async () => {
-    writeTeamsOutboxEntry(agentRoot, entry, 1_000)
+    writeTeamsOutboxEntry(agentRoot, entry, T0 + 1_000)
     fs.mkdirSync(path.join(agentRoot, "state"), { recursive: true })
     fs.writeFileSync(teamsOutboxFailedDir(agentRoot), "not a directory")
     const send = vi.fn().mockResolvedValue({ delivered: false, reason: "trust_skip" })
@@ -207,7 +224,7 @@ describe("drainTeamsOutbox", () => {
 
 describe("startTeamsOutboxDrain", () => {
   it("drains now and on each interval, one drain at a time, until stopped", async () => {
-    writeTeamsOutboxEntry(agentRoot, entry, 1_000)
+    writeTeamsOutboxEntry(agentRoot, entry, T0 + 1_000)
     let release: (() => void) | undefined
     const send = vi.fn(() => new Promise<{ delivered: boolean }>((resolve) => { release = () => resolve({ delivered: true }) }))
     const stop = startTeamsOutboxDrain(agentRoot, send, 5)
@@ -216,12 +233,12 @@ describe("startTeamsOutboxDrain", () => {
     expect(send).toHaveBeenCalledTimes(1)
     release!()
     await vi.waitFor(() => expect(outbox()).toEqual([]))
-    writeTeamsOutboxEntry(agentRoot, { ...entry, text: "later" }, 2_000)
+    writeTeamsOutboxEntry(agentRoot, { ...entry, text: "later" }, T0 + 2_000)
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2))
     release!()
     await vi.waitFor(() => expect(outbox()).toEqual([]))
     stop()
-    writeTeamsOutboxEntry(agentRoot, { ...entry, text: "after stop" }, 3_000)
+    writeTeamsOutboxEntry(agentRoot, { ...entry, text: "after stop" }, T0 + 3_000)
     await new Promise((resolve) => setTimeout(resolve, 30))
     expect(send).toHaveBeenCalledTimes(2)
   })
