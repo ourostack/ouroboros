@@ -68,6 +68,7 @@ describe("daemon command plane branches", () => {
       externalEventSourceReadiness?: (agent: string, source: string) => Promise<void>
       useDefaultExternalEventSourceReadiness?: boolean
       stateRetention?: () => Promise<unknown>
+      updaterAgentWatch?: (() => Promise<unknown>) | null
     },
   ) => {
     const processManager = {
@@ -130,6 +131,7 @@ describe("daemon command plane branches", () => {
       onStopCommandComplete: options?.onStopCommandComplete,
       orphanStartupDrain: options?.orphanStartupDrain,
       ...(options?.stateRetention ? { stateRetention: options.stateRetention } : {}),
+      ...(options?.updaterAgentWatch !== undefined ? { updaterAgentWatch: options.updaterAgentWatch } : {}),
       ...(options?.socketAnswering ? { socketAnswering: options.socketAnswering } : {}),
       ...(!options?.useDefaultExternalEventSourceReadiness
         ? { externalEventSourceReadiness: options?.externalEventSourceReadiness ?? vi.fn(async () => undefined) }
@@ -154,6 +156,49 @@ describe("daemon command plane branches", () => {
       await daemon.stop()
     }
     expect((daemon as any).stateRetentionTimer).toBeNull()
+  })
+
+  it("checks the updater launch agent 5 minutes after start, then hourly, and stops with the daemon", async () => {
+    const updaterAgentWatch = vi.fn(async () => { throw new Error("launchctl unavailable") })
+    const { daemon } = make(tmpSocketPath("updater-watch"), undefined, { updaterAgentWatch })
+    await daemon.start()
+    try {
+      const first = (daemon as any).updaterAgentWatchTimer as NodeJS.Timeout & { _idleTimeout: number; _onTimeout(): void }
+      expect(first._idleTimeout).toBe(5 * 60_000)
+      expect(updaterAgentWatch).not.toHaveBeenCalled()
+      first._onTimeout()
+      await vi.waitFor(() => expect((daemon as any).updaterAgentWatchTimer).not.toBe(first))
+      expect(updaterAgentWatch).toHaveBeenCalledTimes(1)
+      expect((daemon as any).updaterAgentWatchTimer._idleTimeout).toBe(60 * 60_000)
+    } finally {
+      await daemon.stop()
+    }
+    expect((daemon as any).updaterAgentWatchTimer).toBeNull()
+  })
+
+  it("doesn't check the updater again when the daemon stops during a check", async () => {
+    let finish!: () => void
+    const updaterAgentWatch = vi.fn(() => new Promise<void>((resolve) => { finish = resolve }))
+    const { daemon } = make(tmpSocketPath("updater-watch-stop"), undefined, { updaterAgentWatch })
+    await daemon.start()
+    ;((daemon as any).updaterAgentWatchTimer as { _onTimeout(): void })._onTimeout()
+    await daemon.stop()
+    finish()
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(updaterAgentWatch).toHaveBeenCalledTimes(1)
+    expect((daemon as any).updaterAgentWatchTimer).toBeNull()
+  })
+
+  it("never watches launch agents from a test daemon or with the watch turned off", async () => {
+    for (const options of [undefined, { updaterAgentWatch: null }]) {
+      const { daemon } = make(tmpSocketPath("updater-watch-off"), undefined, options)
+      await daemon.start()
+      try {
+        expect((daemon as any).updaterAgentWatchTimer).toBeNull()
+      } finally {
+        await daemon.stop()
+      }
+    }
   })
 
   it("doesn't schedule another state retention pass when the daemon stops during one", async () => {

@@ -107,6 +107,17 @@ describe("package asset validation", () => {
     expect(validatePackageAssets(root).missing).toContain(compiled)
     expect(validatePackageAssets(root, undefined, { sourceTree: true }).ok).toBe(true)
   })
+  it("accepts the generated mailbox doors from actions/generated before a build, and requires the dist copies after", () => {
+    const { ACTION_DOOR_FILES } = require("../../../scripts/copy-action-doors.cjs") as { ACTION_DOOR_FILES: string[] }
+    const root = makeRoot()
+    writeRequiredAssets(root)
+    for (const file of ACTION_DOOR_FILES) {
+      fs.unlinkSync(path.join(root, "dist", "actions", "generated", file))
+      writeFile(root, `actions/generated/${file}`, "{}")
+    }
+    expect(validatePackageAssets(root).missing).toEqual(expect.arrayContaining(ACTION_DOOR_FILES.map((file) => `dist/actions/generated/${file}`)))
+    expect(validatePackageAssets(root, undefined, { sourceTree: true }).ok).toBe(true)
+  })
   it("requires the complete compiled root lifecycle entry surface, not just deployment scripts", () => {
     for (const asset of [
       "dist/heart/daemon/sanctuary-authority-root-lifecycle.js",
@@ -117,6 +128,15 @@ describe("package asset validation", () => {
       "deploy/unraid/sanctuary-authority-installation.json",
     ]) expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain(asset)
     expect(fs.readFileSync("deploy/unraid/Dockerfile", "utf8")).toContain("COPY assets/sanctuary-host-launcher.sh /opt/ouro/deploy/unraid/sanctuary-host-launcher.sh")
+  })
+  it("ships the generated mailbox doors inside dist, beside the code that reads them", () => {
+    const { ACTION_DOOR_FILES, SHIPPED_ACTION_DOOR_PATHS } = require("../../../scripts/copy-action-doors.cjs") as { ACTION_DOOR_FILES: string[]; SHIPPED_ACTION_DOOR_PATHS: string[] }
+    expect(SHIPPED_ACTION_DOOR_PATHS).toEqual(["dist/actions/generated/mailbox/actions.json", "dist/actions/generated/mailbox/commands.json", "dist/actions/generated/mailbox/mcp.json", "dist/actions/generated/mailbox-tools/tools.json"])
+    for (const asset of SHIPPED_ACTION_DOOR_PATHS) expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain(asset)
+    for (const file of ACTION_DOOR_FILES) expect(fs.existsSync(`actions/generated/${file}`)).toBe(true)
+    // dist/ ships whole, so nothing under actions/ is listed on its own.
+    const files = (JSON.parse(fs.readFileSync("package.json", "utf8")) as { files: string[] }).files
+    expect(files.filter((file) => file.startsWith("actions/"))).toEqual([])
   })
   it("documents owner-only sequential Jellyfin provisioning without installation authority or weak rollback", () => {
     const readme = fs.readFileSync("deploy/unraid/README.txt", "utf8")

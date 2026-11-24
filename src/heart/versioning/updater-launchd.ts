@@ -131,3 +131,63 @@ export function ensureUpdaterAgent(deps: UpdaterAgentDeps): UpdaterAgentResult {
   })
   return "installed"
 }
+
+export type UpdaterAgentRestoreResult = "loaded" | "restored" | "no-plist" | "update-in-progress" | "restore-failed"
+
+export interface UpdaterAgentRestoreDeps {
+  homeDir: string
+  userUid: number
+  fileExists: (filePath: string) => boolean
+  exec: (command: string) => void
+  /** True while a live process holds the self-update lock. */
+  updateInProgress: () => boolean
+}
+
+/**
+ * Put the updater back when launchd has lost it. The job has dropped out of
+ * launchd after a successful bootstrap more than once (2026-11-23, twice), and
+ * nothing then reloads it until someone runs `ouro up` by hand, so releases
+ * stop reaching the machine. This only bootstraps the plist already on disk,
+ * unchanged; it never boots anything out and never rewrites the file, so it
+ * cannot fight `ensureUpdaterAgent` or kill a pass in progress.
+ */
+export function restoreUpdaterAgentIfMissing(deps: UpdaterAgentRestoreDeps): UpdaterAgentRestoreResult {
+  const domain = `gui/${deps.userUid}`
+  try {
+    deps.exec(`launchctl print ${domain}/${UPDATER_PLIST_LABEL}`)
+    return "loaded"
+  } catch {
+    // Not loaded: fall through.
+  }
+  const plistPath = updaterPlistPath(deps.homeDir)
+  if (!deps.fileExists(plistPath)) return "no-plist"
+  if (deps.updateInProgress()) return "update-in-progress"
+  let result: UpdaterAgentRestoreResult = "restored"
+  try {
+    deps.exec(`launchctl bootstrap ${domain} "${plistPath}"`)
+  } catch {
+    result = "restore-failed"
+  }
+  emitNervesEvent({
+    level: result === "restored" ? "warn" : "error",
+    component: "daemon",
+    event: "daemon.self_update_agent_restored",
+    message: result === "restored"
+      ? "the unattended updater had dropped out of launchd; loaded it again"
+      : "the unattended updater had dropped out of launchd and loading it again failed",
+    meta: { result },
+  })
+  return result
+}
+
+/**
+ * True when `homeDir` is this account's own home directory. A run with HOME
+ * pointed elsewhere (a test's throwaway HOME) must not touch the machine-wide
+ * `gui/<uid>/bot.ouro.updater` label: its plist lives in that throwaway HOME,
+ * so it would boot out the real updater and load one that points at a folder
+ * about to be deleted.
+ */
+export function isHostUserHome(homeDir: string, accountHome: string): boolean {
+  if (!accountHome) return false
+  return path.resolve(homeDir) === path.resolve(accountHome)
+}

@@ -4,6 +4,8 @@ import {
   chooseUpdaterNodePath,
   ensureUpdaterAgent,
   generateUpdaterPlist,
+  isHostUserHome,
+  restoreUpdaterAgentIfMissing,
   UPDATER_PLIST_LABEL,
   updaterPlistPath,
   type UpdaterAgentDeps,
@@ -97,5 +99,64 @@ describe("chooseUpdaterNodePath", () => {
   it("falls back to the running node", () => {
     expect(chooseUpdaterNodePath({ execPath: NODE, runningMajor: 22, majorOf: () => null })).toBe(NODE)
     expect(chooseUpdaterNodePath({ execPath: NODE, runningMajor: 22, majorOf: () => 22, candidates: [] })).toBe(NODE)
+  })
+})
+
+describe("restoreUpdaterAgentIfMissing", () => {
+  function restoreDeps(options: { loaded: boolean; plist?: boolean; updating?: boolean; bootstrapFails?: boolean }) {
+    const exec = vi.fn((command: string) => {
+      if (command.startsWith("launchctl print") && !options.loaded) throw new Error("Could not find service")
+      if (command.startsWith("launchctl bootstrap") && options.bootstrapFails) throw new Error("Bootstrap failed: 5")
+    })
+    return {
+      exec,
+      deps: {
+        homeDir: HOME,
+        userUid: 501,
+        fileExists: vi.fn(() => options.plist ?? true),
+        exec,
+        updateInProgress: vi.fn(() => options.updating ?? false),
+      },
+    }
+  }
+
+  it("leaves a loaded updater alone", () => {
+    const { deps, exec } = restoreDeps({ loaded: true })
+    expect(restoreUpdaterAgentIfMissing(deps)).toBe("loaded")
+    expect(exec).toHaveBeenCalledTimes(1)
+    expect(exec).toHaveBeenCalledWith(`launchctl print gui/501/${UPDATER_PLIST_LABEL}`)
+  })
+
+  it("bootstraps the existing plist, unchanged, when launchd has lost the updater", () => {
+    const { deps, exec } = restoreDeps({ loaded: false })
+    expect(restoreUpdaterAgentIfMissing(deps)).toBe("restored")
+    expect(exec).toHaveBeenLastCalledWith(`launchctl bootstrap gui/501 "${updaterPlistPath(HOME)}"`)
+    expect(exec.mock.calls.some(([command]) => String(command).includes("bootout"))).toBe(false)
+  })
+
+  it("does nothing when the updater was never installed on this machine", () => {
+    const { deps, exec } = restoreDeps({ loaded: false, plist: false })
+    expect(restoreUpdaterAgentIfMissing(deps)).toBe("no-plist")
+    expect(exec).toHaveBeenCalledTimes(1)
+  })
+
+  it("waits while an update pass holds the lock", () => {
+    const { deps, exec } = restoreDeps({ loaded: false, updating: true })
+    expect(restoreUpdaterAgentIfMissing(deps)).toBe("update-in-progress")
+    expect(exec).toHaveBeenCalledTimes(1)
+  })
+
+  it("reports a bootstrap launchd refuses instead of throwing", () => {
+    const { deps } = restoreDeps({ loaded: false, bootstrapFails: true })
+    expect(restoreUpdaterAgentIfMissing(deps)).toBe("restore-failed")
+  })
+})
+
+describe("isHostUserHome", () => {
+  it("is true only when HOME is the account's own home directory", () => {
+    expect(isHostUserHome("/Users/ari", "/Users/ari")).toBe(true)
+    expect(isHostUserHome("/Users/ari/", "/Users/ari")).toBe(true)
+    expect(isHostUserHome("/var/folders/x/T/ouro-hermetic-runtime-1/home", "/Users/ari")).toBe(false)
+    expect(isHostUserHome("/Users/ari", "")).toBe(false)
   })
 })
