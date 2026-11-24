@@ -17,6 +17,8 @@
 //        ouro-host-lock.mjs hold    --holder <name> --ttl <seconds> [--wait <seconds>]
 //        ouro-host-lock.mjs release --token <token>
 //        ouro-host-lock.mjs check   --token <token>      (exit 0 only while that token holds a live lock)
+//        ouro-host-lock.mjs free-eval                    (eval:stop: frees a lock whose holder starts with "eval")
+//        ouro-host-lock.mjs status                       (@@LOCK free, eval <owner> or other <owner>)
 // Output lines start with @@LOCK. Exit 3: the lock stayed held for all of --wait. Exit 2: bad usage.
 import { randomBytes } from "node:crypto"
 import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs"
@@ -145,6 +147,32 @@ export function release(dir, token, io) {
   })
 }
 
+// Eval runs and interview batches take the lock only under a holder starting with "eval" (their --host-lock checks it).
+const isEval = (owner) => !owner.unreadable && typeof owner.holder === "string" && owner.holder.startsWith("eval")
+
+/**
+ * Where the lock stands for `npm run eval:stop`: "free", "eval" (an eval run or interview batch holds it), or "other"
+ * (a Butler upgrade or rollback, a person's manual hold, or an owner not written yet). A stale lock counts as free.
+ */
+export function stopStatus(dir, io) {
+  const current = readOwner(dir, io)
+  if (!current || staleReason(current, io)) return { state: "free" }
+  return { state: isEval(current) ? "eval" : "other", owner: current }
+}
+
+/**
+ * Frees the lock for `npm run eval:stop` when an eval holds it, whatever its token; never anyone else's, such as a
+ * Butler upgrade's or a person's manual hold. { freed, owner? }.
+ */
+export function freeEval(dir, io) {
+  return withGuard(dir, io, () => {
+    const current = readOwner(dir, io)
+    if (!current || !isEval(current)) return { freed: false, ...(current ? { owner: current } : {}) }
+    rmSync(dir, { recursive: true, force: true })
+    return { freed: true, owner: current }
+  })
+}
+
 /** True while this token holds a lock that is not stale. */
 export function heldBy(dir, token, io) {
   const current = readOwner(dir, io)
@@ -162,7 +190,7 @@ function parse(argv) {
   const [command, ...rest] = argv
   const opts = {}
   for (let i = 0; i < rest.length; i += 2) opts[String(rest[i]).replace(/^--/, "")] = rest[i + 1]
-  const needs = { acquire: ["holder", "ttl"], hold: ["holder", "ttl"], release: ["token"], check: ["token"] }[command]
+  const needs = { acquire: ["holder", "ttl"], hold: ["holder", "ttl"], release: ["token"], check: ["token"], "free-eval": [], status: [] }[command]
   if (!needs || needs.some((key) => !opts[key])) return null
   return { command, ...opts }
 }
@@ -186,8 +214,18 @@ async function takeWaiting(dir, args, pid, over = () => false) {
 
 export async function main(argv, dir = process.env.OURO_HOST_LOCK_DIR || LOCK_DIR) {
   const args = parse(argv)
-  if (!args) { console.error("usage: ouro-host-lock.mjs acquire|hold --holder <name> --ttl <seconds> [--wait <seconds>] | release|check --token <token>"); return 2 }
+  if (!args) { console.error("usage: ouro-host-lock.mjs acquire|hold --holder <name> --ttl <seconds> [--wait <seconds>] | release|check --token <token> | free-eval | status"); return 2 }
   if (args.command === "check") return heldBy(dir, args.token) ? 0 : 1
+  if (args.command === "status") {
+    const { state, owner } = stopStatus(dir)
+    console.log(`@@LOCK ${state}${owner ? ` ${describeOwner(owner)}` : ""}`)
+    return 0
+  }
+  if (args.command === "free-eval") {
+    const { freed, owner } = freeEval(dir)
+    console.log(freed ? `@@LOCK freed ${describeOwner(owner)}` : owner ? `@@LOCK kept ${describeOwner(owner)}` : "@@LOCK free")
+    return 0
+  }
   if (args.command === "release") { console.log(release(dir, args.token) ? "@@LOCK released" : "@@LOCK not-held"); return 0 }
   if (args.command === "acquire") return (await takeWaiting(dir, args, null)) ? 0 : 3
   // hold: keep it until the session that asked for it ends. Listen before taking it, so an early signal still releases.

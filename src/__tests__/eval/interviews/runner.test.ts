@@ -1,6 +1,8 @@
 import crypto from "node:crypto"
+import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type { ProviderRuntime, ProviderTurnRequest } from "../../../heart/core"
 import type { Case } from "../../../eval/domain/case"
 import { canonicalX, NO_BOOKS, parseInterviewArgs, runInterviews, summarizeSessions, X_KIT, type InterviewArgs, type InterviewDeps, type SessionRecord } from "../../../eval/interviews/runner"
@@ -114,7 +116,7 @@ function deps(runCase: RunCase, model = target(chooseOuro), over: Partial<Interv
   const d: InterviewDeps = {
     readText: () => PREREG, loadCases: () => [...cases.values()], resolveTarget: async () => model, runCase, kits: { X: X_KIT },
     outputExists: () => false, writeReport: (_file, report) => reports.push(report), openLog: () => (line) => log.push(line),
-    print: (text) => printed.push(text), allocations: { [SHA]: 1 }, started: startedSet(), ...over,
+    print: (text) => printed.push(text), allocations: { [SHA]: 1 }, started: startedSet(), killSwitch: () => undefined, ...over,
   }
   return { d, reports, log, printed, model }
 }
@@ -215,6 +217,37 @@ describe("the interview runner", () => {
     expect(voided.records[0]).toMatchObject({ status: "void", ended: "final: a request named claude" })
     const refusedQ4 = target((request) => request.messages.some((m) => m.role === "user" && String(m.content).startsWith("One more")) ? { calls: [] } : chooseOuro(request))
     expect((await runInterviews(args(), deps(sandbox(() => ({})), refusedQ4).d)).records[0]).toMatchObject({ status: "complete", ouroFirst: true })
+  })
+
+  it("adds each session's spend to the month ledger as the interviews', never asking it, and runs on when it fails", async () => {
+    const added: Array<[unknown, unknown]> = []
+    const month = { add: async (spent: unknown, source: unknown) => { added.push([spent, source]) } }
+    const first = deps(sandbox(() => ({})), target(chooseOuro), { monthLedger: month })
+    const ok = await runInterviews(args({ sessions: ["X-1", "X-2"] }), first.d)
+    expect(ok.records.map((record) => record.status)).toEqual(["complete", "complete"])
+    expect(added).toEqual(ok.records.map((record) => [record.spent, "interviews"]))
+    const failing = deps(sandbox(() => ({})), target(chooseOuro), { monthLedger: { add: async () => { throw new Error("lock timed out") } } })
+    const ran = await runInterviews(args({ sessions: ["X-1", "X-2"] }), failing.d)
+    expect(ran.records.map((record) => record.status)).toEqual(["complete", "complete"])
+    expect(ran.exitCode).toBe(0)
+    expect(failing.printed).toContain("month ledger: couldn't add X-1's spend (lock timed out)")
+  })
+
+  it("stops the study while ~/.ouro-eval/STOP is set, before any model call", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "interview-stop-"))
+    fs.mkdirSync(path.join(home, ".ouro-eval"))
+    fs.writeFileSync(path.join(home, ".ouro-eval", "STOP"), "")
+    vi.spyOn(os, "homedir").mockReturnValue(home)
+    try {
+      const { killSwitch: _k, ...withDefault } = deps(sandbox(() => ({}))).d
+      const stopped = await runInterviews(args({ sessions: ["X-1", "X-2"] }), withDefault)
+      expect(stopped.exitCode).toBe(2)
+      expect(stopped.records.map((record) => record.status)).not.toContain("complete")
+      expect(JSON.stringify(stopped.records)).toContain("the kill switch ~/.ouro-eval/STOP is set")
+    } finally {
+      vi.restoreAllMocks()
+      fs.rmSync(home, { recursive: true, force: true })
+    }
   })
 
   it("stops the study at a 429, and at a reservation a cap refuses, recording later sessions as not run", async () => {
