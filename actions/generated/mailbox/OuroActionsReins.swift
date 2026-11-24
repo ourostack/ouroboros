@@ -4,13 +4,67 @@
 // test door that stands in for the person's finger, so person-only actions are here too.
 import OuroReins
 
+extension MailboxSendInput: ReinsInput {
+    public static var reinsSchema: ReinsSchema { .object(properties: ["kind": .oneOf(["decide", "do", "accept", "know"]), "subject": .string, "whyOnlyYou": .string, "body": .string, "urgency": .oneOf(["now", "today", "whenever"]), "holdUntil": .string, "expiresAt": .string, "lane": .string], required: ["kind", "subject"]) }
+}
+
 extension MailboxListInput: ReinsInput {
-    public static var reinsSchema: ReinsSchema { .object(properties: [:], required: []) }
+    public static var reinsSchema: ReinsSchema { .object(properties: ["all": .boolean, "mine": .boolean, "kind": .oneOf(["decide", "do", "accept", "know"])], required: []) }
+}
+
+extension MailboxReadInput: ReinsInput {
+    public static var reinsSchema: ReinsSchema { .object(properties: ["letter": .string], required: ["letter"]) }
+}
+
+extension MailboxWaitInput: ReinsInput {
+    public static var reinsSchema: ReinsSchema { .object(properties: ["letter": .string, "cursor": .integer, "timeout": .integer], required: ["letter"]) }
+}
+
+extension MailboxWithdrawInput: ReinsInput {
+    public static var reinsSchema: ReinsSchema { .object(properties: ["letter": .string, "reason": .string], required: ["letter", "reason"]) }
+}
+
+extension MailboxDeliverInput: ReinsInput {
+    public static var reinsSchema: ReinsSchema { .object(properties: ["letter": .string], required: ["letter"]) }
+}
+
+extension MailboxAnswerInput: ReinsInput {
+    public static var reinsSchema: ReinsSchema { .object(properties: ["letter": .string, "option": .string], required: ["letter", "option"]) }
 }
 
 extension ReinsAction {
+    /// Write a letter: File a letter only your person can answer.
+    public static func mailboxSend() -> ReinsAction {
+        ReinsAction("mailboxSend", "Write a letter", input: MailboxSendInput.self) { input in _ = try await MailboxSendAction.run(input) }
+    }
+
     /// Letters: List the letters waiting for you.
     public static func mailboxList() -> ReinsAction {
         ReinsAction("mailboxList", "Letters", input: MailboxListInput.self) { input in _ = try await MailboxListAction.run(input) }
+    }
+
+    /// Read a letter: Read one letter and what has happened to it.
+    public static func mailboxRead() -> ReinsAction {
+        ReinsAction("mailboxRead", "Read a letter", input: MailboxReadInput.self) { input in _ = try await MailboxReadAction.run(input) }
+    }
+
+    /// Wait for an answer: Wait until a letter is answered or closed.
+    public static func mailboxWait() -> ReinsAction {
+        ReinsAction("mailboxWait", "Wait for an answer", input: MailboxWaitInput.self) { input in _ = try await MailboxWaitAction.run(input) }
+    }
+
+    /// Withdraw a letter: Take back a letter you filed.
+    public static func mailboxWithdraw() -> ReinsAction {
+        ReinsAction("mailboxWithdraw", "Withdraw a letter", input: MailboxWithdrawInput.self) { input in _ = try await MailboxWithdrawAction.run(input) }
+    }
+
+    /// Deliver a letter: Send a letter to your chat now.
+    public static func mailboxDeliver() -> ReinsAction {
+        ReinsAction("mailboxDeliver", "Deliver a letter", input: MailboxDeliverInput.self) { input in _ = try await MailboxDeliverAction.run(input) }
+    }
+
+    /// Answer a letter: Answer a letter by picking one of its options.
+    public static func mailboxAnswer() -> ReinsAction {
+        ReinsAction("mailboxAnswer", "Answer a letter", input: MailboxAnswerInput.self) { input in _ = try await MailboxAnswerAction.run(input) }
     }
 }

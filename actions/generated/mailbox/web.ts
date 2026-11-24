@@ -6,29 +6,49 @@ export const generated = {"generator":"ouro-actions 1.12.0","set":"mailbox"} as 
 
 export const componentAx = {
   actions: [
+    { id: "mailbox-send", summary: "File a letter only your person can answer.", effect: "private", agent: true },
     { id: "mailbox-list", summary: "List the letters waiting for you.", effect: "private", agent: true },
+    { id: "mailbox-read", summary: "Read one letter and what has happened to it.", effect: "private", agent: true },
+    { id: "mailbox-wait", summary: "Wait until a letter is answered or closed.", effect: "private", agent: true },
+    { id: "mailbox-withdraw", summary: "Take back a letter you filed.", effect: "private", agent: true },
+    { id: "mailbox-deliver", summary: "Send a letter to your chat now.", effect: "private", agent: true },
+    { id: "mailbox-answer", summary: "Answer a letter by picking one of its options.", effect: "private", personOnly: "You can't answer a letter for the person; only they can" },
   ],
 } as const;
 
 export const twins = {
   actions: {
+    "mailbox-send": "ouro mailbox send",
     "mailbox-list": "ouro mailbox list",
+    "mailbox-read": "ouro mailbox read <letter>",
+    "mailbox-wait": "ouro mailbox wait <letter>",
+    "mailbox-withdraw": "ouro mailbox withdraw <letter>",
+    "mailbox-deliver": "ouro mailbox deliver <letter>",
   },
   refuseAs: {
+    "mailbox-answer": "ouro mailbox answer",
   },
 } as const;
 
 export const controls = {
+  "mailbox-send": { label: "Write a letter", description: "File a letter only your person can answer.", consent: "write", props: { "data-ax-action": "mailbox-send" } },
   "mailbox-list": { label: "Letters", description: "List the letters waiting for you.", consent: "read", props: { "data-ax-action": "mailbox-list" } },
+  "mailbox-read": { label: "Read a letter", description: "Read one letter and what has happened to it.", consent: "read", props: { "data-ax-action": "mailbox-read" } },
+  "mailbox-wait": { label: "Wait for an answer", description: "Wait until a letter is answered or closed.", consent: "read", props: { "data-ax-action": "mailbox-wait" } },
+  "mailbox-withdraw": { label: "Withdraw a letter", description: "Take back a letter you filed.", consent: "write", props: { "data-ax-action": "mailbox-withdraw" } },
+  "mailbox-deliver": { label: "Deliver a letter", description: "Send a letter to your chat now.", consent: "write", props: { "data-ax-action": "mailbox-deliver" } },
+  "mailbox-answer": { label: "Answer a letter", description: "Answer a letter by picking one of its options.", consent: "person-only", props: { "data-ax-action": "mailbox-answer" } },
 } as const;
 
 // Web's CLI hands run() its flags by name, which are kebab-case (--can-edit); every other door uses the field's
 // name (canEdit). fromCli renames them, so a command's run() calls the same handler as MCP, WebMCP and Apple.
 export const cliInput: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  "mailbox-send": { "why-only-you": "whyOnlyYou", "dedupe-key": "dedupeKey", "hold-until": "holdUntil", "expires-at": "expiresAt" },
 };
 
 // A list, group or one-of field comes in on the CLI as one JSON string; fromCli parses it.
 export const cliJson: Readonly<Record<string, readonly string[]>> = {
+  "mailbox-send": ["options", "links"],
 };
 
 export function fromCli(action: keyof typeof twins.actions, input: Readonly<Record<string, unknown>>): Record<string, unknown> {

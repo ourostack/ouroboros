@@ -89,6 +89,10 @@ import * as fs from "fs"
 import { exec, spawnSync } from "child_process"
 import { listSkills, loadSkill } from "../../repertoire/skills"
 import type { ToolContext } from "../../repertoire/tools-base"
+import generatedMailboxTools from "../../../actions/generated/mailbox-tools/tools.json"
+
+// Every ordinary turn also offers the mailbox group's generated tools.
+const MAILBOX_TOOL_COUNT = generatedMailboxTools.tools.length
 
 function mockShellOutput(output: string | ((command: string) => string)) {
   vi.mocked(exec).mockImplementation(((command, _options, callback) => {
@@ -1303,7 +1307,7 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     expect(names).not.toContain("ado_mutate")
     expect(names).toEqual(expect.arrayContaining(["ponder", "observe", "settle"]))
     // Native tools minus the unsupported reasoning capability, plus the three engine schemas.
-    expect(result.length).toBe(tools.length - 1 + 3)
+    expect(result.length).toBe(tools.length - 1 + 3 + MAILBOX_TOOL_COUNT)
   })
 
   it("returns base + ado + graph tools for Teams capabilities", async () => {
@@ -1350,7 +1354,7 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     expect(names).toContain("ado_preview_changes")
     expect(names).toContain("teams_send_message")
     expect(names).toEqual(expect.arrayContaining(["ponder", "observe", "settle"]))
-    expect(result.length).toBe(baseCount + 21 + 3)
+    expect(result.length).toBe(baseCount + 21 + 3 + MAILBOX_TOOL_COUNT)
   })
 
   it("returns base + graph-only tools when only graph integration", async () => {
@@ -1380,7 +1384,7 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     expect(names).not.toContain("ado_work_items")
     expect(names).not.toContain("ado_docs")
     expect(names).toEqual(expect.arrayContaining(["ponder", "observe", "settle"]))
-    expect(result.length).toBe(baseCount + 6 + 3)
+    expect(result.length).toBe(baseCount + 6 + 3 + MAILBOX_TOOL_COUNT)
   })
 
   it("returns base + ado-only tools when only ado integration", async () => {
@@ -1412,7 +1416,7 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     // Should have semantic ado tools
     expect(names).toContain("ado_backlog_list")
     expect(names).toEqual(expect.arrayContaining(["ponder", "observe", "settle"]))
-    expect(result.length).toBe(baseCount + 17 + 3)
+    expect(result.length).toBe(baseCount + 17 + 3 + MAILBOX_TOOL_COUNT)
   })
 })
 
@@ -2506,7 +2510,7 @@ describe("getToolsForChannel includes docs tools", () => {
     expect(names).toContain("read_file")
     expect(names).toContain("shell")
     expect(names).toEqual(expect.arrayContaining(["ponder", "observe", "settle"]))
-    expect(teamsTools.length).toBe(baseCount + 21 + 3)
+    expect(teamsTools.length).toBe(baseCount + 21 + 3 + MAILBOX_TOOL_COUNT)
   })
 
   it("cli channel does NOT include graph_docs or ado_docs", async () => {

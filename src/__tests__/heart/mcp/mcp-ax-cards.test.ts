@@ -85,7 +85,7 @@ function expectCardError(frame: Frame, tool: string, code: string, detail?: stri
 describe("mcp-serve's Ouro AX cards", () => {
   it("gives every tool a card with its own id, a when line, an effect and error cards", () => {
     const schemas = getToolSchemas()
-    expect(schemas).toHaveLength(18)
+    expect(schemas).toHaveLength(23)
     for (const schema of schemas) {
       expect(schema.ax.id).toBe(`mcp:${schema.name}`)
       // The hand-written tools are the ouro-agent group; the generated mailbox tools carry their own group.
@@ -143,7 +143,7 @@ describe("an unknown tool", () => {
     const frame = await call("sendmessage")
     expect(frame.result).toBeUndefined()
     expect(frame.error?.code).toBe(-32602)
-    expect(frame.error?.message).toBe('Unknown tool "sendmessage". Did you mean "send_message"? tools/list has all 18.')
+    expect(frame.error?.message).toBe('Unknown tool "sendmessage". Did you mean "send_message"? tools/list has all 23.')
     expect(frame.error?.data).toEqual({ code: "unknown-door", tool: "sendmessage", nearest: "send_message", candidates: ["send_message"], means: serverErrors[0]!.means, fix: serverErrors[0]!.fix })
     expect(runtime.send).not.toHaveBeenCalled()
   })
@@ -163,7 +163,7 @@ describe("an unknown tool", () => {
   it("lists every tool a partial name matches, rather than guessing one", async () => {
     const frame = await call("report")
     expect(frame.error?.data).toMatchObject({ nearest: null, candidates: ["report_progress", "report_blocker", "report_complete"] })
-    expect(frame.error?.message).toBe('Unknown tool "report". Did you mean one of "report_progress", "report_blocker", "report_complete"? tools/list has all 18.')
+    expect(frame.error?.message).toBe('Unknown tool "report". Did you mean one of "report_progress", "report_blocker", "report_complete"? tools/list has all 23.')
     expect((await call("feedback")).error?.data?.candidates).toEqual(["shepherd_feedback", "shepherd_feedback_status"])
   })
 
@@ -171,7 +171,7 @@ describe("an unknown tool", () => {
     for (const name of ["help", "x", "weather"]) {
       const frame = await call(name)
       expect(frame.error?.data?.nearest, name).toBeNull()
-      expect(frame.error?.message).toBe(`Unknown tool "${name}". No tool has a name close to it; tools/list has all 18.`)
+      expect(frame.error?.message).toBe(`Unknown tool "${name}". No tool has a name close to it; tools/list has all 23.`)
     }
   })
 
@@ -181,7 +181,7 @@ describe("an unknown tool", () => {
     await vi.waitFor(() => expect(connection.frames).toHaveLength(1))
     const frame = connection.frames[0]!
     expect(frame.error?.code).toBe(-32602)
-    expect(frame.error?.message).toBe("tools/call needs params.name, the tool to call. tools/list has all 18.")
+    expect(frame.error?.message).toBe("tools/call needs params.name, the tool to call. tools/list has all 23.")
     expect(frame.error?.data).toMatchObject({ code: "unknown-door", tool: null, nearest: null, candidates: [] })
   })
 })
