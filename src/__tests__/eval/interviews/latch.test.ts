@@ -230,6 +230,21 @@ describe("the guarded runtime", () => {
     expect(brandHits(scannedText([{ type: "function_call", id: "fc_gpt", call_id: "call_ouro" }, { role: "assistant", id: "msg_claude" }]))).toEqual(["gpt", "ouro", "claude"])
   })
 
+  it("reads a brand word in an id only as a whole segment between delimiters, and in readable text anywhere", () => {
+    // Random ids (call_ plus 24 base64 letters, about 45 a session) would spell a brand word by chance; an id an arm
+    // makes from its own name would not be random. So in an id a brand word counts only between delimiters.
+    const ids = (value: string) => brandHits(scannedText({ id: value, call_id: value, tool_call_id: value, response_id: value, previous_response_id: value, item_id: value }))
+    for (const random of ["call_abGPTx9Ouro", "fc_8UstjClaude0Im", "resp_xRADIXq", "call_ouroboros2", "msg-gptz"]) expect(ids(random)).toEqual([])
+    expect(ids("ouro_call_3")).toEqual(Array(6).fill("ouro"))
+    expect(ids("gpt-5")).toEqual(Array(6).fill("gpt"))
+    for (const named of ["call.claude", "x:codex:1", "a/openhands/b", "ouroboros", "run_all-hands_2", "call_GPT"]) expect(ids(named)).toHaveLength(6)
+    // A tool call's id in a chat message is an id too.
+    expect(brandHits(scannedText({ tool_calls: [{ id: "call_k6upGPTffAT4", type: "function", function: { name: "shell", arguments: "{}" } }] }))).toEqual([])
+    expect(brandHits(scannedText({ tool_calls: [{ id: "call_k6upGPTffAT4", type: "function", function: { name: "gptshell", arguments: "{}" } }] }))).toEqual(["gpt"])
+    // Readable fields keep the whole pattern, inside words included.
+    expect(brandHits(scannedText({ content: "call_abGPTx9", name: "myouro" }))).toEqual(["GPT", "ouro"])
+  })
+
   it("scans the system prompt, tools, deferred tools and messages", () => {
     const text = requestText({ ...request("m"), systemPrompt: "s", activeTools: [{ type: "function", function: { name: "t", parameters: {} } }], deferredTools: [] } as unknown as ProviderTurnRequest)
     expect(JSON.parse(text)).toEqual({ systemPrompt: "s", tools: [{ type: "function", function: { name: "t", parameters: {} } }], deferred: [], messages: [{ role: "user", content: "m" }] })
