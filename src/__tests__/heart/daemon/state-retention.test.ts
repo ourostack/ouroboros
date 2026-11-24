@@ -3,7 +3,7 @@ import * as os from "os"
 import * as path from "path"
 import * as zlib from "zlib"
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { compactLegacySessionArchives, compactUnusedMailroomFileStore, mailroomStoreFromRuntimeConfig, runAgentStateRetention } from "../../../heart/daemon/state-retention"
 import { registerGlobalLogSink, type LogEvent } from "../../../nerves"
@@ -190,6 +190,22 @@ describe("runAgentStateRetention", () => {
     expect(proven).toHaveLength(1)
     expect(proven[0].meta).toEqual(expect.objectContaining({ agent: "slugger", deleted: 1, notInBlob: 1 }))
     expect(JSON.stringify(capture.events)).not.toContain(dir)
+  })
+
+  it("opens the hosted container from the agent's runtime config by default", async () => {
+    vi.resetModules()
+    vi.doMock("../../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: () => ({ ok: true, config: { mailroom: { storePath: "/local" } } }),
+      refreshRuntimeCredentialConfig: async () => ({ ok: false }),
+    }))
+    try {
+      const { runAgentStateRetention: run } = await import("../../../heart/daemon/state-retention")
+      const results = await run({ bundlesRoot: dir, agents: ["slugger"], now: () => NOW, mailroomStore: () => "hosted" })
+      expect(results[0].mailroomCopies).toBeNull()
+    } finally {
+      vi.doUnmock("../../../heart/runtime-credentials")
+      vi.resetModules()
+    }
   })
 
   it("keeps every mail copy when the hosted container can't be opened", async () => {

@@ -6,9 +6,8 @@ import { pipeline } from "stream/promises"
 import * as zlib from "zlib"
 
 import { emitNervesEvent } from "../../nerves/runtime"
-import { openHostedMailCopies } from "../../mailroom/reader"
 import { readRuntimeCredentialConfig } from "../runtime-credentials"
-import { pruneProvenMailroomCopies, type HostedMailCopies, type ProvenMailroomCopiesResult } from "./mailroom-copy-proof"
+import type { HostedMailCopies, ProvenMailroomCopiesResult } from "./mailroom-copy-proof"
 
 /**
  * Harness-side retention for an agent's `state/`. It never deletes data: it gzips files that nothing reads or writes
@@ -215,7 +214,12 @@ export interface RunAgentStateRetentionInput {
   /** Where each agent's mail lives. Default: the runtime config this process has loaded; "unknown" leaves mail alone. */
   mailroomStore?: (agent: string) => MailroomStore
   /** Read-only lookups in each agent's hosted mail container. Default: opened from the agent's runtime config. */
-  hostedMailCopies?: (agent: string) => HostedMailCopies | null
+  hostedMailCopies?: (agent: string) => HostedMailCopies | null | Promise<HostedMailCopies | null>
+}
+
+// Loaded only for an agent whose mail is hosted, so the daemon's startup doesn't load the mail store.
+async function defaultHostedMailCopies(agent: string): Promise<HostedMailCopies | null> {
+  return (await import("../../mailroom/reader")).openHostedMailCopies(agent)
 }
 
 /** Runs retention for each agent in turn; one agent's failure doesn't stop the rest. Telemetry is counts only. */
@@ -244,9 +248,12 @@ export async function runAgentStateRetention(input: RunAgentStateRetentionInput)
         message: "gzipped the local mail file store once the agent's mail is hosted",
         meta: { agent, ...mailroom },
       })
-      const hosted = store === "hosted" ? (input.hostedMailCopies ?? openHostedMailCopies)(agent) : null
+      const hosted = store === "hosted" ? await (input.hostedMailCopies ?? defaultHostedMailCopies)(agent) : null
       const mailroomCopies = hosted
-        ? await pruneProvenMailroomCopies({ mailroomRoot: path.join(input.bundlesRoot, `${agent}.ouro`, "state", "mailroom"), hosted })
+        ? await (await import("./mailroom-copy-proof")).pruneProvenMailroomCopies({
+          mailroomRoot: path.join(input.bundlesRoot, `${agent}.ouro`, "state", "mailroom"),
+          hosted,
+        })
         : null
       if (mailroomCopies) {
         emitNervesEvent({
