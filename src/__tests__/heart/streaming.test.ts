@@ -121,6 +121,14 @@ describe("toResponsesTools", () => {
     const result = toResponsesTools(ccTools)
     expect(result[0].parameters).toBeNull()
   })
+
+  it("keeps a tool's strict flag when it sets one, and sends every other tool non-strict", () => {
+    const result = toResponsesTools([
+      { type: "function", function: { name: "strict_tool", strict: true, parameters: { type: "object", properties: {}, additionalProperties: false } } },
+      { type: "function", function: { name: "null_strict", strict: null } },
+    ])
+    expect(result.map((tool) => tool.strict)).toEqual([true, false])
+  })
 })
 
 describe("provider module boundary contract", () => {

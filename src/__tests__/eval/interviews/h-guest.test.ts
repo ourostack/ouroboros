@@ -89,9 +89,9 @@ describe("the H guest", () => {
     expect(await runHGuest({ ...wire(), turnFile, bundle: "/b", arms: odd })).toEqual({ ok: false, error: "plain" })
   })
 
-  it("has the ouro arm by default, and no other yet", async () => {
-    expect(Object.keys(H_ARMS)).toEqual(["ouro"])
-    fs.writeFileSync(turnFile, JSON.stringify({ ...TURN, arm: "codex" }))
-    expect(await runHGuest({ ...wire(), turnFile, bundle: "/b" })).toEqual({ ok: false, error: "no H arm codex in the guest" })
+  it("has the ouro and codex arms by default, and no other yet", async () => {
+    expect(Object.keys(H_ARMS)).toEqual(["ouro", "codex"])
+    fs.writeFileSync(turnFile, JSON.stringify({ ...TURN, arm: "openhands" }))
+    expect(await runHGuest({ ...wire(), turnFile, bundle: "/b" })).toEqual({ ok: false, error: "no H arm openhands in the guest" })
   })
 })
