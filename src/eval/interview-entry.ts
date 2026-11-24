@@ -23,6 +23,7 @@ import { resolveTarget } from "./targets"
 import { parseInterviewArgs, runInterviews, X_KIT } from "./interviews/runner"
 import { U_KIT } from "./interviews/u/kit"
 import { H_KIT } from "./interviews/h/kit"
+import { monthLedger } from "./month-ledger"
 
 const REPO = path.resolve(__dirname, "../..")
 
@@ -152,6 +153,7 @@ async function interviews(args: ReturnType<typeof parseInterviewArgs>, deps: { r
     openLog: openPrivateLog,
     started: deps.started,
     print: (text) => { process.stdout.write(`${text}\n`) },
+    monthLedger: monthLedger(),
   })
   return exitCode
 }

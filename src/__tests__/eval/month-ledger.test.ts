@@ -24,28 +24,48 @@ it("starts a month at nothing, adds each run's spend under its UTC month, and ke
   const month = ledger()
   expect(await month.current()).toEqual({ month: "2026-11", spent: { premium: 0, credits: 0, runs: 0 } })
   await month.add({ premium: 2, credits: 10.1 })
-  await month.add({ premium: 4, credits: 0.2 })
-  expect(await month.current()).toEqual({ month: "2026-11", spent: { premium: 6, credits: 10.3, runs: 2 } })
+  await month.add({ premium: 4, credits: 0.2 }, "interviews")
+  expect(await month.current()).toEqual({
+    month: "2026-11",
+    spent: { premium: 6, credits: 10.3, runs: 2, sources: { eval: { premium: 2, credits: 10.1, runs: 1 }, interviews: { premium: 4, credits: 0.2, runs: 1 } } },
+  })
   now = new Date("2026-12-01T00:30:00Z")
   expect(await month.current()).toEqual({ month: "2026-12", spent: { premium: 0, credits: 0, runs: 0 } })
-  await month.add({ premium: 1, credits: 1 })
-  expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({
-    schemaVersion: 1,
-    months: { "2026-11": { premium: 6, credits: 10.3, runs: 2 }, "2026-12": { premium: 1, credits: 1, runs: 1 } },
-  })
+  await month.add({ premium: 1, credits: 1 }, "eval")
+  expect(JSON.parse(fs.readFileSync(file, "utf8")).months["2026-12"]).toEqual({ premium: 1, credits: 1, runs: 1, sources: { eval: { premium: 1, credits: 1, runs: 1 } } })
+  expect(Object.keys(JSON.parse(fs.readFileSync(file, "utf8")).months)).toEqual(["2026-11", "2026-12"])
+})
+
+it("counts the interviews' spend against an eval run, so evals yield to the study", async () => {
+  const month = monthLedger({ file, now: () => now, caps: { premium: 10, credits: 100 } })
+  await month.add({ premium: 8, credits: 0 }, "interviews")
+  expect(await month.refusal("case-1 run 1", { premium: 3, credits: 0 })).toBe("case-1 run 1 could pass the 2026-11 premium cap 10: 8 spent this month (8 by interviews), 3 more at worst")
+  await month.add({ premium: 1, credits: 0 })
+  expect(await month.refusal("case-1 run 2", { premium: 2, credits: 0 })).toMatch(/9 spent this month \(8 by interviews\)/)
+})
+
+it("reads a file from before sources were kept", async () => {
+  fs.mkdirSync(path.dirname(file))
+  fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, months: { "2026-11": { premium: 5, credits: 5, runs: 1 } } }))
+  await ledger().add({ premium: 1, credits: 1 }, "interviews")
+  expect((await ledger().current()).spent).toEqual({ premium: 6, credits: 6, runs: 2, sources: { interviews: { premium: 1, credits: 1, runs: 1 } } })
+  expect(await ledger().refusal("x", { premium: 0, credits: 0 })).toBeUndefined()
 })
 
 it("refuses a run whose worst case would pass either cap this month, and allows one that fits exactly", async () => {
   const month = monthLedger({ file, now: () => now, caps: { premium: 10, credits: 100 } })
   await month.add({ premium: 6, credits: 50 })
   expect(await month.refusal("case-1 run 1", { premium: 4, credits: 50 })).toBeUndefined()
-  expect(await month.refusal("case-1 run 1", { premium: 5, credits: 0 })).toBe("case-1 run 1 could pass the 2026-11 premium cap 10: 6 spent this month, 5 more at worst")
+  expect(await month.refusal("case-1 run 1", { premium: 5, credits: 0 })).toBe("case-1 run 1 could pass the 2026-11 premium cap 10: 6 spent this month (0 by interviews), 5 more at worst")
   expect(await month.refusal("case-1 run 2", { premium: 0, credits: 50.5 })).toMatch(/2026-11 credits cap 100: 50 spent/)
 })
 
 it("refuses every run while its file can't be understood, rather than starting the month again", async () => {
   fs.mkdirSync(path.dirname(file))
-  for (const bad of ["not json", "{}", JSON.stringify({ schemaVersion: 1, months: { "2026-11": { premium: -1, credits: 0, runs: 0 } } }), JSON.stringify({ schemaVersion: 1, months: [] }), JSON.stringify({ schemaVersion: 1, months: null })]) {
+  for (const bad of ["not json", "{}", JSON.stringify({ schemaVersion: 1, months: { "2026-11": { premium: -1, credits: 0, runs: 0 } } }), JSON.stringify({ schemaVersion: 1, months: [] }),
+    JSON.stringify({ schemaVersion: 1, months: { "2026-11": { premium: 1, credits: 1, runs: 1, sources: { other: { premium: 1, credits: 1, runs: 1 } } } } }),
+    JSON.stringify({ schemaVersion: 1, months: { "2026-11": { premium: 1, credits: 1, runs: 1, sources: { eval: { premium: "1", credits: 1, runs: 1 } } } } }),
+    JSON.stringify({ schemaVersion: 1, months: { "2026-11": { premium: 1, credits: 1, runs: 1, sources: [] } } }),JSON.stringify({ schemaVersion: 1, months: null })]) {
     fs.writeFileSync(file, bad)
     await expect(ledger().refusal("x", { premium: 0, credits: 0 })).rejects.toThrow(/can't be understood/)
     await expect(ledger().add({ premium: 1, credits: 1 })).rejects.toThrow(/can't be understood/)
@@ -66,6 +86,6 @@ it("keeps its file in ~/.ouro-eval by default, under the real clock", async () =
     vi.restoreAllMocks()
   }
   const written = JSON.parse(fs.readFileSync(file, "utf8")) as { months: Record<string, unknown> }
-  expect(Object.values(written.months)).toEqual([{ premium: 1, credits: 2, runs: 1 }])
+  expect(Object.values(written.months)).toEqual([{ premium: 1, credits: 2, runs: 1, sources: { eval: { premium: 1, credits: 2, runs: 1 } } }])
   expect(Object.keys(written.months)[0]).toBe(new Date().toISOString().slice(0, 7))
 })

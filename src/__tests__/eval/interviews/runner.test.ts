@@ -219,6 +219,20 @@ describe("the interview runner", () => {
     expect((await runInterviews(args(), deps(sandbox(() => ({})), refusedQ4).d)).records[0]).toMatchObject({ status: "complete", ouroFirst: true })
   })
 
+  it("adds each session's spend to the month ledger as the interviews', never asking it, and runs on when it fails", async () => {
+    const added: Array<[unknown, unknown]> = []
+    const month = { add: async (spent: unknown, source: unknown) => { added.push([spent, source]) } }
+    const first = deps(sandbox(() => ({})), target(chooseOuro), { monthLedger: month })
+    const ok = await runInterviews(args({ sessions: ["X-1", "X-2"] }), first.d)
+    expect(ok.records.map((record) => record.status)).toEqual(["complete", "complete"])
+    expect(added).toEqual(ok.records.map((record) => [record.spent, "interviews"]))
+    const failing = deps(sandbox(() => ({})), target(chooseOuro), { monthLedger: { add: async () => { throw new Error("lock timed out") } } })
+    const ran = await runInterviews(args({ sessions: ["X-1", "X-2"] }), failing.d)
+    expect(ran.records.map((record) => record.status)).toEqual(["complete", "complete"])
+    expect(ran.exitCode).toBe(0)
+    expect(failing.printed).toContain("month ledger: couldn't add X-1's spend (lock timed out)")
+  })
+
   it("stops the study while ~/.ouro-eval/STOP is set, before any model call", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "interview-stop-"))
     fs.mkdirSync(path.join(home, ".ouro-eval"))
