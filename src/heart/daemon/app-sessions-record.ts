@@ -1,6 +1,5 @@
 import * as fs from "node:fs"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { digestFiles } from "../../senses/app-sessions/digest"
 import { appSessionsStateDir } from "../../senses/app-sessions/store"
 import type { PeerRecord } from "./presence"
 import * as path from "node:path"
@@ -24,7 +23,7 @@ function readJson<T>(file: string): T | null {
 export function appSessionsRecord(agentRoot: string, nowMs: number): Partial<PeerRecord> {
   const snap = readJson<{ at?: string; counts?: Record<string, number>; sessions?: Array<{ id: string; name?: string; state?: string }> }>(path.join(appSessionsStateDir(agentRoot), "snapshot.json"))
   if (!snap?.at || !snap.counts || nowMs - Date.parse(snap.at) > SNAPSHOT_MAX_AGE_MS) return {}
-  const digest = readJson<{ at?: string; sessions?: Array<{ id: string; card?: { track: string; slug: string; status: string } }> }>(digestFiles(agentRoot).json)
+  const digest = readJson<{ at?: string; sessions?: Array<{ id: string; card?: { track: string; slug: string; status: string } }> }>(path.join(appSessionsStateDir(agentRoot), "digest.json"))
   const digestFresh = !!digest?.at && nowMs - Date.parse(digest.at) <= DIGEST_MAX_AGE_MS
   const cards = new Map((digestFresh ? digest?.sessions ?? [] : []).filter((s) => s.card).map((s) => [s.id, s.card!] as const))
   const sessions = (snap.sessions ?? []).map(({ id, name, state }) => {

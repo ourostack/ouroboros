@@ -4,13 +4,12 @@ import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { appSessionsRecord } from "../../../heart/daemon/app-sessions-record"
 import { appSessionsStateDir } from "../../../senses/app-sessions/store"
-import { digestFiles } from "../../../senses/app-sessions/digest"
 
 let root: string
 const NOW = Date.parse("2026-11-24T12:00:00.000Z")
 const put = (file: string, value: unknown) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(value)) }
 const snapshot = (at: string) => put(path.join(appSessionsStateDir(root), "snapshot.json"), { at, counts: { working: 2 }, sessions: [{ id: "a", name: "fix sync", state: "working" }, { id: "b", name: "other", state: "working" }] })
-const digest = (at: string) => put(digestFiles(root).json, { at, sessions: [{ id: "a", card: { track: "ouro", slug: "fix-sync", status: "in-progress" } }, { id: "b" }] })
+const digest = (at: string) => put(path.join(appSessionsStateDir(root), "digest.json"), { at, sessions: [{ id: "a", card: { track: "ouro", slug: "fix-sync", status: "in-progress" } }, { id: "b" }] })
 beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), "app-record-")) })
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }) })
 
