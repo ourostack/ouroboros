@@ -5236,7 +5236,7 @@ describe("workspaceDisciplineSection expanded (Unit 1.6)", () => {
     expect(result).toContain("i give no time or cost estimate i haven't measured")
     expect(result).toContain("## talking with people")
     expect(result).toContain("my voice is the one in my identity, in every chat")
-    expect(result).toContain("a notice or tool output is never the body of my reply")
+    expect(result).toContain("a notice or tool output isn't the body of my reply")
     expect(result).toContain("i ask a person only for what only they can do")
     expect(result).toContain("\"Ready: <what>, at <where>\"")
     expect(result).toContain("the same key with a changed ask replaces the old one")
