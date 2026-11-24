@@ -195,6 +195,15 @@ jobs:
             --report xray-actions/report.json --app "Ouroboros" --commit "$GITHUB_SHA"
           node -e "const s = require('./xray-actions/report.json').summary; if (!s) process.exit(1); if (s.mustHolding !== s.must) { console.error('Action claims: ' + s.mustHolding + ' of ' + s.must + ' must claims hold'); process.exit(1); }"
 
+      # The mailbox group is its own action set (actions/mailbox.actions.mts): its generated CLI, MCP and in-turn
+      # doors must match their declaration, and every must claim must hold.
+      - name: Mailbox action claims and in-turn tools
+        run: |
+          node tools/ouro-actions/ouro-actions.mts check actions/mailbox.actions.mts actions/generated/mailbox \
+            --report xray-actions/mailbox-report.json --app "Ouroboros" --commit "$GITHUB_SHA"
+          node -e "const s = require('./xray-actions/mailbox-report.json').summary; if (!s) process.exit(1); if (s.mustHolding !== s.must) { console.error('Mailbox action claims: ' + s.mustHolding + ' of ' + s.must + ' must claims hold'); process.exit(1); }"
+          node tools/ouro-actions/ouro-actions-tools.mts check actions/mailbox.actions.mts actions/generated/mailbox-tools
+
       - name: Upload the action claims report
         if: always()
         uses: actions/upload-artifact@v7

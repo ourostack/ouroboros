@@ -597,6 +597,8 @@ export interface OuroDaemonOptions {
   orphanStartupDrain?: (socketPath: string) => Promise<void>
   /** Retention over every agent's `state/`; runs 10 minutes after start, then daily. */
   stateRetention?: () => Promise<unknown>
+  /** Reloads the unattended updater if launchd has lost it; 5 minutes after start, then hourly. Null turns it off. */
+  updaterAgentWatch?: (() => Promise<unknown>) | null
   /** Whether another daemon already answers on the socket. Defaults to a real status probe. */
   socketAnswering?: (socketPath: string) => Promise<boolean>
   /** Source-specific credential readiness checked before external-event ownership mutation. */
@@ -874,10 +876,18 @@ function defaultSelfUpdateLauncher(): (() => Promise<string>) | null {
   if (process.platform === "darwin") return null
   return async () => (await import("../versioning/self-update-defaults")).launchUnattendedSelfUpdate()
 }
+
+// macOS only, and never under a test runner: a test daemon must not load launch agents on the host.
+function defaultUpdaterAgentWatch(): (() => Promise<unknown>) | null {
+  if (process.platform !== "darwin" || process.env.VITEST) return null
+  return async () => (await import("../versioning/self-update-defaults")).restoreDefaultUpdaterAgentIfMissing()
+}
 /* v8 ignore stop */
 
 const STATE_RETENTION_FIRST_DELAY_MS = 10 * 60_000
 const STATE_RETENTION_INTERVAL_MS = 24 * 60 * 60_000
+const UPDATER_AGENT_WATCH_FIRST_DELAY_MS = 5 * 60_000
+const UPDATER_AGENT_WATCH_INTERVAL_MS = 60 * 60_000
 
 export class OuroDaemon {
   private readonly socketPath: string
@@ -895,6 +905,8 @@ export class OuroDaemon {
   private externalEventReconcileTimer: ReturnType<typeof setInterval> | null = null
   private stateRetentionTimer: ReturnType<typeof setTimeout> | null = null
   private readonly stateRetention: () => Promise<unknown>
+  private updaterAgentWatchTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly updaterAgentWatch: (() => Promise<unknown>) | null
   private externalEventReconcileRunning = false
   private readonly constructedAtMs = Date.now()
   private readonly frontendSocketPath: string
@@ -956,6 +968,7 @@ export class OuroDaemon {
       // Only agents homed here: another machine's daemon looks after its own agents' state.
       agents: listHomeBundleAgents({ bundlesRoot: this.bundlesRoot }),
     }))
+    this.updaterAgentWatch = options.updaterAgentWatch !== undefined ? options.updaterAgentWatch : defaultUpdaterAgentWatch()
     this.socketAnswering = options.socketAnswering ?? checkDaemonSocketAlive
     this.selfUpdateLauncher = options.selfUpdateLauncher !== undefined ? options.selfUpdateLauncher : defaultSelfUpdateLauncher()
     this.externalEventSourceReadiness = options.externalEventSourceReadiness ?? (async (agent, source) => {
@@ -1132,6 +1145,7 @@ export class OuroDaemon {
     }, 1_000)
     this.externalEventReconcileTimer.unref?.()
     this.scheduleStateRetention(STATE_RETENTION_FIRST_DELAY_MS)
+    this.scheduleUpdaterAgentWatch(UPDATER_AGENT_WATCH_FIRST_DELAY_MS)
 
     // Write all managed PIDs to disk so the next daemon can clean up
     /* v8 ignore start -- pidfile write: collects PIDs from process managers @preserve */
@@ -1158,6 +1172,18 @@ export class OuroDaemon {
         meta: { socketPath: this.frontendSocketPath },
       })
     }
+  }
+
+  // The updater has dropped out of launchd after good bootstraps; nothing reloaded it until a hand-run `ouro up`.
+  private scheduleUpdaterAgentWatch(delayMs: number): void {
+    const watch = this.updaterAgentWatch
+    if (!watch) return
+    this.updaterAgentWatchTimer = setTimeout(() => {
+      void watch().catch(() => undefined).finally(() => {
+        if (this.updaterAgentWatchTimer) this.scheduleUpdaterAgentWatch(UPDATER_AGENT_WATCH_INTERVAL_MS)
+      })
+    }, delayMs)
+    this.updaterAgentWatchTimer.unref?.()
   }
 
   // Waits after start so a restart isn't slowed by it; a failed pass is logged by retention and tried again tomorrow.
@@ -1476,6 +1502,10 @@ export class OuroDaemon {
     if (this.stateRetentionTimer) {
       clearTimeout(this.stateRetentionTimer)
       this.stateRetentionTimer = null
+    }
+    if (this.updaterAgentWatchTimer) {
+      clearTimeout(this.updaterAgentWatchTimer)
+      this.updaterAgentWatchTimer = null
     }
     const workerStopTasks = [
       Promise.resolve().then(() => this.processManager.stopAll()),
