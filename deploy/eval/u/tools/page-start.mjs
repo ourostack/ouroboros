@@ -1,7 +1,7 @@
 // The drivers' first step in the page, before they import the component: take the runner's one-shot hooks
 // (runtime/page-runner.mjs) off the window, so the component's code never sees them, and freeze the page's own
 // built-ins, so the component can't bend the driver's own steps through them. The verdicts themselves come from the
-// runner's judge, outside the page. A second call, or a component that imports this module, gets nothing.
+// judge in the grader's process (runtime/judge.mjs). A second call, or a component that imports this module, gets nothing.
 export function takeHooks() {
   const report = window.__u_report
   const step = window.__u_step
@@ -16,6 +16,6 @@ export function takeHooks() {
   for (const name of ["setTimeout", "clearTimeout", "queueMicrotask", "Promise", "JSON"]) Object.defineProperty(window, name, { value: window[name], writable: false, configurable: false })
   return {
     report: typeof report === "function" ? report : () => undefined,
-    step: typeof step === "function" ? step : () => null,
+    step: typeof step === "function" ? step : () => Promise.resolve(null),
   }
 }

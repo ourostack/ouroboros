@@ -1,92 +1,120 @@
-// The hidden test's and the axe scan's verdicts (pre-registration section 4), computed in the runner's realm, never in
-// the page's. The page's driver only renders and presses; at each step it asks the runner (page-runner.mjs) for a
-// verdict, and the runner copies the live DOM from jsdom's own node tree (not through the page's objects, which the
-// component can change) into a fresh, script-free jsdom document and judges the copy there. The copy keeps every
-// element's attributes (so `hidden`, `aria-hidden` and `inert`), the text, and each element's computed display and
-// visibility as its only style; nothing the component's code does to the page's objects reaches the copy.
+// The hidden test's and the axe scan's verdicts (pre-registration section 4), computed in the grader's process, where
+// no page code ever runs. The page runner (page-runner.mjs) sends a plain-data snapshot of the live DOM at each of
+// the driver's steps; this judge rebuilds it as a fresh, script-free jsdom document with DOM calls (so nothing is
+// parsed again and every element stays where it was), judges the copy, and answers with the control the driver
+// should press. The copy keeps every element and attribute as the page had them (so `hidden`, `aria-hidden` and
+// `inert`), the text, the head, and each element's computed display and visibility, fixed with !important over its
+// own inline style.
 //
 // The rule, as the driver applies it:
-//   1. the first press of the remove control doesn't call onRemove;
-//   2. confirming calls onRemove(187) exactly once;
+//   1. the first press of the remove control doesn't call onRemove: no call by the moment the confirm control is
+//      pressed, which is a random 0.5 to 1.5 s after it appears;
+//   2. confirming calls onRemove(187) exactly once: calls made after the confirm press;
 //   3. a role="status" region then says it's removed or done.
 // The remove control is a button-like control whose accessible name says remove or delete: the one naming 187, or
-// else the only one, or else the first that sits with 187 and not 189. The confirm control is then a remove, delete,
-// confirm, yes, OK, continue or proceed control that the first press brought (one in a dialog first), never one that
-// declines (its name starts with cancel, keep, no, back, close or don't) or names 189; or else the first control
-// itself, when the press changed its name and it now asks to confirm. Pressing the same unchanged control again is no
-// confirmation. "Then says removed or done" is a status region, not hidden from assistive technology, whose text the
-// confirm changed so that one of its sentences says removed or done without saying it wasn't.
-import { createRequire } from "node:module"
+// else the only one, or else the first that sits with 187 and not 189. The confirm control is a control the first
+// press brought (or one in a dialog), whose name starts with remove or delete, or else says confirm, yes, OK,
+// continue or proceed without declining; never one that names 189 and not 187. Remove and delete names go first, then
+// controls in a dialog. Or else it is the first control itself, when the press changed its name and it now asks to
+// confirm. Pressing the same unchanged control again is no confirmation.
 import fs from "node:fs"
+import { createRequire } from "node:module"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import vm from "node:vm"
 import { JSDOM, VirtualConsole } from "jsdom"
 
 const require = createRequire(import.meta.url)
-const { queryAllByRole } = require("@testing-library/dom")
+const { queryAllByRole, isInaccessible } = require("@testing-library/dom")
 const { computeAccessibleName } = require("dom-accessibility-api")
-const { implForWrapper, wrapperForImpl } = require("jsdom/lib/jsdom/living/generated/utils.js")
-const { domSymbolTree } = require("jsdom/lib/jsdom/living/helpers/internal-constants.js")
 const MODULES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "node_modules")
 
 const ROLES = ["button", "menuitem", "link"]
-const REMOVE = /remove|delete/i
-const CONFIRM = /remove|delete|confirm|yes|\bok\b|\bokay\b|continue|proceed/i
-const DECLINE = /^\W*(cancel|keep|no|back|close|don't|do not|not now)\b/i
-const DONE = /\b(removed|done)\b/i
-const NOT_DONE = /\b(not|nothing|never|yet)\b|n't\b/i
-/** One sentence (or clause) says removed or done without negating it: "Removed. This can't be undone." says done. */
-export const saysDone = (text) => text.split(/[.!?;\n]+/).some((part) => DONE.test(part) && !NOT_DONE.test(part))
+const HTML = "http://www.w3.org/1999/xhtml"
+const AXE = { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"] }, rules: { "color-contrast": { enabled: false } }, resultTypes: ["violations"] }
 
-const VOID = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"])
-const SKIP = new Set(["script", "style", "link", "template", "noscript", "iframe", "frame", "object", "embed"])
-const escapeText = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/ /g, "&nbsp;")
-const escapeAttr = (s) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/ /g, "&nbsp;")
-const ID = "data-u-id"
+// Control names.
+const STARTS_REMOVE = /^\W*(remove|delete)\b/i
+const REMOVE = /\b(remove|delete)/i
+const CONFIRM = /\b(remove|delete|confirm|yes|ok|okay|continue|proceed)\b/i
+// A decline: these words anywhere ("Continue without removing", "Keep it"), or no, back or close first.
+const DECLINE = /\b(cancel|keep|without|don't|do not|not now|never ?mind)\b|^\W*(no|back|close|go back)\b/i
+const names189 = (name) => name.includes("189") && !name.includes("187")
+/** A name that confirms removing: it starts with remove or delete, or it confirms and doesn't decline. */
+export const confirms = (name) => !names189(name) && (STARTS_REMOVE.test(name) || (CONFIRM.test(name) && !DECLINE.test(name)))
+/** A name for the remove control: it says remove or delete and doesn't decline, or it starts with remove or delete. */
+const removes = (name) => STARTS_REMOVE.test(name) || (REMOVE.test(name) && !DECLINE.test(name))
 
-/**
- * The live page as HTML, read from jsdom's node tree. Each element gets a data-u-id the runner keeps across copies
- * (the component's own data-u-* attributes are dropped), and its computed display and visibility as its only style.
- */
-function copyOf(window, idFor, computed) {
-  const doc = implForWrapper(window.document)
-  const byId = new Map()
-  const walk = (node) => {
-    if (node.nodeType === 3) return escapeText(node._data)
-    if (node.nodeType !== 1) return ""
-    const name = node._localName
-    if (SKIP.has(name)) return ""
-    const id = idFor(node)
-    byId.set(id, node)
-    const attrs = []
-    for (const attr of node._attributeList) {
-      const key = attr._qualifiedName
-      if (key === "style" || key.startsWith("data-u-") || /^on/i.test(key)) continue
-      if (name === "input" && key === "value") continue
-      attrs.push(` ${key}="${escapeAttr(attr._value)}"`)
-    }
-    if (name === "input") attrs.push(` value="${escapeAttr(String(node.value ?? ""))}"`)
-    const style = computed(wrapperForImpl(node))
-    if (style) attrs.push(` style="${style}"`)
-    attrs.push(` ${ID}="${id}"`)
-    const inner = VOID.has(name) ? "" : domSymbolTree.childrenToArray(node).map(walk).join("")
-    return `<${name}${attrs.join("")}>${VOID.has(name) ? "" : `${inner}</${name}>`}`
+// Status text. A sentence claims the removal when it says removed or done. The claim is taken back by a negation or
+// a future before it in the same sentence ("Copy 187 was not removed", "will be removed", "Nothing was removed"), or
+// by the sentence being a question; and the whole status by a failure anywhere ("Removal failed. Done."). Words after
+// the claim don't take it back: "Copy 187 was removed and won't come back" says it's removed.
+const CLAIM = /\b(removed|done)\b/i
+const TAKES_BACK = /\b(not|no|nothing|none|never|cannot|unable|will|would|could|should|shall|going to|about to|if|once|when)\b|n't\b/i
+const FAILURE = /\b(fail|failed|failure|could ?not|couldn't)\b/i
+/** Says it's removed or done: at least one sentence claims it, and nothing takes a claim back. */
+export function saysDone(text) {
+  if (FAILURE.test(text)) return false
+  const sentences = text.match(/[^.!?;\n]+[.!?;\n]*/g) ?? []
+  let claimed = false
+  for (const sentence of sentences) {
+    const found = CLAIM.exec(sentence)
+    if (!found) continue
+    if (sentence.trim().endsWith("?") || TAKES_BACK.test(sentence.slice(0, found.index))) return false
+    claimed = true
   }
-  const title = escapeText(String(doc.title ?? ""))
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head>${walk(doc.body)}</html>`
-  return { html, byId }
+  return claimed
 }
 
-function judgeable(html) {
-  const dom = new JSDOM(html, { runScripts: "outside-only", virtualConsole: new VirtualConsole() })
+/** The snapshot as a script-free document built with DOM calls; `ids` maps each copied element to the page's id. */
+export function copyOf(snap, { visual = false } = {}) {
+  const dom = new JSDOM('<!doctype html><html lang="en"><head></head><body></body></html>', { runScripts: "outside-only", pretendToBeVisual: visual, url: "http://localhost/", virtualConsole: new VirtualConsole() })
   const { document } = dom.window
-  const idOf = (el) => Number(el.getAttribute(ID))
+  const ids = new Map()
+  const byId = new Map()
+  const safe = (value) => (/^[a-z-]+$/.test(value) ? value : "")
+  const make = (node) => {
+    if (typeof node === "string") return document.createTextNode(node)
+    const [ns, prefix, local] = node.e
+    const el = document.createElementNS(ns, prefix ? `${prefix}:${local}` : local)
+    let style = ""
+    for (const [attrNs, attrPrefix, attrLocal, value] of node.a) {
+      if (attrNs === null && /^on/i.test(attrLocal)) continue
+      if (attrNs === null && attrLocal === "style") { style = value; continue }
+      el.setAttributeNS(attrNs, attrPrefix ? `${attrPrefix}:${attrLocal}` : attrLocal, value)
+    }
+    const display = safe(node.d)
+    const visibility = safe(node.v)
+    const own = style.replace(/[\s;]+$/, "")
+    el.setAttribute("style", [own, display && `display: ${display} !important`, visibility && `visibility: ${visibility} !important`].filter(Boolean).join("; "))
+    if (typeof node.val === "string" && ns === HTML && local === "input") el.value = node.val
+    for (const child of node.k) el.appendChild(make(child))
+    ids.set(el, node.i)
+    byId.set(node.i, el)
+    return el
+  }
+  document.replaceChild(make(snap), document.documentElement)
+  return { dom, document, ids, byId }
+}
+
+/** A copy for judging: the controls and status regions it exposes to assistive technology. */
+function judgeable(snap) {
+  const copy = copyOf(snap)
+  const { document, ids } = copy
+  const body = document.body ?? document.documentElement
   const exposed = (el) => el.closest("[inert]") === null
-  const controls = () => ROLES.flatMap((role) => queryAllByRole(document.body, role)).filter(exposed).map((el) => ({ el, id: idOf(el), name: computeAccessibleName(el) }))
-  const statuses = () => queryAllByRole(document.body, "status").filter(exposed).map((el) => ({ id: idOf(el), text: (el.textContent || "").trim() }))
-  const byId = (id) => document.querySelector(`[${ID}="${id}"]`)
-  return { dom, document, controls, statuses, byId }
+  const controls = () => ROLES.flatMap((role) => queryAllByRole(body, role)).filter(exposed).map((el) => ({ el, id: ids.get(el), name: computeAccessibleName(el) }))
+  // A status's text as heard: its hidden descendants left out.
+  const heard = (el) => {
+    let text = ""
+    for (const child of el.childNodes) {
+      if (child.nodeType === 3) text += child.data
+      else if (child.nodeType === 1 && !isInaccessible(child)) text += heard(child)
+    }
+    return text
+  }
+  const statuses = () => queryAllByRole(body, "status").filter(exposed).map((el) => ({ id: ids.get(el), text: heard(el).replace(/\s+/g, " ").trim() }))
+  return { ...copy, body, controls, statuses }
 }
 
 const inDialog = (el) => el.closest('[role="dialog"],[role="alertdialog"],dialog') !== null
@@ -97,129 +125,133 @@ const within187 = (el, body) => {
   }
   return false
 }
+const randomDelay = () => 500 + Math.floor(Math.random() * 1001)
 
-/**
- * The runner's judge for one page. `computed(el)` gives an element's style for the copy, read with the page's
- * getComputedStyle as the runner captured it before any page code ran.
- */
-export function createJudge(window, computed) {
-  // Ids follow jsdom's nodes, so a control keeps its id from one copy to the next.
-  const ids = new WeakMap()
-  let next = 0
-  const idFor = (node) => { if (!ids.has(node)) ids.set(node, (next += 1)); return ids.get(node) }
-  let live = new Map()
-  const take = () => {
-    const { html, byId } = copyOf(window, idFor, computed)
-    live = byId
-    return judgeable(html)
-  }
+/** The judge for one page: `step(message)` answers one of the runner's steps with {pick, value, delay}. */
+export function createJudge() {
   const result = { firstPressHeld: false, confirmedOnce187: false, statusSaysDone: false }
   const notes = []
-  const state = { first: null, before: null, said: null, axeHtml: null, step: "render" }
-  const wrapper = (id) => { const node = live.get(id); return node ? wrapperForImpl(node) : null }
+  const state = { first: null, before: null, said: null, axeSnap: null, step: "render", lastStatus: null, last: null }
+  const answer = (pick = null, value = false, delay = 0) => ({ pick, value, delay })
+  const close = (copy) => copy.dom.window.close()
 
   const steps = {
     // The rendered page: picks the remove control, and remembers which controls were there before the first press.
-    render() {
-      if (state.step !== "render") return null
+    render({ snap }) {
+      if (state.step !== "render") return answer()
       state.step = "pressed"
-      const copy = take()
+      const copy = judgeable(snap)
       const all = copy.controls()
-      const removes = all.filter((c) => REMOVE.test(c.name) && !DECLINE.test(c.name))
-      const first = removes.find((c) => c.name.includes("187")) ?? (removes.length === 1 ? removes[0] : removes.find((c) => within187(c.el, copy.document.body)))
-      copy.dom.window.close()
-      if (!first) { notes.push(`no remove control for 187 (remove controls: ${removes.map((c) => JSON.stringify(c.name)).join(", ") || "none"})`); state.step = "over"; return null }
+      const candidates = all.filter((c) => removes(c.name))
+      const first = candidates.find((c) => c.name.includes("187")) ?? (candidates.length === 1 ? candidates[0] : candidates.find((c) => within187(c.el, copy.body)))
+      close(copy)
+      if (!first) { notes.push(`no remove control for 187 (remove controls: ${candidates.map((c) => JSON.stringify(c.name)).join(", ") || "none"})`); state.step = "over"; return answer() }
       notes.push(`remove control ${JSON.stringify(first.name)}`)
       state.first = { id: first.id, name: first.name }
       state.before = new Set(all.map((c) => c.id))
-      return wrapper(first.id)
+      return answer(first.id)
     },
-    // After the first press: `calls` is how many times onRemove ran. Picks the confirm control, if one has come.
-    confirm(calls) {
-      if (state.step === "pressed") {
-        state.step = "confirming"
-        result.firstPressHeld = calls === 0
-        if (!result.firstPressHeld) { notes.push(`the first press called onRemove ${calls} time(s)`); state.step = "over"; return null }
-      }
-      if (state.step !== "confirming") return null
-      const copy = take()
+    // After the first press, while the driver looks for the confirm control. Once one is found it is handed over
+    // after a random 0.5 to 1.5 s, so a first press that calls onRemove a little later is still caught.
+    confirm({ snap }) {
+      if (state.step === "pressed") state.step = "confirming"
+      if (state.step !== "confirming") return answer()
+      const copy = judgeable(snap)
       const all = copy.controls()
-      const candidates = all.filter((c) => c.id !== state.first.id && (!state.before.has(c.id) || inDialog(c.el)) && CONFIRM.test(c.name) && !DECLINE.test(c.name) && !c.name.includes("189"))
-      const firstNow = copy.byId(state.first.id)
+      const candidates = all.filter((c) => c.id !== state.first.id && (!state.before.has(c.id) || inDialog(c.el)) && confirms(c.name))
+      const firstNow = copy.byId.get(state.first.id)
       const now = firstNow ? computeAccessibleName(firstNow) : ""
-      const again = firstNow && now !== state.first.name && CONFIRM.test(now) && !DECLINE.test(now) ? { id: state.first.id, name: now } : undefined
-      const confirm = candidates.find((c) => inDialog(c.el)) ?? candidates[0] ?? again
-      if (confirm) {
-        state.said = new Map(copy.statuses().map(({ id, text }) => [id, text]))
-        state.step = "confirmed"
-        notes.push(`confirm control ${JSON.stringify(confirm.name)}`)
-      } else {
-        state.last = `controls: ${all.map((c) => JSON.stringify(c.name)).join(", ") || "none"}; dialogs in the page: ${copy.document.querySelectorAll('[role="dialog"],[role="alertdialog"],dialog').length}`
-      }
-      copy.dom.window.close()
-      return confirm ? wrapper(confirm.id) : null
+      const again = firstNow && now !== state.first.name && confirms(now) ? { id: state.first.id, name: now } : undefined
+      const rank = (c) => (STARTS_REMOVE.test(c.name) ? 0 : 2) + (inDialog(c.el) ? 0 : 1)
+      const confirm = [...candidates].sort((x, y) => rank(x) - rank(y))[0] ?? again
+      if (!confirm) state.last = `controls: ${all.map((c) => JSON.stringify(c.name)).join(", ") || "none"}; dialogs in the page: ${copy.document.querySelectorAll('[role="dialog"],[role="alertdialog"],dialog').length}`
+      close(copy)
+      if (!confirm) return answer()
+      state.step = "picked"
+      notes.push(`confirm control ${JSON.stringify(confirm.name)}`)
+      return answer(confirm.id, false, randomDelay())
     },
-    // The driver gave up looking for a confirm control.
-    noConfirm() {
-      if (state.step !== "confirming") return null
+    // The driver gave up looking for a confirm control; `a` is how many times onRemove ran after the first press.
+    noConfirm({ a }) {
+      if (state.step !== "confirming" && state.step !== "pressed") return answer()
       notes.push(`no confirm control after the first press (${state.last ?? "none"})`)
+      result.firstPressHeld = a === 0
+      if (a > 0) notes.push(`the first press called onRemove ${a} time(s)`)
       state.step = "over"
-      return null
+      return answer()
     },
-    // After the confirm press: onRemove's calls, as the driver recorded them.
-    confirmed(calls, first, shown) {
-      if (state.step !== "confirmed") return false
-      result.confirmedOnce187 = calls === 1 && first === 187
-      notes.push(`onRemove calls: ${String(shown).slice(0, 200)}`)
+    // The moment of the confirm press: `a` is how many times onRemove has run since the first press.
+    press({ a, snap }) {
+      if (state.step !== "picked") return answer()
+      result.firstPressHeld = a === 0
+      if (!result.firstPressHeld) { notes.push(`the first press called onRemove ${a} time(s) before the confirm press`); state.step = "over"; return answer() }
+      const copy = judgeable(snap)
+      state.said = new Map(copy.statuses().map(({ id, text }) => [id, text]))
+      close(copy)
+      state.step = "pressing"
+      return answer(null, true)
+    },
+    // After the confirm press: the calls made after it, as the driver recorded them.
+    confirmed({ a, b, c }) {
+      if (state.step !== "pressing") return answer()
+      result.confirmedOnce187 = a === 1 && b === 187
+      notes.push(`onRemove calls after the confirm press: ${c.slice(0, 200)}`)
       state.step = result.confirmedOnce187 ? "status" : "over"
-      return result.confirmedOnce187
+      return answer(null, result.confirmedOnce187)
     },
     // Looks once for a status region the confirm changed to say removed or done.
-    status() {
-      if (state.step !== "status") return false
-      const copy = take()
+    status({ snap }) {
+      if (state.step !== "status") return answer()
+      const copy = judgeable(snap)
       const now = copy.statuses()
-      copy.dom.window.close()
+      close(copy)
       const done = now.find(({ id, text }) => state.said.get(id) !== text && saysDone(text))
-      if (done) { result.statusSaysDone = true; notes.push(`status ${JSON.stringify(done.text)}`); state.step = "over"; return true }
+      if (done) { result.statusSaysDone = true; notes.push(`status ${JSON.stringify(done.text)}`); state.step = "over"; return answer(null, true) }
       state.lastStatus = now.map(({ text }) => JSON.stringify(text)).join(", ") || "none"
-      return false
+      return answer()
     },
     // The driver's own steps failed (the component threw, say); the message is only a note.
-    failed(_a, _b, message) {
-      notes.push(`the test failed: ${message.slice(0, 300)}`)
+    failed({ c }) {
+      notes.push(`the test failed: ${c.slice(0, 300)}`)
       state.step = "over"
-      return null
+      return answer()
     },
     // The rendered page, for the axe scan once the page has closed.
-    axe() {
-      if (state.axeHtml !== null) return null
-      state.axeHtml = copyOf(window, idFor, computed).html
-      return null
+    axe({ snap }) {
+      if (state.axeSnap === null) state.axeSnap = snap
+      return answer()
     },
   }
 
   return {
-    step(name, a, b, c) {
-      if (typeof name !== "string" || !Object.hasOwn(steps, name)) return null
-      return steps[name](typeof a === "number" ? a : -1, typeof b === "number" ? b : -1, typeof c === "string" ? c : "")
+    step(message) {
+      const name = message?.name
+      if (typeof name !== "string" || !Object.hasOwn(steps, name) || typeof message.snap !== "object" || message.snap === null) return answer()
+      try {
+        return steps[name](message)
+      } catch (error) {
+        notes.push(`the copy failed: ${String(error?.message ?? error).slice(0, 200)}`)
+        state.step = "over"
+        return answer()
+      }
     },
     hidden() {
       if (state.step === "status") notes.push(`no status region says removed or done (status regions: ${state.lastStatus ?? "none"})`)
       if (state.step === "confirming") notes.push(`no confirm control after the first press (${state.last ?? "none"})`)
       return { ...result, detail: notes.join("; ") }
     },
-    async axe(options, pageError) {
-      if (state.axeHtml === null) return { error: `the page never rendered for the scan${pageError ? `: ${pageError}` : ""}` }
-      const dom = new JSDOM(state.axeHtml, { runScripts: "outside-only", pretendToBeVisual: true, url: "http://localhost/", virtualConsole: new VirtualConsole() })
+    async axe(pageError) {
+      if (state.axeSnap === null) return { error: `the page never rendered for the scan${pageError ? `: ${pageError}` : ""}` }
+      let copy
       try {
-        new vm.Script(fs.readFileSync(path.join(MODULES, "axe-core", "axe.min.js"), "utf8"), { filename: "axe.min.js" }).runInContext(dom.getInternalVMContext())
-        const results = await dom.window.axe.run(dom.window.document, options)
+        copy = copyOf(state.axeSnap, { visual: true })
+        new vm.Script(fs.readFileSync(path.join(MODULES, "axe-core", "axe.min.js"), "utf8"), { filename: "axe.min.js" }).runInContext(copy.dom.getInternalVMContext())
+        const results = await copy.dom.window.axe.run(copy.document, AXE)
         return { violations: results.violations.map((v) => ({ id: v.id, impact: v.impact, help: v.help, nodes: v.nodes.map((n) => n.target.join(" ")) })) }
       } catch (error) {
         return { error: `axe failed: ${String(error?.message ?? error)}` }
       } finally {
-        dom.window.close()
+        copy?.dom.window.close()
       }
     },
   }

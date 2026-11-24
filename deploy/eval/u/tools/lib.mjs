@@ -9,18 +9,18 @@
 // write no file. The component's imports resolve only inside its project. jsdom is no sandbox: its DOM objects belong
 // to that process's realm. The runner closes the known ways from them to the process (the realm's Function
 // constructors, refused code from strings, stack-trace call sites, frames' windows) and freezes the built-ins and
-// the jsdom classes it shares. Every verdict comes from the runner's judge, which reads the live DOM from jsdom's own
-// node tree and judges a script-free copy outside the page (runtime/judge.mjs); the page's driver only presses what
-// the judge picks. The result counts only with the HMAC made under a key the page never sees. That is hardening, not
-// proof: a component written to subvert the test through a way out not yet known could change what is reported, so
-// transcripts are kept for review.
+// the jsdom classes it shares. The runner judges nothing: at each of the driver's steps it reads the live DOM from
+// jsdom's own node tree into plain data (a getter or proxy the page planted there ends the run as tampered) and sends
+// it here, where the judge rebuilds it as a script-free copy and gives every verdict (runtime/judge.mjs); the page's
+// driver only presses what the judge picks. That is hardening, not proof: a component written to subvert the test
+// through a way out not yet known could still change what the runner sees, so transcripts are kept for review.
 import { spawn } from "node:child_process"
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { build } from "esbuild"
 import ts from "typescript"
+import { createJudge } from "./runtime/judge.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 export const COMPONENT = "src/RemoveCopy.tsx"
@@ -69,6 +69,8 @@ const ESCAPES = [
   ["Reflect", /\bReflect\b/],
   ["property definition", /\bObject\s*\.\s*(defineProperty|defineProperties|setPrototypeOf|getPrototypeOf)\b|\bReflect\b/],
   ["__proto__", /__proto__/],
+  // jsdom keeps its own objects under an element's symbol keys.
+  ["symbol keys", /\b(getOwnPropertySymbols|getOwnPropertyDescriptors?|ownKeys)\b/],
   ["stack trace hook", /\b(prepareStackTrace|captureStackTrace|stackTraceLimit)\b/],
   ["runner hook", /__u_|__U_/],
   // Any mention, not only `X.prototype.y =`: a prototype held in a variable or passed to Object.assign is written the same.
@@ -169,39 +171,43 @@ export async function bundle(project, driver) {
 
 /**
  * Runs a page script in runtime/page-runner.mjs, in its own process under Node's permission model (reads of the
- * runner and the tools' node_modules only; no writes, processes or inspector), and takes its result only when it
- * carries the HMAC under a key made here, so nothing the page's code prints can stand in for it.
+ * runner and the tools' node_modules only; no writes, processes or inspector), and judges it here, in this process,
+ * from the plain-data snapshots the runner sends at each of the driver's steps (runtime/judge.mjs). Nothing the page
+ * sends is run, and the verdict is never the page's to give.
  */
-export async function runPage({ code }, { mode = "hidden", timeoutMs = 40_000 } = {}) {
-  const mac = randomBytes(32).toString("hex")
+export async function runPage({ code }, { mode = "hidden", timeoutMs = 60_000 } = {}) {
+  const judge = createJudge()
   const runner = path.join(HERE, "runtime", "page-runner.mjs")
   const args = ["--disallow-code-generation-from-strings", "--permission", `--allow-fs-read=${path.join(HERE, "runtime")}${path.sep}`, `--allow-fs-read=${path.join(HERE, "node_modules")}${path.sep}`, runner]
-  const answer = await new Promise((resolve) => {
+  const ended = await new Promise((resolve) => {
     const child = spawn(process.execPath, args, { cwd: path.join(HERE, "runtime"), stdio: ["pipe", "pipe", "ignore"], env: {} })
-    let out = ""
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs)
-    child.stdout.on("data", (chunk) => { if (out.length < 4_000_000) out += chunk })
-    child.on("error", (error) => { clearTimeout(timer); resolve({ error: `the page runner could not start: ${error.message}` }) })
-    child.on("close", (exit) => { clearTimeout(timer); resolve({ out, exit }) })
+    let buffered = ""
+    let end = null
+    let received = 0
+    const finish = (value) => { clearTimeout(timer); child.kill("SIGKILL"); resolve(value) }
+    const timer = setTimeout(() => finish({ error: "the page gave no result in time" }), timeoutMs)
+    child.stdout.setEncoding("utf8")
+    child.stdout.on("data", (chunk) => {
+      received += chunk.length
+      if (received > 200_000_000) { finish({ error: "the page sent too much" }); return }
+      buffered += chunk
+      for (let at = buffered.indexOf("\n"); at >= 0; at = buffered.indexOf("\n")) {
+        const line = buffered.slice(0, at)
+        buffered = buffered.slice(at + 1)
+        let message
+        try { message = JSON.parse(line) } catch { finish({ error: "the page runner sent something that isn't JSON" }); return }
+        if (message?.type === "end") { end = message; continue }
+        if (message?.type !== "step") { finish({ error: "the page runner sent something unexpected" }); return }
+        child.stdin.write(`${JSON.stringify(judge.step(message))}\n`)
+      }
+    })
+    child.on("error", (error) => finish({ error: `the page runner could not start: ${error.message}` }))
+    child.on("close", (exit) => { clearTimeout(timer); resolve(end ?? { error: `the page gave no result (exit ${exit})` }) })
     child.stdin.on("error", () => undefined)
-    child.stdin.end(JSON.stringify({ code, mac, mode }))
+    child.stdin.write(`${JSON.stringify({ code, mode })}\n`)
   })
-  if (answer.error) return answer
-  let parsed
-  try {
-    parsed = JSON.parse(answer.out)
-  } catch {
-    return { error: `the page gave no result (exit ${answer.exit})` }
-  }
-  const expected = createHmac("sha256", mac).update(String(parsed?.result)).digest("hex")
-  if (typeof parsed?.result !== "string" || typeof parsed.sig !== "string" || parsed.sig.length !== expected.length || !timingSafeEqual(Buffer.from(parsed.sig), Buffer.from(expected))) {
-    return { error: "the page's result was not the runner's" }
-  }
-  try {
-    return JSON.parse(parsed.result)
-  } catch {
-    return { error: "the page's result was not JSON" }
-  }
+  if (typeof ended.error === "string") return { error: ended.error }
+  return mode === "axe" ? judge.axe(typeof ended.pageError === "string" ? ended.pageError : "") : judge.hidden()
 }
 
 /** The axe scan: the component rendered with a test onRemove, WCAG 2.x A and AA rules. */

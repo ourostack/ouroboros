@@ -13,8 +13,8 @@
  * The trust boundary: the checking tools run as the guest's user, from a folder the file tools refuse. The type-check
  * never runs the model's code. The axe scan and the hidden test bundle the component for the browser and run it in
  * jsdom in a separate process under Node's permission model, which can read neither the tools' own files nor any
- * project and can write nothing; its result counts only when signed with a key the page never sees
- * (deploy/eval/u/tools).
+ * project and can write nothing, and that process judges nothing: the checking tools' own process judges plain-data
+ * snapshots of the page (deploy/eval/u/tools).
  */
 import { execFile } from "node:child_process"
 import fs from "node:fs"
