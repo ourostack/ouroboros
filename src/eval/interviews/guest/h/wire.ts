@@ -114,7 +114,10 @@ const RESPONSES_FIELDS = new Set([
 /**
  * A Responses body as the harness's request. The harness's instructions (its leading developer and system messages)
  * become the one system message; the case's conversation goes before the first user message; a call joins the
- * assistant message before it, and each output becomes its tool result. Reasoning items are not sent back.
+ * assistant message before it, and each output becomes its tool result. Reasoning items go back as real codex sends
+ * them: each one, unchanged and ciphertext included, rides on the assistant output after it as `_reasoning_items`,
+ * which the host's Responses path puts back into the input before that message's text and calls (as for the ouro
+ * arm's own turn). A reasoning item with no assistant output after it is refused.
  */
 export function responsesRequest(body: unknown, prefix: Message[]): WireRequest {
   if (!isRecord(body) || !Array.isArray(body.input)) throw new Error("a Responses body needs an input list")
@@ -125,10 +128,23 @@ export function responsesRequest(body: unknown, prefix: Message[]): WireRequest 
   const leading: string[] = []
   const rest: Message[] = []
   let prefixed = false
+  let reasoning: unknown[] = []
+  /** The reasoning items waiting for the next assistant output, taken once. */
+  const takeReasoning = (): { _reasoning_items?: unknown[] } => {
+    const taken = reasoning
+    reasoning = []
+    return taken.length > 0 ? { _reasoning_items: taken } : {}
+  }
+  const strandedReasoning = new Error("the H wire can't carry a reasoning item with no assistant output after it")
   for (const item of body.input as unknown[]) {
     const type = typeOf(item)
     const value = item as Record<string, unknown>
-    if (type === "reasoning") continue
+    if (type === "reasoning") {
+      reasoning.push(item)
+      continue
+    }
+    const assistantOutput = type === "function_call" || (type === "message" && value.role === "assistant")
+    if (reasoning.length > 0 && !assistantOutput) throw strandedReasoning
     if (Object.hasOwn(ITEM_FIELDS, type)) checkFields(type, value, ITEM_FIELDS[type]!)
     if (type === "message") {
       const role = String(value.role)
@@ -141,7 +157,7 @@ export function responsesRequest(body: unknown, prefix: Message[]): WireRequest 
         prefixed = true
         rest.push({ role: "user", content: text })
       } else if (role === "assistant") {
-        rest.push({ role: "assistant", content: text })
+        rest.push({ role: "assistant", content: text, ...takeReasoning() } as Message)
       } else {
         throw new Error(`the H wire can't carry a message from ${role}`)
       }
@@ -149,9 +165,12 @@ export function responsesRequest(body: unknown, prefix: Message[]): WireRequest 
       const call = { id: stringField(type, value, "call_id"), type: "function" as const, function: { name: stringField(type, value, "name"), arguments: stringField(type, value, "arguments") } }
       const last = rest[rest.length - 1]
       if (last?.role === "assistant") {
+        const own = last as Message & { _reasoning_items?: unknown[] }
+        const taken = takeReasoning()._reasoning_items
+        if (taken) own._reasoning_items = [...own._reasoning_items ?? [], ...taken]
         last.tool_calls = [...last.tool_calls ?? [], call]
       } else {
-        rest.push({ role: "assistant", content: null, tool_calls: [call] })
+        rest.push({ role: "assistant", content: null, ...takeReasoning(), tool_calls: [call] } as Message)
       }
     } else if (type === "function_call_output") {
       rest.push({ role: "tool", tool_call_id: stringField(type, value, "call_id"), content: textOf(value.output) })
@@ -159,6 +178,7 @@ export function responsesRequest(body: unknown, prefix: Message[]): WireRequest 
       throw new Error(`the H wire can't carry an input item of type ${type}`)
     }
   }
+  if (reasoning.length > 0) throw strandedReasoning
   const tools = (body.tools ?? []) as unknown[]
   for (const tool of tools) {
     if (typeOf(tool) !== "function") throw new Error(`the H wire can't carry a tool of type ${typeOf(tool)}`)
@@ -233,11 +253,17 @@ export function chatAnswer(result: TurnResult, id: string): { id: string; object
   }
 }
 
-/** The events a Responses client reads for one answer: created, each output item done, then completed with usage. */
+/**
+ * The events a Responses client reads for one answer: created, each output item done, then completed with usage. The
+ * model's reasoning items come first, exactly as the provider returned them, so codex keeps them and sends them back
+ * on its next request; the provider's other output items are the reply and calls the events already carry.
+ */
 export function responsesEvents(result: TurnResult, id: string): object[] {
   const usage = result.usage
+  const reasoning = result.outputItems.filter((item) => typeOf(item) === "reasoning")
   return [
     { type: "response.created", response: { id } },
+    ...reasoning.map((item) => ({ type: "response.output_item.done", item })),
     ...(result.content ? [{ type: "response.output_item.done", item: { type: "message", role: "assistant", id: `${id}_msg`, content: [{ type: "output_text", text: result.content }] } }] : []),
     ...result.toolCalls.map((call, index) => ({ type: "response.output_item.done", item: { type: "function_call", id: `${id}_fc_${index}`, call_id: call.id, name: call.name, arguments: call.arguments } })),
     { type: "response.completed", response: { id, usage: {

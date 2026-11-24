@@ -53,7 +53,7 @@ describe("the H wire's Responses translation", () => {
         { role: "assistant", content: "Looking.", tool_calls: [
           { id: "c1", type: "function", function: { name: "exec_command", arguments: "{\"cmd\":\"ls\"}" } },
           { id: "c2", type: "function", function: { name: "exec_command", arguments: "{\"cmd\":\"pwd\"}" } },
-        ] },
+        ], _reasoning_items: [{ type: "reasoning", summary: [], encrypted_content: null }] },
         { role: "tool", tool_call_id: "c1", content: "a\nb" },
         { role: "tool", tool_call_id: "c2", content: "/home" },
         { role: "system", content: "A later note." },
@@ -78,6 +78,43 @@ describe("the H wire's Responses translation", () => {
       messages: [{ role: "user", content: "hi" }, { role: "assistant", content: null, tool_calls: [{ id: "c", type: "function", function: { name: "t", arguments: "{}" } }] }],
       activeTools: [],
     })
+  })
+
+  it("sends codex's reasoning items back unchanged, ciphertext included, on the assistant output that follows them", () => {
+    // Real codex sends its reasoning back between calls; the harness's Responses path puts an assistant message's
+    // `_reasoning_items` back into the input before its text and calls, as the ouro arm's own turn does.
+    const r1 = { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "Find it first." }], content: null, encrypted_content: "gAAAA1+x/GPT=" }
+    const r2 = { type: "reasoning", id: "rs_2", summary: [], encrypted_content: "gAAAA2==" }
+    const r3 = { type: "reasoning", id: "rs_3", summary: [], encrypted_content: "gAAAA3==" }
+    const r4 = { type: "reasoning", id: "rs_4", summary: [], encrypted_content: "gAAAA4==" }
+    const out = streamed({ input: [
+      { type: "message", role: "user", content: "Remove the bad copy." },
+      r1,
+      { type: "function_call", call_id: "c1", name: "exec_command", arguments: "{}" },
+      { type: "function_call_output", call_id: "c1", output: "187" },
+      r2, r3,
+      { type: "message", role: "assistant", content: "Checking." },
+      r4,
+      { type: "function_call", call_id: "c2", name: "exec_command", arguments: "{}" },
+      { type: "function_call_output", call_id: "c2", output: "ok" },
+    ] }, [])
+    expect(out.messages).toStrictEqual([
+      { role: "user", content: "Remove the bad copy." },
+      { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "exec_command", arguments: "{}" } }], _reasoning_items: [r1] },
+      { role: "tool", tool_call_id: "c1", content: "187" },
+      // A call that joins the assistant message before it brings its reasoning to that message too.
+      { role: "assistant", content: "Checking.", _reasoning_items: [r2, r3, r4], tool_calls: [{ id: "c2", type: "function", function: { name: "exec_command", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "c2", content: "ok" },
+    ])
+    // Each item is passed as codex sent it, not copied into a new shape.
+    expect((out.messages[1] as { _reasoning_items: unknown[] })._reasoning_items[0]).toBe(r1)
+    // Reasoning between an assistant message with none of its own and the call that joins it goes on that message.
+    expect(streamed({ input: [{ type: "message", role: "assistant", content: "Hm." }, r2, { type: "function_call", call_id: "c3", name: "t", arguments: "{}" }] }, []).messages).toStrictEqual([
+      { role: "assistant", content: "Hm.", _reasoning_items: [r2], tool_calls: [{ id: "c3", type: "function", function: { name: "t", arguments: "{}" } }] },
+    ])
+    // Reasoning with no assistant output after it has nothing to travel with, so it is refused, never dropped.
+    expect(() => streamed({ input: [{ type: "message", role: "user", content: "x" }, r1] }, [])).toThrow("the H wire can't carry a reasoning item with no assistant output after it")
+    expect(() => streamed({ input: [r1, { type: "message", role: "user", content: "x" }] }, [])).toThrow("the H wire can't carry a reasoning item with no assistant output after it")
   })
 
   it("refuses what it can't carry faithfully, naming it", () => {
@@ -130,6 +167,15 @@ describe("the H wire's Responses translation", () => {
       { type: "response.output_item.done", item: { type: "function_call", id: "resp_1_fc_0", call_id: "c1", name: "exec_command", arguments: "{}" } },
       { type: "response.completed", response: { id: "resp_1", usage: { input_tokens: 100, input_tokens_details: { cached_tokens: 20 }, output_tokens: 10, output_tokens_details: { reasoning_tokens: 4 }, total_tokens: 110 } } },
     ])
+    // The model's reasoning items go first, as the provider returned them, so codex can send them back; its other
+    // output items are the reply and calls above, so they aren't sent twice.
+    const reasoning = { type: "reasoning", id: "rs_9", summary: [], encrypted_content: "gAAAA9==" }
+    const withReasoning = responsesEvents({ content: "Done.", toolCalls: [], outputItems: [reasoning, { type: "message", role: "assistant", content: [] }] as never, usage }, "resp_2")
+    expect(withReasoning.slice(1, 3)).toEqual([
+      { type: "response.output_item.done", item: reasoning },
+      { type: "response.output_item.done", item: { type: "message", role: "assistant", id: "resp_2_msg", content: [{ type: "output_text", text: "Done." }] } },
+    ])
+    expect(withReasoning).toHaveLength(4)
     // No text, no usage: no message item, and zero usage.
     expect(responsesEvents({ content: "", toolCalls: [], outputItems: [] }, "r").slice(1)).toEqual([
       { type: "response.completed", response: { id: "r", usage: { input_tokens: 0, input_tokens_details: { cached_tokens: 0 }, output_tokens: 0, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 0 } } },
@@ -257,6 +303,22 @@ describe("the H wire", () => {
     expect(wire.calls()).toBe(3)
     expect(wire.timeline()).toEqual([{ kind: "call", name: "exec_command", args: "{\"cmd\":\"ls\"}", result: "books" }, { kind: "reply", text: "All done." }, { kind: "reply", text: "6" }])
     expect(wire.error()).toBeNull()
+  })
+
+  it("hands the model's reasoning to codex and back to the host's runtime unchanged, ciphertext included", async () => {
+    const reasoning = { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "List first." }], encrypted_content: "gAAAA+x/9JJLGPTyhe=" }
+    const seen: ProviderTurnRequest[] = []
+    const wire = createWire({ runtime: runtime([
+      { content: "", toolCalls: [{ id: "c1", name: "exec_command", arguments: "{}" }], outputItems: [reasoning] as never, usage },
+      { content: "Done.", toolCalls: [], outputItems: [] },
+    ], seen), prefix: [] })
+    const first = await wire.handle("/v1/responses", { stream: true, input: [{ type: "message", role: "user", content: "go" }] })
+    // codex reads each output item's done event and keeps the item for its next request.
+    const items = first.body.split("\n").filter((line) => line.startsWith("data: ")).map((line) => JSON.parse(line.slice(6)) as { type: string; item?: Record<string, unknown> })
+      .filter((event) => event.type === "response.output_item.done").map((event) => event.item!)
+    expect(items[0]).toStrictEqual(reasoning)
+    await wire.handle("/v1/responses", { stream: true, input: [{ type: "message", role: "user", content: "go" }, ...items, { type: "function_call_output", call_id: "c1", output: "books" }] })
+    expect(seen[1]!.messages[1]).toStrictEqual({ role: "assistant", content: null, _reasoning_items: [reasoning], tool_calls: [{ id: "c1", type: "function", function: { name: "exec_command", arguments: "{}" } }] })
   })
 
   it("answers a refused or failed call with an error the client stops on, and remembers why", async () => {

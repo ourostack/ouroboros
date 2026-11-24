@@ -78,6 +78,16 @@ describe("an arm's replacement list", () => {
     expect(rewriteRequest(request({ systemPrompt: undefined, activeTools: [], messages: [{ role: "user", content: "zeta" }] }), LIST).rewrites).toStrictEqual({ list: 1 })
   })
 
+  it("leaves a provider's encrypted reasoning as it was returned, and rewrites the readable summary beside it", () => {
+    // Rewriting letters inside ciphertext would corrupt it, and the model never reads it as text.
+    const item = { type: "reasoning", id: "rs_1", encrypted_content: "q8AcmEzeta+/x=", summary: [{ type: "summary_text", text: "Asking Acme." }] }
+    const assistant = { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "acme_shell", arguments: "{}" } }], _reasoning_items: [item] }
+    const { request: out, rewrites } = rewriteRequest(request({ systemPrompt: undefined, activeTools: [], messages: [assistant] as never }), LIST)
+    expect((out.messages[0] as unknown as { _reasoning_items: unknown[] })._reasoning_items).toEqual([{ ...item, summary: [{ type: "summary_text", text: "Asking agent." }] }])
+    // Only the summary's "Acme" and the call's name were rewritten; nothing in the ciphertext was counted.
+    expect(rewrites).toStrictEqual({ list: 2 })
+  })
+
   it("refuses a replacement that would rewrite only the first match, or two tools that would share a name", () => {
     expect(() => replace("acme acme", [{ pattern: /acme/i, with: "agent" }])).toThrow("replacement /acme/i must be global (the g flag)")
     const clash = request({ activeTools: [

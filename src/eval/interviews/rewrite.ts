@@ -13,6 +13,7 @@
  */
 import type { ProviderTurnRequest } from "../../heart/core"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { isOpaque } from "./protocol"
 
 /** One replacement; the pattern must be global, so every match is replaced, not only the first. */
 /**
@@ -40,7 +41,8 @@ export function replace(text: string, list: readonly Replacement[], counts?: Rew
 function deep<T>(value: T, list: readonly Replacement[], counts: RewriteCounts): T {
   if (typeof value === "string") return replace(value, list, counts) as T
   if (Array.isArray(value)) return value.map((item: unknown) => deep(item, list, counts)) as T
-  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, deep(item, list, counts)])) as T
+  // A provider's ciphertext is kept as it was returned: rewriting letters in it would corrupt it (`isOpaque`).
+  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, isOpaque(key, item) ? item : deep(item, list, counts)])) as T
   return value
 }
 

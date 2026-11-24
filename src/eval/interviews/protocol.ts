@@ -77,6 +77,22 @@ export function brandHits(text: string): string[] {
   return hits
 }
 
+/**
+ * Fields whose string value is a provider's ciphertext: `encrypted_content`, the encrypted reasoning a Responses
+ * provider returns and takes back. The model never reads it as text, and base64's letters can spell a brand word by
+ * chance (the 2026-11-23 H pilot was voided on "GPT" inside one), so the brand scan and the leak check leave it out and
+ * no replacement list rewrites it. Every other field, a reasoning item's summary included, is scanned.
+ */
+export const OPAQUE_FIELDS: ReadonlySet<string> = new Set(["encrypted_content"])
+
+/** Whether `key` holds a provider's ciphertext: an opaque field whose value is a string. */
+export const isOpaque = (key: string, value: unknown): boolean => typeof value === "string" && OPAQUE_FIELDS.has(key)
+
+/** `value` as the JSON the brand scan reads: every opaque field's ciphertext left out (as ""), everything else as it is. */
+export function scannedText(value: unknown): string {
+  return JSON.stringify(value, (key, item: unknown) => isOpaque(key, item) ? "" : item)
+}
+
 /** `text` with every brand word replaced by the product's neutral word. */
 export function scrubBrands(text: string, product: Product): string {
   return text.replace(brandRegex(), NEUTRAL_WORD[product])
