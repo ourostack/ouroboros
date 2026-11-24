@@ -58,7 +58,7 @@ import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rs
 import { completeHabitRun } from "../habits/habit-session"
 import type { SanctuarySchedulerFireCommand, SanctuarySchedulerOrigin } from "./sanctuary-scheduler-origin"
 import { withTurnExecutionLease } from "../turn-execution-lease"
-import { LettersWriter, answerLettersCommand, type LettersCommand } from "../letters/writer"
+import type { LettersCommand, LettersWriter } from "../letters/writer"
 import { FrontendSessionService, lazyFrontendAuthority } from "../frontend-session-service"
 import { frontendSocketPathForDaemon, startFrontendSocketServer, type FrontendSocketServer } from "../frontend-socket"
 import { FrontendJournalStore } from "../frontend-journal"
@@ -2866,8 +2866,12 @@ export class OuroDaemon {
         return this.handlePrivateRuntimeWake(this.buildAwaitPrivateWakeCommand(command))
       }
       case "letters.action":
-        this.lettersWriter ??= new LettersWriter({ bundlesRoot: this.bundlesRoot })
-        return answerLettersCommand(this.lettersWriter, command)
+      {
+        // Loaded on the first mailbox call so a daemon with no letters pays nothing at start.
+        const letters = await import("../letters/writer")
+        this.lettersWriter ??= new letters.LettersWriter({ bundlesRoot: this.bundlesRoot })
+        return letters.answerLettersCommand(this.lettersWriter, command)
+      }
       case "mcp.list": {
         return withTurnExecutionLease(async () => {
           const agentName = command.agent ?? "default"
