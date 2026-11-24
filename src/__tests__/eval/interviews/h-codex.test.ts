@@ -117,7 +117,7 @@ describe("the codex arm", () => {
       runs.push({ args, cwd: options.cwd, env: options.env, config, timeoutMs: options.timeoutMs })
       const url = /base_url = "([^"]+)"/.exec(config)![1]!
       const post = async (input: unknown[]): Promise<void> => {
-        const response = await fetch(`${url}/responses`, { method: "POST", body: JSON.stringify({ input, tools: [{ type: "function", name: "exec_command" }] }) })
+        const response = await fetch(`${url}/responses`, { method: "POST", body: JSON.stringify({ input, stream: true, tools: [{ type: "function", name: "exec_command" }] }) })
         await response.text()
       }
       if (args.includes("resume")) {
@@ -166,7 +166,7 @@ describe("the codex arm", () => {
     // The host refuses the first call: the wire answers an error codex stops on, and the turn is a provider error.
     const refusing: CodexRun = async (_args, options) => {
       const url = /base_url = "([^"]+)"/.exec(fs.readFileSync(path.join(options.env.CODEX_HOME!, "config.toml"), "utf8"))![1]!
-      await (await fetch(`${url}/responses`, { method: "POST", body: JSON.stringify({ input: [{ type: "message", role: "user", content: "x" }] }) })).text()
+      await (await fetch(`${url}/responses`, { method: "POST", body: JSON.stringify({ input: [{ type: "message", role: "user", content: "x" }], stream: true }) })).text()
       return { code: 1, stdout: "{\"type\":\"thread.started\",\"thread_id\":\"t\"}\n", stderr: "stream error" }
     }
     const refused = await codexArm({ run: refusing, home, workdir: path.join(home, "w1") })({ turn: TURN, bundle, providerRuntime: runtime([], []) })
@@ -185,7 +185,7 @@ describe("the codex arm", () => {
     expect(await codexArm({ run: quiet, home, workdir: path.join(home, "w4") })({ turn: TURN, bundle, providerRuntime: runtime([], []) })).toMatchObject({ outcome: "harness-error: codex ended the turn with no reply" })
     const threadless: CodexRun = async (_args, options) => {
       const url = /base_url = "([^"]+)"/.exec(fs.readFileSync(path.join(options.env.CODEX_HOME!, "config.toml"), "utf8"))![1]!
-      await (await fetch(`${url}/responses`, { method: "POST", body: JSON.stringify({ input: [{ type: "message", role: "user", content: "x" }] }) })).text()
+      await (await fetch(`${url}/responses`, { method: "POST", body: JSON.stringify({ input: [{ type: "message", role: "user", content: "x" }], stream: true }) })).text()
       return { code: 0, stdout: "", stderr: "" }
     }
     const lost = await codexArm({ run: threadless, home, workdir: path.join(home, "w5") })({ turn: TURN, bundle, providerRuntime: runtime([{ content: "done", toolCalls: [], outputItems: [] }], []) })
