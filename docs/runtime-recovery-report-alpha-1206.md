@@ -32,3 +32,7 @@ Path: delivered proactive sends are recorded into the session history, which is 
 - Fleet skill, `./mac fleet now`, Tailscale and ssh name resolution: out of scope by the coordinator's correction.
 - Which replay produced the repeats on the mini is unproven; copies already in a session's history are not removed.
 - Full `npm test` / CI coverage run: verified on main for both PRs: [#1848 main run 45340685801](https://github.com/ourostack/ouroboros/actions/runs/45340685801) completed success at `918a0f8` (coverage, package-e2e, github-release); #1843 main run was green at `02f4b9b`. Locally `sync.test.ts` and `app-sessions/client.test.ts` fail on the baseline here (environment), not in CI.
+
+## Canonical card schema evidence
+
+The pointer parser (`readCard` in `src/senses/app-sessions/digest-cards.ts`) follows Desk's `task-card-format` skill (loaded from the Desk plugin, `desk/skills/task-card-format/SKILL.md`; the repo vendors no Desk schema or helper, so that skill is the source of truth): `repos[].name/url`, `artifacts[]`, `evidence.ref` (PR URL), `iterations.active` and `iterations.history[].repo/pr/path`, `bridge_sessions[]`, and `branch:<owner/repo>#<name>` rows in `## Resources`. Flat `repo`/`branch`/`pr`/`session` fields remain supported. Synthetic v1-card fixtures: `src/__tests__/senses/app-sessions/digest-cards.test.ts`. Live laptop pointers remain unverified.

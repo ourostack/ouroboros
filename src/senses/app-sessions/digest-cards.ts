@@ -141,6 +141,68 @@ export function scanFocus(id: string, entry: FocusEntry | undefined, maxBytes: n
   return scanned
 }
 
+const unquote = (value: string): string => value.trim().replace(/^['"]|['"]$/g, "")
+
+/** The indented lines under a top-level front-matter key, or an empty list. */
+function block(front: string, key: string): string[] {
+  const lines = front.split("\n")
+  const start = lines.findIndex(line => line.startsWith(`${key}:`))
+  if (start < 0) return []
+  const out: string[] = []
+  for (const line of lines.slice(start + 1)) {
+    if (line.length > 0 && !/^\s/.test(line) && !line.startsWith("- ")) break
+    out.push(line)
+  }
+  return out
+}
+
+/** The `- key: value` items of a block list, each as its simple key/value pairs. */
+function items(lines: string[]): Array<Record<string, string>> {
+  const result: Array<Record<string, string>> = []
+  for (const line of lines) {
+    const entry = /^(\s*)-\s+(.*)$/.exec(line)
+    const text = entry ? entry[2]! : line.trim()
+    if (entry) result.push({})
+    const pair = /^([A-Za-z_][\w-]*):\s*(.*)$/.exec(text)
+    if (pair && result.length > 0) result[result.length - 1]![pair[1]!] = unquote(pair[2]!.replace(/\s+#.*$/, ""))
+  }
+  return result
+}
+
+/** The values of a front-matter list, written inline (`[a, b]`) or as a block of `- value` lines. */
+function listValues(front: string, key: string): string[] {
+  const inline = new RegExp(`^${key}:\\s*\\[(.*)\\]`, "m").exec(front)?.[1]
+  if (inline !== undefined) return inline.split(",").map(unquote).filter(Boolean)
+  return block(front, key).map(line => /^\s*-\s+(.+)$/.exec(line)?.[1]).filter((v): v is string => !!v).map(v => unquote(v.replace(/\s+#.*$/, "")))
+}
+
+const githubRepo = (url: string): string | undefined => /github\.com[/:]([^/]+\/[^/.]+)/.exec(url)?.[1]
+
+/**
+ * Where the work a card describes can be followed: the repository, branch, pull request and session. It reads the
+ * canonical v1 card (`repos[]`, `evidence.ref`, `artifacts`, `iterations`, `bridge_sessions`, and the `branch:<owner/repo>#<name>`
+ * rows of `## Resources`, per Desk's task-card-format) and, for compatibility, flat `repo`, `branch`, `pr`/`pr_url` and
+ * `session`/`session_id` fields, which win when present.
+ */
+function pointers(front: string, body: string, field: (name: string) => string | null): Pick<CardFacts, "repo" | "branch" | "pr" | "session"> {
+  const repos = items(block(front, "repos"))
+  const history = items(block(front, "iterations").filter(line => /^\s{2,}(?:-\s|[a-z]+:\s)/.test(line) && !/^\s*(active|history):/.test(line)))
+  const evidence = block(front, "evidence").join("\n")
+  const slugOf = (name: string | undefined): string | undefined => {
+    const entry = repos.find(r => r.name === name)
+    return (entry?.url ? githubRepo(entry.url) : undefined) ?? name
+  }
+  const branchRow = [...body.matchAll(/`?branch:([^\s#|`]+)#([^\s|`]+)`?/g)].pop()
+  const active = /^\s+active:\s*(\S.*)$/m.exec(block(front, "iterations").join("\n"))?.[1]?.trim()
+  const current = history.filter(h => h.pr && h.pr !== "null").find(h => active && h.path && unquote(active).endsWith(h.path.replace(/^\.\//, ""))) ?? [...history].reverse().find(h => h.pr && h.pr !== "null")
+  const pullUrl = (evidence.match(/ref:\s*(\S*\/pull\/\d+\S*)/)?.[1]) ?? [...listValues(front, "artifacts")].reverse().find(v => /\/pull\/\d+/.test(v))
+  const repo = field("repo") ?? (branchRow ? branchRow[1] : undefined) ?? (pullUrl ? githubRepo(pullUrl) : undefined) ?? slugOf(current?.repo ?? repos[0]?.name)
+  const pr = field("pr") ?? field("pr_url") ?? pullUrl ?? (current && repo ? `https://github.com/${repo}/pull/${current.pr}` : undefined)
+  const branch = field("branch") ?? branchRow?.[2]
+  const session = field("session") ?? field("session_id") ?? listValues(front, "bridge_sessions")[0]
+  return { ...(repo ? { repo } : {}), ...(branch ? { branch } : {}), ...(pr ? { pr } : {}), ...(session ? { session } : {}) }
+}
+
 /** The card at `<root>/<track>/<slug>/task.md`, or archived beside it, in the first desk root that has it: its title, status and next step. */
 export function readCard(roots: string[], track: string, slug: string): CardFacts | null {
   for (const root of roots) {
@@ -165,10 +227,7 @@ export function readCard(roots: string[], track: string, slug: string): CardFact
       title: field("title") ?? slug,
       status: field("status") ?? "unknown",
       next: next ? (next.length > NEXT_MAX_CHARS ? `${next.slice(0, NEXT_MAX_CHARS - 1)}…` : next) : null,
-      ...(field("repo") ? { repo: field("repo")! } : {}),
-      ...(field("branch") ? { branch: field("branch")! } : {}),
-      ...(field("pr") ?? field("pr_url") ? { pr: (field("pr") ?? field("pr_url"))! } : {}),
-      ...(field("session") ?? field("session_id") ? { session: (field("session") ?? field("session_id"))! } : {}),
+      ...pointers(front, body, field),
       file: found.file,
       updatedAt: found.updatedAt,
     }
