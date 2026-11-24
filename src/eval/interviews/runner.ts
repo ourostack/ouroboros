@@ -16,6 +16,7 @@ import type { ProviderRuntime, ProviderTurnRequest } from "../../heart/core"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { evaluate } from "../assertions"
 import { createBudgetLedger, type Cost, type Pricing } from "../budget"
+import { stopRequested } from "../kill-switch"
 import type { Case, Observation, TraceCall } from "../domain/case"
 import { gradeRun } from "../report"
 import type { GuestChoice, RunCase, SandboxRun } from "../sandbox/remote"
@@ -147,6 +148,8 @@ export type InterviewDeps = {
   print(text: string): void
   /** The sessions ever started, in an append-only record kept beside the reports: a session starts once, ever. */
   started: { has(id: string): boolean; add(id: string): void }
+  /** Why every reservation and call must stop now (the `~/.ouro-eval/STOP` file by default, `kill-switch.ts`). */
+  killSwitch?: () => string | undefined
   /** The registered versions' Appendix B SHA-256s; the real ones unless a test gives its own table. */
   allocations?: Readonly<Record<string, number>>
 }
@@ -373,7 +376,10 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
   if (args.budgetCredits === undefined && (target.account === null || before.tokenBased !== false)) {
     throw new Error(`${args.target} is billed by the token (or not known not to be); pass --budget-credits with --price-in, --price-out and --reserve-credits-per-call`)
   }
-  const ledger = createBudgetLedger({ premium: args.budgetPremium, ...(args.budgetCredits !== undefined ? { credits: args.budgetCredits } : {}) })
+  const ledger = createBudgetLedger(
+    { premium: args.budgetPremium, ...(args.budgetCredits !== undefined ? { credits: args.budgetCredits } : {}) },
+    { killSwitch: deps.killSwitch ?? (() => stopRequested()) },
+  )
   const pricing: Pricing = { premiumPerCall: target.unitCost, creditsPerMillionInput: args.priceIn ?? 0, creditsPerMillionOutput: args.priceOut ?? 0 }
   let perCallCredits = args.reserveCreditsPerCall ?? 0
   const interviewLatch = createInterviewLatch({ ledger, pricing, perCall: () => ({ premium: target.unitCost, credits: perCallCredits }) })

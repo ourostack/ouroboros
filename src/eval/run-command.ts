@@ -11,6 +11,10 @@
  * calls outgrow its own credit reservation is cut short and not scored (it counts as not run), and the next run
  * reserves more. The first 402 or 429 also stops the command. Either way the report keeps every finished run, and the
  * run the provider cut short counts as failed. The command exits 2 when it stopped early.
+ *
+ * Three more stops come before each run: the kill switch (`~/.ouro-eval/STOP`, which also stops a run at its next
+ * call), the billing guard (an account with a login must read at least 20% of its quota left) and the month ledger
+ * (the run's worst case must fit this month's cap, and its spend is added once it ends).
  */
 import { MAX_PROVIDER_ITERATIONS_CEILING, type ProviderRuntime } from "../heart/core"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -21,7 +25,9 @@ import { buildCells, gradeRun, summarize, withoutBooksRemove, type RunRecord, ty
 import type { SandboxImages } from "./sandbox/docker"
 import type { RunCase, SandboxRun } from "./sandbox/remote"
 import { loadCases, selfTest } from "./self-test"
-import type { ResolvedTarget, TargetCredentials } from "./targets"
+import type { QuotaSnapshot, ResolvedTarget, TargetCredentials } from "./targets"
+import { stopRequested } from "./kill-switch"
+import type { MonthLedger } from "./month-ledger"
 
 /** The most model calls one turn can make: the step-budget ceiling, plus the report call it asks for when used up. */
 export const CALLS_PER_RUN = MAX_PROVIDER_ITERATIONS_CEILING + 1
@@ -60,6 +66,12 @@ export type EvalDeps = {
   outputExists(file: string): boolean
   writeReport(file: string, report: unknown): void
   print(text: string): void
+  /** Why every reservation and call must stop now (the `STOP` file by default, `kill-switch.ts`). */
+  killSwitch?: () => string | undefined
+  /** The month's spend across eval commands: asked before each run, and told what each run spent. */
+  monthLedger?: MonthLedger
+  /** Asked before each run on an account with a login, with that account's quota read just then. */
+  billingGuard?: (account: string, snapshot: QuotaSnapshot) => string | undefined
 }
 
 const STRING_FLAGS = {
@@ -100,7 +112,7 @@ export function parseEvalArgs(argv: string[]): EvalArgs {
     out.sandboxImages = { agent, household }
   }
   if (out.hostLock !== undefined && out.sandboxSsh === undefined) throw new Error("--host-lock needs --sandbox-ssh: it locks that host")
-  if (out.hostLock !== undefined && !/^[\w.:@+-]+$/.test(String(out.hostLock))) throw new Error("--host-lock takes one word of letters, digits and . : @ + - _ (it is sent over ssh)")
+  if (out.hostLock !== undefined && !/^eval[\w.:@+-]*$/.test(String(out.hostLock))) throw new Error("--host-lock takes one word starting with eval, of letters, digits and . : @ + - _ (it is sent over ssh, and eval:stop frees only eval holders)")
   const missing = REQUIRED.find((flag) => !seen.has(flag))
   if (missing) throw new Error(`${missing} is required`)
   return out as EvalArgs
@@ -134,7 +146,10 @@ export async function runEvalCommand(args: EvalArgs, deps: EvalDeps): Promise<{ 
   }
   emitNervesEvent({ component: "eval", event: "eval.run_command_start", message: "starting an eval model run", meta: { target: args.target, bundleRef: args.bundleRef, runs: args.runs, cases: cases.length } })
 
-  const ledger = createBudgetLedger({ premium: args.budgetPremium, ...(args.budgetCredits !== undefined ? { credits: args.budgetCredits } : {}) })
+  const ledger = createBudgetLedger(
+    { premium: args.budgetPremium, ...(args.budgetCredits !== undefined ? { credits: args.budgetCredits } : {}) },
+    { killSwitch: deps.killSwitch ?? (() => stopRequested()) },
+  )
   const pricing: Pricing = { premiumPerCall: target.unitCost, creditsPerMillionInput: args.priceIn ?? 0, creditsPerMillionOutput: args.priceOut ?? 0 }
   let perCallCredits = args.reserveCreditsPerCall ?? 0
   const runCase = deps.runCase(args)
@@ -143,7 +158,24 @@ export async function runEvalCommand(args: EvalArgs, deps: EvalDeps): Promise<{ 
   outer: for (const c of cases) {
     for (let run = 1; run <= args.runs; run += 1) {
       const reserved: Cost = { premium: target.unitCost, credits: perCallCredits }
-      const hold = ledger.reserve(`${c.id} run ${run}`, { calls: CALLS_PER_RUN, perCall: reserved, pricing })
+      const label = `${c.id} run ${run}`
+      if (deps.billingGuard && target.account !== null) {
+        const refused = deps.billingGuard(target.account, await target.quota())
+        if (refused !== undefined) {
+          stopped = `the billing guard refused ${label}: ${refused}`
+          break outer
+        }
+      }
+      if (deps.monthLedger) {
+        // A month ledger that can't be read or locked stops the batch, and the report still keeps the finished runs.
+        const refused = await deps.monthLedger.refusal(label, { premium: CALLS_PER_RUN * reserved.premium, credits: CALLS_PER_RUN * reserved.credits })
+          .catch((error: unknown) => `the month ledger failed: ${(error as Error).message}`)
+        if (refused !== undefined) {
+          stopped = refused
+          break outer
+        }
+      }
+      const hold = ledger.reserve(label, { calls: CALLS_PER_RUN, perCall: reserved, pricing })
       if ("refused" in hold) {
         stopped = hold.refused
         break outer
@@ -157,6 +189,7 @@ export async function runEvalCommand(args: EvalArgs, deps: EvalDeps): Promise<{ 
         obs = failedRun(`sandbox-error: ${sandboxError}`)
       }
       const spent = hold.release()
+      const monthError = await deps.monthLedger?.add(spent).then(() => undefined, (error: unknown) => `the month ledger failed to add ${label}'s spend: ${(error as Error).message}`)
       const budgetCut = hold.cutShort()
       const graded = evaluate(c, obs)
       const verdict = budgetCut ? { passed: false, reason: "cut short by its credit reservation" } : gradeRun(obs, graded)
@@ -166,6 +199,10 @@ export async function runEvalCommand(args: EvalArgs, deps: EvalDeps): Promise<{ 
         viaShellFallback: verdict.passed && withoutBooksRemove(obs), observation,
       })
       perCallCredits = Math.max(perCallCredits, hold.maxCall())
+      if (monthError !== undefined) {
+        stopped = monthError
+        break outer
+      }
       if (ledger.stopped()) {
         stopped = ledger.stopped()
         break outer
