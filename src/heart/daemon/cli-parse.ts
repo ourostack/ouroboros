@@ -26,7 +26,7 @@ import type { HabitRunTrigger } from "../../arc/flight-recorder"
 import type { HabitSummaryWhich } from "../habits/habit-session-summary"
 import { DEFAULT_NERVES_PROCESS } from "../../nerves/review/core"
 import { isSafePrunableAgentName } from "./prunable-bundle"
-import type { MailboxActionId } from "../letters/doors"
+import { mailboxUsageLines, parseMailboxCli, readMailboxDoors, type MailboxActionId } from "../letters/doors"
 import {
   isVaultItemTemplate,
   normalizePorkbunOpsAccount,
@@ -413,7 +413,7 @@ export function usage(): string {
     "  ouro shepherd reconcile --agent <name> --expected-revision <n> --request-id <id> --id <id> --resolution retired|delivered [--json]",
     "  ouro shepherd maintenance --agent <name> --expected-revision <n> --request-id <id> --destination <path> [--json]",
     "  ouro session list [--agent <name>]",
-    "  ouro mailbox list [--json]",
+    ...mailboxUsageLines().map((line) => `  ${line}`),
     "  ouro mcp list",
     "  ouro mcp call <server> <tool> [--args '{...}']",
     "  ouro mcp doctor --agent <name> [--json]",
@@ -583,23 +583,34 @@ function parsePokeCommand(args: string[]): OuroCliCommand {
  * The words of the mailbox group (`ouro mailbox <word>`), each the generated action it runs. They are written out here because the AX census
  * reads a parser's words from its own syntax; doors.test.ts holds them equal to actions/generated/mailbox.
  */
-export const MAILBOX_CLI_WORDS = { list: "mailbox_list" } as const satisfies Record<string, MailboxActionId>
+export const MAILBOX_CLI_WORDS = {
+  send: "mailbox_send",
+  list: "mailbox_list",
+  read: "mailbox_read",
+  wait: "mailbox_wait",
+  withdraw: "mailbox_withdraw",
+  deliver: "mailbox_deliver",
+} as const satisfies Record<string, MailboxActionId>
 const MAILBOX_USAGE_WORDS = Object.keys(MAILBOX_CLI_WORDS).join("|")
 
 /**
  * `ouro mailbox <word>`: each word is a command ouro-actions generated for the mailbox group
- * (actions/generated/mailbox/commands.json), and runs that command's action (src/heart/letters/doors.ts).
+ * (actions/generated/mailbox/commands.json), and runs that command's action (src/heart/letters/doors.ts). A
+ * person-only word, such as `answer`, is refused with its generated refusal.
  */
 function parseMailboxCommand(args: string[]): OuroCliCommand {
-  const { rest } = extractAgentFlag(args)
+  const { agent, rest } = extractAgentFlag(args)
   const sub = rest[0]
+  const personOnly = sub === undefined ? undefined : readMailboxDoors().refusals[`mailbox_${sub}`]
+  if (personOnly) throw Object.assign(new Error(personOnly.summary), { code: "person-only" })
   if (sub === undefined || !Object.hasOwn(MAILBOX_CLI_WORDS, sub)) {
     throw new Error(`Usage: ouro mailbox ${MAILBOX_USAGE_WORDS} [--json]`)
   }
-  const extra = rest.slice(1).filter((token) => token !== "--json")
-  if (extra.length > 0) throw new Error(`ouro mailbox ${sub} takes no words after it: ${extra.join(" ")}`)
-  const action = MAILBOX_CLI_WORDS[sub as keyof typeof MAILBOX_CLI_WORDS]
-  return { kind: "mailbox.action", action, ...(rest.includes("--json") ? { json: true as const } : {}) }
+  const parsed = parseMailboxCli(sub, rest.slice(1))
+  return {
+    kind: "mailbox.action", action: parsed.action, input: parsed.input,
+    ...(agent ? { agent } : {}), ...(parsed.json ? { json: true as const } : {}), ...(parsed.dryRun ? { dryRun: true as const } : {}),
+  }
 }
 
 function parseHabitCommand(args: string[]): OuroCliCommand {

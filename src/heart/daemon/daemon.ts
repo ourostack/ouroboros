@@ -58,6 +58,7 @@ import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rs
 import { completeHabitRun } from "../habits/habit-session"
 import type { SanctuarySchedulerFireCommand, SanctuarySchedulerOrigin } from "./sanctuary-scheduler-origin"
 import { withTurnExecutionLease } from "../turn-execution-lease"
+import { LettersWriter, answerLettersCommand, type LettersCommand } from "../letters/writer"
 import { FrontendSessionService, lazyFrontendAuthority } from "../frontend-session-service"
 import { frontendSocketPathForDaemon, startFrontendSocketServer, type FrontendSocketServer } from "../frontend-socket"
 import { FrontendJournalStore } from "../frontend-journal"
@@ -548,6 +549,7 @@ export type DaemonCommand =
   | { kind: "message.poll"; agent: string }
   | { kind: "mcp.list"; agent?: string }
   | { kind: "mcp.call"; agent?: string; server: string; tool: string; args?: string }
+  | LettersCommand
   | { kind: "hatch.start" }
   | { kind: "agent.senseTurn"; agent: string; friendId: string; channel: string; sessionKey: string; message: string; runtimeMcp?: RuntimeMcpServers }
   | import("../../senses/shepherd/feedback-submit").FeedbackCommand
@@ -897,6 +899,8 @@ export class OuroDaemon {
   private readonly router: DaemonRouterLike
   private readonly senseManager: DaemonSenseManagerLike | null
   private readonly bundlesRoot: string
+  /** The letters' single writer, made on the first mailbox call. */
+  private lettersWriter: LettersWriter | null = null
   private readonly mode: "dev" | "production"
   private server: net.Server | null = null
   private frontendSocketServer: FrontendSocketServer | null = null
@@ -2861,6 +2865,9 @@ export class OuroDaemon {
       case "await.poke": {
         return this.handlePrivateRuntimeWake(this.buildAwaitPrivateWakeCommand(command))
       }
+      case "letters.action":
+        this.lettersWriter ??= new LettersWriter({ bundlesRoot: this.bundlesRoot })
+        return answerLettersCommand(this.lettersWriter, command)
       case "mcp.list": {
         return withTurnExecutionLease(async () => {
           const agentName = command.agent ?? "default"

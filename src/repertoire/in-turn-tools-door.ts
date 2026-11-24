@@ -25,6 +25,7 @@ export const DISPATCH_ERRORS = [
   { code: "guardrail-blocked", means: "A guardrail refused this call; the text says which.", fix: "Do what the text says, such as reading the file before editing it." },
   { code: "commerce-authority-required", means: "A purchase needs a commerce authority token from the person.", fix: "Ask the person to approve the purchase, then call it with the token." },
   { code: "not-run", means: "This X-ray door checked the call but runs no tool.", fix: "Nothing to fix: in a real turn the tool runs." },
+  { code: "person-only", means: "Only the person can do this, so no agent may call it; the text says why and where the person does it.", fix: "Tell the person what the text says, and leave the step to them." },
 ] as const
 
 /** The door's sign-in: it never starts one, since no tool it answers runs. */
