@@ -56,6 +56,9 @@ describe("renderWhereAmI", () => {
     expect(first).toContain("  its copilot app sessions as of 5 min ago:\n  - s0 (working)\n  - work 1\n  - work 2 (working)")
     expect(first).toContain("  - and 2 more")
     expect(render([{ id: "d", name: "fix sync", state: "working", desk: { track: "ouro", slug: "fix-sync", status: "in-progress" } } as never, { id: "e", desk: { track: "t" } } as never])).toContain("  - fix sync (working), desk card ouro/fix-sync [in-progress]\n  - e, desk card t/?")
+    const rich = { id: "f", name: "w", state: "working", desk: { track: "t", slug: "s", status: "processing", repo: "o/r", branch: "b", url: "https://x/pull/1", session: "sid", file: "/d/t/s/task.md", updatedAt: "2026-11-10T03:00:00.000Z" } }
+    expect(render([rich as never])).toContain("  - w (working), desk card t/s [processing]; o/r@b; pr https://x/pull/1; session sid; log /d/t/s/task.md (updated 60 min ago)")
+    expect(render([{ id: "g", desk: { track: "t", branch: "b", file: "/f" } } as never])).toContain("repo?@b; log /f\n")
     const second = render(sessions.slice(0, 2))
     expect(second).not.toContain("and 2 more")
     expect(second).toContain("  - work 1")

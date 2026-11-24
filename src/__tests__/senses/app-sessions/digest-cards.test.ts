@@ -82,7 +82,7 @@ describe("readCard", () => {
     fs.mkdirSync(path.join(stateDir, "a", "eng", "kernel"), { recursive: true })
     fs.mkdirSync(path.join(stateDir, "b", "eng", "kernel"), { recursive: true })
     fs.writeFileSync(path.join(stateDir, "b", "eng", "kernel", "task.md"), card("'Kernel work'", "processing", "**Next step:** Land the **parser** change and `verify` it.\n"))
-    expect(readCard([path.join(stateDir, "a"), path.join(stateDir, "b")], "eng", "kernel")).toEqual({ track: "eng", slug: "kernel", title: "Kernel work", status: "processing", next: "Land the parser change and verify it." })
+    expect(readCard([path.join(stateDir, "a"), path.join(stateDir, "b")], "eng", "kernel")).toMatchObject({ track: "eng", slug: "kernel", title: "Kernel work", status: "processing", next: "Land the parser change and verify it.", file: path.join(stateDir, "b", "eng", "kernel", "task.md") })
   })
 
   it("cuts a long next step, and falls back to the slug, an unknown status and no next step", () => {
@@ -93,7 +93,18 @@ describe("readCard", () => {
     expect(long.next!.endsWith("…")).toBe(true)
     fs.mkdirSync(path.join(stateDir, "eng", "bare"), { recursive: true })
     fs.writeFileSync(path.join(stateDir, "eng", "bare", "task.md"), "no front matter")
-    expect(readCard([stateDir], "eng", "bare")).toEqual({ track: "eng", slug: "bare", title: "bare", status: "unknown", next: null })
+    expect(readCard([stateDir], "eng", "bare")).toMatchObject({ track: "eng", slug: "bare", title: "bare", status: "unknown", next: null })
+  })
+
+  it("reads the repository, branch, pull request and session a card names, with its file and age", () => {
+    fs.mkdirSync(path.join(stateDir, "eng", "ptr"), { recursive: true })
+    fs.writeFileSync(path.join(stateDir, "eng", "ptr", "task.md"), "---\ntitle: Ptr\nstatus: processing\nrepo: ourostack/ouroboros\nbranch: fix-x\npr_url: https://github.com/ourostack/ouroboros/pull/9\nsession_id: abc-123\n---\n")
+    const withPointers = readCard([stateDir], "eng", "ptr")!
+    expect(withPointers).toMatchObject({ repo: "ourostack/ouroboros", branch: "fix-x", pr: "https://github.com/ourostack/ouroboros/pull/9", session: "abc-123" })
+    expect(Date.parse(withPointers.updatedAt!)).not.toBeNaN()
+    fs.writeFileSync(path.join(stateDir, "eng", "ptr", "task.md"), "---\ntitle: Ptr\npr: https://x/pull/1\nsession: s2\n---\n")
+    expect(readCard([stateDir], "eng", "ptr")).toMatchObject({ pr: "https://x/pull/1", session: "s2" })
+    expect(readCard([stateDir], "eng", "ptr")).not.toHaveProperty("repo")
   })
 
   it("finds a card archived under its track, and nothing for a card that is not there", () => {

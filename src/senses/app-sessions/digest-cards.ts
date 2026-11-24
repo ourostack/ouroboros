@@ -21,6 +21,15 @@ export interface CardFacts {
   title: string
   status: string
   next: string | null
+  /** Where the work can be followed without reaching its machine: the repository, branch and pull request the card names. */
+  repo?: string
+  branch?: string
+  pr?: string
+  /** The session or coordinator the card names as running it. */
+  session?: string
+  /** The card file and when it last changed, so a reader can open the desk log and judge its age. */
+  file: string
+  updatedAt: string | null
 }
 
 const CHUNK_BYTES = 256 * 1024
@@ -135,14 +144,15 @@ export function scanFocus(id: string, entry: FocusEntry | undefined, maxBytes: n
 /** The card at `<root>/<track>/<slug>/task.md`, or archived beside it, in the first desk root that has it: its title, status and next step. */
 export function readCard(roots: string[], track: string, slug: string): CardFacts | null {
   for (const root of roots) {
-    const body = [path.join(root, track, slug, "task.md"), path.join(root, track, "_archive", slug, "task.md")].map(file => {
+    const found = [path.join(root, track, slug, "task.md"), path.join(root, track, "_archive", slug, "task.md")].map(file => {
       try {
-        return fs.readFileSync(file, "utf-8")
+        return { file, body: fs.readFileSync(file, "utf-8"), updatedAt: fs.statSync(file).mtime.toISOString() }
       } catch {
         return null
       }
-    }).find(content => content !== null)
-    if (body === undefined) continue
+    }).find(entry => entry !== null)
+    if (found === undefined) continue
+    const { body } = found
     const front = /^---\n([\s\S]*?)\n---/.exec(body)?.[1] ?? ""
     const field = (name: string): string | null => {
       const value = new RegExp(`^${name}:\\s*(.+)$`, "m").exec(front)?.[1]?.trim().replace(/^['"]|['"]$/g, "")
@@ -155,6 +165,12 @@ export function readCard(roots: string[], track: string, slug: string): CardFact
       title: field("title") ?? slug,
       status: field("status") ?? "unknown",
       next: next ? (next.length > NEXT_MAX_CHARS ? `${next.slice(0, NEXT_MAX_CHARS - 1)}…` : next) : null,
+      ...(field("repo") ? { repo: field("repo")! } : {}),
+      ...(field("branch") ? { branch: field("branch")! } : {}),
+      ...(field("pr") ?? field("pr_url") ? { pr: (field("pr") ?? field("pr_url"))! } : {}),
+      ...(field("session") ?? field("session_id") ? { session: (field("session") ?? field("session_id"))! } : {}),
+      file: found.file,
+      updatedAt: found.updatedAt,
     }
   }
   return null

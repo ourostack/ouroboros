@@ -1,0 +1,1 @@
+- "where i am" now shows, for each work session on another machine, the repository, branch, pull request, owning session and desk log file its desk card names, with when the card last changed, so that work can be followed through the shared repos and desk.
