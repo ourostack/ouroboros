@@ -1144,7 +1144,7 @@ describe("runAgent", () => {
         return makeStream([
           makeChunk(undefined, [
             { index: 0, id: "tc_read", function: { name: "read_file", arguments: '{"path":"safe.txt"}' } },
-            { index: 1, id: "tc_shell", function: { name: "shell", arguments: '{"command":"rm -rf /tmp/habit"}' } },
+            { index: 1, id: "tc_send", function: { name: "send_message", arguments: '{"friendId":"ari","channel":"cli","key":"main","content":"hi"}' } },
           ]),
         ])
       }
@@ -1175,32 +1175,27 @@ describe("runAgent", () => {
     })
 
     await (runAgent as any)(messages, callbacks, "inner", undefined, {
-      tools: [toolSchema("read_file"), toolSchema("shell")],
+      tools: [toolSchema("read_file"), toolSchema("send_message")],
       execTool,
       habitSession: {
         permissionEnvelope: {
           schemaVersion: 1,
-          canMessageOutward: false,
+          // Offered, but this session denies it: the whole batch stops.
+          canMessageOutward: true,
           returnRoutes: [],
           deniedTools: ["send_message", "surface"],
           warnings: [],
-        },
-        toolPolicy: {
-          requestedTools: null,
-          grantedTools: ["read_file"],
-          deniedTools: ["shell", "send_message", "surface"],
-          outwardMessagingAllowed: false,
         },
         recordError,
       },
     })
 
     expect(execTool).not.toHaveBeenCalled()
-    expect(recordError).toHaveBeenCalledWith(expect.stringContaining("habit tool 'shell' is denied"))
+    expect(recordError).toHaveBeenCalledWith(expect.stringContaining("habit tool 'send_message' is denied"))
     expect(toolStarts).toEqual(["rest"])
     expect(textChunks).toEqual([])
     expectProviderOnlyControl(messages, "tc_read", "blocked")
-    expectProviderOnlyControl(messages, "tc_shell", "blocked")
+    expectProviderOnlyControl(messages, "tc_send", "blocked")
   })
 
   it("habit mode with no return routes does not advertise send_message or surface", async () => {
@@ -1228,12 +1223,6 @@ describe("runAgent", () => {
           returnRoutes: [],
           deniedTools: ["send_message", "surface"],
           warnings: [],
-        },
-        toolPolicy: {
-          requestedTools: null,
-          grantedTools: [],
-          deniedTools: ["send_message", "surface"],
-          outwardMessagingAllowed: false,
         },
       },
     })
@@ -1293,7 +1282,7 @@ describe("runAgent", () => {
           { choices: [{ delta: { reasoning_content: "thinking before a blocked call" } }] },
           makeChunk("draft text that should not leak"),
           makeChunk(undefined, [
-            { index: 0, id: "tc_shell", function: { name: "shell", arguments: '{"command":"rm -rf /tmp/habit"}' } },
+            { index: 0, id: "tc_send", function: { name: "send_message", arguments: '{"friendId":"ari","channel":"cli","key":"main","content":"hi"}' } },
           ]),
         ])
       }
@@ -1316,28 +1305,22 @@ describe("runAgent", () => {
       onClearText: vi.fn(),
       flushNow: vi.fn(),
     }
-    const shellTool = {
+    const sendTool = {
       type: "function" as const,
-      function: { name: "shell", description: "shell", parameters: { type: "object", properties: {} } },
+      function: { name: "send_message", description: "send", parameters: { type: "object", properties: {} } },
     }
     const messages: any[] = [{ role: "system", content: "test" }]
 
     await (runAgent as any)(messages, callbacks, "inner", undefined, {
-      tools: [shellTool],
+      tools: [sendTool],
       execTool,
       habitSession: {
         permissionEnvelope: {
           schemaVersion: 1,
-          canMessageOutward: false,
+          canMessageOutward: true,
           returnRoutes: [],
           deniedTools: ["send_message", "surface"],
           warnings: [],
-        },
-        toolPolicy: {
-          requestedTools: null,
-          grantedTools: [],
-          deniedTools: ["shell", "send_message", "surface"],
-          outwardMessagingAllowed: false,
         },
       },
     })
@@ -1349,7 +1332,7 @@ describe("runAgent", () => {
     expect(callbacks.flushNow).not.toHaveBeenCalled()
     expect(callbacks.onToolStart).toHaveBeenCalledTimes(1)
     expect(callbacks.onToolStart).toHaveBeenCalledWith("rest", { status: "blocked" })
-    expectProviderOnlyControl(messages, "tc_shell", "blocked")
+    expectProviderOnlyControl(messages, "tc_send", "blocked")
   })
 
   it("habit mode blocks non-object tool arguments before execution", async () => {
@@ -1397,12 +1380,6 @@ describe("runAgent", () => {
           returnRoutes: [],
           deniedTools: ["send_message", "surface"],
           warnings: [],
-        },
-        toolPolicy: {
-          requestedTools: ["read_file"],
-          grantedTools: ["read_file"],
-          deniedTools: ["send_message", "surface"],
-          outwardMessagingAllowed: false,
         },
       },
     })
@@ -1457,12 +1434,6 @@ describe("runAgent", () => {
           deniedTools: ["send_message", "surface"],
           warnings: [],
         },
-        toolPolicy: {
-          requestedTools: ["read_file"],
-          grantedTools: ["read_file"],
-          deniedTools: ["send_message", "surface"],
-          outwardMessagingAllowed: false,
-        },
       },
     })
 
@@ -1470,115 +1441,7 @@ describe("runAgent", () => {
     expectProviderOnlyControl(messages, "tc_bad_json", "malformed JSON")
   })
 
-  it("habit mode blocks known tools that were not granted", async () => {
-    let callCount = 0
-    mockCreate.mockImplementation(() => {
-      callCount++
-      if (callCount === 1) {
-        return makeStream([
-          makeChunk(undefined, [
-            { index: 0, id: "tc_read", function: { name: "read_file", arguments: "{\"path\":\"safe.txt\"}" } },
-          ]),
-        ])
-      }
-      return makeStream([
-        makeChunk(undefined, [
-          { index: 0, id: "tc_rest", function: { name: "rest", arguments: "{\"status\":\"blocked\"}" } },
-        ]),
-      ])
-    })
-
-    const execTool = vi.fn(async () => "side effect happened")
-    const callbacks: ChannelCallbacks = {
-      onModelStart: () => {},
-      onModelStreamStart: () => {},
-      onTextChunk: () => {},
-      onReasoningChunk: () => {},
-      onToolStart: vi.fn(),
-      onToolEnd: () => {},
-      onError: () => {},
-    }
-    const messages: any[] = [{ role: "system", content: "test" }]
-
-    await (runAgent as any)(messages, callbacks, "inner", undefined, {
-      tools: [{ type: "function" as const, function: { name: "read_file", description: "read", parameters: { type: "object", properties: {} } } }],
-      execTool,
-      habitSession: {
-        permissionEnvelope: {
-          schemaVersion: 1,
-          canMessageOutward: false,
-          returnRoutes: [],
-          deniedTools: ["send_message", "surface"],
-          warnings: [],
-        },
-        toolPolicy: {
-          requestedTools: ["read_file"],
-          grantedTools: [],
-          deniedTools: ["send_message", "surface"],
-          outwardMessagingAllowed: false,
-        },
-      },
-    })
-
-    expect(execTool).not.toHaveBeenCalled()
-    expectProviderOnlyControl(messages, "tc_read", "not granted")
-  })
-
-  it("habit mode blocks advertised tools with no executable risk profile", async () => {
-    let callCount = 0
-    mockCreate.mockImplementation(() => {
-      callCount++
-      if (callCount === 1) {
-        return makeStream([
-          makeChunk(undefined, [
-            { index: 0, id: "tc_custom", function: { name: "custom_local_tool", arguments: "{}" } },
-          ]),
-        ])
-      }
-      return makeStream([
-        makeChunk(undefined, [
-          { index: 0, id: "tc_rest", function: { name: "rest", arguments: "{\"status\":\"blocked\"}" } },
-        ]),
-      ])
-    })
-
-    const execTool = vi.fn(async () => "side effect happened")
-    const callbacks: ChannelCallbacks = {
-      onModelStart: () => {},
-      onModelStreamStart: () => {},
-      onTextChunk: () => {},
-      onReasoningChunk: () => {},
-      onToolStart: vi.fn(),
-      onToolEnd: () => {},
-      onError: () => {},
-    }
-    const messages: any[] = [{ role: "system", content: "test" }]
-
-    await (runAgent as any)(messages, callbacks, "inner", undefined, {
-      tools: [{ type: "function" as const, function: { name: "custom_local_tool", description: "custom", parameters: { type: "object", properties: {} } } }],
-      execTool,
-      habitSession: {
-        permissionEnvelope: {
-          schemaVersion: 1,
-          canMessageOutward: false,
-          returnRoutes: [],
-          deniedTools: ["send_message", "surface"],
-          warnings: [],
-        },
-        toolPolicy: {
-          requestedTools: ["custom_local_tool"],
-          grantedTools: ["custom_local_tool"],
-          deniedTools: ["send_message", "surface"],
-          outwardMessagingAllowed: false,
-        },
-      },
-    })
-
-    expect(execTool).not.toHaveBeenCalled()
-    expectProviderOnlyControl(messages, "tc_custom", "known executable risk profile")
-  })
-
-  it("habit mode blocks granted tools whose executable risk mutates external state", async () => {
+  it("habit mode runs a shell call that changes things outside, as a normal turn would", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -1591,12 +1454,12 @@ describe("runAgent", () => {
       }
       return makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "tc_rest", function: { name: "rest", arguments: '{"status":"blocked"}' } },
+          { index: 0, id: "tc_rest", function: { name: "rest", arguments: '{"status":"done"}' } },
         ]),
       ])
     })
 
-    const execTool = vi.fn(async () => "side effect happened")
+    const execTool = vi.fn(async () => "removed")
     const recordError = vi.fn()
     const callbacks: ChannelCallbacks = {
       onModelStart: () => {},
@@ -1624,21 +1487,15 @@ describe("runAgent", () => {
           deniedTools: ["send_message", "surface"],
           warnings: [],
         },
-        toolPolicy: {
-          requestedTools: ["shell"],
-          grantedTools: ["shell"],
-          deniedTools: ["send_message", "surface"],
-          outwardMessagingAllowed: false,
-        },
         recordError,
       },
     })
 
-    expect(execTool).not.toHaveBeenCalled()
-    expect(recordError).toHaveBeenCalledWith(expect.stringContaining("external_side_effect"))
-    expect(callbacks.onToolStart).toHaveBeenCalledTimes(1)
-    expect(callbacks.onToolStart).toHaveBeenCalledWith("rest", { status: "blocked" })
-    expectProviderOnlyControl(messages, "tc_shell", "external_side_effect")
+    expect(execTool).toHaveBeenCalledWith("shell", { command: "rm -rf /tmp/habit" }, expect.any(Object))
+    expect(recordError).not.toHaveBeenCalled()
+    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tool_call_id: "tc_shell", content: "removed" }),
+    ]))
   })
 
   it("habit mode allows explicitly granted durable-state-only high-risk tools", async () => {
@@ -1681,12 +1538,6 @@ describe("runAgent", () => {
           returnRoutes: [],
           deniedTools: ["send_message", "surface"],
           warnings: [],
-        },
-        toolPolicy: {
-          requestedTools: ["write_file"],
-          grantedTools: ["write_file"],
-          deniedTools: ["send_message", "surface"],
-          outwardMessagingAllowed: false,
         },
       },
     })
@@ -1741,12 +1592,6 @@ describe("runAgent", () => {
           returnRoutes: [],
           deniedTools: ["send_message", "surface"],
           warnings: [],
-        },
-        toolPolicy: {
-          requestedTools: ["shell"],
-          grantedTools: ["shell"],
-          deniedTools: ["send_message", "surface"],
-          outwardMessagingAllowed: false,
         },
       },
     })
@@ -1810,12 +1655,6 @@ describe("runAgent", () => {
           returnRoutes: [],
           deniedTools: ["send_message", "surface"],
           warnings: [],
-        },
-        toolPolicy: {
-          requestedTools: ["read_file"],
-          grantedTools: ["read_file"],
-          deniedTools: ["send_message", "surface"],
-          outwardMessagingAllowed: false,
         },
       },
     })
@@ -1893,12 +1732,6 @@ describe("runAgent", () => {
           deniedTools: ["send_message", "surface"],
           warnings: [],
         },
-        toolPolicy: {
-          requestedTools: ["read_file"],
-          grantedTools: ["read_file"],
-          deniedTools: ["send_message", "surface"],
-          outwardMessagingAllowed: false,
-        },
       },
     })
 
@@ -1935,12 +1768,6 @@ describe("runAgent", () => {
         deniedTools: ["send_message", "surface"],
         warnings: [],
       },
-      toolPolicy: {
-        requestedTools: ["read_file"],
-        grantedTools: ["read_file"],
-        deniedTools: ["send_message", "surface"],
-        outwardMessagingAllowed: false,
-      },
     }
     const execTool = vi.fn(async (_name, _args, ctx) => {
       expect(ctx.habitSession).toBe(habitSession)
@@ -1967,57 +1794,6 @@ describe("runAgent", () => {
     })
 
     expect(execTool).toHaveBeenCalledTimes(1)
-  })
-
-  it("habit mode honors explicit denials before special control tool branches", async () => {
-    let callCount = 0
-    mockCreate.mockImplementation(() => {
-      callCount++
-      if (callCount === 1) {
-        return makeStream([
-          makeChunk(undefined, [
-            { index: 0, id: "tc_rest", function: { name: "rest", arguments: '{"status":"done"}' } },
-          ]),
-        ])
-      }
-      return makeStream([makeChunk("blocked and stopped")])
-    })
-
-    const execTool = vi.fn(async () => "side effect happened")
-    const callbacks: ChannelCallbacks = {
-      onModelStart: () => {},
-      onModelStreamStart: () => {},
-      onTextChunk: () => {},
-      onReasoningChunk: () => {},
-      onToolStart: vi.fn(),
-      onToolEnd: () => {},
-      onError: () => {},
-    }
-    const messages: any[] = [{ role: "system", content: "test" }]
-
-    await (runAgent as any)(messages, callbacks, "inner", undefined, {
-      tools: [],
-      execTool,
-      habitSession: {
-        permissionEnvelope: {
-          schemaVersion: 1,
-          canMessageOutward: false,
-          returnRoutes: [],
-          deniedTools: ["rest", "send_message", "surface"],
-          warnings: [],
-        },
-        toolPolicy: {
-          requestedTools: null,
-          grantedTools: [],
-          deniedTools: ["rest", "send_message", "surface"],
-          outwardMessagingAllowed: false,
-        },
-      },
-    })
-
-    expect(execTool).not.toHaveBeenCalled()
-    expect(callbacks.onToolStart).not.toHaveBeenCalledWith("rest", { status: "done" })
-    expectProviderOnlyControl(messages, "tc_rest", "denied")
   })
 
   it("habit mode blocks granted tool calls that were not advertised in the active tool set", async () => {
@@ -2056,12 +1832,6 @@ describe("runAgent", () => {
           returnRoutes: [],
           deniedTools: ["send_message", "surface"],
           warnings: [],
-        },
-        toolPolicy: {
-          requestedTools: ["read_file"],
-          grantedTools: ["read_file"],
-          deniedTools: ["send_message", "surface"],
-          outwardMessagingAllowed: false,
         },
       },
     })
@@ -2141,12 +1911,6 @@ describe("runAgent", () => {
           deniedTools: [],
           warnings: [],
         },
-        toolPolicy: {
-          requestedTools: null,
-          grantedTools: ["send_message", "read_file"],
-          deniedTools: [],
-          outwardMessagingAllowed: true,
-        },
         friendStore,
         recordSurfaceAttempt,
       },
@@ -2211,12 +1975,6 @@ describe("runAgent", () => {
           returnRoutes: [],
           deniedTools: [],
           warnings: [],
-        },
-        toolPolicy: {
-          requestedTools: ["surface"],
-          grantedTools: ["surface"],
-          deniedTools: [],
-          outwardMessagingAllowed: true,
         },
         recordSurfaceAttempt,
       },
@@ -2305,12 +2063,6 @@ describe("runAgent", () => {
           returnRoutes: [{ kind: "family", recipient: "family", status: "allowed" }],
           deniedTools: [],
           warnings: [],
-        },
-        toolPolicy: {
-          requestedTools: null,
-          grantedTools: ["send_message"],
-          deniedTools: [],
-          outwardMessagingAllowed: true,
         },
         friendStore,
       },

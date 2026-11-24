@@ -2366,12 +2366,6 @@ describe("private runtime", () => {
           deniedTools: ["send_message", "surface"],
           warnings: [],
         },
-        toolPolicy: {
-          requestedTools: null,
-          grantedTools: ["read"],
-          deniedTools: ["shell", "send_message", "surface"],
-          outwardMessagingAllowed: false,
-        },
       },
     })
 
@@ -3039,12 +3033,6 @@ describe("private runtime", () => {
           returnRoutes: [],
           deniedTools: [],
           warnings: [],
-        },
-        toolPolicy: {
-          requestedTools: ["send_message"],
-          grantedTools: ["send_message"],
-          deniedTools: [],
-          outwardMessagingAllowed: true,
         },
       },
     })
@@ -4868,36 +4856,6 @@ describe("private runtime", () => {
 
   // ── Habit tool enforcement tests ──────────────────────────────────
 
-  it("restricts tools to only those declared in habit tools field", async () => {
-    const habitsDir = path.join(agentRoot, "habits")
-    fs.mkdirSync(habitsDir, { recursive: true })
-    fs.writeFileSync(
-      path.join(habitsDir, "focused-habit.md"),
-      "---\ntitle: Focused Habit\ncadence: 1h\nstatus: active\nlastRun: 2026-03-06T11:00:00.000Z\ncreated: 2026-03-01\ntools:\n  - read\n  - shell\n---\n\nDo focused work.",
-      "utf8",
-    )
-
-    mockLoadSession.mockReturnValue({
-      messages: [
-        { role: "system", content: "system prompt" },
-        { role: "assistant", content: "ready" },
-      ],
-    })
-    mockBuildHabitTurnMessage.mockReturnValueOnce("focused habit message")
-
-    await runApprovedPrivateRuntimeTurn({
-      reason: "habit",
-      habitName: "focused-habit",
-      now: () => new Date("2026-03-06T12:05:00.000Z"),
-    })
-
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    const tools = input.runAgentOptions.tools
-    expect(tools).toBeDefined()
-    expect(tools).toHaveLength(2)
-    expect(tools.map((t: any) => t.function.name).sort()).toEqual(["read", "shell"])
-  })
-
   it("reduces a private habit probe to no-send tools and context even when the habit is unrestricted", async () => {
     const habitsDir = path.join(agentRoot, "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
@@ -4939,9 +4897,7 @@ describe("private runtime", () => {
       permissionEnvelope: {
         canMessageOutward: false,
         returnRoutes: [],
-      },
-      toolPolicy: {
-        outwardMessagingAllowed: false,
+        deniedTools: ["send_message", "surface"],
       },
     })
     expect(input.runAgentOptions.toolContext.habitSession)
@@ -4972,12 +4928,6 @@ describe("private runtime", () => {
         deniedTools: ["mail_send"],
         warnings: ["existing warning"],
       },
-      toolPolicy: {
-        requestedTools: ["read", "send_message"],
-        grantedTools: ["read", "send_message"],
-        deniedTools: ["shell"],
-        outwardMessagingAllowed: true,
-      },
       recordError,
     }
 
@@ -4997,50 +4947,15 @@ describe("private runtime", () => {
       permissionEnvelope: {
         canMessageOutward: false,
         returnRoutes: [],
-        deniedTools: expect.arrayContaining(["mail_send", "read", "send_message", "shell", "surface"]),
+        deniedTools: ["send_message", "surface"],
         warnings: ["existing warning"],
       },
-      toolPolicy: {
-        requestedTools: ["read", "send_message"],
-        grantedTools: [],
-        deniedTools: expect.arrayContaining(["mail_send", "read", "send_message", "shell", "surface"]),
-        outwardMessagingAllowed: false,
-      },
     })
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.tools).toEqual([])
     expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext.habitSession).toBe(effective)
   })
 
-  it("silently excludes unknown tool names from habit tools field (fail closed)", async () => {
-    const habitsDir = path.join(agentRoot, "habits")
-    fs.mkdirSync(habitsDir, { recursive: true })
-    fs.writeFileSync(
-      path.join(habitsDir, "partial-habit.md"),
-      "---\ntitle: Partial Habit\ncadence: 1h\nstatus: active\nlastRun: 2026-03-06T11:00:00.000Z\ncreated: 2026-03-01\ntools:\n  - read\n  - nonexistent_tool\n---\n\nDo partial work.",
-      "utf8",
-    )
-
-    mockLoadSession.mockReturnValue({
-      messages: [
-        { role: "system", content: "system prompt" },
-        { role: "assistant", content: "ready" },
-      ],
-    })
-    mockBuildHabitTurnMessage.mockReturnValueOnce("partial habit message")
-
-    await runApprovedPrivateRuntimeTurn({
-      reason: "habit",
-      habitName: "partial-habit",
-      now: () => new Date("2026-03-06T12:05:00.000Z"),
-    })
-
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    const tools = input.runAgentOptions.tools
-    expect(tools).toBeDefined()
-    expect(tools).toHaveLength(1)
-    expect(tools[0].function.name).toBe("read")
-  })
-
-  it("does not set runAgentOptions.tools when habit has no tools field (full repertoire)", async () => {
+  it("gives a habit the full repertoire: runAgentOptions.tools stays unset", async () => {
     const habitsDir = path.join(agentRoot, "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
     fs.writeFileSync(
@@ -5065,68 +4980,6 @@ describe("private runtime", () => {
 
     const input = mockHandleInboundTurn.mock.calls[0][0]
     expect(input.runAgentOptions.tools).toBeUndefined()
-  })
-
-  it("passes empty tools array when habit declares tools: [] (no tools)", async () => {
-    const habitsDir = path.join(agentRoot, "habits")
-    fs.mkdirSync(habitsDir, { recursive: true })
-    fs.writeFileSync(
-      path.join(habitsDir, "silent-habit.md"),
-      "---\ntitle: Silent Habit\ncadence: 1h\nstatus: active\nlastRun: 2026-03-06T11:00:00.000Z\ncreated: 2026-03-01\ntools: []\n---\n\nThink quietly.",
-      "utf8",
-    )
-
-    mockLoadSession.mockReturnValue({
-      messages: [
-        { role: "system", content: "system prompt" },
-        { role: "assistant", content: "ready" },
-      ],
-    })
-    mockBuildHabitTurnMessage.mockReturnValueOnce("silent habit message")
-
-    await runApprovedPrivateRuntimeTurn({
-      reason: "habit",
-      habitName: "silent-habit",
-      now: () => new Date("2026-03-06T12:05:00.000Z"),
-    })
-
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    const tools = input.runAgentOptions.tools
-    expect(tools).toBeDefined()
-    expect(tools).toHaveLength(0)
-  })
-
-  it("emits habit.tools_restricted nerves event when habit has tools field", async () => {
-    const habitsDir = path.join(agentRoot, "habits")
-    fs.mkdirSync(habitsDir, { recursive: true })
-    fs.writeFileSync(
-      path.join(habitsDir, "restricted-habit.md"),
-      "---\ntitle: Restricted Habit\ncadence: 1h\nstatus: active\nlastRun: 2026-03-06T11:00:00.000Z\ncreated: 2026-03-01\ntools:\n  - read\n  - shell\n---\n\nRestricted work.",
-      "utf8",
-    )
-
-    mockLoadSession.mockReturnValue({
-      messages: [
-        { role: "system", content: "system prompt" },
-        { role: "assistant", content: "ready" },
-      ],
-    })
-    mockBuildHabitTurnMessage.mockReturnValueOnce("restricted habit message")
-
-    await runApprovedPrivateRuntimeTurn({
-      reason: "habit",
-      habitName: "restricted-habit",
-      now: () => new Date("2026-03-06T12:05:00.000Z"),
-    })
-
-    const restrictedEvent = mockEmitNervesEvent.mock.calls.find(
-      (call: any[]) => call[0].event === "habit.tools_restricted",
-    )
-    expect(restrictedEvent).toBeDefined()
-    expect(restrictedEvent![0].component).toBe("senses")
-    expect(restrictedEvent![0].meta.habitName).toBe("restricted-habit")
-    expect(restrictedEvent![0].meta.declared).toEqual(["read", "shell"])
-    expect(restrictedEvent![0].meta.resolved).toEqual(["read", "shell"])
   })
 
   it("exposes the canonical await tool to an external-event turn", async () => {
@@ -5729,36 +5582,5 @@ describe("private runtime", () => {
       const rows = fs.readFileSync(path.join(agentRoot, "state", "run-ledger", "runs.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line))
       expect(rows.at(-1)).toMatchObject({ lifecycle: "error", senseOrHabit: "external-event", errorName: "UnknownError" })
     })
-  })
-
-  it("emits habit.tools_unrestricted nerves event when habit has no tools field", async () => {
-    const habitsDir = path.join(agentRoot, "habits")
-    fs.mkdirSync(habitsDir, { recursive: true })
-    fs.writeFileSync(
-      path.join(habitsDir, "unrestricted-habit.md"),
-      "---\ntitle: Unrestricted Habit\ncadence: 1h\nstatus: active\nlastRun: 2026-03-06T11:00:00.000Z\ncreated: 2026-03-01\n---\n\nUnrestricted work.",
-      "utf8",
-    )
-
-    mockLoadSession.mockReturnValue({
-      messages: [
-        { role: "system", content: "system prompt" },
-        { role: "assistant", content: "ready" },
-      ],
-    })
-    mockBuildHabitTurnMessage.mockReturnValueOnce("unrestricted habit message")
-
-    await runApprovedPrivateRuntimeTurn({
-      reason: "habit",
-      habitName: "unrestricted-habit",
-      now: () => new Date("2026-03-06T12:05:00.000Z"),
-    })
-
-    const unrestrictedEvent = mockEmitNervesEvent.mock.calls.find(
-      (call: any[]) => call[0].event === "habit.tools_unrestricted",
-    )
-    expect(unrestrictedEvent).toBeDefined()
-    expect(unrestrictedEvent![0].component).toBe("senses")
-    expect(unrestrictedEvent![0].meta.habitName).toBe("unrestricted-habit")
   })
 })

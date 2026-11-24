@@ -7,12 +7,12 @@ const {
   mockGetAgentRoot,
   mockGetPrivateRuntimePendingDir,
   mockHasPendingMessages,
+  mockQueuePendingMessageOnce,
   mockRecordHabitRun,
   mockCreateHabitRunId,
   mockIsSafeHabitRunId,
   mockWriteHabitRunReceipt,
   mockReserveAutonomyBudget,
-  mockResolveAutonomyBudgetPolicy,
   mockApplyHabitRuntimeState,
   mockReadHabitSessionSummary,
   mockReadFileSync,
@@ -26,12 +26,12 @@ const {
   mockGetAgentRoot: vi.fn(() => "/bundles/slugger.ouro"),
   mockGetPrivateRuntimePendingDir: vi.fn(() => "/mock/pending/self/inner/dialog"),
   mockHasPendingMessages: vi.fn(() => false),
+  mockQueuePendingMessageOnce: vi.fn(),
   mockRecordHabitRun: vi.fn(),
   mockCreateHabitRunId: vi.fn(() => "habit-run-id"),
   mockIsSafeHabitRunId: vi.fn(() => true),
   mockWriteHabitRunReceipt: vi.fn(),
   mockReserveAutonomyBudget: vi.fn(),
-  mockResolveAutonomyBudgetPolicy: vi.fn(),
   mockApplyHabitRuntimeState: vi.fn((_agentRoot: string, habit: any) => habit),
   mockReadHabitSessionSummary: vi.fn(() => null),
   mockReadFileSync: vi.fn(),
@@ -75,6 +75,7 @@ vi.mock("../../heart/identity", () => ({
 vi.mock("../../mind/pending", () => ({
   getPrivateRuntimePendingDir: (...args: any[]) => mockGetPrivateRuntimePendingDir(...args),
   hasPendingMessages: (...args: any[]) => mockHasPendingMessages(...args),
+  queuePendingMessageOnce: (...args: any[]) => mockQueuePendingMessageOnce(...args),
 }))
 
 vi.mock("../../heart/habits/habit-runtime-state", () => ({
@@ -105,7 +106,6 @@ vi.mock("../../arc/flight-recorder", () => ({
 vi.mock("../../heart/autonomy-budget", () => ({
   reserveAutonomyBudget: (...args: any[]) => mockReserveAutonomyBudget(...args),
   recordAutonomyFailure: vi.fn(),
-  resolveAutonomyBudgetPolicy: (...args: any[]) => mockResolveAutonomyBudgetPolicy(...args),
 }))
 
 import { createPrivateRuntimeWorker, HEARTBEAT_OK_REST_SUPPRESSION_MS, startPrivateRuntimeWorker } from "../../senses/private-runtime-worker"
@@ -117,6 +117,7 @@ describe("private-runtime-worker", () => {
       return ""
     })
     mockHasPendingMessages.mockReset().mockReturnValue(false)
+    mockQueuePendingMessageOnce.mockReset()
     mockGetAgentName.mockReset().mockReturnValue("slugger")
     mockGetAgentRoot.mockReset().mockReturnValue("/bundles/slugger.ouro")
     mockGetPrivateRuntimePendingDir.mockReset().mockReturnValue("/mock/pending/self/inner/dialog")
@@ -136,18 +137,6 @@ describe("private-runtime-worker", () => {
       senseOrHabit: "heartbeat",
       targetHash: "sha256:test",
       idempotencyKey: "habit:test",
-    })
-    mockResolveAutonomyBudgetPolicy.mockReset().mockReturnValue({
-      agentProactivePaidTurnsPerHour: 6,
-      agentProactivePaidTurnsPerDay: 40,
-      senseRecoveryPaidTurnsPer15m: 3,
-      senseRecoveryPaidTurnsPerDay: 12,
-      habitPaidTurnsPerDay: 4,
-      duplicateRecoveryTtlMs: 600_000,
-      duplicateHabitTtlMs: 86_400_000,
-      stormFailureThreshold: 3,
-      stormFailureWindowMs: 600_000,
-      stormBlockMs: 1_800_000,
     })
     mockApplyHabitRuntimeState.mockReset().mockImplementation((_agentRoot: string, habit: any) => habit)
     mockReadHabitSessionSummary.mockReset().mockReturnValue(null)
@@ -434,7 +423,6 @@ describe("private-runtime-worker", () => {
           "cadence: 1h",
           "continuity:",
           "  mode: stateful",
-          "tools: [send_message, session_summary]",
           "---",
           "",
           "Keep durable context between fires.",
@@ -470,7 +458,6 @@ describe("private-runtime-worker", () => {
           name: "stateful",
           title: "Stateful Check",
           continuity: { mode: "stateful" },
-          tools: ["send_message", "session_summary"],
           body: "Keep durable context between fires.",
         }),
       }),
@@ -936,7 +923,6 @@ describe("private-runtime-worker", () => {
         runtimeStateLocator: "state/habits/daily-record.json",
         receiptLocator: "arc/flight-recorder/habit-receipts/habit-run-id.json",
         permissionEnvelope: expect.objectContaining({ schemaVersion: 1, canMessageOutward: true }),
-        toolPolicy: expect.objectContaining({ requestedTools: null, outwardMessagingAllowed: true }),
         producedRefs: [{ kind: "desk_record", locator: "desk/_record" }],
         surfaceAttempts: [],
         errors: [],
@@ -1155,10 +1141,6 @@ describe("private-runtime-worker", () => {
           canMessageOutward: false,
           deniedTools: ["send_message", "surface"],
         }),
-        toolPolicy: expect.objectContaining({
-          requestedTools: [],
-          grantedTools: [],
-        }),
         errors: expect.arrayContaining([
           expect.stringContaining("habit missing"),
           "habit status degraded is non-executable before private runtime execution",
@@ -1197,7 +1179,6 @@ describe("private-runtime-worker", () => {
           return [
             "---",
             `status: ${definitionStatus}`,
-            "tools: [shell, send_message]",
             "---",
             "",
             "This must not execute while non-active.",
@@ -1218,11 +1199,6 @@ describe("private-runtime-worker", () => {
         trigger: "manual",
         outcome: "error",
         permissionEnvelope: expect.objectContaining({ canMessageOutward: false }),
-        toolPolicy: expect.objectContaining({
-          requestedTools: [],
-          grantedTools: [],
-          outwardMessagingAllowed: false,
-        }),
         errors: expect.arrayContaining([
           `habit status ${runtimeStatus} is non-executable before private runtime execution`,
         ]),
@@ -1251,7 +1227,6 @@ describe("private-runtime-worker", () => {
         [
           "---",
           "status: active",
-          "tools: [shell, send_message]",
           "This frontmatter never closes.",
         ].join("\n"),
         "unterminated_frontmatter",
@@ -1261,7 +1236,6 @@ describe("private-runtime-worker", () => {
         [
           "---",
           "status: active",
-          "tools: [shell, send_message]",
           "not valid frontmatter",
           "---",
           "This malformed habit must not execute.",
@@ -1283,11 +1257,6 @@ describe("private-runtime-worker", () => {
       expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
         habitName: "parse-failure",
         outcome: "error",
-        toolPolicy: expect.objectContaining({
-          requestedTools: [],
-          grantedTools: [],
-          outwardMessagingAllowed: false,
-        }),
         errors: expect.arrayContaining([
           "habit status degraded is non-executable before private runtime execution",
         ]),
@@ -1311,41 +1280,6 @@ describe("private-runtime-worker", () => {
       }))
     })
 
-    it("uses executable shell risk when preparing habit tool policy", async () => {
-      mockReadFileSync.mockImplementation((filePath: any) => {
-        if (String(filePath).includes("/habits/")) return [
-          "---",
-          "tools: [shell]",
-          "---",
-          "",
-          "try a shell command",
-          "",
-        ].join("\n")
-        return ""
-      })
-      const runTurn = vi.fn().mockResolvedValue({ messages: [] })
-      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
-
-      await worker.handleMessage({ type: "habit", habitName: "shell-probe", trigger: "poke" })
-
-      expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
-        habitSession: expect.objectContaining({
-          toolPolicy: expect.objectContaining({
-            requestedTools: ["shell"],
-            grantedTools: [],
-            deniedTools: ["shell"],
-          }),
-        }),
-      }))
-      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
-        toolPolicy: expect.objectContaining({
-          requestedTools: ["shell"],
-          grantedTools: [],
-          deniedTools: ["shell"],
-        }),
-      }))
-    })
-
     it("blocks untyped RSVP habit sessions before provider or budget execution", async () => {
       mockReadFileSync.mockImplementation((filePath: any) => {
         if (String(filePath).includes("/habits/rsvp-wedding.md")) {
@@ -1353,7 +1287,6 @@ describe("private-runtime-worker", () => {
             "---",
             "title: Wedding RSVPs",
             "cadence: 0 10 * * *",
-            "tools: [rsvp_query, rsvp_summary, shell]",
             "surface:",
             "  family: false",
             "  originator: false",
@@ -1376,12 +1309,14 @@ describe("private-runtime-worker", () => {
         habitName: "rsvp-wedding",
         outcome: "error",
         errors: [expect.stringMatching(/RSVP habit metadata is required/i)],
-        toolPolicy: expect.objectContaining({
-          requestedTools: [],
-          grantedTools: [],
-          deniedTools: [],
-          outwardMessagingAllowed: false,
-        }),
+      }))
+      expect(mockQueuePendingMessageOnce).toHaveBeenCalledWith("/mock/pending/self/inner/dialog", expect.objectContaining({
+        from: "slugger",
+        friendId: "self",
+        channel: "inner",
+        key: "dialog",
+        content: expect.stringContaining("my habit rsvp-wedding could not run"),
+        packetId: expect.stringContaining("habit-blocked:rsvp-wedding:"),
       }))
     })
 
@@ -1428,14 +1363,13 @@ describe("private-runtime-worker", () => {
       }))
     })
 
-    it("derives RSVP runtime policy from typed metadata instead of trusting freeform tool declarations", async () => {
+    it("derives RSVP runtime policy from typed metadata and reserves no habit budget", async () => {
       mockReadFileSync.mockImplementation((filePath: any) => {
         if (String(filePath).includes("/habits/rsvp-wedding.md")) {
           return [
             "---",
             "title: Wedding RSVPs",
             "cadence: 0 10 * * *",
-            "tools: [shell]",
             "continuity:",
             "  mode: stateful",
             "rsvp:",
@@ -1469,7 +1403,6 @@ describe("private-runtime-worker", () => {
         preparedHabit: expect.objectContaining({
           habit: expect.objectContaining({
             name: "rsvp-wedding",
-            tools: ["rsvp_query", "rsvp_summary"],
             rsvp: expect.objectContaining({
               policyVersion: "rsvp-habit/v1",
               mode: "shadow",
@@ -1493,31 +1426,12 @@ describe("private-runtime-worker", () => {
             budgetRef: "state/rsvp/spend-ledger.json",
             idempotencyRef: "state/rsvp/outbound-state.json",
           }),
-          toolPolicy: expect.objectContaining({
-            requestedTools: ["rsvp_query", "rsvp_summary"],
-            grantedTools: expect.arrayContaining(["rsvp_query", "rsvp_summary"]),
-            deniedTools: [],
-            outwardMessagingAllowed: false,
-          }),
         }),
       }))
-      expect(mockReserveAutonomyBudget).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
-        senseOrHabit: "rsvp-wedding",
-        target: expect.objectContaining({
-          habitName: "rsvp-wedding",
-          rsvpSnapshotRef: "state/rsvp/snapshots/latest.json",
-          rsvpBudgetRef: "state/rsvp/spend-ledger.json",
-          rsvpIdempotencyRef: "state/rsvp/outbound-state.json",
-        }),
-        idempotencyKey: expect.stringContaining("rsvp-wedding"),
-      }), expect.any(Object))
+      expect(mockQueuePendingMessageOnce).not.toHaveBeenCalled()
+      expect(mockReserveAutonomyBudget).not.toHaveBeenCalled()
       expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
         habitName: "rsvp-wedding",
-        toolPolicy: expect.objectContaining({
-          requestedTools: ["rsvp_query", "rsvp_summary"],
-          grantedTools: expect.arrayContaining(["rsvp_query", "rsvp_summary"]),
-          deniedTools: [],
-        }),
       }))
     })
 
@@ -1536,7 +1450,6 @@ describe("private-runtime-worker", () => {
       expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
         habitName: "string-missing",
         outcome: "error",
-        toolPolicy: expect.objectContaining({ requestedTools: [], grantedTools: [] }),
         errors: expect.arrayContaining([
           expect.stringContaining("habit missing as string"),
           "habit status degraded is non-executable before private runtime execution",

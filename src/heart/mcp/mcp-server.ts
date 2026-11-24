@@ -920,7 +920,7 @@ export function getToolSchemas(): McpToolSchema[] {
     },
     {
       name: "request_decision",
-      description: "Ask the agent to make a decision through a full conversation turn. Optionally provide a list of options to consider.",
+      description: "Ask the agent to make a decision through a full conversation turn. Optionally provide a list of options to consider. When it needs the agent's human, put in it: urgency (now, today or batch), the ask in one line, why only the human can do it, exact steps, any deadline and a dedupe key that stays the same for the same ask.",
       ax: { id: "mcp:request_decision", group: "ouro-agent", when: "Pick this when you need a choice made that is the agent's or its human's to make, listing the options; for stuck work, use report_blocker.", effect: "write", openWorld: true, errors: turnErrors("request_decision", "topic", "the choice to be made") },
       inputSchema: {
         type: "object",
@@ -957,7 +957,7 @@ export function getToolSchemas(): McpToolSchema[] {
     },
     {
       name: "report_blocker",
-      description: "Tell the agent about a delegated-work blocker through a full conversation turn so it can respond, record, or act normally.",
+      description: "Tell the agent about a delegated-work blocker through a full conversation turn so it can respond, record, or act normally. When it needs the agent's human, put in it: urgency (now, today or batch), the ask in one line, why only the human can do it, exact steps, any deadline and a dedupe key that stays the same for the same ask.",
       ax: { id: "mcp:report_blocker", group: "ouro-agent", when: "Pick this when work the agent handed you is stuck, to say what stops it so the agent can unblock, decide or escalate.", effect: "write", openWorld: true, errors: turnErrors("report_blocker", "blocker", "what is stopping the work") },
       inputSchema: {
         type: "object",

@@ -46,12 +46,6 @@ function makeReceipt(
       deniedTools: [],
       warnings: [],
     },
-    toolPolicy: overrides.toolPolicy ?? {
-      requestedTools: null,
-      grantedTools: [],
-      deniedTools: [],
-      outwardMessagingAllowed: true,
-    },
     producedRefs: overrides.producedRefs ?? [],
     surfaceAttempts: overrides.surfaceAttempts ?? [],
     traceSteps: overrides.traceSteps ?? [],

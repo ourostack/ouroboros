@@ -3,13 +3,12 @@ import { describe, expect, it } from "vitest"
 import { parseHabitFile } from "../../../heart/habits/habit-parser"
 
 describe("RSVP habit metadata parsing", () => {
-  it("parses typed RSVP policy metadata and derives the allowed RSVP tool set", () => {
+  it("parses typed RSVP policy metadata", () => {
     const habit = parseHabitFile([
       "---",
       "title: Wedding RSVPs",
       "status: active",
       "cadence: 0 10 * * *",
-      "tools: [shell, rsvp_query]",
       "continuity:",
       "  mode: stateful",
       "rsvp:",
@@ -30,7 +29,6 @@ describe("RSVP habit metadata parsing", () => {
       "",
     ].join("\n"), "/bundles/slugger.ouro/habits/rsvp-wedding.md") as ReturnType<typeof parseHabitFile> & { rsvp?: Record<string, unknown> }
 
-    expect(habit.tools).toEqual(["rsvp_query", "rsvp_summary"])
     expect(habit.rsvp).toEqual({
       policyVersion: "rsvp-habit/v1",
       mode: "shadow",
@@ -52,7 +50,6 @@ describe("RSVP habit metadata parsing", () => {
       "title: Wedding RSVPs",
       "status: active",
       "cadence: 0 10 * * *",
-      "tools: [send_message, shell]",
       "rsvp:",
       "  policyVersion: rsvp-habit/v1",
       "  mode: shadow",
@@ -72,7 +69,6 @@ describe("RSVP habit metadata parsing", () => {
       "RSVP habit metadata requires sense, not channel",
     )
     expect(habit.rsvp).toBeUndefined()
-    expect(habit.tools).toBeUndefined()
   })
 
   it("preserves typed RSVP metadata while recognizing cancelled lifecycle state", () => {
@@ -99,6 +95,5 @@ describe("RSVP habit metadata parsing", () => {
 
     expect(habit.status).toBe("cancelled")
     expect(habit.rsvp?.sense).toBe("bluebubbles")
-    expect(habit.tools).toEqual(["rsvp_query", "rsvp_summary"])
   })
 })

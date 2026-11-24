@@ -133,8 +133,6 @@ describe("approval cards go to the primary agent over A2A first", () => {
     cleanups.push(() => bundle.cleanup())
     const peerDid = "did:key:z6MkSyntheticSluggerRoute"
     const config = JSON.parse(fs.readFileSync(bundle.agentConfigPath, "utf8"))
-    // A Sanctuary agent.json must set its habit budget, as the deployed one does.
-    config.habitPaidTurnsPerDay = 24
     config.senses = { ...config.senses, telegram: { ...config.senses?.telegram, enabled: true, ownerNoticesTo: { cardUrl: CARD_URL_FOR_RELAY, did: peerDid } } }
     fs.writeFileSync(bundle.agentConfigPath, JSON.stringify(config))
     const trust = operatorTrustDir(bundle.agentRoot)
