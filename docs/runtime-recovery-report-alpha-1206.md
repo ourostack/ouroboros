@@ -1,6 +1,6 @@
 # Runtime recovery report (reported on 0.1.0-alpha.1206)
 
-First change: PR [#1843](https://github.com/ourostack/ouroboros/pull/1843), merged as 02f4b9b. Follow-up: branch `arimendelow-teams-replay-dedupe`. Release: unverified until a publish run is confirmed.
+Shipped in two PRs: [#1843](https://github.com/ourostack/ouroboros/pull/1843) (merged as `02f4b9b`, released as [v0.1.0-alpha.1508](https://github.com/ourostack/ouroboros/releases/tag/v0.1.0-alpha.1508): git binary selection, stale-peer markers, Teams outbox/pending expiry) and [#1848](https://github.com/ourostack/ouroboros/pull/1848) (merged as `918a0f8`, main pipeline [run 45340685801](https://github.com/ourostack/ouroboros/actions/runs/45340685801) green incl. coverage and package-e2e, released as [v0.1.0-alpha.1511](https://github.com/ourostack/ouroboros/releases/tag/v0.1.0-alpha.1511), published 2026-11-24T06:39:31Z: dedupe of replayed pending sends, no replay of proactive notices older than 6 h to the model, desk cards in published peer app sessions). Both releases carry the fixes; alpha.1511 carries everything. PR #1848 first failed coverage on one unreachable branch (`provenance?.` on a required field); fixed in code, gate unchanged. Evidence is synthetic-fixture regression tests only: no live mini/laptop recovery was observed (see below).
 
 ## What was found and changed
 
