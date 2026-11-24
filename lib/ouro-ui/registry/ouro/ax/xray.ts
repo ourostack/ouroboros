@@ -1595,6 +1595,14 @@ function rpcClient(line: string, env: Record<string, string>, timeoutMs: number)
   return { request, notify, kill: () => child.kill() };
 }
 
+/**
+ * Words that promise a stream: an MCP tool call here answers once per call, over JSON-RPC, so no tool's description
+ * can honestly make this promise, whatever the command behind it does on its own CLI.
+ *
+ * @claim "an MCP tool call here answers once per call, over JSON-RPC, so no tool's description can honestly make this promise" registry/ouro/ax/xray.test.mts verify:testExists(registry/ouro/ax/xray.test.mts::an MCP tool whose description promises a stream fails: this transport answers once per call, never a stream)
+ */
+const STREAM_LANGUAGE = /\bstream(s|ing)?\b|\bas (it|they) happen[s]?\b|\bcontinuously\b/i;
+
 async function checkMcp(ctx: Context) {
   const { rec, opts } = ctx;
   const rpc = rpcClient(opts.mcp!, ctx.env, opts.timeoutMs);
@@ -1635,6 +1643,8 @@ async function checkMcp(ctx: Context) {
       const a = isRecord(t["annotations"]) ? t["annotations"] : {};
       const ann = typeof a["readOnlyHint"] === "boolean" || typeof a["destructiveHint"] === "boolean";
       rec.add("mcp.effect-annotated", tname, ann ? "pass" : "fail", ann ? JSON.stringify(a) : "no readOnlyHint or destructiveHint");
+      const streamed = STREAM_LANGUAGE.exec(String(t["description"] ?? ""));
+      rec.add("mcp.no-stream-promise", tname, streamed ? "fail" : "pass", streamed ? `the description promises "${streamed[0]}", but tools/call answers one reply, never a stream` : "no streaming language in the description");
       const required = isRecord(schema) && Array.isArray(schema["required"]) ? schema["required"].map(String) : [];
       if (required.length && a["readOnlyHint"] !== true && !ctx.safety.ok) rec.add("mcp.bad-call-teaches", tname, "skip", refusedNote(ctx.safety));
       else if (required.length) {

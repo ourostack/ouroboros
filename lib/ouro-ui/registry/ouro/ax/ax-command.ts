@@ -93,6 +93,16 @@ interface ArgSpec {
    * @claim "A required word, a word that reads stdin" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::defineCli refuses a default that does not fit its word or flag, naming the fix)
    */
   default?: string;
+  /**
+   * Leaves the word out of the MCP input schema: it exists only so the CLI can tell apart an alternate, longer form of
+   * the same command (a fourth word some installs still send), and its own name carries no meaning an agent should
+   * read. The CLI still parses it and `run()` still gets it when given; an MCP call simply has no property for it, and
+   * is never asked to supply it.
+   *
+   * @claim "its own name carries no meaning an agent should read" registry/ouro/ax/mcp.test.mts verify:testExists(registry/ouro/ax/mcp.test.mts::a word that only disambiguates the CLI's longer form is left out of the MCP schema, with every other property described)
+   * @claim "an MCP call simply has no property for it" registry/ouro/ax/mcp.test.mts verify:testExists(registry/ouro/ax/mcp.test.mts::a word that only disambiguates the CLI's longer form is left out of the MCP schema, with every other property described)
+   */
+  cliOnly?: boolean;
 }
 
 /**
@@ -178,6 +188,15 @@ interface CommandDef<R = unknown, C extends RunContext = RunContext> {
   output?: string;
   /** Out of the overview, still callable and with its help. */
   hidden?: boolean;
+  /**
+   * The CLI's own `run()` keeps printing until stopped or the thing it watches closes (a continuous stream, never a
+   * `wait/1` poll that returns once). MCP answers one reply per call and has no way to give that, so the command is
+   * left out of its tool list rather than carry a description MCP cannot honour.
+   *
+   * @claim "a continuous stream, never a `wait/1` poll that returns once" registry/ouro/ax/mcp.test.mts verify:testExists(registry/ouro/ax/mcp.test.mts::a command whose CLI streams forever is left out of the MCP tool list)
+   * @claim "left out of its tool list" registry/ouro/ax/mcp.test.mts verify:testExists(registry/ouro/ax/mcp.test.mts::a command whose CLI streams forever is left out of the MCP tool list)
+   */
+  streams?: boolean;
   /**
    * The command is a protocol: another program reads its stdout as one JSON reply line (such as `wire`, which a --via
    * Mac's caller reads), not a person. The X-ray takes that one line as the reply, and still checks the one stderr line
@@ -890,6 +909,7 @@ function inputSchema(cli: Pick<Cli, "globalFlags">, cmd: CommandDef): JsonSchema
   const properties: Record<string, JsonSchema & { type: string }> = {};
   const required: string[] = [];
   for (const a of cmd.args ?? []) {
+    if (a.cliOnly) continue;
     const unless = unlessOf(a);
     const description = a.description + (unless.length ? ` Not needed with ${unless.join(" or ")}.` : "");
     const enumOf = a.values && a.rest !== true ? { enum: a.values } : {};
