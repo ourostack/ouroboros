@@ -21,15 +21,15 @@ export const H_CODEX_FIDELITY: readonly string[] = [
   "web_search is disabled: it is a hosted tool the host's runtime can't run, and the sandbox has no route off the host",
   "plugins and apps are off, and with them tool suggestions: the sandbox has no route off the host",
   "bundled skills are off ([skills.bundled] enabled = false): they are about codex itself, not the household",
-  "analytics, the otel exporters and check_for_update_on_startup are off: the sandbox has no route off the host; the model sees no difference",
+  "analytics, the otel exporters (exporter, trace_exporter and metrics_exporter) and check_for_update_on_startup are off:the sandbox has no route off the host; the model sees no difference",
   "the request's own settings (tool_choice, parallel_tool_calls, reasoning, include, store, prompt_cache_key and the like) are not passed on: the host's runtime sets the model's settings, as it does for the ouro arm",
   "codex's leading developer messages become one system message, joined with a blank line, and a message's text parts are joined with a newline, since the harness's messages carry one string each",
   "codex doesn't know the model's name, so it runs as for any unknown model: its generic base prompt, no apply_patch tool, and output of each tool call cut at 10,000 bytes",
   "the brand words in codex's base prompt are replaced before the call reaches the model",
-  "the shell can still show the brand through the CODEX_HOME variable's name, which isn't in the prompt; codex adds no helper folder to PATH, since it refuses to create one under /tmp",
+  "the shell can still show the brand through the names of the variables codex sets (CODEX_HOME, CODEX_THREAD_ID, CODEX_SESSION_ID, CODEX_CI), none of which is in the prompt; codex adds no helper folder to PATH, since it refuses to create one under /tmp",
   "codex runs from a neutral home under /tmp (the agent container is read-only elsewhere), with the bundle linked at /tmp/agent/AgentBundles/sanctuary.agent",
-  "the whole conversation is killed at 540 seconds, inside the host's 600-second guest deadline",
-  "built from source at the pinned commit for x86_64 gnu, not codex's released musl build, without the release's version stamp",
+  "codex is killed at 540 seconds, inside the host's 600-second guest deadline, and the turn reports that it exited 137; commands it started stop when the host removes the container at the guest's end",
+  "built from source at the pinned commit for x86_64 gnu (on the x86_64 sandbox host, which runs every session), not codex's released musl build, without the release's version stamp",
 ]
 
 export const H_OPENHANDS_FIDELITY: readonly string[] = [
