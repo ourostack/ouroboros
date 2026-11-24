@@ -15,7 +15,7 @@ import type { UsageData } from "../../heart/streaming"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { creditsOf, meteredRuntime, type BudgetLedger, type Cost, type Hold, type Pricing } from "../budget"
 import { brandHits } from "./protocol"
-import { rewriteRequest, type Replacement } from "./rewrite"
+import { rewriteRequest, type Replacement, type RewriteCounts } from "./rewrite"
 
 /**
  * A session's most calls: three jobs at 12, three debriefs at 2, the choice and the blinding check at 1, and the one
@@ -128,9 +128,11 @@ export function guardedRuntime(input: {
   ledger: BudgetLedger
   pricing: Pricing
   gateFor(request: ProviderTurnRequest): Gate
-  log(entry: { kind: ConversationKind; sent: boolean; body: string }): void
+  log(entry: { kind: ConversationKind; sent: boolean; body: string; rewrites?: RewriteCounts }): void
   /** The arm's replacement list, applied before the scan; the model is sent only the rewritten request. */
   replacements?: readonly Replacement[]
+  /** The arm's running count of matches rewritten, by tier; each request's are also on its log line. */
+  rewrites?: RewriteCounts
 }): ProviderRuntime {
   const latch = input.latch as SessionLatch & { _void(hits: string[]): void; _record(entry: CallRecord): void }
   const metered = meteredRuntime(input.inner, latch.hold, input.ledger)
@@ -139,19 +141,21 @@ export function guardedRuntime(input: {
     const rewritten = input.replacements ? rewriteRequest(own, input.replacements) : undefined
     const request = rewritten?.request ?? own
     const body = requestText(request)
+    const counted = rewritten ? { rewrites: rewritten.rewrites } : {}
+    if (rewritten && input.rewrites) for (const [tier, n] of Object.entries(rewritten.rewrites)) input.rewrites[tier] = (input.rewrites[tier] ?? 0) + n
     const hits = brandHits(body)
     if (hits.length > 0) {
       latch._void(hits)
-      input.log({ kind: gate.kind, sent: false, body })
+      input.log({ kind: gate.kind, sent: false, body, ...counted })
       latch._record({ kind: gate.kind, usage: null, credits: 0, sent: false })
       emitNervesEvent({ component: "eval", level: "warn", event: "eval.interview_request_void", message: "refused a request with brand words; its session is void", meta: { kind: gate.kind, count: hits.length } })
       throw new RefusedCall(`not sent: the request names ${[...new Set(hits.map((hit) => hit.toLowerCase()))].join(", ")}`, "brand")
     }
     if (!gate.take()) {
-      input.log({ kind: gate.kind, sent: false, body })
+      input.log({ kind: gate.kind, sent: false, body, ...counted })
       throw new RefusedCall(`not sent: ${gate.refused()}`, "limit")
     }
-    input.log({ kind: gate.kind, sent: true, body })
+    input.log({ kind: gate.kind, sent: true, body, ...counted })
     // The provider builds its body from the messages just scanned, never from items it kept from an earlier call (a
     // Responses-API runtime keeps reasoning and output items otherwise), so what is sent is what was scanned.
     input.inner.resetTurnState(request.messages)

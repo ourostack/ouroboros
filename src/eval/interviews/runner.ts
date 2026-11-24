@@ -28,7 +28,7 @@ import { messageOf } from "./guest/loop"
 import { U_ARMS } from "./guest/u/arms"
 import { argvOf, commandLine } from "./guest/operations"
 import { createInterviewLatch, guardedRuntime, SESSION_CALLS, type CallRecord, type ConversationKind, type Gate, type SessionLatch } from "./latch"
-import type { Replacement } from "./rewrite"
+import type { Replacement, RewriteCounts } from "./rewrite"
 import { debriefQuestion, IDENTIFY_QUESTION, labelLine, ratingOf, type Note, type Product } from "./protocol"
 
 /** What is recorded about each arm before any session: where it differs from the product it stands for. */
@@ -160,6 +160,8 @@ export type ArmRecord = {
   debriefToolCalls: number
   jobCalls: number
   debriefCalls: number
+  /** Matches the arm's replacement list rewrote across its job and debrief, by tier; empty with no list. */
+  rewrites: RewriteCounts
   observation: Observation
 }
 
@@ -189,7 +191,7 @@ const named = (hits: string[]): string => [...new Set(hits.map((hit) => hit.toLo
 
 const providerFailure = (outcome: string): boolean => /^(provider-error|sandbox-error|trace-mismatch)/.test(outcome)
 
-function armRecord(input: { arm: LabelledArm; c: Case; obs: SandboxRun; kit: ProductKit; job: Gate; debrief: Gate }): ArmRecord {
+function armRecord(input: { arm: LabelledArm; c: Case; obs: SandboxRun; kit: ProductKit; job: Gate; debrief: Gate; rewrites: RewriteCounts }): ArmRecord {
   const { gaps: _gaps, followUps, grade: _grade, ...raw } = input.obs
   const observation = input.kit.canonical(input.arm.arm, raw)
   const own = input.kit.grade ? ownGrade(input.kit.grade, input.obs, input.c) : undefined
@@ -203,7 +205,7 @@ function armRecord(input: { arm: LabelledArm; c: Case; obs: SandboxRun; kit: Pro
   return {
     label: input.arm.label, arm: input.arm.arm, ...verdict, outcome: raw.outcome, checks: graded.checks, note, rating: ratingOf(note),
     debriefOutcome: debrief?.outcome ?? null, debriefToolCalls: debrief?.toolCalls ?? 0,
-    jobCalls: input.job.calls(), debriefCalls: input.debrief.calls(), observation,
+    jobCalls: input.job.calls(), debriefCalls: input.debrief.calls(), rewrites: input.rewrites, observation,
   }
 }
 
@@ -253,8 +255,8 @@ async function runSession(input: {
     ouroFirst: false, voidedBy: null, calls: [], spent: ZERO,
   }
   const c = caseOf(input.kit, input.cases, session)!
-  const guard = (gateFor: (request: ProviderTurnRequest) => Gate, replacements?: readonly Replacement[]): ProviderRuntime => guardedRuntime({
-    inner: input.target.runtime, latch, ledger: input.ledger, pricing: input.pricing, gateFor, ...(replacements ? { replacements } : {}),
+  const guard = (gateFor: (request: ProviderTurnRequest) => Gate, replacements?: readonly Replacement[], rewrites?: RewriteCounts): ProviderRuntime => guardedRuntime({
+    inner: input.target.runtime, latch, ledger: input.ledger, pricing: input.pricing, gateFor, ...(replacements ? { replacements, rewrites } : {}),
     log: (entry) => input.log(JSON.stringify({ session: session.id, preregistrationVersion: input.version, ...entry })),
   })
   const end = (status: SessionStatus, why: string): void => {
@@ -266,7 +268,8 @@ async function runSession(input: {
     const job = latch.gate("job")
     const debriefGate = latch.gate("debrief")
     // The gate reads the runner's own request, so the debrief is told apart before the arm's list rewrites it.
-    const host = guard((request) => request.messages.some((m) => m.role === "user" && m.content === debrief) ? debriefGate : job, input.kit.replacements?.(arm.arm))
+    const rewrites: RewriteCounts = {}
+    const host = guard((request) => request.messages.some((m) => m.role === "user" && m.content === debrief) ? debriefGate : job, input.kit.replacements?.(arm.arm), rewrites)
     let obs: SandboxRun
     try {
       obs = await input.runCase({ case: c, host, budget: { take: () => true }, guest: input.kit.guest({ session, arm, case: c, debrief }) })
@@ -274,7 +277,7 @@ async function runSession(input: {
       end("crashed", `${arm.label}: ${messageOf(error)}`)
       break
     }
-    const armResult = armRecord({ arm, c, obs, kit: input.kit, job, debrief: debriefGate })
+    const armResult = armRecord({ arm, c, obs, kit: input.kit, job, debrief: debriefGate, rewrites })
     record.arms.push(armResult)
     if (latch.voided()) {
       end("void", `${arm.label}: a request named ${named(latch.voided()!)}`)
@@ -315,7 +318,8 @@ export function summarizeSessions(records: SessionRecord[], spent: Cost, stopped
   const lines = records.map((r) => {
     const passed = r.arms.filter((arm) => arm.passed).length
     const usage = r.calls.reduce((sum, call) => ({ input: sum.input + (call.usage?.input_tokens ?? 0), output: sum.output + (call.usage?.output_tokens ?? 0) }), { input: 0, output: 0 })
-    return `${r.id} ${r.status} ouro-first=${r.ouroFirst ? "yes" : "no"} jobs-passed=${passed}/${r.arms.length} calls=${r.calls.length} tokens-in=${usage.input} tokens-out=${usage.output} credits=${r.spent.credits.toFixed(3)} premium=${r.spent.premium}`
+    const rewrites = r.arms.map((arm) => `${arm.arm}:${Object.entries(arm.rewrites).map(([tier, n]) => `${tier} ${n}`).join(",") || "none"}`).join(";")
+    return `${r.id} ${r.status} ouro-first=${r.ouroFirst ? "yes" : "no"} jobs-passed=${passed}/${r.arms.length} calls=${r.calls.length} tokens-in=${usage.input} tokens-out=${usage.output} credits=${r.spent.credits.toFixed(3)} premium=${r.spent.premium}${rewrites ? ` rewrites=${rewrites}` : ""}`
   })
   return [...lines, `spent: ${spent.credits.toFixed(3)} credits, ${spent.premium} premium requests${stopped ? `; stopped: ${stopped}` : ""}`].join("\n")
 }

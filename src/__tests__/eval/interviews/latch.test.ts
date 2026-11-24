@@ -148,8 +148,10 @@ describe("the guarded runtime", () => {
     })
     inner.resetTurnState = (messages) => { resets.push(messages) }
     const logged: string[] = []
-    const replacements = [{ pattern: /ouro/gi, with: "agent" }]
-    const guarded = guardedRuntime({ inner, latch, ledger, pricing, gateFor: () => gate, log: (entry) => logged.push(entry.body), replacements })
+    const lines: unknown[] = []
+    const replacements = [{ pattern: /ouro/gi, with: "agent", tier: "word" }]
+    const rewrites = { path: 1 }
+    const guarded = guardedRuntime({ inner, latch, ledger, pricing, gateFor: () => gate, log: (entry) => { logged.push(entry.body); lines.push(entry) }, replacements, rewrites })
     const own: ProviderTurnRequest = {
       ...request("list /home/ouro"), systemPrompt: { stable: "You are Ouro.", volatile: "" },
       activeTools: [{ type: "function", function: { name: "ouro_shell", description: "Ouro's shell" } }],
@@ -165,6 +167,9 @@ describe("the guarded runtime", () => {
     // The harness's request is its own, and the model's call comes back under the harness's tool name.
     expect(own.messages).toEqual([{ role: "user", content: "list /home/ouro" }])
     expect(result.toolCalls).toEqual([{ id: "c1", name: "ouro_shell", arguments: "{\"cmd\":\"ls /home/agent\"}" }])
+    // The request's matches, by tier, are on its log line and added to the arm's running count.
+    expect(lines[0]).toMatchObject({ kind: "job", sent: true, rewrites: { word: 4 } })
+    expect(rewrites).toStrictEqual({ path: 1, word: 4 })
   })
 
   it("still voids a session whose rewritten request leaks a brand word the list missed", async () => {
@@ -177,7 +182,7 @@ describe("the guarded runtime", () => {
     expect(inner.sent).toBe(0)
     expect(latch.voided()).toEqual(["Claude"])
     // The log holds the rewritten body the scan read.
-    expect(logged).toEqual([{ kind: "job", sent: false, body: expect.stringContaining("agent, based on Claude") }])
+    expect(logged).toEqual([{ kind: "job", sent: false, body: expect.stringContaining("agent, based on Claude"), rewrites: { list: 1 } }])
   })
 
   it("scans the system prompt, tools, deferred tools and messages", () => {
