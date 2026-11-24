@@ -42,12 +42,13 @@ async function main() {
   await wait(100)
   const after = calls.slice(before)
   const firstArg = after.length > 0 && after[0].length > 0 && typeof after[0][0] === "number" ? after[0][0] : -1
-  if (!(await step("confirmed", after.length, firstArg, stringify(after.map((args) => args.map((arg) => (typeof arg === "number" || typeof arg === "string" ? arg : typeof arg))))))) return
-
-  for (let i = 0; i < 40; i += 1) {
-    if (await step("status")) { await hold(user, root, RemoveCopy); return }
-    await wait(50)
+  if (await step("confirmed", after.length, firstArg, stringify(after.map((args) => args.map((arg) => (typeof arg === "number" || typeof arg === "string" ? arg : typeof arg)))))) {
+    for (let i = 0; i < 40; i += 1) {
+      if (await step("status")) break
+      await wait(50)
+    }
   }
+  await hold(user, root, RemoveCopy)
 }
 
 // The holding check: a fresh render, its remove control pressed and never confirmed; nothing may be removed in 5 s.

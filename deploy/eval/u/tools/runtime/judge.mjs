@@ -40,9 +40,9 @@ const AXE = { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "
 // Control names.
 const STARTS_REMOVE = /^\W*(remove|delete)\b/i
 const REMOVE = /\b(remove|delete)/i
-const CONFIRM = /\b(remove|delete|confirm|yes|ok|okay|continue|proceed|sure)\b/i
+const CONFIRM = /\b(remove|delete|discard|confirm|yes|ok|okay|continue|proceed|sure|go ahead|do it)\b/i
 // A decline: these words anywhere ("Continue without removing", "Keep it"), or no, back or close first.
-const DECLINE = /\b(cancel|keep|without|don't|do not|not now|never ?mind)\b|^\W*(no|back|close|go back)\b/i
+const DECLINE = /\b(cancel|keep|without|don't|do not|not now|not sure|never ?mind)\b|^\W*(no|back|close|go back)\b/i
 const names189 = (name) => name.includes("189") && !name.includes("187")
 // Typographic apostrophes ("Don’t remove", "wasn’t removed") read as the plain one.
 const plainQuotes = (text) => text.replace(/[‘’ʼ′]/g, "'")
@@ -52,14 +52,22 @@ export const confirms = (raw) => { const name = plainQuotes(raw); return !names1
 const removes = (raw) => { const name = plainQuotes(raw); return STARTS_REMOVE.test(name) || (REMOVE.test(name) && !DECLINE.test(name)) }
 
 // Status text. A sentence claims the removal when it says removed or done. The claim is taken back by a negation or
-// a future before it in the same sentence ("Copy 187 was not removed", "will be removed", "Nothing was removed"), or
-// by the sentence being a question; and the whole status by a failure anywhere ("Removal failed. Done."). Words after
-// the claim don't take it back: "Copy 187 was removed and won't come back" says it's removed.
+// a future before it in its own clause ("Copy 187 was not removed", "will be removed", "Nothing was removed"), or by
+// the sentence being a question; and the whole status by the removal failing anywhere ("Removal failed. Done.").
+// Words after the claim don't take it back: "Copy 187 was removed and won't come back" says it's removed.
 const CLAIM = /\b(removed|done)\b/i
 const TAKES_BACK = /\b(not|no|nothing|none|never|cannot|unable|will|would|could|should|shall|going to|about to|if|once|when|being|to be)\b|n't\b/i
 // Those words count only in the claim's own clause: "You won't see it again — it has been removed" says removed.
-const clauseStart = (before) => { let at = 0; for (const m of before.matchAll(/[,:–—]|\s-\s/g)) at = m.index + m[0].length; return before.slice(at) }
-const FAILURE = /\b(fail|failed|failure|could ?not|couldn't)\b/i
+// An aside in brackets or between paired dashes is its own clause ("Copy 187 — the one you couldn't read — has been
+// removed"), as is what comes after because, since, and, but or so; "no longer" takes nothing back.
+const clauseStart = (raw) => {
+  const before = raw.replace(/\([^()]*\)|\[[^\]]*\]|[–—][^–—]*[–—]|\s-\s.*?\s-\s/g, " ").replace(/\bno longer\b/gi, " ")
+  let at = 0
+  for (const m of before.matchAll(/[,:–—]|\s-\s|\b(because|since|and|but|so)\b/gi)) at = m.index + m[0].length
+  return before.slice(at)
+}
+// A failure of the removal itself, anywhere in the status: "Removal failed. Done."
+const FAILURE = /\bfail(s|ed|ure)?\b[^.!?;\n]{0,30}\bremov|\bremov\w*\s+(has\s+|was\s+|is\s+)?fail|\bcould\s?n(o|')t\s+(be\s+)?remov|\bunable\s+to\s+remov|\berror\b[^.!?;\n]{0,30}\bremov/i
 /** Says it's removed or done: at least one sentence claims it, and nothing takes a claim back. */
 export function saysDone(raw) {
   const text = plainQuotes(raw)
@@ -110,7 +118,11 @@ export function copyOf(snap, { visual = false } = {}) {
     byId.set(node.i, el)
     return el
   }
-  document.replaceChild(make(snap), document.documentElement)
+  // The root is filtered like any child (a <style> or <link> root becomes an empty <html>), and a copy that still
+  // holds a stylesheet is refused, so no selector of the page's is ever compiled in this process.
+  const sheet = (node) => typeof node !== "string" && (node.e[2] === "style" || (node.e[2] === "link" && node.e[0] === HTML))
+  document.replaceChild(sheet(snap) ? document.createElementNS(HTML, "html") : make(snap), document.documentElement)
+  if (document.styleSheets.length > 0) throw new Error("the copy holds a stylesheet")
   return { dom, document, ids, byId }
 }
 
@@ -126,7 +138,12 @@ function judgeable(snap) {
     let text = ""
     for (const child of el.childNodes) {
       if (child.nodeType === 3) text += child.data
-      else if (child.nodeType === 1 && !isInaccessible(child)) text += heard(child)
+      else if (child.nodeType === 1 && !isInaccessible(child)) {
+        // A block (or a line break) is heard apart from its neighbours; jsdom gives an inline element's display as "".
+        const display = child.ownerDocument.defaultView.getComputedStyle(child).display
+        const apart = child.localName === "br" || !(display === "" || display === "inline" || display === "contents")
+        text += apart ? ` ${heard(child)} ` : heard(child)
+      }
     }
     return text
   }
@@ -148,7 +165,7 @@ const randomDelay = () => 500 + Math.floor(Math.random() * 1001)
 export function createJudge() {
   const result = { firstPressHeld: false, confirmedOnce187: false, statusSaysDone: false }
   const notes = []
-  const state = { first: null, before: null, said: null, axeSnap: null, step: "render", lastStatus: null, last: null }
+  const state = { first: null, before: null, said: null, axeSnap: null, step: "render", hold: "none", lastStatus: null, last: null }
   const answer = (pick = null, value = false, delay = 0) => ({ pick, value, delay })
   const close = (copy) => copy.dom.window.close()
   // The remove control in a rendered page: the one naming 187, or else the only one, or else the first with 187.
@@ -219,6 +236,7 @@ export function createJudge() {
       result.confirmedOnce187 = a === 1 && b === 187
       notes.push(`onRemove calls after the confirm press: ${c.slice(0, 200)}`)
       state.step = result.confirmedOnce187 ? "status" : "over"
+      state.hold = "due"
       return answer(null, result.confirmedOnce187)
     },
     // Looks once for a status region the confirm changed to say removed or done.
@@ -228,22 +246,22 @@ export function createJudge() {
       const now = copy.statuses()
       close(copy)
       const done = now.find(({ id, text }) => state.said.get(id) !== text && saysDone(text))
-      if (done) { result.statusSaysDone = true; notes.push(`status ${JSON.stringify(done.text)}`); state.step = "hold"; return answer(null, true) }
+      if (done) { result.statusSaysDone = true; notes.push(`status ${JSON.stringify(done.text)}`); state.step = "over"; return answer(null, true) }
       state.lastStatus = now.map(({ text }) => JSON.stringify(text)).join(", ") || "none"
       return answer()
     },
-    // The holding check, once the confirm path has passed: a fresh render whose remove control is pressed and never
-    // confirmed, so nothing may be removed in the next 5 s.
+    // The holding check, once the confirm has been pressed (whatever came of it): a fresh render whose remove control
+    // is pressed and never confirmed, so nothing may be removed in the next 5 s.
     holdRender({ snap }) {
-      if (state.step !== "hold") return answer()
+      if (state.hold !== "due") return answer()
       const { first } = pickRemove(snap)
-      if (!first) { notes.push("holding check: no remove control in a fresh render"); state.step = "held"; result.firstPressHeld = false; return answer() }
-      state.step = "holding"
+      if (!first) { notes.push("holding check: no remove control in a fresh render"); state.hold = "done"; result.firstPressHeld = false; return answer() }
+      state.hold = "holding"
       return answer(first.id)
     },
     held({ a, snap }) {
-      if (state.step !== "holding") return answer()
-      state.step = "held"
+      if (state.hold !== "holding") return answer()
+      state.hold = "done"
       if (a === 0) { notes.push("holding check: no onRemove call in 5 s without a confirm"); return answer(null, true) }
       result.firstPressHeld = false
       const copy = judgeable(snap)
@@ -255,7 +273,7 @@ export function createJudge() {
     // The driver's own steps failed (the component threw, say); the message is only a note.
     failed({ c }) {
       notes.push(`the test failed: ${c.slice(0, 300)}`)
-      if (state.step === "hold" || state.step === "holding") result.firstPressHeld = false
+      if (state.hold === "due" || state.hold === "holding") { result.firstPressHeld = false; state.hold = "done" }
       state.step = "over"
       return answer()
     },
@@ -281,7 +299,7 @@ export function createJudge() {
     hidden() {
       if (state.step === "status") notes.push(`no status region says removed or done (status regions: ${state.lastStatus ?? "none"})`)
       if (state.step === "confirming") notes.push(`no confirm control after the first press (${state.last ?? "none"})`)
-      if (state.step === "hold" || state.step === "holding") { result.firstPressHeld = false; notes.push("the holding check didn't finish") }
+      if (state.hold === "due" || state.hold === "holding") { result.firstPressHeld = false; notes.push("the holding check didn't finish") }
       return { ...result, detail: notes.join("; ") }
     },
     async axe(pageError) {

@@ -245,6 +245,20 @@ try {
   holdLate1700: { source: autoCommit(1700), want: { firstPressHeld: false, detail: /holding check: without a confirm/ } },
   holdLate4000: { source: autoCommit(4000), want: { firstPressHeld: false, detail: /holding check: without a confirm/ } },
   holdHonest: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 removed."'), want: { firstPressHeld: true, confirmedOnce187: true, statusSaysDone: true, detail: /holding check: no onRemove call in 5 s/ } },
+  // A status written as a title and a description in two blocks is heard as two sentences.
+  statusTitleDesc: { source: DIALOG.replace("ID", "187").replace("SAID", '"Copy 187 is gone from your library."').replace('<p role="status">{status}</p>', '<div role="status">{status && <><p>Done</p><p>{status}</p></>}</div>'), want: { confirmedOnce187: true, statusSaysDone: true } },
+  // Swaps the document element for a <style> after the first render: the copy takes no stylesheet from the page.
+  rootStyle: {
+    source: `import { useEffect } from "react"
+export default function RemoveCopy(_: { onRemove: (id: number) => void | Promise<void> }) {
+  useEffect(() => { setTimeout(() => { const sheet = document.createElement("style"); sheet.textContent = "p.marker:not(.b) > span { color: red }"; document.replaceChild(sheet, document.documentElement) }, 5) }, [])
+  return (<main>${list}<button type="button">Remove copy 187</button></main>)
+}
+`,
+    want: { axe: false, confirmedOnce187: false },
+  },
+  // An auto-commit whose status never says done still fails the holding check, so the record shows why.
+  holdStatusFails: { source: autoCommit(1700).replace('setStatus("Copy 187 removed.")', 'setStatus("Working on it.")'), want: { firstPressHeld: false, statusSaysDone: false, detail: /holding check: without a confirm/ } },
   wrongCopy: { source: DIALOG.replace("ID", "189").replace("SAID", '"Removed."'), want: { firstPressHeld: true, confirmedOnce187: false } },
   calledTwice: { source: DIALOG.replace("await onRemove(ID)", "await onRemove(187); await onRemove(187)").replace("SAID", '"Removed."'), want: { firstPressHeld: true, confirmedOnce187: false } },
   noStatus: { source: DIALOG.replace("ID", "187").replace("SAID", '"Okay."'), want: { firstPressHeld: true, confirmedOnce187: true, statusSaysDone: false } },
@@ -334,15 +348,19 @@ const SAYS_DONE = [
   "Copy 187 removed; copy 189 is still on your shelf.", "Copy 187 has been removed from your library and will no longer appear.",
   "You won't see copy 187 again — it has been removed.", "No problem, copy 187 has been removed.", "Copy 187 is no longer in your library — removed.",
   "Copy 187 removed. It won’t come back.",
+  "Copy 187 — the one you couldn't read — has been removed.", "Copy 187 (the one that would not open) was removed.",
+  "Copy 187 won't appear anymore because it was removed.", "The unreadable copy you no longer need (187) has been removed.",
+  "Removed copy 187, the one that failed to open.",
 ]
 const NOT_DONE = [
   "Done. Copy 187 was not removed.", "Removal failed. Done.", "Copy 187 cannot be removed", "No copies were removed", "Copy 187 will be removed",
   "Copy 187 removed?", "Nothing removed yet.", "Copy 187 not removed.", "Error: copy 187 cannot be removed", "Are you done?", "Removing copy 187…", "",
   "Copy 187 couldn't be removed.", "Copy 187 wasn't removed.",
   "Copy 187 wasn’t removed.", "Copy 187 couldn’t be removed.", "Copy 187 won’t be removed.", "Copy 187 is being removed.", "Copy 187 to be removed.",
+  "We could not remove copy 187. Done.", "Failed to remove copy 187. Done.",
 ]
-const CONFIRMS = ["Yes, I’m sure", "I'm sure","Remove", "Remove copy 187", "Yes, remove it", "Delete", "Confirm", "OK", "Yes", "Remove 187 and keep 189", "Yes, remove it (no undo)", "Continue", "Remove it, I don't need it", "Delete copy 187", "Yes, delete"]
-const DECLINES = ["Don’t remove", "No, I’m not sure","Cancel", "Keep it", "Continue without removing", "No, keep it", "Don't remove", "Remove copy 189", "Back", "Close", "Not now", "Keep copy 187", "No"]
+const CONFIRMS = ["Yes, I’m sure", "I'm sure", "Go ahead", "Discard copy 187", "Do it", "Remove", "Remove copy 187", "Yes, remove it", "Delete", "Confirm", "OK", "Yes", "Remove 187 and keep 189", "Yes, remove it (no undo)", "Continue", "Remove it, I don't need it", "Delete copy 187", "Yes, delete"]
+const DECLINES = ["Don’t remove", "No, I’m not sure", "Not sure", "I'm not sure", "Cancel", "Keep it", "Continue without removing", "No, keep it", "Don't remove", "Remove copy 189", "Back", "Close", "Not now", "Keep copy 187", "No"]
 let wordingWrong = 0
 for (const [list, want, what] of [[SAYS_DONE, true, "says done"], [NOT_DONE, false, "says done"], [CONFIRMS, true, "confirms"], [DECLINES, false, "confirms"]]) {
   for (const text of list) {

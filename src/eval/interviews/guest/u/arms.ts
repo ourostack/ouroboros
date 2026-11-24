@@ -38,7 +38,9 @@ export const COMPONENT = "src/RemoveCopy.tsx"
 /** The longest answer one file read gives, in characters; a longer file is cut with a note saying where to read on. */
 export const READ_LIMIT = 60_000
 /** How long one check run may take. */
-export const CHECK_TIMEOUT_MS = 120_000
+// A grade runs the scan, the hidden test (its holding check alone waits 5 s; a page run may take up to 75 s) and,
+// for a flagged run, the hidden test again.
+export const CHECK_TIMEOUT_MS = 240_000
 
 export type Exec = (file: string, args: string[], options: { cwd: string; timeoutMs: number }) => Promise<{ code: number; stdout: string; stderr: string }>
 

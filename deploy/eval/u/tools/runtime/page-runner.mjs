@@ -244,7 +244,7 @@ async function run() {
     if (Object.hasOwn(window, "__u_report") || Object.hasOwn(window, "__u_step")) return { error: "the driver didn't take its hooks" }
     const started = Date.now()
     while (!finished && !tampered) {
-      if (Date.now() - started > 30_000) return { error: `the page gave no result in 30s${errors.length ? `: ${errors[0]}` : ""}` }
+      if (Date.now() - started > 50_000) return { error: `the page gave no result in 50s${errors.length ? `: ${errors[0]}` : ""}` }
       await new Promise((resolve) => setTimeout(resolve, 20))
     }
     if (tampered) return { error: `tampered: ${tampered}` }

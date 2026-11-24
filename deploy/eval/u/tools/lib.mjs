@@ -175,7 +175,7 @@ export async function bundle(project, driver) {
  * from the plain-data snapshots the runner sends at each of the driver's steps (runtime/judge.mjs). Nothing the page
  * sends is run, and the verdict is never the page's to give.
  */
-export async function runPage({ code }, { mode = "hidden", timeoutMs = 60_000 } = {}) {
+export async function runPage({ code }, { mode = "hidden", timeoutMs = 75_000 } = {}) {
   const judge = createJudge()
   const runner = path.join(HERE, "runtime", "page-runner.mjs")
   const args = ["--disallow-code-generation-from-strings", "--permission", `--allow-fs-read=${path.join(HERE, "runtime")}${path.sep}`, `--allow-fs-read=${path.join(HERE, "node_modules")}${path.sep}`, runner]
