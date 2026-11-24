@@ -58,6 +58,11 @@ describe("build script", () => {
       },
       {
         command: "/node",
+        args: ["/repo/scripts/copy-action-doors.cjs", "/repo"],
+        options: { cwd: "/repo", stdio: "inherit" },
+      },
+      {
+        command: "/node",
         args: ["/repo/scripts/sanctuary-health-acceptance-probe-entry-smoke.cjs"],
         options: { cwd: "/repo", stdio: "inherit" },
       },
@@ -66,11 +71,11 @@ describe("build script", () => {
   })
 
   it("stops at the first failing step instead of running the rest", () => {
-    const { calls, deps, stderr } = makeDeps([0, 0, 0, 5])
+    const { calls, deps, stderr } = makeDeps([0, 0, 0, 0, 5])
 
     expect(runBuildCli([], deps)).toBe(5)
 
-    expect(calls).toHaveLength(4)
+    expect(calls).toHaveLength(5)
     expect(stderr.join("")).toContain("build failed during smoke Sanctuary health acceptance probe entry with exit code 5")
   })
 
@@ -89,16 +94,17 @@ describe("build script", () => {
     expect(parseArgs(["/elsewhere"])).toEqual({ repoRoot: "/elsewhere" })
     expect(runBuildCli(["/elsewhere"], deps)).toBe(0)
 
-    expect(calls.map((call) => call.options.cwd)).toEqual(["/elsewhere", "/elsewhere", "/elsewhere", "/elsewhere"])
+    expect(calls.map((call) => call.options.cwd)).toEqual(["/elsewhere", "/elsewhere", "/elsewhere", "/elsewhere", "/elsewhere"])
   })
 
-  it("defines only the Desk, clean, compile and smoke steps", () => {
+  it("defines only the Desk, clean, compile, door copy and smoke steps", () => {
     const { deps } = makeDeps()
 
     expect(buildSteps("/repo", deps).map((step: { label: string }) => step.label)).toEqual([
       "vendor the pinned Desk release",
       "clean dist",
       "compile TypeScript",
+      "copy the generated action doors into dist",
       "smoke Sanctuary health acceptance probe entry",
     ])
   })

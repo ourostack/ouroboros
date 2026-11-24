@@ -1,0 +1,46 @@
+{
+  "generator": "ouro-actions 1.12.0",
+  "set": "mailbox",
+  "tools": [
+    {
+      "name": "mailbox_list",
+      "title": "Letters",
+      "description": "List the letters this agent has filed for its person that are still waiting for an answer, oldest first. Read only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "description": "done, when the pile was read."
+          },
+          "count": {
+            "type": "integer",
+            "description": "How many letters wait for an answer."
+          },
+          "listing": {
+            "type": "string",
+            "description": "One waiting letter per line, oldest first: code, state, age and subject; empty when none wait."
+          }
+        },
+        "required": [
+          "outcome",
+          "count",
+          "listing"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "refusals": {}
+}

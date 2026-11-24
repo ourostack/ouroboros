@@ -1,0 +1,41 @@
+{
+  "generator": "ouro-actions 1.12.0",
+  "set": "mailbox",
+  "tool": "ouro",
+  "actions": [
+    {
+      "id": "mailbox_list",
+      "consent": "read",
+      "label": "Letters",
+      "description": "List the letters waiting for you.",
+      "agent": "List the letters this agent has filed for its person that are still waiting for an answer, oldest first. Read only.",
+      "when": "Pick this to see which letters still wait for the person's answer before filing another; it only reads.",
+      "errors": [
+        {
+          "code": "unknown-input",
+          "means": "The call passed an input mailbox_list doesn't take; the text names it.",
+          "fix": "Call it again with no input; it takes none."
+        }
+      ],
+      "input": {},
+      "output": {
+        "outcome": {
+          "label": "Outcome",
+          "description": "done, when the pile was read.",
+          "kind": "string"
+        },
+        "count": {
+          "label": "Waiting",
+          "description": "How many letters wait for an answer.",
+          "kind": "integer"
+        },
+        "listing": {
+          "label": "Letters",
+          "description": "One waiting letter per line, oldest first: code, state, age and subject; empty when none wait.",
+          "kind": "string"
+        }
+      },
+      "cli": "mailbox list"
+    }
+  ]
+}
