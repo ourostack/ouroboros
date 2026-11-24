@@ -26,7 +26,7 @@ const sentence = (text: string, by: string): Replacement => ({ pattern: new RegE
 
 /** The container's real home and bundle, as every arm shows them; the H guest links both. */
 const PATHS: readonly Replacement[] = [
-  { pattern: /\/home\/ouro\b/g, with: "/tmp/agent", tier: "path" },
+  { pattern: /\/home\/ouro(?![\w.-])/g, with: "/tmp/agent", tier: "path" },
   { pattern: /\bsanctuary\.ouro\b/g, with: "sanctuary.agent", tier: "path" },
 ]
 
@@ -65,8 +65,12 @@ export const H_REPLACEMENTS: Readonly<Record<string, readonly Replacement[]>> = 
   openhands: OPENHANDS,
 }
 
+/** The folder openhands' terminal reports after a command, the last such line in its result. */
+const REPORTED_FOLDER = /\[Current working directory: ([^\]\n]+)\]/g
+const reportedFolder = (result: string): string | undefined => [...result.matchAll(REPORTED_FOLDER)].at(-1)?.[1]
+
 /** A shell call's command and folder, from the arm's own arguments; null when they aren't readable. */
-function shellArgs(arm: string, name: string, args: string): { command: string; cwd?: string } | null {
+function shellArgs(arm: string, name: string, args: string, folder: string | undefined): { command: string; cwd?: string } | null {
   const tool = arm === "codex" ? "exec_command" : arm === "openhands" ? "terminal" : null
   if (name !== tool) return null
   let value: unknown
@@ -79,17 +83,21 @@ function shellArgs(arm: string, name: string, args: string): { command: string; 
   const fields = value as Record<string, unknown>
   const command = arm === "codex" ? fields.cmd : fields.command
   if (typeof command !== "string") return null
-  // codex names the call's folder; openhands' tmux keeps the folder between calls, so it has none to give.
-  return arm === "codex" && typeof fields.workdir === "string" ? { command, cwd: fields.workdir } : { command }
+  // codex names the call's folder. openhands' tmux keeps the folder between calls, so a call starts where the terminal
+  // reported it was after the call before; the first starts in the workdir, the bundle.
+  const cwd = arm === "codex" ? (typeof fields.workdir === "string" ? fields.workdir : undefined) : folder
+  return cwd === undefined ? { command } : { command, cwd }
 }
 
 /** codex's exec_command and openhands' terminal as the `shell` calls the books cases' assertions read. */
 export function canonicalH(arm: string, obs: Observation): Observation {
   let mapped = 0
+  let folder: string | undefined
   const timeline = obs.timeline.map((entry): TraceCall | typeof entry => {
     if (entry.kind !== "call") return entry
-    const shell = shellArgs(arm, entry.name, entry.args)
+    const shell = shellArgs(arm, entry.name, entry.args, folder)
     if (!shell) return entry
+    if (arm === "openhands") folder = reportedFolder(entry.result) ?? folder
     mapped += 1
     return { ...entry, name: "shell", args: JSON.stringify(shell) }
   })

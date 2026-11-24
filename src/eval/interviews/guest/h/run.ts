@@ -32,18 +32,26 @@ export type HTurnFile = {
 export type HArmRunner = (input: { turn: HTurnFile; bundle: string; providerRuntime: ProviderRuntime }) => Promise<unknown>
 
 /**
- * The neutral paths the H kit's lists show the model, made to exist in the ouro arm as they do in the others: the
- * bundle's neutral name beside it (`sanctuary.agent` → `sanctuary.ouro`), and the neutral home (`/tmp/agent`) as a
- * link to the real one, so `/tmp/agent/AgentBundles/sanctuary.agent` is the bundle. Both folders are the container's
- * writable tmpfs. Links that are already there are kept.
+ * The neutral paths the H kit's lists show the model, made to exist in the ouro arm as they do in the others: a real
+ * neutral home (`/tmp/agent`, on the container's writable /tmp) with the bundle linked at
+ * `AgentBundles/sanctuary.agent`, and a link for each other entry the real home has now. The bundles folder beside the
+ * real bundle is the mount point Docker made, which the container's user can't write, so no link goes there. Entries
+ * that are already there are kept.
  */
 export function linkNeutralPaths(bundle: string, neutral: string): void {
   const bundles = path.dirname(bundle)
-  const named = path.join(bundles, path.basename(bundle).replace(/\.ouro$/, ".agent"))
+  const home = path.dirname(bundles)
   const exists = (file: string): boolean => { try { fs.lstatSync(file); return true } catch { return false } }
-  if (!exists(named)) fs.symlinkSync(path.basename(bundle), named)
-  if (!exists(neutral)) fs.symlinkSync(path.dirname(bundles), neutral)
-  emitNervesEvent({ component: "eval", event: "eval.h_neutral_links", message: "linked the ouro arm's neutral paths", meta: { neutral } })
+  const named = path.join(neutral, path.basename(bundles), path.basename(bundle).replace(/\.ouro$/, ".agent"))
+  fs.mkdirSync(path.dirname(named), { recursive: true })
+  if (!exists(named)) fs.symlinkSync(bundle, named)
+  let linked = 0
+  for (const entry of fs.readdirSync(home)) {
+    if (entry === path.basename(bundles) || exists(path.join(neutral, entry))) continue
+    fs.symlinkSync(path.join(home, entry), path.join(neutral, entry))
+    linked += 1
+  }
+  emitNervesEvent({ component: "eval", event: "eval.h_neutral_links", message: "linked the ouro arm's neutral paths", meta: { neutral, linked } })
 }
 
 /**

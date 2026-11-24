@@ -9,7 +9,8 @@ export const H_OURO_FIDELITY: readonly string[] = [
   "no provider retries, as in every arm: each error from the host's runtime is marked not retryable, so a retry is never a second metered call",
   "offers web_search and fetch_url, which fail in the sandbox (no route off the host); the other arms don't offer web search at all, since their hosted search tools can't reach the host's runtime",
   "the bundle sits at its production path, where the turn reads it; the arm's list shows the model that path, and /home/ouro, as the other arms' neutral ones (/tmp/agent/AgentBundles/sanctuary.agent), which the guest links to the real ones",
-  "every arm's list rewrites the container's user name (ouro) and real paths in what the model sees, tool results included, so a rewritten name that is no path (the user agent, AGENT_HOME, ~/.agent) finds nothing when the model types it; model names are in no list, so the host's scan voids a session that shows one",
+  "every arm's list rewrites the container's user name (ouro) and real paths in what the model sees, tool results included, so a rewritten name that is no path (the user agent, AGENT_HOME, ~/.agent) finds nothing when the model types it, nor does an id or file name with a brand word inside it; model names are in no list, so the host's scan voids a session that shows one",
+  "the neutral home is a real folder under /tmp in every arm, with the bundle linked at /tmp/agent/AgentBundles/sanctuary.agent; in the ouro arm, the real home's entries are linked into it when the arm starts, and one the turn makes later is not",
   "skills aren't listed in the prompt: a skill reaches the model only when the agent reads its file, while the other arms list each skill's name and when-line",
 ]
 
@@ -30,6 +31,7 @@ export const H_CODEX_FIDELITY: readonly string[] = [
   "what the shell shows of the brand (the CODEX_HOME variable, codex's own name in output) is rewritten to AGENT_HOME and agent in tool results; codex adds no helper folder to PATH, since it refuses to create one under /tmp",
   "codex runs from a neutral home under /tmp (the agent container is read-only elsewhere), with the bundle linked at /tmp/agent/AgentBundles/sanctuary.agent",
   "the whole conversation is killed at 540 seconds, inside the host's 600-second guest deadline",
+  "the books checks read each exec_command as a shell call in its workdir; a command typed into an open session through write_stdin is not read as one",
   "built from source at the pinned commit for x86_64 gnu, not codex's released musl build, without the release's version stamp",
 ]
 
@@ -47,5 +49,6 @@ export const H_OPENHANDS_FIDELITY: readonly string[] = [
   "what the shell shows of the brand (the tmux socket and session names in TMUX, the ~/.openhands folder) is rewritten to agent in tool results; the LITELLM_LOCAL_MODEL_COST_MAP variable has no brand word. AI_AGENT is set to a neutral name, where the SDK would set its own",
   "the SDK runs on the uv-managed Python 3.13 and uv 0.13.7 its own agent-server image uses, with bytecode compiled at build time because the image is read-only when the arm runs",
   "runs from a neutral home under /tmp (the agent container is read-only elsewhere), with the bundle linked at /tmp/agent/AgentBundles/sanctuary.agent",
+  "the books checks read each terminal call as a shell call in the folder the terminal reported after the call before (tmux keeps the folder between calls); the first starts in the workdir",
   "the supervisor process, and with it the whole conversation, is killed at 540 seconds, inside the host's 600-second guest deadline",
 ]

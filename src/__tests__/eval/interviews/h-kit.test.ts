@@ -72,6 +72,8 @@ describe("the H kit's replacement lists", () => {
     expect(replace("CODEX_HOME=/tmp/agent/.state codex: error", listOf("codex"))).toBe("AGENT_HOME=/tmp/agent/.state agent: error")
     expect(replace("TMUX=/tmp/tmux-10001/openhands-1a2b,77,0 ~/.openhands all-hands", listOf("openhands"))).toBe("TMUX=/tmp/tmux-10001/agent-1a2b,77,0 ~/.agent agent")
     expect(replace("an Ouroboros harness", listOf("ouro"))).toBe("an agent harness")
+    // The home path is rewritten only as a whole folder name.
+    expect(replace("/home/ouro /home/ouro/x /home/ouro.bak", listOf("codex"))).toBe("/tmp/agent /tmp/agent/x /home/agent.bak")
     // Model names are in no list, so the scan still voids a session that shows one.
     for (const arm of ["ouro", "codex", "openhands"]) expect(brandHits(replace("claude gpt minimax openai anthropic", listOf(arm)))).toHaveLength(5)
   })
@@ -113,6 +115,26 @@ describe("the H kit", () => {
     expect(H_KIT.canonical("ouro", obs("shell", { command: "ls" })).timeline[0]).toMatchObject({ name: "shell", args: JSON.stringify({ command: "ls" }) })
   })
 
+  it("gives each openhands terminal call the folder the terminal reported after the one before, since tmux keeps it", () => {
+    const call = (command: string, result: string) => ({ kind: "call", name: "terminal", args: JSON.stringify({ command }), result })
+    const timeline = [
+      call("cd work", "\n[The command completed with exit code 0.]\n[Current working directory: /tmp/agent/AgentBundles/sanctuary.agent/work]"),
+      { kind: "call", name: "file_editor", args: "{}", result: "[Current working directory: /elsewhere]" },
+      call("books send x.epub", "sent\n[Current working directory: /a]\n[Current working directory: /tmp/agent/AgentBundles/sanctuary.agent/work]"),
+      call("ls", "no folder line"),
+      call("pwd", ""),
+    ]
+    const args = H_KIT.canonical("openhands", { timeline } as unknown as Observation).timeline.map((entry) => (entry as { args: string }).args)
+    expect(args).toStrictEqual([
+      JSON.stringify({ command: "cd work" }),
+      "{}",
+      JSON.stringify({ command: "books send x.epub", cwd: "/tmp/agent/AgentBundles/sanctuary.agent/work" }),
+      JSON.stringify({ command: "ls", cwd: "/tmp/agent/AgentBundles/sanctuary.agent/work" }),
+      // A result with no folder line keeps the folder known before it.
+      JSON.stringify({ command: "pwd", cwd: "/tmp/agent/AgentBundles/sanctuary.agent/work" }),
+    ])
+  })
+
   it("carries the fidelity notes for every arm", () => {
     expect(Object.keys(H_KIT.fidelity!)).toStrictEqual(["H:ouro", "H:codex", "H:openhands"])
   })
@@ -122,22 +144,31 @@ describe("the neutral paths in the ouro arm", () => {
   const made: string[] = []
   afterEach(() => { for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
 
-  it("links the neutral home to the real one and the neutral bundle name to the real bundle, once", () => {
+  it("makes the neutral home as the other arms have it, the bundle linked under it, and links the home's own entries, once", () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "h-links-")))
     made.push(root)
     const home = path.join(root, "home")
     const bundle = path.join(home, "AgentBundles", "sanctuary.ouro")
     fs.mkdirSync(bundle, { recursive: true })
     fs.writeFileSync(path.join(bundle, "agent.json"), "{}")
+    fs.mkdirSync(path.join(home, ".cache"))
+    // The bundles folder is the mount point Docker made, which the container's user can't write.
+    fs.chmodSync(path.join(home, "AgentBundles"), 0o555)
     const neutral = path.join(root, "tmp", "agent")
     fs.mkdirSync(path.dirname(neutral))
-    linkNeutralPaths(bundle, neutral)
-    linkNeutralPaths(bundle, neutral)
+    try {
+      linkNeutralPaths(bundle, neutral)
+      linkNeutralPaths(bundle, neutral)
+    } finally {
+      fs.chmodSync(path.join(home, "AgentBundles"), 0o755)
+    }
     const seen = path.join(neutral, "AgentBundles", "sanctuary.agent")
     expect(fs.readFileSync(path.join(seen, "agent.json"), "utf8")).toBe("{}")
     expect(fs.realpathSync(seen)).toBe(bundle)
-    expect(fs.readlinkSync(neutral)).toBe(home)
-    expect(fs.readlinkSync(path.join(home, "AgentBundles", "sanctuary.agent"))).toBe("sanctuary.ouro")
+    expect(fs.lstatSync(neutral).isDirectory()).toBe(true)
+    expect(fs.readlinkSync(path.join(neutral, ".cache"))).toBe(path.join(home, ".cache"))
+    expect(fs.readdirSync(neutral).sort()).toStrictEqual([".cache", "AgentBundles"])
+    expect(fs.readdirSync(path.join(home, "AgentBundles"))).toStrictEqual(["sanctuary.ouro"])
   })
 
   it("makes the links before the ouro arm's turn runs, in the bundle it was given", async () => {
