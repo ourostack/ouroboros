@@ -328,12 +328,6 @@ interface HabitRunReceipt {
     deniedTools: string[]
     warnings: string[]
   }
-  toolPolicy: {
-    requestedTools: string[] | null
-    grantedTools: string[]
-    deniedTools: string[]
-    outwardMessagingAllowed: boolean
-  }
   producedRefs: Array<{
     kind: "arc" | "desk_task" | "desk_record" | "claim" | "surface" | "none"
     locator: string
@@ -366,10 +360,16 @@ runtime state without loading the private session transcript.
 
 ## Habit Surfacing
 
+A habit runs with the agent's normal tools, the same as any of its turns, and
+draws on no paid-turn allowance of its own: its cadence is its pace. Only
+messaging outward is bounded, by the recipients below. When a habit cannot run
+(a broken definition, say), the agent hears about it once in its private runtime,
+and again only if the reason changes.
+
 Habits can surface by default to:
 
 - family;
-- the habit originator;
+- the habit originator, when the habit has one;
 - explicit recipients listed in the habit file.
 
 This is an allowed-recipient set, not a broadcast requirement. A habit should

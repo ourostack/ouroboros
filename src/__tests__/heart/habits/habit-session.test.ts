@@ -4,14 +4,13 @@ import * as os from "os"
 import * as path from "path"
 import { parseHabitFile, type HabitFile } from "../../../heart/habits/habit-parser"
 import type { FriendRecord, TrustLevel, FriendStore } from "@ouro.bot/friends"
-import type { ToolDefinition, ToolRiskProfile } from "../../../repertoire/tools-base"
 import {
   buildHabitRunReceipt,
   completeHabitRun,
   createHabitSessionPaths,
-  filterHabitToolsForEnvelope,
   isSafeHabitRunId,
   normalizeHabitPermissionEnvelope,
+  noteHabitRunBlocked,
   readLatestHabitSessionState,
   resolveHabitReturnRoute,
 } from "../../../heart/habits/habit-session"
@@ -31,7 +30,6 @@ function makeHabit(overrides: Partial<HabitFile> = {}): HabitFile {
     status: "active",
     lastRun: "2026-06-11T17:00:00.000Z",
     created: "2026-06-01T00:00:00.000Z",
-    tools: undefined,
     origin: null,
     surface: { family: true, originator: true, extra: [] },
     body: "Check in.",
@@ -62,24 +60,6 @@ function makeFriendStore(records: FriendRecord[]): FriendStore {
     delete: vi.fn(),
     findByExternalId: vi.fn(async () => null),
     listAll: vi.fn(async () => [...records]),
-  }
-}
-
-function makeTool(
-  name: string,
-  riskProfile?: ToolRiskProfile | ((args: Record<string, string>) => ToolRiskProfile),
-): ToolDefinition {
-  return {
-    tool: {
-      type: "function",
-      function: {
-        name,
-        description: name,
-        parameters: { type: "object", properties: {} },
-      },
-    },
-    handler: () => "ok",
-    ...(riskProfile ? { riskProfile } : {}),
   }
 }
 
@@ -197,17 +177,15 @@ describe("habit-session helpers", () => {
     expect(envelope.returnRoutes).toEqual([])
   })
 
-  it("records unresolved originator routes when origin is missing", async () => {
+  it("asks for no originator route and warns nothing when the habit has no origin", async () => {
     const envelope = await normalizeHabitPermissionEnvelope(makeHabit({
       origin: null,
       surface: { family: false, originator: true, extra: [] },
     }), { agentRoot })
 
     expect(envelope.canMessageOutward).toBe(false)
-    expect(envelope.returnRoutes).toEqual([
-      expect.objectContaining({ kind: "originator", recipient: "originator", status: "unresolved" }),
-    ])
-    expect(envelope.warnings.join("\n")).toContain("no origin")
+    expect(envelope.returnRoutes).toEqual([])
+    expect(envelope.warnings).toEqual([])
   })
 
   it("handles malformed originators and no-store exact extra routes", async () => {
@@ -513,61 +491,8 @@ describe("habit-session helpers", () => {
     })).resolves.toMatchObject({ allowed: true, routeKind: "originator", friendId: "ari", channel: "cli", key: "main" })
   })
 
-  it("filters habit tools with the supplied executable risk classifier and route envelope", async () => {
-    const envelope = await normalizeHabitPermissionEnvelope(makeHabit({
-      origin: null,
-      surface: { family: false, originator: false, extra: [] },
-    }), { agentRoot })
-    const shellRisk = vi.fn((args: Record<string, string>) =>
-      args.command?.startsWith("echo")
-        ? { mutates: "none", risk: "low" as const }
-        : { mutates: "external_side_effect" as const, risk: "high" as const, reason: "mutating shell command" })
-    const tools = [
-      makeTool("read_file", { mutates: "none", risk: "low" }),
-      makeTool("shell", shellRisk),
-      makeTool("graph_mutate", { mutates: "external_side_effect", risk: "high", reason: "mutates graph" }),
-      makeTool("send_message", { mutates: "external_side_effect", risk: "high", reason: "messages outward" }),
-      makeTool("surface", { mutates: ["durable_state_write", "external_side_effect"], risk: "high", reason: "surfaces outward" }),
-    ]
-
-    const policy = filterHabitToolsForEnvelope(tools, null, envelope, (definition) => {
-      if (typeof definition.riskProfile === "function") return definition.riskProfile({ command: "rm -rf /tmp/habit-policy-probe" })
-      return definition.riskProfile ?? { mutates: "none", risk: "low" }
-    })
-
-    expect(shellRisk).toHaveBeenCalled()
-    expect(policy.grantedTools).toEqual(["read_file"])
-    expect(policy.deniedTools).toEqual(expect.arrayContaining(["shell", "graph_mutate", "send_message", "surface"]))
-    expect(policy.outwardMessagingAllowed).toBe(false)
-  })
-
-  it("filters requested tools while preserving route-checked outward messaging exceptions", async () => {
-    const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
-    const tools = [
-      makeTool("read_file", { mutates: "none", risk: "low" }),
-      makeTool("send_message", { mutates: "external_side_effect", risk: "high", reason: "messages outward" }),
-      makeTool("shell", { mutates: "none", risk: "low" }),
-    ]
-
-    const policy = filterHabitToolsForEnvelope(tools, ["send_message"], envelope, (definition) =>
-      definition.riskProfile as ToolRiskProfile)
-
-    expect(policy).toMatchObject({
-      requestedTools: ["send_message"],
-      grantedTools: ["send_message"],
-      deniedTools: [],
-      outwardMessagingAllowed: true,
-    })
-  })
-
   it("builds complete schema v2 receipts without writing them", async () => {
     const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
-    const policy = {
-      requestedTools: null,
-      grantedTools: ["read_file"],
-      deniedTools: ["shell"],
-      outwardMessagingAllowed: true,
-    }
 
     const receipt = buildHabitRunReceipt({
       agentRoot,
@@ -578,7 +503,6 @@ describe("habit-session helpers", () => {
       endedAt: "2026-06-11T17:01:00.000Z",
       outcome: "surfaced",
       permissionEnvelope: envelope,
-      toolPolicy: policy,
       producedRefs: [{ kind: "surface", locator: "state/pending/ari/cli/main" }],
       surfaceAttempts: [{ recipient: "ari", channel: "cli", reason: "status", result: "delivered", routeKind: "family" }],
       errors: [],
@@ -595,7 +519,6 @@ describe("habit-session helpers", () => {
       receiptLocator: "arc/flight-recorder/habit-receipts/2026-06-11T17-00-00-000Z-heartbeat-abc123ef.json",
       nextRunAt: "2026-06-11T17:31:00.000Z",
       permissionEnvelope: envelope,
-      toolPolicy: policy,
       summarySnapshot: {
         summary: "Habit heartbeat surfaced via ari/cli.",
         decisions: [],
@@ -607,12 +530,6 @@ describe("habit-session helpers", () => {
 
   it("completes habit runs through the habit-session helper before advancing runtime state", async () => {
     const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
-    const policy = {
-      requestedTools: null,
-      grantedTools: ["desk"],
-      deniedTools: [],
-      outwardMessagingAllowed: true,
-    }
 
     const result = completeHabitRun({
       agentRoot,
@@ -622,7 +539,6 @@ describe("habit-session helpers", () => {
       startedAt: "2026-06-11T17:00:00.000Z",
       endedAt: "2026-06-11T17:01:00.000Z",
       permissionEnvelope: envelope,
-      toolPolicy: policy,
       producedRefs: [{ kind: "desk_task", locator: "desk/tasks/check-in" }],
       surfaceAttempts: [],
       errors: [],
@@ -663,12 +579,6 @@ describe("habit-session helpers", () => {
 
   it("defaults omitted completion refs, attempts, and errors to a no-change receipt", async () => {
     const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
-    const policy = {
-      requestedTools: null,
-      grantedTools: [],
-      deniedTools: [],
-      outwardMessagingAllowed: true,
-    }
 
     const result = completeHabitRun({
       agentRoot,
@@ -678,7 +588,6 @@ describe("habit-session helpers", () => {
       startedAt: "2026-06-11T17:02:00.000Z",
       endedAt: "2026-06-11T17:02:10.000Z",
       permissionEnvelope: envelope,
-      toolPolicy: policy,
     })
 
     expect(result).toMatchObject({
@@ -698,12 +607,6 @@ describe("habit-session helpers", () => {
 
   it("sets null nextRunAt for inactive, unparseable, and invalid-ended runs unless explicitly provided", async () => {
     const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
-    const policy = {
-      requestedTools: null,
-      grantedTools: [],
-      deniedTools: [],
-      outwardMessagingAllowed: false,
-    }
     const base = {
       agentRoot,
       habit: makeHabit(),
@@ -713,7 +616,6 @@ describe("habit-session helpers", () => {
       endedAt: "not-a-date",
       outcome: "no_change" as const,
       permissionEnvelope: envelope,
-      toolPolicy: policy,
     }
 
     expect(buildHabitRunReceipt({ ...base, habit: makeHabit({ status: "paused" }) }).nextRunAt).toBeNull()
@@ -743,12 +645,6 @@ describe("habit-session helpers", () => {
 
   it("computes nextRunAt for fixed daily cron habits from the next local civil occurrence", async () => {
     const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
-    const policy = {
-      requestedTools: null,
-      grantedTools: [],
-      deniedTools: [],
-      outwardMessagingAllowed: false,
-    }
     const endedAt = new Date(2026, 6, 9, 10, 1, 0, 0).toISOString()
 
     const receipt = buildHabitRunReceipt({
@@ -760,7 +656,6 @@ describe("habit-session helpers", () => {
       endedAt,
       outcome: "no_change",
       permissionEnvelope: envelope,
-      toolPolicy: policy,
     })
 
     expect(receipt.nextRunAt).toBe(new Date(2026, 6, 10, 10, 0, 0, 0).toISOString())
@@ -771,12 +666,6 @@ describe("habit-session helpers", () => {
       origin: { friendId: "ari", channel: "cli", key: "main" },
       surface: { family: true, originator: true, extra: [] },
     }), { agentRoot })
-    const policy = {
-      requestedTools: null,
-      grantedTools: ["send_message", "surface"],
-      deniedTools: ["shell"],
-      outwardMessagingAllowed: true,
-    }
     writeHabitRunReceipt(agentRoot, buildHabitRunReceipt({
       agentRoot,
       habit: makeHabit({ name: "heartbeat" }),
@@ -786,7 +675,6 @@ describe("habit-session helpers", () => {
       endedAt: "2026-06-11T10:01:00.000Z",
       outcome: "no_change",
       permissionEnvelope: envelope,
-      toolPolicy: policy,
     }))
     const latest = buildHabitRunReceipt({
       agentRoot,
@@ -797,7 +685,6 @@ describe("habit-session helpers", () => {
       endedAt: "2026-06-11T12:01:00.000Z",
       outcome: "blocked",
       permissionEnvelope: envelope,
-      toolPolicy: policy,
       producedRefs: [{ kind: "surface", locator: "state/pending/ari/cli/main" }],
       surfaceAttempts: [{
         recipient: "ari",
@@ -832,7 +719,6 @@ describe("habit-session helpers", () => {
         trigger: "cron",
         outcome: "blocked",
         permissionEnvelope: envelope,
-        toolPolicy: policy,
         producedRefs: latest.producedRefs,
         surfaceAttempts: latest.surfaceAttempts,
         errors: ["needs input"],
@@ -852,12 +738,6 @@ describe("habit-session helpers", () => {
 
   it("normalizes runtime cursor snapshots and rejects malformed cursor fields", async () => {
     const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
-    const policy = {
-      requestedTools: null,
-      grantedTools: [],
-      deniedTools: [],
-      outwardMessagingAllowed: false,
-    }
     const receipt = buildHabitRunReceipt({
       agentRoot,
       habit: makeHabit({ name: "heartbeat" }),
@@ -868,7 +748,6 @@ describe("habit-session helpers", () => {
       outcome: "no_change",
       operationId: "op-cursor",
       permissionEnvelope: envelope,
-      toolPolicy: policy,
     })
     writeHabitRunReceipt(agentRoot, receipt)
     const runtimeStatePath = path.join(agentRoot, "state", "habits", "heartbeat.json")
@@ -912,12 +791,6 @@ describe("habit-session helpers", () => {
 
   it("keeps the receipt when runtime state recording fails after write", async () => {
     const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
-    const policy = {
-      requestedTools: null,
-      grantedTools: [],
-      deniedTools: [],
-      outwardMessagingAllowed: false,
-    }
     const stateDir = path.join(agentRoot, "state", "habits")
     fs.mkdirSync(path.dirname(stateDir), { recursive: true })
     fs.writeFileSync(stateDir, "not a directory", "utf-8")
@@ -931,7 +804,6 @@ describe("habit-session helpers", () => {
       endedAt: "2026-06-11T14:01:00.000Z",
       operationId: "op-partial",
       permissionEnvelope: envelope,
-      toolPolicy: policy,
     })
 
     expect(result).toMatchObject({
@@ -951,12 +823,6 @@ describe("habit-session helpers", () => {
 
   it("does not advance runtime state when receipt writing fails", async () => {
     const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
-    const policy = {
-      requestedTools: null,
-      grantedTools: [],
-      deniedTools: [],
-      outwardMessagingAllowed: false,
-    }
 
     const result = completeHabitRun({
       agentRoot,
@@ -967,7 +833,6 @@ describe("habit-session helpers", () => {
       endedAt: "2026-06-11T14:11:00.000Z",
       operationId: "op-bad-run",
       permissionEnvelope: envelope,
-      toolPolicy: policy,
     })
 
     expect(result).toMatchObject({
@@ -984,12 +849,6 @@ describe("habit-session helpers", () => {
 
   it("classifies completion outcomes across refs, attempts, and errors", async () => {
     const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
-    const policy = {
-      requestedTools: null,
-      grantedTools: [],
-      deniedTools: [],
-      outwardMessagingAllowed: false,
-    }
     const base = {
       agentRoot,
       habit: makeHabit({ name: "heartbeat", cadence: null }),
@@ -997,7 +856,6 @@ describe("habit-session helpers", () => {
       startedAt: "2026-06-11T15:00:00.000Z",
       endedAt: "2026-06-11T15:01:00.000Z",
       permissionEnvelope: envelope,
-      toolPolicy: policy,
     }
 
     expect(completeHabitRun({ ...base, runId: "run-error", errors: ["boom"] }).outcome).toBe("error")
@@ -1044,12 +902,6 @@ describe("habit-session helpers", () => {
     fs.writeFileSync(path.join(receiptDir, "run-malformed-late.json"), "{\"schemaVersion\":2}", "utf-8")
 
     const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
-    const policy = {
-      requestedTools: null,
-      grantedTools: [],
-      deniedTools: [],
-      outwardMessagingAllowed: false,
-    }
     const good = buildHabitRunReceipt({
       agentRoot,
       habit: makeHabit({ name: "heartbeat" }),
@@ -1059,7 +911,6 @@ describe("habit-session helpers", () => {
       endedAt: "2026-06-11T09:01:00.000Z",
       outcome: "no_change",
       permissionEnvelope: envelope,
-      toolPolicy: policy,
     })
     writeHabitRunReceipt(agentRoot, good)
 
@@ -1071,12 +922,6 @@ describe("habit-session helpers", () => {
 
   it("keeps recovery available when runtime state exists but is malformed", async () => {
     const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
-    const policy = {
-      requestedTools: null,
-      grantedTools: [],
-      deniedTools: [],
-      outwardMessagingAllowed: false,
-    }
     const receipt = buildHabitRunReceipt({
       agentRoot,
       habit: makeHabit({ name: "heartbeat" }),
@@ -1086,7 +931,6 @@ describe("habit-session helpers", () => {
       endedAt: "2026-06-11T08:01:00.000Z",
       outcome: "no_change",
       permissionEnvelope: envelope,
-      toolPolicy: policy,
     })
     writeHabitRunReceipt(agentRoot, receipt)
     const runtimeStatePath = path.join(agentRoot, "state", "habits", "heartbeat.json")
@@ -1100,6 +944,55 @@ describe("habit-session helpers", () => {
     expect(readLatestHabitSessionState(agentRoot, { habitName: "other-habit" })).toBeNull()
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "daemon.habit_runtime_state_malformed",
+    }))
+  })
+})
+
+describe("noteHabitRunBlocked", () => {
+  let agentRoot: string
+  const pendingDir = () => path.join(agentRoot, "state", "pending", "self", "inner", "dialog")
+  const marker = () => path.join(agentRoot, "state", "habits", "heartbeat.blocked-notice")
+  const queued = () => fs.existsSync(pendingDir())
+    ? fs.readdirSync(pendingDir()).map((name) => JSON.parse(fs.readFileSync(path.join(pendingDir(), name), "utf-8")))
+    : []
+
+  beforeEach(() => {
+    agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "habit-blocked-"))
+    mockEmitNervesEvent.mockReset()
+  })
+
+  afterEach(() => {
+    fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
+  it("tells the agent once per reason, again on a new reason, and forgets once a run is not blocked", () => {
+    noteHabitRunBlocked(agentRoot, "slugger", "heartbeat", "habit status paused is non-executable")
+    noteHabitRunBlocked(agentRoot, "slugger", "heartbeat", "habit status paused is non-executable")
+
+    expect(queued()).toHaveLength(1)
+    expect(queued()[0]).toMatchObject({ from: "slugger", friendId: "self", channel: "inner", key: "dialog" })
+    expect(queued()[0].content).toContain("my habit heartbeat could not run: habit status paused is non-executable")
+    expect(fs.readFileSync(marker(), "utf-8")).toBe("habit status paused is non-executable")
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "daemon.habit_blocked_noted" }))
+
+    noteHabitRunBlocked(agentRoot, "slugger", "heartbeat", "habit file could not be read")
+    expect(queued()).toHaveLength(2)
+
+    noteHabitRunBlocked(agentRoot, "slugger", "heartbeat", null)
+    expect(fs.existsSync(marker())).toBe(false)
+    noteHabitRunBlocked(agentRoot, "slugger", "heartbeat", "habit file could not be read")
+    expect(fs.readFileSync(marker(), "utf-8")).toBe("habit file could not be read")
+  })
+
+  it("reports, without throwing, when the note cannot be written", () => {
+    fs.mkdirSync(path.join(agentRoot, "state"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "state", "pending"), "not a directory")
+
+    expect(() => noteHabitRunBlocked(agentRoot, "slugger", "heartbeat", "blocked")).not.toThrow()
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "daemon.habit_blocked_note_error",
+      meta: expect.objectContaining({ habitName: "heartbeat" }),
     }))
   })
 })

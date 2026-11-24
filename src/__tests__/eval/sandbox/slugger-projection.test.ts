@@ -73,7 +73,6 @@ describe("Slugger's projection", () => {
       senses: { bluebubbles: { enabled: true, hostUsername: "household-mac" }, teams: { enabled: false }, shepherd: { enabled: true, notify: "every" } },
       mcpServers: { spoonjoy: { command: "/usr/local/bin/spoonjoy", env: { TOKEN } }, browser: { command: "browser-mcp" } },
       vault: { email: "agent@example.invalid" }, home: "/Users/household", sync: { enabled: true }, privateRuntime: {}, desks: { a: "~/desk" },
-      habitPaidTurnsPerDay: 3,
     }))
     write(repo, "psyche/SOUL.md", "be kind")
     write(repo, "psyche/TACIT.md", "what was learned")
@@ -119,7 +118,7 @@ describe("Slugger's projection", () => {
     expect(files(out).flatMap((file) => file.endsWith("/") ? [] : [fs.readFileSync(path.join(out, file), "utf8")]).join("\n")).not.toContain(TOKEN)
     expect(gaps).toEqual(expect.arrayContaining([
       "skills/friend-link.md: a symbolic link, left out",
-      "agent.json: left out desks, habitPaidTurnsPerDay, home, privateRuntime, sync, vault, senses.bluebubbles.hostUsername, senses.shepherd.notify, mcpServers.browser",
+      "agent.json: left out desks, home, privateRuntime, sync, vault, senses.bluebubbles.hostUsername, senses.shepherd.notify, mcpServers.browser",
       "spoonjoy: a fake MCP server with synthetic data stands in for the real one",
       "browser: left out",
     ]))

@@ -95,7 +95,6 @@ function tempAgentRoot(): string {
     "---",
     "title: RSVP Check",
     "cadence: daily",
-    "tools: []",
     "---",
     "",
     "Check the private RSVP state.",
@@ -118,18 +117,18 @@ describe("private-runtime autonomy budget", () => {
     mockReadHabitSessionSummary.mockReset().mockReturnValue(null)
   })
 
-  it("skips an over-budget habit before runTurn and leaves a blocked receipt", async () => {
+  it("runs a habit without reserving any autonomy budget, even when the shared allowance is spent", async () => {
     const agentRoot = tempAgentRoot()
     mockGetAgentRoot.mockReturnValue(agentRoot)
-    for (let index = 0; index < AUTONOMY_BUDGET_DEFAULT_POLICY.habitPaidTurnsPerDay; index++) {
+    for (let index = 0; index < AUTONOMY_BUDGET_DEFAULT_POLICY.agentProactivePaidTurnsPerHour; index++) {
       expect(reserveAutonomyBudget(agentRoot, {
         agent: "slugger",
-        triggerType: "habit",
+        triggerType: "proactive",
         sourceKind: "private-runtime",
-        senseOrHabit: "rsvp",
-        target: { habitName: "rsvp", run: index, body: "do not store habit body" },
-        idempotencyKey: `habit:rsvp:${index}`,
-        now: "2026-07-09T12:00:00.000Z",
+        senseOrHabit: "instinct",
+        target: { run: index },
+        idempotencyKey: `proactive:${index}`,
+        now: "2026-07-09T16:30:00.000Z",
       }).allowed).toBe(true)
     }
     const runTurn = vi.fn().mockResolvedValue({
@@ -139,35 +138,35 @@ describe("private-runtime autonomy budget", () => {
 
     await worker.handleMessage({ type: "habit", habitName: "rsvp", trigger: "scheduled" })
 
-    expect(runTurn).not.toHaveBeenCalled()
-    expect(readAutonomyBudgetState(agentRoot).reservations).toHaveLength(AUTONOMY_BUDGET_DEFAULT_POLICY.habitPaidTurnsPerDay)
-    expect(fs.readdirSync(autonomyReceiptsDir(agentRoot)).some((name) => name.endsWith(".json"))).toBe(true)
-    expect(JSON.stringify(mockWriteHabitRunReceipt.mock.calls)).toContain("autonomy budget blocked")
-    expect(JSON.stringify(readAutonomyBudgetState(agentRoot))).not.toContain("do not store habit body")
+    expect(runTurn).toHaveBeenCalledTimes(1)
+    expect(readAutonomyBudgetState(agentRoot).reservations).toHaveLength(AUTONOMY_BUDGET_DEFAULT_POLICY.agentProactivePaidTurnsPerHour)
+    expect(JSON.stringify(mockWriteHabitRunReceipt.mock.calls)).not.toContain("autonomy budget blocked")
   })
 
   const eventLease = (claimOwner: string) => ({ schemaVersion: 1 as const, recordPath: "/events/slugger/health/books.json", agent: "slugger", source: "health", eventId: "books", generation: 1, observationRevision: "rev-1", claimOwner })
 
-  it("puts external-event turns under their own daily allowance", async () => {
+  it("puts external-event turns under the agent's shared hourly allowance", async () => {
     const agentRoot = tempAgentRoot()
     mockGetAgentRoot.mockReturnValue(agentRoot)
+    // Each turn settles its event itself, so no failure feeds the storm breaker.
+    vi.mocked(settleExternalEventFailureIfOwned).mockReturnValue({ settled: false } as any)
     const runTurn = vi.fn().mockResolvedValue({ usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 } })
     let clock = new Date("2026-07-09T01:00:00.000Z").getTime()
     const worker = createPrivateRuntimeWorker(runTurn, undefined, () => clock)
-    for (let index = 0; index <= AUTONOMY_BUDGET_DEFAULT_POLICY.habitPaidTurnsPerDay; index++) {
-      clock += 2 * 60 * 60_000
+    for (let index = 0; index <= AUTONOMY_BUDGET_DEFAULT_POLICY.agentProactivePaidTurnsPerHour; index++) {
+      clock += 60_000
       await worker.handleMessage({ type: "message", externalEvent: eventLease(`lease-${index}`) })
     }
-    expect(runTurn).toHaveBeenCalledTimes(AUTONOMY_BUDGET_DEFAULT_POLICY.habitPaidTurnsPerDay)
+    expect(runTurn).toHaveBeenCalledTimes(AUTONOMY_BUDGET_DEFAULT_POLICY.agentProactivePaidTurnsPerHour)
     const reservations = readAutonomyBudgetState(agentRoot).reservations
-    expect(reservations).toHaveLength(AUTONOMY_BUDGET_DEFAULT_POLICY.habitPaidTurnsPerDay)
+    expect(reservations).toHaveLength(AUTONOMY_BUDGET_DEFAULT_POLICY.agentProactivePaidTurnsPerHour)
     expect(reservations.every((row) => row.senseOrHabit === "external-events")).toBe(true)
+    vi.mocked(settleExternalEventFailureIfOwned).mockReturnValue({ settled: true } as any)
   })
 
   it("pauses external-event turns for thirty minutes after three failed turns", async () => {
     const agentRoot = tempAgentRoot()
     mockGetAgentRoot.mockReturnValue(agentRoot)
-    fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ habitPaidTurnsPerDay: 24 }))
     const runTurn = vi.fn().mockRejectedValue(new Error("provider iteration limit exhausted"))
     let clock = new Date("2026-07-09T17:00:00.000Z").getTime()
     const worker = createPrivateRuntimeWorker(runTurn, undefined, () => clock)

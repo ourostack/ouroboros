@@ -14,7 +14,6 @@ export interface AutonomyBudgetPolicy {
   agentProactivePaidTurnsPerDay: number
   senseRecoveryPaidTurnsPer15m: number
   senseRecoveryPaidTurnsPerDay: number
-  habitPaidTurnsPerDay: number
   duplicateRecoveryTtlMs: number
   duplicateHabitTtlMs: number
   stormFailureThreshold: number
@@ -27,59 +26,11 @@ export const AUTONOMY_BUDGET_DEFAULT_POLICY: AutonomyBudgetPolicy = {
   agentProactivePaidTurnsPerDay: 40,
   senseRecoveryPaidTurnsPer15m: 3,
   senseRecoveryPaidTurnsPerDay: 12,
-  habitPaidTurnsPerDay: 4,
   duplicateRecoveryTtlMs: 10 * 60 * 1000,
   duplicateHabitTtlMs: 24 * 60 * 60 * 1000,
   stormFailureThreshold: 3,
   stormFailureWindowMs: 10 * 60 * 1000,
   stormBlockMs: 30 * 60 * 1000,
-}
-
-export const DEFAULT_HABIT_PAID_TURNS_PER_DAY = 4
-
-export function normalizeHabitPaidTurnsPerDay(agentName: string, value: unknown, configFile: string): number {
-  if (value === undefined) {
-    if (agentName === "sanctuary") {
-      throw new Error(`agent.json at ${configFile} must explicitly set habitPaidTurnsPerDay for Sanctuary.`)
-    }
-    return DEFAULT_HABIT_PAID_TURNS_PER_DAY
-  }
-  if (!Number.isInteger(value) || (value as number) < 0 || (value as number) > 96) {
-    emitNervesEvent({
-      level: "error",
-      event: "config_identity.error",
-      component: "config/identity",
-      message: "agent config has invalid habit paid-turn budget",
-      meta: { path: configFile, value },
-    })
-    throw new Error(`agent.json at ${configFile} habitPaidTurnsPerDay must be an integer from 0 through 96.`)
-  }
-  return value as number
-}
-
-export function resolveAutonomyBudgetPolicy(
-  agentRoot: string,
-  agentName: string,
-  basePolicy: AutonomyBudgetPolicy = AUTONOMY_BUDGET_DEFAULT_POLICY,
-): AutonomyBudgetPolicy {
-  const configPath = path.join(agentRoot, "agent.json")
-  let configured: unknown
-  if (fs.existsSync(configPath)) {
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(fs.readFileSync(configPath, "utf8"))
-    } catch (error) {
-      throw new Error(`failed to read autonomy budget from ${configPath}: ${String(error)}`)
-    }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error(`agent.json at ${configPath} must be an object`)
-    }
-    configured = (parsed as Record<string, unknown>).habitPaidTurnsPerDay
-  }
-  return {
-    ...basePolicy,
-    habitPaidTurnsPerDay: normalizeHabitPaidTurnsPerDay(agentName, configured, configPath),
-  }
 }
 
 export interface AutonomyBudgetRequest {
@@ -483,15 +434,6 @@ function budgetBlockReason(state: AutonomyBudgetState, request: AutonomyBudgetRe
       && sameCivilDay(row.reservedAt, now),
     ).length
     if (recoveryToday >= policy.senseRecoveryPaidTurnsPerDay) return "sense recovery paid turn budget exceeded for day"
-  }
-  if (request.triggerType === "habit") {
-    const habitToday = state.reservations.filter((row) =>
-      row.agent === request.agent
-      && row.triggerType === "habit"
-      && row.senseOrHabit === request.senseOrHabit
-      && sameCivilDay(row.reservedAt, now),
-    ).length
-    if (habitToday >= policy.habitPaidTurnsPerDay) return "habit paid turn budget exceeded for day"
   }
   return null
 }

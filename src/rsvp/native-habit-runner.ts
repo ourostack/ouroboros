@@ -8,7 +8,7 @@ import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
 import { completeHabitRun } from "../heart/habits/habit-session"
 import { appendRunLedgerRecordNonFatal, createRunLedgerRecord, usageMetadataFromUsageData, type RunLedgerLifecycle } from "../heart/run-ledger"
 import { recordRsvpSpendLedgerRun } from "./spend-ledger"
-import { RSVP_HABIT_ALLOWED_TOOLS, rsvpHabitRuntimePolicy, type RsvpHabitMetadata } from "./habit-policy"
+import { rsvpHabitRuntimePolicy, type RsvpHabitMetadata } from "./habit-policy"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
   decisionsFromHabitRunTraceSteps,
@@ -17,7 +17,6 @@ import {
   type HabitRunTraceStep,
   type HabitRunTrigger,
   type HabitSurfaceAttempt,
-  type HabitToolPolicy,
 } from "../arc/flight-recorder"
 
 type RsvpRefreshCommand = Extract<RsvpCliCommand, { kind: "rsvp.refresh" }>
@@ -176,15 +175,6 @@ function permissionEnvelope(sendAllowed: boolean): HabitPermissionEnvelope {
       : [],
     deniedTools: sendAllowed ? [] : ["send_message", "surface"],
     warnings: [],
-  }
-}
-
-function toolPolicy(sendAllowed: boolean): HabitToolPolicy {
-  return {
-    requestedTools: [...RSVP_HABIT_ALLOWED_TOOLS],
-    grantedTools: [...RSVP_HABIT_ALLOWED_TOOLS],
-    deniedTools: [],
-    outwardMessagingAllowed: sendAllowed,
   }
 }
 
@@ -649,7 +639,6 @@ export async function runNativeRsvpHabit(input: RunNativeRsvpHabitInput): Promis
     endedAt,
     operationId: `rsvp-native:${input.trigger}:${input.occurrenceId ?? runId}`,
     permissionEnvelope: permissionEnvelope(effectiveSendAllowed),
-    toolPolicy: toolPolicy(effectiveSendAllowed),
     producedRefs,
     surfaceAttempts,
     traceSteps,

@@ -37,12 +37,6 @@ function makeHabitReceipt(overrides: Partial<HabitRunReceipt> = {}): HabitRunRec
       deniedTools: [],
       warnings: [],
     },
-    toolPolicy: overrides.toolPolicy ?? {
-      requestedTools: ["send_message", "session_summary"],
-      grantedTools: ["send_message", "session_summary"],
-      deniedTools: [],
-      outwardMessagingAllowed: true,
-    },
     producedRefs: overrides.producedRefs ?? [{ kind: "surface", locator: "surface/ari/bluebubbles" }],
     surfaceAttempts: overrides.surfaceAttempts ?? [{
       recipient: "ari",

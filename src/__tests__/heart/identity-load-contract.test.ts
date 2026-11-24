@@ -141,18 +141,6 @@ describe("loadAgentConfig explicit owner", () => {
     expect(fs.readFileSync).toHaveBeenCalledExactlyOnceWith(path.join(owner.agentRoot, "agent.json"), "utf-8")
   })
 
-  it("uses the explicit name for Sanctuary's required paid-turn budget", async () => {
-    process.argv = ["node", "cli-entry.js", "--agent", "other"]
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(FULL_AGENT_JSON))
-    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
-    resetIdentity()
-    const sanctuary = { agentName: "sanctuary", agentRoot: "/mock/bundles/sanctuary.ouro" }
-
-    expect(() => loadAgentConfig(sanctuary)).toThrow("must explicitly set")
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ ...FULL_AGENT_JSON, habitPaidTurnsPerDay: 24 }))
-    expect(loadAgentConfig(sanctuary).habitPaidTurnsPerDay).toBe(24)
-  })
-
   it.each(["missing", "malformed"])("does not fall back to an override after a %s explicit config", async (failure) => {
     const { loadAgentConfig, resetIdentity, setAgentConfigOverride } = await import("../../heart/identity")
     resetIdentity()

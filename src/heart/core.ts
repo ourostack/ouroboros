@@ -11,7 +11,7 @@ import { FIND_TOOLS_NAME, buildToolCatalog, formatFindToolsReply, formatLoadedDo
 import { findToolsSkillNote } from "../repertoire/skill-search";
 import { declaredTools } from "../repertoire/skill-summaries";
 import { APPROVAL_UNAVAILABLE_REJECTION, classifyApprovalForInvocation, executeTool, preflightToolCall, summarizeArgs, buildToolResultSummary, restTool, selectToolsForChannel, reduceToolSelection, ToolSelectionError, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
-import type { HabitSessionToolContext, ToolContext, ToolResultImage, ToolRiskProfile, ToolSelection } from "../repertoire/tools-base";
+import type { HabitSessionToolContext, ToolContext, ToolResultImage, ToolSelection } from "../repertoire/tools-base";
 import { withCode } from "../repertoire/tools-base";
 import { FLOW_TOOL_REFUSALS, SETTLE_CHECK_BACK_CADENCE } from "../repertoire/tools-flow";
 import { buildToolImagesMessage, canModelSeeToolImages, toolImagesNote, type ToolCallImages } from "./tool-images";
@@ -819,14 +819,6 @@ function hasFreshPendingWork(options?: RunAgentOptions): boolean {
   )
 }
 
-const HABIT_CONTROL_TOOLS = new Set(["rest", "ponder", "observe"])
-
-function highRiskExternalMutation(profile: ToolRiskProfile): string | null {
-  if (profile.risk !== "high") return null
-  const mutates = typeof profile.mutates === "string" ? [profile.mutates] : [...profile.mutates]
-  return mutates.includes("external_side_effect") ? mutates.join(", ") : null
-}
-
 function recordBlockedHabitSurfaceAttempts(
   habitSession: HabitSessionToolContext | undefined,
   toolCalls: Array<{ name: string; arguments: string }>,
@@ -855,34 +847,23 @@ async function habitToolBatchBlockReason(
   habitSession: HabitSessionToolContext | undefined,
   toolCalls: Array<{ name: string; arguments: string }>,
   delegatedOrigins: ToolContext["delegatedOrigins"] | undefined,
-  selection: ToolSelection,
 ): Promise<string | null> {
   if (!habitSession) return null
-  const granted = new Set(habitSession.toolPolicy.grantedTools)
-  const denied = new Set(habitSession.toolPolicy.deniedTools)
+  // A habit has the agent's normal tools. Only messaging outward is bounded, by the habit's return routes.
   for (const call of toolCalls) {
-    if (denied.has(call.name)) return `habit tool '${call.name}' is denied by this habit session`
-    if (HABIT_CONTROL_TOOLS.has(call.name)) continue
-    if (!granted.has(call.name)) return `habit tool '${call.name}' was not granted to this habit session`
+    if (call.name !== "send_message" && call.name !== "surface") continue
+    if (habitSession.permissionEnvelope.deniedTools.includes(call.name)) return `habit tool '${call.name}' is denied by this habit session`
     // The canonical pre-batch schema gate guarantees object arguments here.
     const args = JSON.parse(call.arguments) as Record<string, string>
-    const riskProfile = riskProfileForToolName(call.name, args, selection)
-    if (!riskProfile) return `habit tool '${call.name}' does not have a known executable risk profile`
-    const externalMutation = highRiskExternalMutation(riskProfile)
-    if (externalMutation && call.name !== "send_message" && call.name !== "surface") {
-      return `habit tool '${call.name}' has high-risk executable mutation ${externalMutation}: ${riskProfile.reason}`
-    }
-    if (call.name === "send_message" || call.name === "surface") {
-      const route = await resolveHabitReturnRoute({
-        agentRoot: getAgentRoot(),
-        envelope: habitSession.permissionEnvelope,
-        toolName: call.name,
-        args,
-        friendStore: habitSession.friendStore,
-        delegatedOrigins,
-      })
-      if (!route.allowed) return route.reason
-    }
+    const route = await resolveHabitReturnRoute({
+      agentRoot: getAgentRoot(),
+      envelope: habitSession.permissionEnvelope,
+      toolName: call.name,
+      args,
+      friendStore: habitSession.friendStore,
+      delegatedOrigins,
+    })
+    if (!route.allowed) return route.reason
   }
   return null
 }
@@ -2691,7 +2672,6 @@ async function runCountedTurn(
           habitSession,
           result.toolCalls,
           augmentedToolContext?.delegatedOrigins,
-          toolSelection,
         )
         if (habitBlockReason) {
           streamCallbackBuffer?.discard();
