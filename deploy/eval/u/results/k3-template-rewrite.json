@@ -1,0 +1,19 @@
+{
+  "keepPackageScopes": false,
+  "skipped": [],
+  "counts": {
+    "radix -> prim": 105,
+    "@mui/material(?![-\\w]) -> @kit/ui": 207,
+    "@mui/ -> @kit/": 2186,
+    "(?<![\\w-])mui-(?=[a-z]) -> kit-": 30,
+    "\\bmui\\b -> kit": 122,
+    "material[ -]?ui -> kit": 1,
+    "codex -> agent": 1,
+    "minimax|gpt -> model": 23
+  },
+  "files": 1227,
+  "renamed": 2,
+  "collisions": [],
+  "binariesWithHits": [],
+  "removedBinaries": []
+}

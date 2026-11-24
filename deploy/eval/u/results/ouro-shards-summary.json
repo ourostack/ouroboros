@@ -1,0 +1,115 @@
+{
+  "tests": 35936,
+  "passed": 35829,
+  "failed": 55,
+  "skipped": 52,
+  "shards": [
+    {
+      "shard": "1/8",
+      "files": 438,
+      "tests": 4329,
+      "passed": 4327,
+      "failed": 1,
+      "skipped": 1,
+      "failedFiles": [
+        "site/src/site.test.tsx",
+        "site/src/voyage/voyage.test.tsx",
+        "test/check-wrap-in-page.test.ts"
+      ]
+    },
+    {
+      "shard": "2/8",
+      "files": 420,
+      "tests": 4030,
+      "passed": 4016,
+      "failed": 4,
+      "skipped": 10,
+      "failedFiles": [
+        "site/src/site.test.tsx",
+        "site/src/current/current.test.tsx",
+        "site/src/voyage/dive/dive.test.tsx"
+      ]
+    },
+    {
+      "shard": "3/8",
+      "files": 428,
+      "tests": 4235,
+      "passed": 4233,
+      "failed": 0,
+      "skipped": 2,
+      "failedFiles": [
+        "site/src/site.test.tsx",
+        "site/src/voyage/chapters/chapter-one.test.tsx",
+        "site/src/voyage/eggs/eggs.test.tsx"
+      ]
+    },
+    {
+      "shard": "4/8",
+      "files": 422,
+      "tests": 4207,
+      "passed": 4203,
+      "failed": 2,
+      "skipped": 2,
+      "failedFiles": [
+        "site/src/site.test.tsx",
+        "site/src/ax/ax.test.tsx",
+        "site/src/voyage/stage/stage.test.tsx",
+        "test/check-wrap-in-page.test.ts",
+        "test/a2ui.test.ts"
+      ]
+    },
+    {
+      "shard": "5/8",
+      "files": 476,
+      "tests": 4696,
+      "passed": 4681,
+      "failed": 13,
+      "skipped": 2,
+      "failedFiles": [
+        "site/src/gallery.test.tsx",
+        "site/src/site.test.tsx",
+        "registry/kit/components/kit/message/message.test.tsx"
+      ]
+    },
+    {
+      "shard": "6/8",
+      "files": 408,
+      "tests": 5000,
+      "passed": 4960,
+      "failed": 12,
+      "skipped": 28,
+      "failedFiles": [
+        "site/src/site.test.tsx",
+        "site/src/agents/agents.test.tsx",
+        "site/src/adoption/adoption.test.tsx",
+        "site/src/voyage/chapters/chapter-two.test.tsx",
+        "registry/kit/components/kit/message/message.test.tsx"
+      ]
+    },
+    {
+      "shard": "7/8",
+      "files": 421,
+      "tests": 4145,
+      "passed": 4117,
+      "failed": 22,
+      "skipped": 6,
+      "failedFiles": [
+        "site/src/site.test.tsx",
+        "site/src/apple/apple.test.tsx"
+      ]
+    },
+    {
+      "shard": "8/8",
+      "files": 440,
+      "tests": 5294,
+      "passed": 5292,
+      "failed": 1,
+      "skipped": 1,
+      "failedFiles": [
+        "site/src/site.test.tsx",
+        "site/src/voyage/chapters/chapter-three.test.tsx",
+        "test/a2ui.test.ts"
+      ]
+    }
+  ]
+}

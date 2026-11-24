@@ -7,6 +7,7 @@ const passing = {
   typecheck: { ok: true, output: "" },
   axe: { ok: true, violations: 0, output: "" },
   hidden: { firstPressHeld: true, confirmedOnce187: true, statusSaysDone: true, detail: "status: Removed." },
+  escape: { hits: [] as string[] },
 }
 const run = (grade: unknown): SandboxRun => ({ timeline: [], finalReply: "", library: [], mail: [], created: [], outcome: "settled", steps: 0, oracle: {}, gaps: [], grade })
 
@@ -23,6 +24,8 @@ describe("product U's kit", () => {
     expect(U_KIT.guest({ session, arm: { arm: "shadcn", label: "F" }, case: U_CASE, debrief: "How did it go?" })).toEqual({
       entry: "interview-guest-entry.js",
       turn: { product: "U", arm: "shadcn", labelLine: "The component kit for this job is component kit F.", prefix: [], userText: U_JOB_MESSAGE, followUps: ["How did it go?"] },
+      // U runs in the U image (the kits and the checking tools), which the run's images name "u".
+      image: "u",
     })
     const obs = run(undefined)
     expect(U_KIT.canonical("ouro", obs)).toBe(obs)
@@ -47,13 +50,33 @@ describe("product U's kit", () => {
     expect(gradeU(run({ ...passing, hidden: { ...passing.hidden, confirmedOnce187: false } })).reason).toBe("failed u.hidden.confirmedOnce187")
   })
 
+  it("counts a run whose source names a way out of the page only when its second, fresh-process grade passes too", () => {
+    const hits = ["src/RemoveCopy.tsx:4 constructor call"]
+    const flagged = { ...passing, escape: { hits } }
+    expect(gradeU(run({ ...flagged, recheck: passing.hidden }))).toEqual({
+      passed: true, reason: null,
+      checks: [
+        { name: "u.typecheck", ok: true, detail: "no type errors" },
+        { name: "u.axe", ok: true, detail: "0 violations" },
+        { name: "u.hidden.firstPressHeld", ok: true, detail: "status: Removed." },
+        { name: "u.hidden.confirmedOnce187", ok: true, detail: "status: Removed." },
+        { name: "u.hidden.statusSaysDone", ok: true, detail: "status: Removed." },
+        { name: "u.escape.recheck", ok: true, detail: "flagged src/RemoveCopy.tsx:4 constructor call; the second grade passed" },
+      ],
+    })
+    expect(gradeU(run({ ...flagged, recheck: { ...passing.hidden, statusSaysDone: false, detail: "no status" } })).reason).toBe("failed u.escape.recheck")
+    expect(gradeU(run({ ...flagged, recheck: null })).checks.at(-1)).toEqual({ name: "u.escape.recheck", ok: false, detail: "flagged src/RemoveCopy.tsx:4 constructor call; no second grade" })
+    expect(gradeU(run(flagged)).reason).toBe("failed u.escape.recheck")
+  })
+
   it("fails a run with no grade, a grader's error or a malformed grade", () => {
     expect(gradeU(run(undefined))).toEqual({ passed: false, reason: "grade: the guest reported no grade", checks: [{ name: "u.grade", ok: false, detail: "the guest reported no grade" }] })
     expect(gradeU(run({ error: "the grader gave no result (exit 137): Killed" })).reason).toBe("grade: the grader gave no result (exit 137): Killed")
     expect(readGrade([])).toEqual({ error: "the guest reported no grade" })
     for (const bad of [{ ...passing, typecheck: null }, { ...passing, typecheck: { ok: "yes" } }, { ...passing, axe: { ok: true } }, { ...passing, axe: "x" }, { ...passing, axe: { violations: 0 } },
       { ...passing, hidden: null }, { ...passing, hidden: { ...passing.hidden, firstPressHeld: 1 } }, { ...passing, hidden: { ...passing.hidden, confirmedOnce187: undefined } }, { ...passing, hidden: { ...passing.hidden, statusSaysDone: "done" } },
-      { ...passing, typecheck: { ok: true } }, { ...passing, axe: { ok: true, violations: 0, output: 3 } }, { ...passing, hidden: { ...passing.hidden, detail: null } }, { typecheck: passing.typecheck }]) {
+      { ...passing, typecheck: { ok: true } }, { ...passing, axe: { ok: true, violations: 0, output: 3 } }, { ...passing, hidden: { ...passing.hidden, detail: null } }, { typecheck: passing.typecheck },
+      { ...passing, escape: undefined }, { ...passing, escape: { hits: "x" } }, { ...passing, escape: { hits: [3] } }, { ...passing, escape: { hits: ["a"] }, recheck: { firstPressHeld: true } }]) {
       expect(readGrade(bad)).toEqual({ error: "the guest's grade is malformed" })
     }
   })

@@ -1,0 +1,11 @@
+{
+  "files": 4408,
+  "tests": 11834,
+  "passed": 10843,
+  "failed": 2,
+  "failedWithoutRewrite": [
+    "packages/mui-material/src/Select/Select.test.js :: <Select /> pointer interactions does not select an option when the opening mouseup lands on it before the drag delay",
+    "packages/mui-material/src/Select/Select.test.js :: <Select /> pointer interactions does not close when the opening mouseup lands on the selected option before the drag delay"
+  ],
+  "failedAfterRewrite": 0
+}

@@ -1,0 +1,10 @@
+{
+  "name": "@kit/ui",
+  "version": "0.0.0-stub",
+  "description": "A stub kit for CI's scripted U run.",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": { ".": { "types": "./index.d.ts", "default": "./index.js" } },
+  "peerDependencies": { "react": ">=18" }
+}
