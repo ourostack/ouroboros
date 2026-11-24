@@ -52,6 +52,7 @@ export default defineConfig({
       // Need Docker; `npm run test:eval-sandbox` runs them.
       "src/__tests__/eval/e2e.integration.test.ts",
       "src/__tests__/eval/profile.integration.test.ts",
+      "src/__tests__/eval/u-e2e.integration.test.ts",
       "src/__tests__/senses/cli/*.tsx",
     ],
     maxWorkers: 1,

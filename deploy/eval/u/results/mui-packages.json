@@ -1,0 +1,50 @@
+[
+  {
+    "name": "@mui/material",
+    "version": "10.0.0-alpha.0",
+    "path": "/work/mui/packages/mui-material",
+    "private": false
+  },
+  {
+    "name": "@mui/material-pigment-css",
+    "version": "10.0.0-alpha.0",
+    "path": "/work/mui/packages/mui-material-pigment-css",
+    "private": false
+  },
+  {
+    "name": "@mui/system",
+    "version": "10.0.0-alpha.0",
+    "path": "/work/mui/packages/mui-system",
+    "private": false
+  },
+  {
+    "name": "@mui/private-theming",
+    "version": "10.0.0-alpha.0",
+    "path": "/work/mui/packages/mui-private-theming",
+    "private": false
+  },
+  {
+    "name": "@mui/types",
+    "version": "10.0.0-alpha.0",
+    "path": "/work/mui/packages/mui-types",
+    "private": false
+  },
+  {
+    "name": "@mui/utils",
+    "version": "10.0.0-alpha.0",
+    "path": "/work/mui/packages/mui-utils",
+    "private": false
+  },
+  {
+    "name": "@mui/styled-engine",
+    "version": "10.0.0-alpha.0",
+    "path": "/work/mui/packages/mui-styled-engine",
+    "private": false
+  },
+  {
+    "name": "@mui/core-downloads-tracker",
+    "version": "10.0.0-alpha.0",
+    "path": "/work/mui/packages/mui-core-downloads-tracker",
+    "private": false
+  }
+]

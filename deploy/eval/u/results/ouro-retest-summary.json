@@ -1,0 +1,318 @@
+{
+  "files": 17,
+  "results": [
+    {
+      "file": "registry/kit/components/kit/message/message.test.tsx",
+      "tests": 340,
+      "passed": 337,
+      "failed": 2,
+      "failures": [
+        {
+          "test": "Message shows the author's avatar from main's Avatar, silent because the name is written",
+          "message": "@http://localhost:63316/work/ouro/registry/kit/components/kit/message/message.test.tsx:238:111"
+        }
+      ]
+    },
+    {
+      "file": "site/src/adoption/adoption.test.tsx",
+      "tests": 24,
+      "passed": 16,
+      "failed": 8,
+      "failures": [
+        {
+          "test": "the adoption page has a route and leads with the count of green products out of the total",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63318/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "the adoption page gives every counted product its four checks as the ledger says them, closest to green first",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63318/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "the adoption page folds products alike in every check, with nothing particular to say, into one line that names them",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63318/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "the adoption page leaves out a line that only says what the marks say",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63318/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "the adoption page says a reason every product shares once, under the list, and not on every row",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63318/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "the adoption page gives each gap one line that links to where it came from",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63318/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "the adoption page passes the accessibility scan in light",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63318/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "the adoption page passes the accessibility scan in dark",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63318/site/src/pages/voyage.tsx"
+        }
+      ]
+    },
+    {
+      "file": "site/src/agents/agents.test.tsx",
+      "tests": 7,
+      "passed": 4,
+      "failed": 3,
+      "failures": [
+        {
+          "test": "variant: the landing page shows the code, the type error, the prop's source and the dev message",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63318/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "isLoading: the landing page shows the code, the type error, the prop's source and the dev message",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63318/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "asChild: the landing page shows the code, the type error, the prop's source and the dev message",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63318/site/src/pages/voyage.tsx"
+        }
+      ]
+    },
+    {
+      "file": "site/src/apple/apple.test.tsx",
+      "tests": 29,
+      "passed": 7,
+      "failed": 22,
+      "failures": [
+        {
+          "test": "Kit UI for Apple renders /apple/ with its title, its section menu and a route",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple renders /apple/hx/ with its title, its section menu and a route",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple renders /apple/feel/ with its title, its section menu and a route",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple renders /apple/ax/ with its title, its section menu and a route",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple renders /apple/reins/ with its title, its section menu and a route",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple renders /apple/start/ with its title, its section menu and a route",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple states the release the package has today, and no component is in the workshop",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple shows web and Apple parity from core's claim files, gaps included",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple control: xray lets you flip apps and sides, and filter the claims",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple control: twin sends the puck over and back, and only fades under Reduce Motion",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple control: press twin saves the tart and says so, like the capture beside it",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple control: twin comes to rest on its end stop, inside its track",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple control: haptics lists all eight moments, each with taps to see",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple control: duel lets Feel double-tap both switches and reports the locked one failing",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple control: duel switch takes a tap from the keyboard",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple control: gatefold flips between build 19 and the fix",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple control: terminal runs a typed line and a suggested one, and refuses politely",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple control: race skips to the finish line with the real numbers",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple shows stills, not video, under Reduce Motion",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple shows the light capture in dark mode when a clip has no dark one, and the dark capture when it has",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple has no axe violations on any Apple page in light",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit UI for Apple has no axe violations on any Apple page in dark",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        }
+      ]
+    },
+    {
+      "file": "site/src/ax/ax.test.tsx",
+      "tests": 0,
+      "passed": 0,
+      "failed": 0,
+      "failures": [],
+      "fileError": "Failed to import test file /work/ouro/site/src/ax/ax.test.tsx"
+    },
+    {
+      "file": "site/src/current/current.test.tsx",
+      "tests": 6,
+      "passed": 2,
+      "failed": 4,
+      "failures": [
+        {
+          "test": "Kit Current's page has a route, leads with what it does and has one Install button",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit Current's page names every release it follows, and says what it never does",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit Current's page passes the accessibility scan in light",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        },
+        {
+          "test": "Kit Current's page passes the accessibility scan in dark",
+          "message": "TypeError: Failed to fetch dynamically imported module: http://localhost:63317/site/src/pages/voyage.tsx"
+        }
+      ]
+    },
+    {
+      "file": "site/src/gallery.test.tsx",
+      "tests": 153,
+      "passed": 153,
+      "failed": 0,
+      "failures": []
+    },
+    {
+      "file": "site/src/site.test.tsx",
+      "tests": 0,
+      "passed": 0,
+      "failed": 0,
+      "failures": [],
+      "fileError": "Failed to import test file /work/ouro/site/src/site.test.tsx"
+    },
+    {
+      "file": "site/src/voyage/chapters/chapter-one.test.tsx",
+      "tests": 0,
+      "passed": 0,
+      "failed": 0,
+      "failures": [],
+      "fileError": "Failed to import test file /work/ouro/site/src/voyage/chapters/chapter-one.test.tsx"
+    },
+    {
+      "file": "site/src/voyage/chapters/chapter-three.test.tsx",
+      "tests": 0,
+      "passed": 0,
+      "failed": 0,
+      "failures": [],
+      "fileError": "Failed to import test file /work/ouro/site/src/voyage/chapters/chapter-three.test.tsx"
+    },
+    {
+      "file": "site/src/voyage/chapters/chapter-two.test.tsx",
+      "tests": 0,
+      "passed": 0,
+      "failed": 0,
+      "failures": [],
+      "fileError": "Failed to import test file /work/ouro/site/src/voyage/chapters/chapter-two.test.tsx"
+    },
+    {
+      "file": "site/src/voyage/dive/dive.test.tsx",
+      "tests": 0,
+      "passed": 0,
+      "failed": 0,
+      "failures": [],
+      "fileError": "Failed to import test file /work/ouro/site/src/voyage/dive/dive.test.tsx"
+    },
+    {
+      "file": "site/src/voyage/eggs/eggs.test.tsx",
+      "tests": 0,
+      "passed": 0,
+      "failed": 0,
+      "failures": [],
+      "fileError": "Failed to import test file /work/ouro/site/src/voyage/eggs/eggs.test.tsx"
+    },
+    {
+      "file": "site/src/voyage/stage/stage.test.tsx",
+      "tests": 0,
+      "passed": 0,
+      "failed": 0,
+      "failures": [],
+      "fileError": "Failed to import test file /work/ouro/site/src/voyage/stage/stage.test.tsx"
+    },
+    {
+      "file": "site/src/voyage/voyage.test.tsx",
+      "tests": 0,
+      "passed": 0,
+      "failed": 0,
+      "failures": [],
+      "fileError": "Failed to import test file /work/ouro/site/src/voyage/voyage.test.tsx"
+    },
+    {
+      "file": "test/a2ui.test.ts",
+      "tests": 38,
+      "passed": 36,
+      "failed": 2,
+      "failures": [
+        {
+          "test": "A2UI files vendored from core are byte for byte the files core.json pins, and every case core pinned is here",
+          "message": "AssertionError: registry/kit/lib/kit/a2ui-core.ts differs from what v1.2.0's src/a2ui.mts vendors as. Fix: node scripts/core-bundle.mts --update v1.2.0, never edit it.: expected '51c018b5e718f5a405c484c3053ff38ece366…' to be '817fafdcaa41cad8cb22b9889dc35f5cb8b43…' // Object.is equality\n    at http://localhost:63316/work/ouro/test/a2ui.test.ts?import&browserv=1795472915061:29:188\n    at async http"
+        }
+      ]
+    },
+    {
+      "file": "test/check-wrap-in-page.test.ts",
+      "tests": 16,
+      "passed": 14,
+      "failed": 2,
+      "failures": [
+        {
+          "test": "readHeroArt reads the largest picture in the first screen, marks it, and says whether the page is dark",
+          "message": "AssertionError: expected 'img \"A meadow at dawn, with Kit and t…' to be 'img \"A meadow at dawn, with Kit and t…' // Object.is equality\n    at http://localhost:63315/work/ouro/test/check-wrap-in-page.test.ts?import&browserv=1795472923177:129:23\n    at async http://localhost:63315/node_modules/.vite/vitest/3c6e81b6de4e0d5e3496470d4d3fb61b503b31f4/deps/plugins.D2ut1V9b-CpqzU00O.js?v=8ac950e2:5211:20"
+        }
+      ]
+    }
+  ],
+  "stillFailing": [
+    "registry/kit/components/kit/message/message.test.tsx",
+    "site/src/adoption/adoption.test.tsx",
+    "site/src/agents/agents.test.tsx",
+    "site/src/apple/apple.test.tsx",
+    "site/src/ax/ax.test.tsx",
+    "site/src/current/current.test.tsx",
+    "site/src/site.test.tsx",
+    "site/src/voyage/chapters/chapter-one.test.tsx",
+    "site/src/voyage/chapters/chapter-three.test.tsx",
+    "site/src/voyage/chapters/chapter-two.test.tsx",
+    "site/src/voyage/dive/dive.test.tsx",
+    "site/src/voyage/eggs/eggs.test.tsx",
+    "site/src/voyage/stage/stage.test.tsx",
+    "site/src/voyage/voyage.test.tsx",
+    "test/a2ui.test.ts",
+    "test/check-wrap-in-page.test.ts"
+  ]
+}

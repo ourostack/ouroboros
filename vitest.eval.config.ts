@@ -40,7 +40,7 @@ export default defineConfig({
   },
   test: {
     globals: true,
-    include: ["src/__tests__/eval/e2e.integration.test.ts", "src/__tests__/eval/profile.integration.test.ts"],
+    include: ["src/__tests__/eval/e2e.integration.test.ts", "src/__tests__/eval/profile.integration.test.ts", "src/__tests__/eval/u-e2e.integration.test.ts"],
     exclude: ["dist/**", "node_modules/**", "packages/**", ".claude/**"],
     maxWorkers: 1,
     setupFiles: ["src/__tests__/nerves/global-capture.ts"],

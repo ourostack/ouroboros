@@ -88,7 +88,8 @@ describe("the books core", () => {
     expect(coreError(verdict)).toBeNull()
     expect(verdict.json).toMatchObject({ ok: false, results: [{ file: "nope.epub", ok: false }] })
     fs.rmSync(home, { recursive: true, force: true })
-  })
+    // Three runs of the Python stub take 3 to 5 s on a loaded Mac, against vitest's 5 s default.
+  }, 20_000)
 })
 
 describe("the three X arms", () => {

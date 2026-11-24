@@ -1,0 +1,26 @@
+{
+  "keepPackageScopes": false,
+  "skipped": [],
+  "counts": {
+    "\\bmui\\b -> kit": 1528,
+    "material[ -]?ui -> kit": 11,
+    "(?<![\\w-])mui-(?=[a-z]) -> kit-": 11,
+    "base ui -> base kit": 1563,
+    "radix -> prim": 42,
+    "shadcn -> kit": 164,
+    "@mui/ -> @kit/": 4,
+    "ouroboros -> kit": 334,
+    "ourostack -> kit": 15,
+    "ouro -> kit": 32216,
+    "mui(?=[A-Z]) -> kit": 6,
+    "mendelow -> owner": 2,
+    "claude -> assistant": 6,
+    "minimax|gpt -> model": 2,
+    "Mui(?=[A-Z]) -> Kit": 21
+  },
+  "files": 1757,
+  "renamed": 10,
+  "collisions": [],
+  "binariesWithHits": [],
+  "removedBinaries": []
+}
