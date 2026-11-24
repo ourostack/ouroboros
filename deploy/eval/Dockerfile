@@ -6,6 +6,8 @@
 # The agent container: the harness under test, run as uid 10001. It holds none of the eval's grading code: no
 # fakes, fixtures, assertions or cases, only the guest entry and the turn it runs.
 FROM node:22-bookworm-slim AS agent
+# The label `npm run eval:stop` removes every eval image by (src/eval/stop-command.ts).
+LABEL ouro.eval=1
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl python3 \
   && rm -rf /var/lib/apt/lists/* \
@@ -28,6 +30,7 @@ USER 10001:10001
 # The household sidecar (uid 10002), and the helpers that build the run's fixtures, its test authority and hand
 # the run's folder back.
 FROM debian:bookworm-slim AS household
+LABEL ouro.eval=1
 RUN apt-get update \
   && apt-get install -y --no-install-recommends openssl python3 \
   && rm -rf /var/lib/apt/lists/*

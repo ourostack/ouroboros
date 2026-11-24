@@ -23,6 +23,7 @@ import { DaemonSenseManager } from "./sense-manager"
 import { listBundleSyncRows, listHomeBundleAgents, readPrivateRuntimeConfig } from "./agent-discovery"
 import { checkAgentHomes } from "./agent-home"
 import { getRepoRoot, getAgentBundlesRoot } from "../identity"
+import { appSessionsRecord } from "./app-sessions-record"
 import { detectRuntimeMode } from "./runtime-mode"
 import { HabitScheduler } from "../habits/habit-scheduler"
 import { migrateHabitsFromTaskSystem } from "../habits/habit-migration"
@@ -341,15 +342,7 @@ const presenceTicker = new PresenceTicker({
   },
   schedulersRunning: (agent) => agentSchedulers.has(agent),
   // This machine's Copilot app sessions, from the app-sessions sense's last snapshot, so peers see them too.
-  extraRecord: (agent) => {
-    try {
-      const snap = JSON.parse(fs.readFileSync(path.join(getAgentBundlesRoot(), `${agent}.ouro`, "state", "senses", "app-sessions", "snapshot.json"), "utf-8")) as { at?: string; counts?: Record<string, number>; sessions?: Array<{ id: string; name?: string; state?: string }> }
-      if (!snap.at || !snap.counts || Date.now() - Date.parse(snap.at) > 10 * 60_000) return {}
-      return { appSessions: { at: snap.at, counts: snap.counts, sessions: (snap.sessions ?? []).map(({ id, name, state }) => ({ id, name, state })) } }
-    } catch {
-      return {}
-    }
-  },
+  extraRecord: (agent) => appSessionsRecord(path.join(getAgentBundlesRoot(), `${agent}.ouro`), Date.now()),
   notify: async (agent, text) => {
     await sendDaemonCommand(socketPath, { kind: "message.send", from: "presence", to: agent, content: text })
     await sendDaemonCommand(socketPath, {

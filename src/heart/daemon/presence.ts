@@ -66,7 +66,7 @@ export interface PeerAppSession {
   /** Reserved for the fleet sense: who runs and coordinates it. */
   owner?: { agent?: string; coordinator?: string; startedBy?: string }
   /** Reserved for the fleet sense: the desk card that is its source of truth. */
-  desk?: { desk?: string; track?: string; slug?: string; status?: string; url?: string; via?: string }
+  desk?: { desk?: string; track?: string; slug?: string; status?: string; url?: string; via?: string; repo?: string; branch?: string; session?: string; file?: string; deskRepo?: string; updatedAt?: string }
 }
 
 /** What a presence publishes about itself in `presence/<machineId>.json`. */
@@ -462,4 +462,12 @@ export function emitOwnershipChange(agent: string, sense: string, owns: boolean,
     message: owns ? `${sense} is owned by this machine` : `${sense} is owned by another machine`,
     meta: { agent, sense, owner },
   })
+}
+
+/** Peers publish every 15 min; three missed cycles means the record can no longer be trusted. */
+export const STALE_PEER_MS = 45 * 60_000
+
+export function isStaleSeenAt(seenAt: string, nowMs: number): boolean {
+  const ms = nowMs - Date.parse(seenAt)
+  return !Number.isFinite(ms) || ms > STALE_PEER_MS
 }

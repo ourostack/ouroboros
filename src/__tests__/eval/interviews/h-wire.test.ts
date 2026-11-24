@@ -1,8 +1,10 @@
+import fs from "node:fs"
+import path from "node:path"
 import { describe, expect, it } from "vitest"
 import type { ProviderRuntime, ProviderTurnRequest } from "../../../heart/core"
 import type { TurnResult } from "../../../heart/streaming"
-import { toResponsesTools } from "../../../heart/streaming"
-import { createWire, responsesEvents, responsesRequest, serveWire, sse } from "../../../eval/interviews/guest/h/wire"
+import { toResponsesInput, toResponsesTools } from "../../../heart/streaming"
+import { chatAnswer, chatRequest, createWire, responsesEvents, responsesRequest, serveWire, sse } from "../../../eval/interviews/guest/h/wire"
 import codexTools from "./fixtures/codex-tools-227fa4e.json"
 
 const PREFIX = [{ role: "user" as const, content: "Morning." }, { role: "assistant" as const, content: "Morning, Ari." }]
@@ -51,7 +53,7 @@ describe("the H wire's Responses translation", () => {
         { role: "assistant", content: "Looking.", tool_calls: [
           { id: "c1", type: "function", function: { name: "exec_command", arguments: "{\"cmd\":\"ls\"}" } },
           { id: "c2", type: "function", function: { name: "exec_command", arguments: "{\"cmd\":\"pwd\"}" } },
-        ] },
+        ], _reasoning_items: [{ type: "reasoning", summary: [], encrypted_content: null }] },
         { role: "tool", tool_call_id: "c1", content: "a\nb" },
         { role: "tool", tool_call_id: "c2", content: "/home" },
         { role: "system", content: "A later note." },
@@ -76,6 +78,55 @@ describe("the H wire's Responses translation", () => {
       messages: [{ role: "user", content: "hi" }, { role: "assistant", content: null, tool_calls: [{ id: "c", type: "function", function: { name: "t", arguments: "{}" } }] }],
       activeTools: [],
     })
+  })
+
+  it("sends codex's reasoning items back unchanged, ciphertext included, each in its place", () => {
+    // Real codex sends its reasoning back between calls; the harness's Responses path puts an assistant message's
+    // `_reasoning_items` back into the input before its text and calls, as the ouro arm's own turn does.
+    const r1 = { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "Find it first." }], content: null, encrypted_content: "gAAAA1+x/GPT=" }
+    const r2 = { type: "reasoning", id: "rs_2", summary: [], encrypted_content: "gAAAA2==" }
+    const r3 = { type: "reasoning", id: "rs_3", summary: [], encrypted_content: "gAAAA3==" }
+    const r4 = { type: "reasoning", id: "rs_4", summary: [], encrypted_content: "gAAAA4==" }
+    const r5 = { type: "reasoning", id: "rs_5", summary: [], encrypted_content: "gAAAA5==" }
+    const r6 = { type: "reasoning", id: "rs_6", summary: [], encrypted_content: "gAAAA6==" }
+    const call = (id: string) => ({ type: "function_call", call_id: id, name: "exec_command", arguments: "{}" })
+    const input = [
+      { type: "message", role: "user", content: "Remove the bad copy." },
+      r1, call("c1"),
+      { type: "function_call_output", call_id: "c1", output: "187" },
+      r2, r3,
+      { type: "message", role: "assistant", content: "Checking." },
+      r4, call("c2"), call("c3"),
+      { type: "function_call_output", call_id: "c2", output: "ok" },
+      { type: "function_call_output", call_id: "c3", output: "ok" },
+      // A turn that gave only reasoning, then the owner's next message, then reasoning at the very end.
+      r5,
+      { type: "message", role: "user", content: "And?" },
+      r6,
+    ]
+    const asCall = (id: string) => ({ id, type: "function", function: { name: "exec_command", arguments: "{}" } })
+    const out = streamed({ input }, [])
+    expect(out.messages).toStrictEqual([
+      { role: "user", content: "Remove the bad copy." },
+      { role: "assistant", content: null, _reasoning_items: [r1], tool_calls: [asCall("c1")] },
+      { role: "tool", tool_call_id: "c1", content: "187" },
+      { role: "assistant", content: "Checking.", _reasoning_items: [r2, r3] },
+      // Reasoning between a message and a call opens a message of its own, so it isn't put before "Checking.".
+      { role: "assistant", content: null, _reasoning_items: [r4], tool_calls: [asCall("c2"), asCall("c3")] },
+      { role: "tool", tool_call_id: "c2", content: "ok" },
+      { role: "tool", tool_call_id: "c3", content: "ok" },
+      { role: "assistant", content: null, _reasoning_items: [r5] },
+      { role: "user", content: "And?" },
+      { role: "assistant", content: null, _reasoning_items: [r6] },
+    ])
+    // Each item is passed as codex sent it, not copied into a new shape.
+    expect((out.messages[1] as { _reasoning_items: unknown[] })._reasoning_items[0]).toBe(r1)
+    // What the host's Responses path sends the provider is codex's input in codex's order, each reasoning item the
+    // very object codex sent.
+    const sent = toResponsesInput(out.messages).input as Array<Record<string, unknown>>
+    const shape = (item: Record<string, unknown>) => item.type === "reasoning" ? item : item.type ?? `${String(item.role)}:${String(item.content)}`
+    expect(sent.map(shape)).toEqual(input.map((item) => item.type === "reasoning" ? item : item.type === "message" ? `${item.role}:${item.content}` : item.type))
+    for (const reasoning of [r1, r2, r3, r4, r5, r6]) expect(sent).toContain(reasoning)
   })
 
   it("refuses what it can't carry faithfully, naming it", () => {
@@ -128,6 +179,15 @@ describe("the H wire's Responses translation", () => {
       { type: "response.output_item.done", item: { type: "function_call", id: "resp_1_fc_0", call_id: "c1", name: "exec_command", arguments: "{}" } },
       { type: "response.completed", response: { id: "resp_1", usage: { input_tokens: 100, input_tokens_details: { cached_tokens: 20 }, output_tokens: 10, output_tokens_details: { reasoning_tokens: 4 }, total_tokens: 110 } } },
     ])
+    // The model's reasoning items go first, as the provider returned them, so codex can send them back; its other
+    // output items are the reply and calls above, so they aren't sent twice.
+    const reasoning = { type: "reasoning", id: "rs_9", summary: [], encrypted_content: "gAAAA9==" }
+    const withReasoning = responsesEvents({ content: "Done.", toolCalls: [], outputItems: [reasoning, { type: "message", role: "assistant", content: [] }] as never, usage }, "resp_2")
+    expect(withReasoning.slice(1, 3)).toEqual([
+      { type: "response.output_item.done", item: reasoning },
+      { type: "response.output_item.done", item: { type: "message", role: "assistant", id: "resp_2_msg", content: [{ type: "output_text", text: "Done." }] } },
+    ])
+    expect(withReasoning).toHaveLength(4)
     // No text, no usage: no message item, and zero usage.
     expect(responsesEvents({ content: "", toolCalls: [], outputItems: [] }, "r").slice(1)).toEqual([
       { type: "response.completed", response: { id: "r", usage: { input_tokens: 0, input_tokens_details: { cached_tokens: 0 }, output_tokens: 0, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 0 } } },
@@ -136,7 +196,94 @@ describe("the H wire's Responses translation", () => {
   })
 })
 
+describe("the H wire's chat-completions translation", () => {
+  it("turns a chat body into the harness's request: instructions first, the case's conversation before the first user message, calls and results as they are", () => {
+    const body = {
+      model: "openai/model", stream: false,
+      messages: [
+        { role: "system", content: [{ type: "text", text: "You are a helpful agent." }] },
+        { role: "user", content: "Remove the bad copy." },
+        { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "terminal", arguments: "{\"command\":\"ls\"}" } }] },
+        { role: "tool", tool_call_id: "c1", name: "terminal", content: [{ type: "text", text: "books" }] },
+        { role: "assistant", content: "Done." },
+        { role: "user", content: [{ type: "text", text: "How did it go?" }] },
+      ],
+      tools: [{ type: "function", function: { name: "terminal", description: "Run a command.", parameters: { type: "object" } } }],
+    }
+    expect(chatRequest(body, PREFIX)).toStrictEqual({
+      messages: [
+        { role: "system", content: "You are a helpful agent." },
+        ...PREFIX,
+        { role: "user", content: "Remove the bad copy." },
+        { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "terminal", arguments: "{\"command\":\"ls\"}" } }] },
+        { role: "tool", tool_call_id: "c1", content: "books" },
+        { role: "assistant", content: "Done." },
+        { role: "user", content: "How did it go?" },
+      ],
+      activeTools: [{ type: "function", function: { name: "terminal", description: "Run a command.", parameters: { type: "object" } } }],
+    })
+    // A developer message is a system message; no tools is fine, and so is a tool with no description or schema.
+    expect(chatRequest({ messages: [{ role: "developer", content: "d" }, { role: "user", content: "u" }] }, [])).toStrictEqual({ messages: [{ role: "system", content: "d" }, { role: "user", content: "u" }], activeTools: [] })
+    expect(chatRequest({ messages: [], tools: [{ type: "function", function: { name: "t" } }] }, []).activeTools).toStrictEqual([{ type: "function", function: { name: "t" } }])
+  })
+
+  it("refuses what it can't carry faithfully, naming it", () => {
+    expect(() => chatRequest({ messages: [], stream: true }, [])).toThrow("the H wire answers chat completions only without streaming")
+    expect(() => chatRequest({}, [])).toThrow("a chat body needs a messages list")
+    expect(() => chatRequest({ messages: [{ role: "critic", content: "x" }] }, [])).toThrow("the H wire can't carry a message from critic")
+    expect(() => chatRequest({ messages: [null] }, [])).toThrow("the H wire can't carry a message from undefined")
+    expect(() => chatRequest({ messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "x" } }] }] }, [])).toThrow("the H wire can't carry content of type image_url")
+    expect(() => chatRequest({ messages: [], tools: [{ type: "web_search" }] }, [])).toThrow("the H wire can't carry a tool of type web_search")
+    // OpenHands' real tools at the pinned SDK commit (captured from a scripted run) reach the model exactly as sent:
+    // name, description and the whole schema, with its required lists, enums and nested objects.
+    const openhands = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/openhands-tools-ecea9a91.json"), "utf8")) as unknown[]
+    expect(openhands.length).toBe(4)
+    expect(chatRequest({ messages: [], tools: openhands }, []).activeTools).toStrictEqual(openhands)
+    expect(() => chatRequest({ messages: [], tools: [{ type: "function" }] }, [])).toThrow("a chat tool needs its function")
+    expect(() => chatRequest({ messages: [], tools: [{ type: "function", function: { name: "t", cache_control: {} } }] }, [])).toThrow("the H wire can't carry a tool's cache_control")
+    // OpenHands marks text for prompt caching only when the SDK knows the model caches, which it doesn't for the
+    // arm's unknown model; a marked part would lose the mark, so it is refused.
+    expect(() => chatRequest({ messages: [{ role: "system", content: [{ type: "text", text: "s", cache_control: { type: "ephemeral" } }] }] }, [])).toThrow("the H wire can't carry a text's cache_control")
+    expect(chatRequest({ messages: [], tools: [{ type: "function", function: { name: "t", description: "d", strict: false, parameters: { type: "object", additionalProperties: false } } }] }, []).activeTools)
+      .toStrictEqual([{ type: "function", function: { name: "t", description: "d", strict: false, parameters: { type: "object", additionalProperties: false } } }])
+    // Any other request field would go unseen, so it is refused by name.
+    expect(() => chatRequest({ messages: [], temperature: 0 }, [])).toThrow("the H wire can't carry a chat request's temperature")
+  })
+
+  it("answers with one chat completion: the reply, its calls, why it stopped and the usage", () => {
+    expect(chatAnswer({ content: "Done.", toolCalls: [{ id: "c1", name: "terminal", arguments: "{}" }], outputItems: [], usage }, "chat_1")).toEqual({
+      id: "chat_1", object: "chat.completion", created: 0, model: "model",
+      choices: [{ index: 0, finish_reason: "tool_calls", message: { role: "assistant", content: "Done.", tool_calls: [{ id: "c1", type: "function", function: { name: "terminal", arguments: "{}" } }] } }],
+      usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110, prompt_tokens_details: { cached_tokens: 20 }, completion_tokens_details: { reasoning_tokens: 4 } },
+    })
+    expect(chatAnswer({ content: "", toolCalls: [], outputItems: [] }, "c").choices).toEqual([{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "" } }])
+  })
+})
+
 describe("the H wire", () => {
+  it("answers chat completions through the host's runtime too, keeping the same trace", async () => {
+    const seen: ProviderTurnRequest[] = []
+    const wire = createWire({ runtime: runtime([
+      { content: "", toolCalls: [{ id: "c1", name: "terminal", arguments: "{\"command\":\"ls\"}" }], outputItems: [], usage },
+      { content: "All done.", toolCalls: [], outputItems: [] },
+    ], seen), prefix: PREFIX })
+    const first = await wire.handle("/v1/chat/completions", { messages: [{ role: "user", content: "go" }] })
+    expect(first.status).toBe(200)
+    expect(first.contentType).toBe("application/json")
+    expect(JSON.parse(first.body).choices[0].message.tool_calls[0].id).toBe("c1")
+    const second = await wire.handle("/chat/completions", { messages: [
+      { role: "user", content: "go" },
+      { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "terminal", arguments: "{\"command\":\"ls\"}" } }] },
+      { role: "tool", tool_call_id: "c1", content: "books" },
+    ] })
+    expect(JSON.parse(second.body).choices[0].message.content).toBe("All done.")
+    expect(seen[0]!.messages).toEqual([...PREFIX, { role: "user", content: "go" }])
+    expect(wire.timeline()).toEqual([{ kind: "call", name: "terminal", args: "{\"command\":\"ls\"}", result: "books" }, { kind: "reply", text: "All done." }])
+    // A streaming request is refused, never sent.
+    expect((await wire.handle("/v1/chat/completions", { messages: [], stream: true })).status).toBe(400)
+    expect(wire.calls()).toBe(2)
+  })
+
   it("sends each request through the host's runtime, reset first, and keeps the trace: each call with the output the client sent back, then the reply", async () => {
     const seen: ProviderTurnRequest[] = []
     const resets: unknown[] = []
@@ -168,6 +315,22 @@ describe("the H wire", () => {
     expect(wire.calls()).toBe(3)
     expect(wire.timeline()).toEqual([{ kind: "call", name: "exec_command", args: "{\"cmd\":\"ls\"}", result: "books" }, { kind: "reply", text: "All done." }, { kind: "reply", text: "6" }])
     expect(wire.error()).toBeNull()
+  })
+
+  it("hands the model's reasoning to codex and back to the host's runtime unchanged, ciphertext included", async () => {
+    const reasoning = { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "List first." }], encrypted_content: "gAAAA+x/9JJLGPTyhe=" }
+    const seen: ProviderTurnRequest[] = []
+    const wire = createWire({ runtime: runtime([
+      { content: "", toolCalls: [{ id: "c1", name: "exec_command", arguments: "{}" }], outputItems: [reasoning] as never, usage },
+      { content: "Done.", toolCalls: [], outputItems: [] },
+    ], seen), prefix: [] })
+    const first = await wire.handle("/v1/responses", { stream: true, input: [{ type: "message", role: "user", content: "go" }] })
+    // codex reads each output item's done event and keeps the item for its next request.
+    const items = first.body.split("\n").filter((line) => line.startsWith("data: ")).map((line) => JSON.parse(line.slice(6)) as { type: string; item?: Record<string, unknown> })
+      .filter((event) => event.type === "response.output_item.done").map((event) => event.item!)
+    expect(items[0]).toStrictEqual(reasoning)
+    await wire.handle("/v1/responses", { stream: true, input: [{ type: "message", role: "user", content: "go" }, ...items, { type: "function_call_output", call_id: "c1", output: "books" }] })
+    expect(seen[1]!.messages[1]).toStrictEqual({ role: "assistant", content: null, _reasoning_items: [reasoning], tool_calls: [{ id: "c1", type: "function", function: { name: "exec_command", arguments: "{}" } }] })
   })
 
   it("answers a refused or failed call with an error the client stops on, and remembers why", async () => {
