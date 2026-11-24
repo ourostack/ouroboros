@@ -22,6 +22,7 @@ import { remoteRunCase, sshNode, sshStart, type RunCase } from "./sandbox/remote
 import { resolveTarget } from "./targets"
 import { parseInterviewArgs, runInterviews, X_KIT } from "./interviews/runner"
 import { U_KIT } from "./interviews/u/kit"
+import { H_KIT } from "./interviews/h/kit"
 
 const REPO = path.resolve(__dirname, "../..")
 
@@ -103,7 +104,8 @@ async function main(): Promise<number> {
     lock = await holdHostLock(sshNode(host, [`${root}/harness/deploy/unraid/ouro-host-lock.mjs`, "hold", "--holder", hostLock.value, "--ttl", String(HOST_LOCK_TTL_S), "--wait", String(HOST_LOCK_WAIT_S)]))
   }
   try {
-    return await interviews(args, lock ? stopWhenLockLost(runCaseFor(ssh.value, bundle.value, seed.value, images, lock.token)) : { runCase: runCaseFor(ssh.value, bundle.value, seed.value, images, undefined), started: startedSessions() })
+    const agentImages = Object.keys(images?.named ?? {})
+    return await interviews(args, lock ? stopWhenLockLost(runCaseFor(ssh.value, bundle.value, seed.value, images, lock.token)) : { runCase: runCaseFor(ssh.value, bundle.value, seed.value, images, undefined), started: startedSessions() }, agentImages)
   } finally {
     await lock?.release()
   }
@@ -137,13 +139,14 @@ function stopWhenLockLost(runCase: RunCase): { runCase: RunCase; started: Starte
   }
 }
 
-async function interviews(args: ReturnType<typeof parseInterviewArgs>, deps: { runCase: RunCase; started: Started }): Promise<number> {
+async function interviews(args: ReturnType<typeof parseInterviewArgs>, deps: { runCase: RunCase; started: Started }, agentImages: string[]): Promise<number> {
   const { exitCode } = await runInterviews(args, {
     readText: (file) => fs.readFileSync(file, "utf8"),
     loadCases,
     resolveTarget: (spec, creds) => resolveTarget(spec, creds),
     runCase: deps.runCase,
-    kits: { X: X_KIT, U: U_KIT },
+    kits: { X: X_KIT, U: U_KIT, H: H_KIT },
+    agentImages,
     outputExists: (file) => fs.existsSync(file),
     writeReport: writePrivateReport,
     openLog: openPrivateLog,
