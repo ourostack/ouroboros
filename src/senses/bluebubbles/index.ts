@@ -33,7 +33,7 @@ import {
   type OrientationSource,
   type ReplyingToAuthor,
 } from "../../heart/orientation-frame"
-import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked } from "../proactive-content-guard"
+import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked, isVerificationHoldReason, returnHeldProactiveMessage } from "../proactive-content-guard"
 import { containsInternalMetaMarkers, emitBluebubblesMetaBlocked } from "../bluebubbles-meta-guard"
 import type { ReplyTargetSelection, ToolContext } from "../../repertoire/tools-base"
 import {
@@ -5133,6 +5133,9 @@ export async function drainAndSendPendingBlueBubbles(
         reason: internalBlockReason,
         source: "pending_drain",
       })
+      if (isVerificationHoldReason(internalBlockReason)) {
+        await returnHeldProactiveMessage({ agentName: getAgentName(), friendId, text: messageText, reason: internalBlockReason })
+      }
       continue
     }
 

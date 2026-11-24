@@ -8,7 +8,7 @@ import { advanceReturnObligation, findPendingObligationForOrigin, fulfillObligat
 import { completePonderPacket } from "../arc/packets";
 import { listSessionActivity } from "../heart/session-activity";
 import { containsInternalMetaMarkers } from "../senses/bluebubbles-meta-guard";
-import { getProactiveInternalContentBlockReason } from "../senses/proactive-content-guard";
+import { getProactiveInternalContentBlockReason, isVerificationHoldReason, proactiveContentBlockGuidance } from "../senses/proactive-content-guard";
 import { emitNervesEvent } from "../nerves/runtime";
 import * as path from "path";
 import type { AttentionItem } from "../arc/attention-types";
@@ -299,7 +299,11 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
       if (sent?.delivered) return { status: "delivered", detail: "sent to Teams now" }
       if (sent && teamsSendMayHaveGoneOut(sent)) return { status: "unconfirmed", detail: unconfirmedDetail("Teams") }
       if (sent?.reason && CONTENT_REFUSALS.has(sent.reason)) {
-        return { status: "failed", detail: withCode(`blocked: Teams refused this text as internal (${sent.reason}); rewrite it as plain words for them`, "delivery-blocked") }
+        const held = getProactiveInternalContentBlockReason(content)
+        const detail = isVerificationHoldReason(held)
+          ? proactiveContentBlockGuidance(held)
+          : `blocked: Teams refused this text as internal (${sent.reason}); rewrite it as plain words for them`
+        return { status: "failed", detail: withCode(detail, "delivery-blocked") }
       }
       return queueToSession(target, detail)
     }
@@ -399,7 +403,7 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
     // Text the senses' content guard refuses goes nowhere, whichever chat is newest.
     const contentBlock = getProactiveInternalContentBlockReason(content)
     if (contentBlock) {
-      return { status: "failed", detail: withCode(`blocked: this reads as internal status (${contentBlock}), so no chat sends it; rewrite it as plain words for them`, "delivery-blocked") }
+      return { status: "failed", detail: withCode(proactiveContentBlockGuidance(contentBlock), "delivery-blocked") }
     }
     const outreach = await sendSpontaneousOutreach(friendId, allFriendSessions, spontaneousOutreachSenders(agentName, agentRoot, content, queueItem), Date.now())
     if ("sent" in outreach) return outreach.sent
