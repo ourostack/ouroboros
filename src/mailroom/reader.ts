@@ -5,7 +5,7 @@ import { loadAzureBlobSdk } from "./azure-sdk"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentMailroomRoot, getAgentName, getAgentRoot } from "../heart/identity"
 import { readRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../heart/runtime-credentials"
-import { AzureBlobMailroomStore, type HostedMailIndexAuthorityReader } from "./blob-store"
+import { AzureBlobMailroomStore, blobHostedMailCopies, type HostedMailCopies, type HostedMailIndexAuthorityReader } from "./blob-store"
 import { FileMailroomStore, type MailroomStore } from "./file-store"
 import type { MailroomRegistry } from "./core"
 import type { MailAutonomyPolicy } from "./core"
@@ -253,6 +253,21 @@ export function resolveMailroomReader(agentName: string = getAgentName()): Mailr
     meta: { agentName, status: "ready", mailboxAddress: config.mailboxAddress, storeKind: store.storeKind },
   })
   return result
+}
+
+/**
+ * Read-only lookups in the agent's hosted mail container, for retention to prove a local copy was uploaded before it
+ * deletes it. Null when the agent's mail isn't hosted or its runtime config can't be read.
+ */
+export function openHostedMailCopies(agentName: string): HostedMailCopies | null {
+  const runtime = readRuntimeCredentialConfig(agentName)
+  if (!runtime.ok) return null
+  const mailroom = isRecord(runtime.config.mailroom) ? runtime.config.mailroom : null
+  const azureAccountUrl = mailroom ? textField(mailroom, "azureAccountUrl") : undefined
+  if (!mailroom || !azureAccountUrl) return null
+  const container = createBlobServiceClient(azureAccountUrl, textField(mailroom, "azureManagedIdentityClientId"))
+    .getContainerClient(textField(mailroom, "azureContainer") ?? "mailroom")
+  return blobHostedMailCopies(container)
 }
 
 export function resolveHostedMailAuthority(agentName: string = getAgentName()): HostedMailAuthorityResolution {

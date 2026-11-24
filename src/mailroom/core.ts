@@ -756,6 +756,18 @@ function messageStorageId(
   return `mail_${value.slice(0, 32)}`
 }
 
+/**
+ * The id the hosted (Blob) store gives a message: the local file store's id plus its destination. Retention uses it to
+ * find a local copy's hosted counterpart before deleting the local copy.
+ */
+export function hostedMessageStorageId(
+  envelope: MailEnvelopeInput,
+  raw: Buffer,
+  destination: Pick<ResolvedMailAddress, "agentId" | "mailboxId" | "address">,
+): string {
+  return messageStorageId(envelope, raw, destination)
+}
+
 function candidateSender(input: { parsedFrom: string[]; envelope: MailEnvelopeInput }): { email: string; display: string } {
   const parsed = input.parsedFrom[0]
   if (parsed) return { email: parsed, display: parsed }
