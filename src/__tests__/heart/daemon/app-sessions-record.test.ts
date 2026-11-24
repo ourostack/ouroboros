@@ -27,6 +27,13 @@ describe("appSessionsRecord", () => {
     expect(appSessionsRecord(root, NOW + 60 * 60_000)).toEqual({})
   })
 
+  it("publishes the repository, branch, pull request, session and desk log a card names, with their age", () => {
+    snapshot("2026-11-24T11:58:00.000Z")
+    put(path.join(appSessionsStateDir(root), "digest.json"), { at: "2026-11-24T11:55:00.000Z", sessions: [{ id: "a", card: { track: "ouro", slug: "fix-sync", status: "processing", repo: "o/r", branch: "fix", pr: "https://github.com/o/r/pull/3", session: "s-1", file: "ouro/fix-sync/task.md", deskRepo: "https://github.com/o/desk.git", updatedAt: "2026-11-24T11:00:00.000Z" } }] })
+    const desk = appSessionsRecord(root, NOW).appSessions!.sessions![0]!.desk
+    expect(desk).toEqual({ track: "ouro", slug: "fix-sync", status: "processing", via: "desk", url: "https://github.com/o/r/pull/3", repo: "o/r", branch: "fix", session: "s-1", file: "ouro/fix-sync/task.md", deskRepo: "https://github.com/o/desk.git", updatedAt: "2026-11-24T11:00:00.000Z" })
+  })
+
   it("publishes nothing without a snapshot, and tolerates a snapshot without sessions", () => {
     expect(appSessionsRecord(root, NOW)).toEqual({})
     put(path.join(appSessionsStateDir(root), "snapshot.json"), { at: "2026-11-24T11:58:00.000Z", counts: {} })
