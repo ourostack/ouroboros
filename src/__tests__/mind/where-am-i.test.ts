@@ -55,6 +55,7 @@ describe("renderWhereAmI", () => {
     const first = render(sessions)
     expect(first).toContain("  its copilot app sessions as of 5 min ago:\n  - s0 (working)\n  - work 1\n  - work 2 (working)")
     expect(first).toContain("  - and 2 more")
+    expect(render([{ id: "d", name: "fix sync", state: "working", desk: { track: "ouro", slug: "fix-sync", status: "in-progress" } } as never, { id: "e", desk: { track: "t" } } as never])).toContain("  - fix sync (working), desk card ouro/fix-sync [in-progress]\n  - e, desk card t/?")
     const second = render(sessions.slice(0, 2))
     expect(second).not.toContain("and 2 more")
     expect(second).toContain("  - work 1")

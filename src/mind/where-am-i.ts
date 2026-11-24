@@ -58,7 +58,7 @@ const PEER_SESSIONS_SHOWN = 8
 function peerSessionLines(record: PeerRecord | undefined, nowMs: number): string[] {
   const sessions = record?.appSessions?.sessions ?? []
   if (!record?.appSessions || sessions.length === 0) return []
-  const shown = sessions.slice(0, PEER_SESSIONS_SHOWN).map((session) => `  - ${session.name ?? session.id}${session.state ? ` (${session.state})` : ""}`)
+  const shown = sessions.slice(0, PEER_SESSIONS_SHOWN).map((session) => `  - ${session.name ?? session.id}${session.state ? ` (${session.state})` : ""}${session.desk?.track ? `, desk card ${session.desk.track}/${session.desk.slug ?? "?"}${session.desk.status ? ` [${session.desk.status}]` : ""}` : ""}`)
   const more = sessions.length > shown.length ? [`  - and ${sessions.length - shown.length} more`] : []
   return [`  its copilot app sessions as of ${ago(record.appSessions.at, nowMs)}:`, ...shown, ...more]
 }

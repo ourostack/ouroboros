@@ -1263,8 +1263,17 @@ export function projectedSessionEventIds(envelope: SessionEnvelope): string[] {
   return providerProjectionEvents(envelope).map((event) => event.id)
 }
 
-function providerProjectionEvents(envelope: SessionEnvelope): SessionEvent[] {
-  const events = selectEffectiveSessionEvents(envelope.events)
+/** A proactive notice this old is no longer news. It stays in the durable history but is not replayed to the model. */
+export const PROACTIVE_REPLAY_MAX_AGE_MS = 6 * 60 * 60_000
+
+function isDeadProactiveNotice(event: SessionEvent, nowMs: number): boolean {
+  if (event.provenance?.outbound?.origin !== "proactive") return false
+  const at = Date.parse(bestEventTimestamp(event))
+  return Number.isFinite(at) && nowMs - at > PROACTIVE_REPLAY_MAX_AGE_MS
+}
+
+function providerProjectionEvents(envelope: SessionEnvelope, nowMs = Date.now()): SessionEvent[] {
+  const events = selectEffectiveSessionEvents(envelope.events).filter((event) => !isDeadProactiveNotice(event, nowMs))
   if (envelope.projection.eventIds.length === 0) return envelope.projection.trimmed ? [] : events
   const byId = new Map(events.map((event) => [event.id, event] as const))
   return envelope.projection.eventIds

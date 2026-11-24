@@ -1,3 +1,5 @@
 - A pending Teams message that is sent again (a file that reappears) is now recorded in the conversation once, so the same old proactive message no longer piles up in the agent's context.
 - The STALE marker on a peer's presence now names where that data comes from (the bundle's presence record, delivered only by git sync) and which commands to check.
 - "where i am" now lists the Copilot app sessions each peer machine published, so what runs on the other machine is visible from the bundle alone.
+- Proactive notices older than 6 hours stay in the conversation history but are no longer replayed to the model.
+- Each machine's published app sessions now carry their desk card (track, slug, status), shown by "where i am".
