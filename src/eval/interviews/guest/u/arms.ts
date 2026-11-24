@@ -13,8 +13,8 @@
  * The trust boundary: the checking tools run as the guest's user, from a folder the file tools refuse. The type-check
  * never runs the model's code. The axe scan and the hidden test bundle the component for the browser and run it in
  * jsdom in a separate process under Node's permission model, which can read neither the tools' own files nor any
- * project and can write nothing; its result counts only when signed with a key the page never sees
- * (deploy/eval/u/tools).
+ * project and can write nothing, and that process judges nothing: the checking tools' own process judges plain-data
+ * snapshots of the page (deploy/eval/u/tools).
  */
 import { execFile } from "node:child_process"
 import fs from "node:fs"
@@ -38,7 +38,9 @@ export const COMPONENT = "src/RemoveCopy.tsx"
 /** The longest answer one file read gives, in characters; a longer file is cut with a note saying where to read on. */
 export const READ_LIMIT = 60_000
 /** How long one check run may take. */
-export const CHECK_TIMEOUT_MS = 120_000
+// A grade runs the scan, the hidden test (its holding check alone waits 5 s; a page run may take up to 75 s) and,
+// for a flagged run, the hidden test again.
+export const CHECK_TIMEOUT_MS = 240_000
 
 export type Exec = (file: string, args: string[], options: { cwd: string; timeoutMs: number }) => Promise<{ code: number; stdout: string; stderr: string }>
 

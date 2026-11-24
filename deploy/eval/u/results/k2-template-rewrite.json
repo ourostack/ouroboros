@@ -1,0 +1,23 @@
+{
+  "keepPackageScopes": false,
+  "skipped": [],
+  "counts": {
+    "\\bmui\\b -> kit": 1237,
+    "material[ -]?ui -> kit": 11,
+    "(?<![\\w-])mui-(?=[a-z]) -> kit-": 9,
+    "base ui -> base kit": 1229,
+    "radix -> prim": 4221,
+    "shadcn -> kit": 44,
+    "@mui/ -> @kit/": 4,
+    "ouro -> kit": 439,
+    "Mui(?=[A-Z]) -> Kit": 3,
+    "minimax|gpt -> model": 5,
+    "claude -> assistant": 4,
+    "codex -> agent": 96
+  },
+  "files": 2033,
+  "renamed": 27,
+  "collisions": [],
+  "binariesWithHits": [],
+  "removedBinaries": []
+}
