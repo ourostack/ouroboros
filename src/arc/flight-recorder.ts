@@ -118,13 +118,6 @@ export interface HabitPermissionEnvelope {
   warnings: string[]
 }
 
-export interface HabitToolPolicy {
-  requestedTools: string[] | null
-  grantedTools: string[]
-  deniedTools: string[]
-  outwardMessagingAllowed: boolean
-}
-
 export interface HabitSurfaceAttempt {
   recipient: string
   channel: string
@@ -208,7 +201,6 @@ export interface HabitRunReceipt {
   operationId?: string | null
   nextRunAt: string | null
   permissionEnvelope: HabitPermissionEnvelope
-  toolPolicy: HabitToolPolicy
   summarySnapshot: HabitRunSummarySnapshot
   producedRefs: FlightRecorderProducedRef[]
   surfaceAttempts: HabitSurfaceAttempt[]
@@ -1013,14 +1005,6 @@ function isHabitPermissionEnvelope(value: unknown): value is HabitPermissionEnve
     && isStringArray(value.warnings)
 }
 
-function isHabitToolPolicy(value: unknown): value is HabitToolPolicy {
-  if (!isPlainRecord(value)) return false
-  return (value.requestedTools === null || isStringArray(value.requestedTools))
-    && isStringArray(value.grantedTools)
-    && isStringArray(value.deniedTools)
-    && typeof value.outwardMessagingAllowed === "boolean"
-}
-
 function defaultHabitRunSummarySnapshot(receipt: {
   habitName: string
   outcome: HabitRunOutcome
@@ -1109,7 +1093,6 @@ function isHabitRunReceipt(value: unknown): value is HabitRunReceipt {
     && (value.operationId === undefined || value.operationId === null || typeof value.operationId === "string")
     && (value.nextRunAt === null || typeof value.nextRunAt === "string")
     && isHabitPermissionEnvelope(value.permissionEnvelope)
-    && isHabitToolPolicy(value.toolPolicy)
     && (value.summarySnapshot === undefined || isPlainRecord(value.summarySnapshot))
     && isProducedRefArray(value.producedRefs)
     && isHabitSurfaceAttemptArray(value.surfaceAttempts)
@@ -1175,12 +1158,6 @@ function normalizeLegacyHabitRunReceipt(receipt: LegacyHabitRunReceipt): HabitRu
       returnRoutes: [],
       deniedTools: sawSurface ? [] : ["send_message", "surface"],
       warnings: ["legacy receipt normalized without habit permission envelope"],
-    },
-    toolPolicy: {
-      requestedTools: null,
-      grantedTools: sawSurface ? ["surface"] : [],
-      deniedTools: sawSurface ? [] : ["send_message", "surface"],
-      outwardMessagingAllowed: sawSurface,
     },
     summarySnapshot: defaultHabitRunSummarySnapshot(receipt),
     producedRefs: receipt.producedRefs,
@@ -1259,12 +1236,6 @@ function capHabitRunReceipt(receipt: Omit<HabitRunReceipt, "summarySnapshot" | "
       })),
       deniedTools: cappedArray(receipt.permissionEnvelope.deniedTools),
       warnings: cappedArray(receipt.permissionEnvelope.warnings),
-    },
-    toolPolicy: {
-      requestedTools: receipt.toolPolicy.requestedTools ? cappedArray(receipt.toolPolicy.requestedTools) : null,
-      grantedTools: cappedArray(receipt.toolPolicy.grantedTools),
-      deniedTools: cappedArray(receipt.toolPolicy.deniedTools),
-      outwardMessagingAllowed: receipt.toolPolicy.outwardMessagingAllowed,
     },
     summarySnapshot: normalizeHabitRunSummarySnapshot(receipt.summarySnapshot, fallbackSnapshot),
     producedRefs: receipt.producedRefs.map((ref) => ({ ...ref, locator: capStructuredRecordString(ref.locator) })),

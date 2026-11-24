@@ -22,7 +22,6 @@
   "privateRuntime": {
     "autoStart": true
   },
-  "habitPaidTurnsPerDay": 24,
   "phrases": {
     "thinking": [
       "consulting the household machinery",

@@ -2344,7 +2344,7 @@ describe("ouro rsvp operational CLI wiring", () => {
       })
       expect(written).toEqual(parsed)
       expect(habitContent).toContain("title: Wedding RSVPs")
-      expect(habitContent).toContain("tools: [rsvp_query, rsvp_summary]")
+      expect(habitContent).not.toContain("tools:")
       expect(habitContent).toContain("sense: bluebubbles")
       expect(habitContent).toContain("snapshotRef: state/rsvp/snapshots/latest.json")
 

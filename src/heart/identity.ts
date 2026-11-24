@@ -3,12 +3,10 @@ import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { migrateAgentConfigV1ToV2 } from "./migrate-config"
-import { DEFAULT_HABIT_PAID_TURNS_PER_DAY, normalizeHabitPaidTurnsPerDay } from "./autonomy-budget"
 import { validateAgentDisplayName } from "../senses/shepherd/agent-presentation"
 import { normalizeShepherdCheckInMinutes } from "../senses/shepherd/checkin-config"
 import type { AccountPoolSettings } from "./providers/account-pool"
 
-export { normalizeHabitPaidTurnsPerDay } from "./autonomy-budget"
 
 export type AgentProvider = "azure" | "minimax" | "anthropic" | "openai-codex" | "github-copilot" | "openai-compatible" | "openai-compatible-gemini"
 
@@ -130,7 +128,6 @@ export interface AgentConfig {
     contextMargin?: number
     maxStepsPerTurn?: number
   }
-  habitPaidTurnsPerDay?: number
   logging?: {
     level?: LogLevel
     sinks?: LogSinkType[]
@@ -471,7 +468,6 @@ export function buildDefaultAgentTemplate(_agentName: string): AgentConfigTempla
     humanFacing: { provider: "anthropic", model: "claude-opus-5-5" },
     agentFacing: { provider: "anthropic", model: "claude-opus-5-5" },
     context: { contextMargin: DEFAULT_AGENT_CONTEXT.contextMargin },
-    habitPaidTurnsPerDay: DEFAULT_HABIT_PAID_TURNS_PER_DAY,
     senses: {
       cli: { ...DEFAULT_AGENT_SENSES.cli },
       teams: { ...DEFAULT_AGENT_SENSES.teams },
@@ -848,7 +844,6 @@ export function loadAgentConfig(owner?: Readonly<{ agentName: string; agentRoot:
     agentFacing,
     ...(parsed.providerFallback !== undefined ? { providerFallback: validateProviderFallback(parsed.providerFallback, configFile) } : {}),
     ...(parsed.desks !== undefined ? { desks: validateDesks(parsed.desks, configFile) } : {}),
-    habitPaidTurnsPerDay: normalizeHabitPaidTurnsPerDay(owner === undefined ? getAgentName() : owner.agentName, parsed.habitPaidTurnsPerDay, configFile),
     senses: normalizeSenses(parsed.senses, configFile),
     phrases: parsed.phrases as AgentConfig["phrases"],
   }

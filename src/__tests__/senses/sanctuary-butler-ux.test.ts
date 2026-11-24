@@ -158,7 +158,6 @@ async function residentFixture() {
     pendingLocator: "state/habit-sessions/resident-run/pending", runtimeStateLocator: "state/habits/resident-check.json",
     receiptLocator: "arc/flight-recorder/habit-receipts/resident-run.json", nextRunAt: null,
     permissionEnvelope: { schemaVersion: 1, canMessageOutward: false, returnRoutes: [], deniedTools: [], warnings: [] },
-    toolPolicy: { requestedTools: null, grantedTools: [], deniedTools: [], outwardMessagingAllowed: false },
     summarySnapshot: { summary: "resident habit marker", decisions: [], nextLikelyStep: null },
     producedRefs: [], surfaceAttempts: [], traceSteps: [], errors: [],
   })

@@ -8997,12 +8997,6 @@ describe("ouro habit CLI execution", () => {
         deniedTools: [],
         warnings: [],
       },
-      toolPolicy: overrides.toolPolicy ?? {
-        requestedTools: null,
-        grantedTools: ["send_message"],
-        deniedTools: [],
-        outwardMessagingAllowed: true,
-      },
       producedRefs,
       surfaceAttempts,
       errors,

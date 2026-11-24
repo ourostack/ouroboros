@@ -233,9 +233,9 @@ export function selectToolsForChannel(
   if (inner && !sanctuary && context?.agentName === "sanctuary") ordinary.push(...houseCareToolDefinitions)
   const habit = context?.habitSession
   if (inner) {
-    const canSend = habit?.toolPolicy.outwardMessagingAllowed === true && habit.toolPolicy.grantedTools.includes("send_message")
+    const canSend = habit?.permissionEnvelope.canMessageOutward === true
     ordinary = ordinary.filter((definition) => canSend || definition.tool.function.name !== "send_message")
-    if (!habit || (habit.toolPolicy.outwardMessagingAllowed && habit.toolPolicy.grantedTools.includes("surface"))) {
+    if (!habit || canSend) {
       ordinary.push(surfaceToolDefinition)
     }
   }

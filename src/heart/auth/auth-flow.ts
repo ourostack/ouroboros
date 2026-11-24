@@ -4,7 +4,7 @@ import * as os from "os"
 import * as path from "path"
 import { githubDeviceLogin } from "./github-device-login"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { getAgentBundlesRoot, normalizeHabitPaidTurnsPerDay, normalizeSenses, persistedSenses, PROVIDER_CREDENTIALS, type AgentConfig, type AgentProvider, type AgentSensesConfig } from "../identity"
+import { getAgentBundlesRoot, normalizeSenses, persistedSenses, PROVIDER_CREDENTIALS, type AgentConfig, type AgentProvider, type AgentSensesConfig } from "../identity"
 import { migrateAgentConfigV1ToV2 } from "../migrate-config"
 import { resolveModelForProviderSelection } from "../provider-models"
 import { validateAgentDisplayName } from "../../senses/shepherd/agent-presentation"
@@ -126,7 +126,6 @@ export function readAgentConfigForAgent(
     ...(parsed as unknown as AgentConfig),
     displayName: validateAgentDisplayName(parsed.displayName),
     senses: normalizeSenses(parsed.senses, configPath),
-    habitPaidTurnsPerDay: normalizeHabitPaidTurnsPerDay(agentName, parsed.habitPaidTurnsPerDay, configPath),
   }
 
   return {

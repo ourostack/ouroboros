@@ -2768,7 +2768,6 @@ export class OuroDaemon {
               endedAt,
               operationId: occurrenceId,
               permissionEnvelope: { schemaVersion: 1, canMessageOutward: true, returnRoutes: [], deniedTools: [], warnings: [] },
-              toolPolicy: { requestedTools: null, grantedTools: [], deniedTools: [], outwardMessagingAllowed: true },
               ...(nativeResult.ok ? {} : { errors: [nativeResult.error ?? nativeResult.message ?? "native habit failed"] }),
             })
           } finally {

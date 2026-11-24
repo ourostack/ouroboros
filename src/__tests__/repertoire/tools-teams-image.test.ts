@@ -98,7 +98,6 @@ describe("send_file on Teams", () => {
     const { source, send, context } = await fixture()
     if (kind === "habit") context.habitSession = {
       permissionEnvelope: { schemaVersion: 1, canMessageOutward: false, returnRoutes: [], deniedTools: [], warnings: [] },
-      toolPolicy: { requestedTools: null, grantedTools: [], deniedTools: [], outwardMessagingAllowed: false },
     }
     else context.autonomousTurnKind = "await"
     expect(selectToolsForChannel(getChannelCapabilities("teams"), undefined, undefined, undefined, undefined, undefined, context)
