@@ -99,7 +99,8 @@ describe("the openhands arm", () => {
     expect(started[0]!.cwd).toBe(workdir)
     expect(started[0]!.spec).toEqual({ baseUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/v1$/), workdir, systemSuffix: "I am the Butler.\n\nYou are working in environment Z." })
     // PWD keeps the neutral path if the SDK falls back to a plain shell; AI_AGENT keeps the SDK's brand out of the shell.
-    expect(started[0]!.env).toStrictEqual({ HOME: home, PWD: workdir, PATH: process.env.PATH, LITELLM_LOCAL_MODEL_COST_MAP: "True", AI_AGENT: "agent" })
+    // SHELL is bash because tmux runs its session through it, and the image's user has no login shell.
+    expect(started[0]!.env).toStrictEqual({ HOME: home, PWD: workdir, PATH: process.env.PATH, SHELL: "/bin/bash", LITELLM_LOCAL_MODEL_COST_MAP: "True", AI_AGENT: "agent" })
     expect(fs.realpathSync(workdir)).toBe(fs.realpathSync(bundle))
     expect(fs.existsSync(path.join(home, ".agents", "skills", "books", "SKILL.md"))).toBe(true)
     expect(seen[0]!.messages).toEqual([...TURN.prefix, { role: "user", content: "Remove the bad copy." }])

@@ -113,8 +113,9 @@ export function openhandsArm(options: { start?: StartSupervisor; home?: string; 
       fs.writeFileSync(specFile, JSON.stringify({ baseUrl: served.url, workdir, systemSuffix: `${personaPrompt(bundle)}\n\n${turn.labelLine}` }))
       // The SDK reads the model cost map it ships with rather than fetching one; the container has no route out.
       // The terminal's tmux keeps the neutral workdir as given; PWD keeps it too if the SDK falls back to a plain shell.
-      // AI_AGENT is set to a neutral name, since the SDK otherwise puts its own brand there for the shell.
-      const supervisor = start(specFile, { cwd: workdir, env: { HOME: home, PWD: workdir, PATH: process.env.PATH, LITELLM_LOCAL_MODEL_COST_MAP: "True", AI_AGENT: "agent" } })
+      // AI_AGENT is set to a neutral name, since the SDK otherwise puts its own brand there for the shell. SHELL is
+      // bash because tmux runs its session through SHELL, and the image's user has no login shell to fall back on.
+      const supervisor = start(specFile, { cwd: workdir, env: { HOME: home, PWD: workdir, PATH: process.env.PATH, SHELL: "/bin/bash", LITELLM_LOCAL_MODEL_COST_MAP: "True", AI_AGENT: "agent" } })
       // OpenHands' `finish` call is the turn's reply.
       const traced = (): Array<TraceCall | TraceReply> => wire.timeline().map((entry) => entry.kind === "call" && entry.name === "finish"
         ? { kind: "reply", text: withoutThinking(finishMessage(entry.args)) }
