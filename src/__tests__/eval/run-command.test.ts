@@ -1,5 +1,7 @@
+import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type { ProviderRuntime } from "../../heart/core"
 import { CALLS_PER_RUN, parseEvalArgs, runEvalCommand, type EvalArgs, type EvalDeps } from "../../eval/run-command"
 import { loadCases } from "../../eval/self-test"
@@ -68,6 +70,7 @@ function deps(runCase: RunCase, over: Partial<EvalDeps> = {}): EvalDeps & { prin
     outputExists: () => false,
     writeReport: (file, report) => { reports.push({ file, report }) },
     print: (text) => { printed.push(text) },
+    killSwitch: () => undefined,
     ...over,
   }
 }
@@ -110,7 +113,7 @@ describe("parseEvalArgs", () => {
     const required = ["--cases", "c", "--bundle", "b", "--bundle-ref", "r", "--target", "t", "--budget-premium", "1", "--credentials-agent", "a", "--output", "o", "--runs", "1"]
     expect(parseEvalArgs([...required, "--sandbox-ssh", "sanctuary:/tmp/x", "--host-lock", "eval:c17-replay"])).toMatchObject({ hostLock: "eval:c17-replay" })
     expect(() => parseEvalArgs([...required, "--host-lock", "eval:c17-replay"])).toThrow(/--host-lock needs --sandbox-ssh/)
-    for (const bad of ["eval c17", "x;rm -rf /", "$(id)", ""]) expect(() => parseEvalArgs([...required, "--sandbox-ssh", "sanctuary:/tmp/x", "--host-lock", bad])).toThrow(/--host-lock takes one word/)
+    for (const bad of ["eval c17", "x;rm -rf /", "$(id)", "", "butler:ship", "c17-replay"]) expect(() => parseEvalArgs([...required, "--sandbox-ssh", "sanctuary:/tmp/x", "--host-lock", bad])).toThrow(/--host-lock takes one word/)
   })
 })
 
@@ -219,6 +222,95 @@ describe("runEvalCommand", () => {
       ["remove-bad-copy", true, null], ["remove-bad-copy", true, null], ["unreadable-edition", false, "outcome errored"],
     ])
     expect(result.cells[1]).toMatchObject({ completed: 1, notRun: 1, passes: 0 })
+  })
+
+  it("stops a running batch at its next call once ~/.ouro-eval/STOP appears, and starts no more runs", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "run-stop-"))
+    vi.spyOn(os, "homedir").mockReturnValue(home)
+    try {
+      const plan = scripted(() => ({ calls: 3, obs: "pass" }))
+      const runCase: RunCase = async (input) => {
+        if (plan.runs.length === 1) {
+          fs.mkdirSync(path.join(home, ".ouro-eval"))
+          fs.writeFileSync(path.join(home, ".ouro-eval", "STOP"), "")
+        }
+        return plan(input)
+      }
+      const { killSwitch: _k, ...withDefault } = deps(runCase)
+      const { exitCode, result } = await runEvalCommand(base, withDefault)
+      expect(exitCode).toBe(2)
+      expect(result.stopped).toBe("the kill switch ~/.ouro-eval/STOP is set")
+      expect(plan.runs).toEqual(["remove-bad-copy#1", "remove-bad-copy#2"])
+      expect(result.calls).toBe(3)
+    } finally {
+      vi.restoreAllMocks()
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("refuses every run while the kill switch is set, before any call", async () => {
+    const plan = scripted(() => ({ calls: 1, obs: "pass" }))
+    const { exitCode, result } = await runEvalCommand(base, deps(plan, { killSwitch: () => "the kill switch /h/STOP is set" }))
+    expect(exitCode).toBe(2)
+    expect(result.stopped).toMatch(/kill switch/)
+    expect(plan.runs).toEqual([])
+  })
+
+  it("asks the billing guard before each run on a logged-in account, with the quota read just then", async () => {
+    const readings = [100, 50, 19]
+    const asked: Array<[string, unknown]> = []
+    const plan = scripted(() => ({ calls: 1, obs: "pass" }))
+    const d = deps(plan, {
+      resolveTarget: async () => target({ account: "ari", quota: async () => ({ tokenBased: false, reading: { leftPct: readings.shift() ?? 0 } as never }) }),
+      billingGuard: (account, snapshot) => { asked.push([account, snapshot.reading?.leftPct]); return snapshot.reading!.leftPct < 20 ? "under 20%" : undefined },
+    })
+    const { exitCode, result } = await runEvalCommand(base, d)
+    expect(exitCode).toBe(2)
+    expect(result.stopped).toBe("the billing guard refused remove-bad-copy run 2: under 20%")
+    expect(plan.runs).toEqual(["remove-bad-copy#1"])
+    // The first reading is the batch's own; each run's guard gets a fresh one.
+    expect(asked).toEqual([["ari", 50], ["ari", 19]])
+  })
+
+  it("leaves the billing guard out for a target with no login", async () => {
+    let asked = 0
+    const plan = scripted(() => ({ calls: 1, obs: "pass" }))
+    await runEvalCommand({ ...base, runs: 1 }, deps(plan, { billingGuard: () => { asked += 1; return "no" } }))
+    expect(asked).toBe(0)
+    expect(plan.runs).toHaveLength(2)
+  })
+
+  it("asks the month ledger before each run with its worst case, and adds what each run spent", async () => {
+    const asked: Array<[string, unknown]> = []
+    const added: unknown[] = []
+    const plan = scripted(() => ({ calls: 2, obs: "pass" }))
+    const month = {
+      refusal: async (label: string, worst: { premium: number; credits: number }) => { asked.push([label, worst]); return asked.length === 3 ? "past the month cap" : undefined },
+      add: async (spent: unknown) => { added.push(spent) },
+      current: async () => ({ month: "2026-11", spent: { premium: 0, credits: 0, runs: 0 } }),
+    }
+    const { exitCode, result } = await runEvalCommand(base, deps(plan, { monthLedger: month }))
+    expect(exitCode).toBe(2)
+    expect(result.stopped).toBe("past the month cap")
+    expect(asked[0]).toEqual(["remove-bad-copy run 1", { premium: CALLS_PER_RUN, credits: CALLS_PER_RUN }])
+    expect(plan.runs).toEqual(["remove-bad-copy#1", "remove-bad-copy#2"])
+    expect(added).toHaveLength(2)
+    expect(added[0]).toMatchObject({ premium: 2 })
+  })
+
+  it("stops, and still writes the report of finished runs, when the month ledger fails", async () => {
+    const plan = scripted(() => ({ calls: 1, obs: "pass" }))
+    const current = async () => ({ month: "2026-11", spent: { premium: 0, credits: 0, runs: 0 } })
+    const addFails = deps(plan, { monthLedger: { refusal: async () => undefined, add: async () => { throw new Error("lock timed out") }, current } })
+    const first = await runEvalCommand(base, addFails)
+    expect(first.result.stopped).toBe("the month ledger failed to add remove-bad-copy run 1's spend: lock timed out")
+    expect(first.runs).toHaveLength(1)
+    expect(addFails.reports).toHaveLength(1)
+    const refusalFails = deps(scripted(() => ({ calls: 1, obs: "pass" })), { monthLedger: { refusal: async () => { throw new Error("can't be understood") }, add: async () => undefined, current } })
+    const second = await runEvalCommand(base, refusalFails)
+    expect(second.result.stopped).toBe("the month ledger failed: can't be understood")
+    expect(second.exitCode).toBe(2)
+    expect(refusalFails.reports).toHaveLength(1)
   })
 
   it("fails a run that hit the step budget or errored, and one whose checks fail, with its reason", async () => {
