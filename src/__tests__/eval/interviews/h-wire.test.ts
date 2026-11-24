@@ -22,6 +22,9 @@ function runtime(answers: TurnResult[], seen: ProviderTurnRequest[], resets: unk
   }
 }
 
+/** A Responses body as codex sends it: always streamed. */
+const streamed = (body: Record<string, unknown>, prefix: Parameters<typeof responsesRequest>[1]) => responsesRequest({ stream: true, ...body }, prefix)
+
 const usage = { input_tokens: 100, output_tokens: 10, reasoning_tokens: 4, total_tokens: 110, cached_input_tokens: 20 }
 
 describe("the H wire's Responses translation", () => {
@@ -59,7 +62,7 @@ describe("the H wire's Responses translation", () => {
     })
     // The case's conversation goes in once, before the first user message only. A tool reaches the model exactly as
     // the arm sent it: nothing added where it sent no description or schema (or an empty one), and `strict` kept.
-    expect(responsesRequest({ input: [{ type: "message", role: "user", content: "job" }, { type: "message", role: "system", content: "s" }, { type: "message", role: "user", content: "debrief" }], tools: [{ type: "function", name: "t" }, { type: "function", name: "u", description: "", strict: true, parameters: { type: "object", properties: {}, additionalProperties: false } }] }, PREFIX)).toEqual({
+    expect(streamed({ input: [{ type: "message", role: "user", content: "job" }, { type: "message", role: "system", content: "s" }, { type: "message", role: "user", content: "debrief" }], tools: [{ type: "function", name: "t" }, { type: "function", name: "u", description: "", strict: true, parameters: { type: "object", properties: {}, additionalProperties: false } }] }, PREFIX)).toEqual({
       messages: [...PREFIX, { role: "user", content: "job" }, { role: "system", content: "s" }, { role: "user", content: "debrief" }],
       activeTools: [
         { type: "function", function: { name: "t" } },
@@ -67,53 +70,56 @@ describe("the H wire's Responses translation", () => {
       ],
     })
     // A schema of null is carried as null, not replaced with an empty one.
-    expect(responsesRequest({ input: [], tools: [{ type: "function", name: "t", parameters: null }] }, []).activeTools).toStrictEqual([{ type: "function", function: { name: "t", parameters: null } }])
+    expect(streamed({ input: [], tools: [{ type: "function", name: "t", parameters: null }] }, []).activeTools).toStrictEqual([{ type: "function", function: { name: "t", parameters: null } }])
     // A tool field the wire doesn't know would be dropped, so it is refused by name instead.
-    expect(() => responsesRequest({ input: [], tools: [{ type: "function", name: "t", defer_loading: true }] }, [])).toThrow("the H wire can't carry a tool's defer_loading")
+    expect(() => streamed({ input: [], tools: [{ type: "function", name: "t", defer_loading: true }] }, [])).toThrow("the H wire can't carry a tool's defer_loading")
     // A call with no assistant text before it starts its own assistant message; no instructions and no tools are fine.
-    expect(responsesRequest({ input: [{ type: "message", role: "user", content: "hi" }, { type: "function_call", call_id: "c", name: "t", arguments: "{}" }] }, [])).toEqual({
+    expect(streamed({ input: [{ type: "message", role: "user", content: "hi" }, { type: "function_call", call_id: "c", name: "t", arguments: "{}" }] }, [])).toEqual({
       messages: [{ role: "user", content: "hi" }, { role: "assistant", content: null, tool_calls: [{ id: "c", type: "function", function: { name: "t", arguments: "{}" } }] }],
       activeTools: [],
     })
   })
 
   it("refuses what it can't carry faithfully, naming it", () => {
-    expect(() => responsesRequest({ input: [{ type: "custom_tool_call", call_id: "c", name: "apply_patch", input: "x" }] }, [])).toThrow("the H wire can't carry an input item of type custom_tool_call")
-    expect(() => responsesRequest({ input: [], tools: [{ type: "web_search" }] }, [])).toThrow("the H wire can't carry a tool of type web_search")
-    expect(() => responsesRequest({ input: [{ type: "message", role: "critic", content: "x" }] }, [])).toThrow("the H wire can't carry a message from critic")
-    expect(() => responsesRequest({ input: [{ type: "message", role: "user", content: [{ type: "input_image", image_url: "x" }] }] }, [])).toThrow("the H wire can't carry content of type input_image")
-    expect(() => responsesRequest({ input: [{ type: "function_call_output", call_id: "c", output: 3 }] }, [])).toThrow("the H wire can't carry content of type number")
+    expect(() => streamed({ input: [{ type: "custom_tool_call", call_id: "c", name: "apply_patch", input: "x" }] }, [])).toThrow("the H wire can't carry an input item of type custom_tool_call")
+    expect(() => streamed({ input: [], tools: [{ type: "web_search" }] }, [])).toThrow("the H wire can't carry a tool of type web_search")
+    expect(() => streamed({ input: [{ type: "message", role: "critic", content: "x" }] }, [])).toThrow("the H wire can't carry a message from critic")
+    expect(() => streamed({ input: [{ type: "message", role: "user", content: [{ type: "input_image", image_url: "x" }] }] }, [])).toThrow("the H wire can't carry content of type input_image")
+    expect(() => streamed({ input: [{ type: "function_call_output", call_id: "c", output: 3 }] }, [])).toThrow("the H wire can't carry content of type number")
     // Request fields outside what codex sends would be dropped, so they are refused by name; instructions among them,
     // since the wire reads the harness's instructions from its developer messages only.
-    expect(() => responsesRequest({ input: [], instructions: "x" }, [])).toThrow("the H wire can't carry a request's instructions")
-    expect(() => responsesRequest({ input: [], previous_response_id: "r" }, [])).toThrow("the H wire can't carry a request's previous_response_id")
+    expect(() => streamed({ input: [], instructions: "x" }, [])).toThrow("the H wire can't carry a request's instructions")
+    expect(() => streamed({ input: [], previous_response_id: "r" }, [])).toThrow("the H wire can't carry a request's previous_response_id")
     // The wire always streams and always lets the model call the tools, so any other setting is refused.
-    expect(() => responsesRequest({ input: [], stream: false }, [])).toThrow("the H wire can't carry a request's stream of false")
-    expect(() => responsesRequest({ input: [], tool_choice: "none" }, [])).toThrow("the H wire can't carry a request's tool_choice of \"none\"")
-    expect(responsesRequest({ input: [], stream: true, tool_choice: "auto" }, [])).toEqual({ messages: [], activeTools: [] })
+    expect(() => streamed({ input: [], stream: false }, [])).toThrow("the H wire can't carry a request's stream of false")
+    expect(() => streamed({ input: [], tool_choice: "none" }, [])).toThrow("the H wire can't carry a request's tool_choice of \"none\"")
+    expect(() => responsesRequest({ input: [] }, [])).toThrow("the H wire can't carry a request's stream of undefined")
+    expect(streamed({ input: [], stream: true, tool_choice: "auto" }, [])).toEqual({ messages: [], activeTools: [] })
+    // An item type that names something on an object's prototype is refused by name, like any other.
+    expect(() => streamed({ input: [{ type: "constructor" }], stream: true }, [])).toThrow("the H wire can't carry an input item of type constructor")
     // Tools that aren't a list, or a tool without a name, are refused rather than read as no tools.
-    expect(() => responsesRequest({ input: [], tools: { type: "function", name: "t" } }, [])).toThrow("the H wire can't carry a request's tools of type function")
-    expect(() => responsesRequest({ input: [], tools: null }, [])).toThrow("the H wire can't carry a request's tools of type null")
-    expect(() => responsesRequest({ input: [], tools: [{ type: "function" }] }, [])).toThrow("the H wire can't carry a tool's name of type undefined")
-    expect(() => responsesRequest({ input: [], tools: [{ type: "function", name: 7 }] }, [])).toThrow("the H wire can't carry a tool's name of type number")
+    expect(() => streamed({ input: [], tools: { type: "function", name: "t" } }, [])).toThrow("the H wire can't carry a request's tools of type function")
+    expect(() => streamed({ input: [], tools: null }, [])).toThrow("the H wire can't carry a request's tools of type null")
+    expect(() => streamed({ input: [], tools: [{ type: "function" }] }, [])).toThrow("the H wire can't carry a tool's name of type undefined")
+    expect(() => streamed({ input: [], tools: [{ type: "function", name: 7 }] }, [])).toThrow("the H wire can't carry a tool's name of type number")
     // An item's fields beyond what the wire reads (its id and status are the client's own bookkeeping) are refused.
-    expect(() => responsesRequest({ input: [{ type: "message", role: "user", content: "x", encrypted_content: "e" }] }, [])).toThrow("the H wire can't carry a message's encrypted_content")
-    expect(() => responsesRequest({ input: [{ type: "message", role: "assistant", content: "x", phase: "final_answer" }] }, [])).toThrow("the H wire can't carry a message's phase")
-    expect(() => responsesRequest({ input: [{ type: "function_call", call_id: "c", name: "t", arguments: "{}", namespace: "n" }] }, [])).toThrow("the H wire can't carry a function_call's namespace")
-    expect(() => responsesRequest({ input: [{ type: "function_call_output", call_id: "c", output: "o", success: true }] }, [])).toThrow("the H wire can't carry a function_call_output's success")
-    expect(() => responsesRequest({ input: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "x", annotations: [] }] }] }, [])).toThrow("the H wire can't carry an output_text's annotations")
-    expect(() => responsesRequest({ input: [{ type: "function_call", call_id: "c" }] }, [])).toThrow("the H wire can't carry a function_call's name of type undefined")
-    expect(() => responsesRequest({ input: [{ type: "function_call", call_id: "c", name: null, arguments: "{}" }] }, [])).toThrow("the H wire can't carry a function_call's name of type null")
-    expect(() => responsesRequest({ input: [{ type: "function_call", call_id: "c", name: "t", arguments: {} }] }, [])).toThrow("the H wire can't carry a function_call's arguments of type object")
-    expect(() => responsesRequest({ input: [{ type: "function_call_output", call_id: 3, output: "o" }] }, [])).toThrow("the H wire can't carry a function_call_output's call_id of type number")
-    expect(responsesRequest({ input: [
+    expect(() => streamed({ input: [{ type: "message", role: "user", content: "x", encrypted_content: "e" }] }, [])).toThrow("the H wire can't carry a message's encrypted_content")
+    expect(() => streamed({ input: [{ type: "message", role: "assistant", content: "x", phase: "final_answer" }] }, [])).toThrow("the H wire can't carry a message's phase")
+    expect(() => streamed({ input: [{ type: "function_call", call_id: "c", name: "t", arguments: "{}", namespace: "n" }] }, [])).toThrow("the H wire can't carry a function_call's namespace")
+    expect(() => streamed({ input: [{ type: "function_call_output", call_id: "c", output: "o", success: true }] }, [])).toThrow("the H wire can't carry a function_call_output's success")
+    expect(() => streamed({ input: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "x", annotations: [] }] }] }, [])).toThrow("the H wire can't carry an output_text's annotations")
+    expect(() => streamed({ input: [{ type: "function_call", call_id: "c" }] }, [])).toThrow("the H wire can't carry a function_call's name of type undefined")
+    expect(() => streamed({ input: [{ type: "function_call", call_id: "c", name: null, arguments: "{}" }] }, [])).toThrow("the H wire can't carry a function_call's name of type null")
+    expect(() => streamed({ input: [{ type: "function_call", call_id: "c", name: "t", arguments: {} }] }, [])).toThrow("the H wire can't carry a function_call's arguments of type object")
+    expect(() => streamed({ input: [{ type: "function_call_output", call_id: 3, output: "o" }] }, [])).toThrow("the H wire can't carry a function_call_output's call_id of type number")
+    expect(streamed({ input: [
       { type: "message", id: "m", status: "completed", role: "user", content: "x" },
       { type: "function_call", id: "f", status: "completed", call_id: "c", name: "t", arguments: "{}" },
       { type: "function_call_output", id: "o", status: "completed", call_id: "c", output: "y" },
     ] }, []).messages).toHaveLength(3)
-    expect(() => responsesRequest({}, [])).toThrow("a Responses body needs an input list")
+    expect(() => streamed({}, [])).toThrow("a Responses body needs an input list")
     expect(() => responsesRequest(null, [])).toThrow("a Responses body needs an input list")
-    expect(() => responsesRequest({ input: [null] }, [])).toThrow("the H wire can't carry an input item of type null")
+    expect(() => streamed({ input: [null] }, [])).toThrow("the H wire can't carry an input item of type null")
   })
 
   it("answers with the events the client reads: created, each item done, completed with usage", () => {
@@ -228,20 +234,20 @@ describe("the H wire", () => {
       { content: "All done.", toolCalls: [], outputItems: [] },
       { content: "6", toolCalls: [], outputItems: [] },
     ], seen, resets), prefix: PREFIX })
-    const first = await wire.handle("/v1/responses", { input: [{ type: "message", role: "user", content: "go" }], tools: [] })
+    const first = await wire.handle("/v1/responses", { stream: true, input: [{ type: "message", role: "user", content: "go" }], tools: [] })
     expect(first.status).toBe(200)
     expect(first.contentType).toBe("text/event-stream")
     expect(first.body).toContain("\"call_id\":\"c1\"")
     expect(resets).toEqual([seen[0]!.messages])
     expect(seen[0]!.messages).toEqual([...PREFIX, { role: "user", content: "go" }])
-    const second = await wire.handle("/v1/responses", { input: [
+    const second = await wire.handle("/v1/responses", { stream: true, input: [
       { type: "message", role: "user", content: "go" },
       { type: "function_call", call_id: "c1", name: "exec_command", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "c1", output: "books" },
     ] })
     expect(second.body).toContain("All done.")
     // The debrief resends the whole history; an output already recorded stays as it was.
-    await wire.handle("/v1/responses", { input: [
+    await wire.handle("/v1/responses", { stream: true, input: [
       { type: "message", role: "user", content: "go" },
       { type: "function_call", call_id: "c1", name: "exec_command", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "c1", output: "changed" },
@@ -255,19 +261,19 @@ describe("the H wire", () => {
 
   it("answers a refused or failed call with an error the client stops on, and remembers why", async () => {
     const wire = createWire({ runtime: runtime([], []), prefix: [] })
-    const failed = await wire.handle("/v1/responses", { input: [] })
+    const failed = await wire.handle("/v1/responses", { stream: true, input: [] })
     // 400, which codex never retries: a retry would be another metered call.
     expect(failed).toEqual({ status: 400, contentType: "application/json", body: JSON.stringify({ error: { message: "the host refused the call" } }) })
     expect(wire.error()).toBe("the host refused the call")
     expect(wire.calls()).toBe(1)
     // A body the wire can't carry is never sent.
     const refused = createWire({ runtime: runtime([], []), prefix: [] })
-    expect((await refused.handle("/v1/responses", { input: [{ type: "local_shell_call" }] })).status).toBe(400)
+    expect((await refused.handle("/v1/responses", { stream: true, input: [{ type: "local_shell_call" }] })).status).toBe(400)
     expect(refused.calls()).toBe(0)
     expect(refused.error()).toBe("the H wire can't carry an input item of type local_shell_call")
     expect(await refused.handle("/v1/models", {})).toEqual({ status: 404, contentType: "application/json", body: JSON.stringify({ error: { message: "no route /v1/models" } }) })
     const odd = createWire({ runtime: { ...runtime([], []), streamTurn: async () => { throw "plain" } }, prefix: [] })
-    expect((await odd.handle("/responses", { input: [] })).status).toBe(400)
+    expect((await odd.handle("/responses", { stream: true, input: [] })).status).toBe(400)
     expect(odd.error()).toBe("plain")
   })
 
@@ -277,7 +283,7 @@ describe("the H wire", () => {
     const served = await serveWire(wire)
     try {
       expect(served.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1$/)
-      const response = await fetch(`${served.url}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ input: [{ type: "message", role: "user", content: "hello" }] }) })
+      const response = await fetch(`${served.url}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ stream: true, input: [{ type: "message", role: "user", content: "hello" }] }) })
       expect(response.status).toBe(200)
       expect(response.headers.get("content-type")).toBe("text/event-stream")
       expect(await response.text()).toContain("response.completed")
@@ -307,7 +313,7 @@ describe("the H wire", () => {
 describe("codex's captured tools", () => {
   it("reach the model exactly as codex sent them, on both of the host's paths", () => {
     expect(codexTools.map((tool) => tool.name)).toEqual(["exec_command", "write_stdin", "request_user_input", "get_goal", "create_goal", "update_goal"])
-    const { activeTools } = responsesRequest({ input: [], tools: codexTools }, [])
+    const { activeTools } = streamed({ input: [], tools: codexTools }, [])
     // A chat provider sends activeTools as they are: same names, words, schemas and strict flags, nothing added.
     expect(activeTools).toStrictEqual(codexTools.map(({ type, ...fields }) => ({ type, function: fields })))
     // A Responses provider turns them back into Responses tools; the result is codex's own list.
@@ -315,7 +321,7 @@ describe("codex's captured tools", () => {
     expect(JSON.stringify(activeTools)).not.toContain("MCP tool")
     // A strict tool stays strict on the Responses path too.
     const strict = { type: "function", name: "s", description: "d", parameters: { type: "object", properties: {}, additionalProperties: false }, strict: true }
-    expect(toResponsesTools(responsesRequest({ input: [], tools: [strict] }, []).activeTools as Parameters<typeof toResponsesTools>[0])).toStrictEqual([strict])
+    expect(toResponsesTools(streamed({ input: [], tools: [strict] }, []).activeTools as Parameters<typeof toResponsesTools>[0])).toStrictEqual([strict])
   })
 })
 

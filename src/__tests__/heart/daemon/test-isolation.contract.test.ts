@@ -136,6 +136,10 @@ const RM_RECURSIVE_ALLOWLIST: Array<{ file: string; why: string }> = [
     file: "src/eval/sandbox/docker.ts",
     why: "Eval sandbox cleanup: removes the run's own folder, made by mkdtemp under the eval's work root, once its containers are gone. Not agent-callable — runs on the eval host, outside the sandbox the agent's turn runs in.",
   },
+  {
+    file: "src/eval/sandbox/slugger-projection.ts",
+    why: "Eval projection cleanup: removes a git-archive folder this module made by mkdtemp (refusing any other path), and a projection folder it refused partway. Not agent-callable — runs on the eval host, before the sandbox starts.",
+  },
 ]
 
 // Files that are themselves the enforcement layer for the rm-rf rule

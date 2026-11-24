@@ -3,7 +3,7 @@ import * as os from "os"
 import * as path from "path"
 import * as zlib from "zlib"
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { compactLegacySessionArchives, compactUnusedMailroomFileStore, mailroomStoreFromRuntimeConfig, runAgentStateRetention } from "../../../heart/daemon/state-retention"
 import { registerGlobalLogSink, type LogEvent } from "../../../nerves"
@@ -144,6 +144,79 @@ describe("runAgentStateRetention", () => {
     expect(done).toHaveLength(2)
     expect(done[0].meta).toEqual(expect.objectContaining({ agent: "slugger", compacted: 1, skippedRecent: 0, failed: 0 }))
     expect(JSON.stringify(done)).not.toContain(dir)
+  })
+
+  it("deletes gzipped mail copies Blob proves it holds, keeps the rest, and logs counts only", async () => {
+    const { createHash } = await import("crypto")
+    const { hostedMessageStorageId } = await import("../../../mailroom/core")
+    const mailroom = path.join(dir, "slugger.ouro", "state", "mailroom")
+    const hostedRecords = new Map<string, { rawSha256: string; rawSize: number; rawObject: string }>()
+    for (const n of [1, 2]) {
+      const raw = Buffer.from(`Subject: synthetic ${n}\r\n\r\nbody ${n}\r\n`)
+      const id = `mail_${String(n).padStart(32, "0")}`
+      const envelope = { mailFrom: "a@example.com", rcptTo: ["slugger@ouro.bot"] }
+      const message = { id, agentId: "slugger", mailboxId: "mbx", recipient: "slugger@ouro.bot", envelope, rawObject: `raw/${id}.eml`, rawSha256: createHash("sha256").update(raw).digest("hex"), rawSize: raw.byteLength }
+      writeAged(path.join(mailroom, "messages", `${id}.json`), JSON.stringify(message), 60 * DAY)
+      writeAged(path.join(mailroom, "raw", `${id}.eml`), raw, 60 * DAY)
+      // Only the first was uploaded.
+      if (n === 1) {
+        const hostedId = hostedMessageStorageId(envelope, raw, { agentId: "slugger", mailboxId: "mbx", address: "slugger@ouro.bot" })
+        hostedRecords.set(hostedId, { rawSha256: message.rawSha256, rawSize: message.rawSize, rawObject: `raw/${hostedId}.k.json` })
+      }
+    }
+    const opened: string[] = []
+    const capture = captureEvents()
+    let results: Awaited<ReturnType<typeof runAgentStateRetention>>
+    try {
+      results = await runAgentStateRetention({
+        bundlesRoot: dir,
+        agents: ["slugger", "local"],
+        now: () => NOW,
+        mailroomStore: (agent) => (agent === "slugger" ? "hosted" : "local"),
+        hostedMailCopies: (agent) => {
+          opened.push(agent)
+          return { readMessage: async (id) => hostedRecords.get(id) ?? null, rawObjectSize: async () => 100 }
+        },
+      })
+    } finally {
+      capture.stop()
+    }
+    expect(opened).toEqual(["slugger"])
+    expect(results[0].mailroomCopies).toEqual(expect.objectContaining({ checked: 2, deleted: 1, notInBlob: 1 }))
+    expect(results[1].mailroomCopies).toBeNull()
+    expect(fs.readdirSync(path.join(mailroom, "messages"))).toEqual([`mail_${"0".repeat(31)}2.json.gz`])
+    expect(fs.readdirSync(path.join(mailroom, "raw"))).toEqual([`mail_${"0".repeat(31)}2.eml.gz`])
+    const proven = capture.events.filter((e) => e.event === "daemon.state_retention_mailroom_proven_copies")
+    expect(proven).toHaveLength(1)
+    expect(proven[0].meta).toEqual(expect.objectContaining({ agent: "slugger", deleted: 1, notInBlob: 1 }))
+    expect(JSON.stringify(capture.events)).not.toContain(dir)
+  })
+
+  it("opens the hosted container from the agent's runtime config by default", async () => {
+    vi.resetModules()
+    vi.doMock("../../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: () => ({ ok: true, config: { mailroom: { storePath: "/local" } } }),
+      refreshRuntimeCredentialConfig: async () => ({ ok: false }),
+    }))
+    try {
+      const { runAgentStateRetention: run } = await import("../../../heart/daemon/state-retention")
+      const results = await run({ bundlesRoot: dir, agents: ["slugger"], now: () => NOW, mailroomStore: () => "hosted" })
+      expect(results[0].mailroomCopies).toBeNull()
+    } finally {
+      vi.doUnmock("../../../heart/runtime-credentials")
+      vi.resetModules()
+    }
+  })
+
+  it("keeps every mail copy when the hosted container can't be opened", async () => {
+    const results = await runAgentStateRetention({
+      bundlesRoot: dir,
+      agents: ["slugger"],
+      now: () => NOW,
+      mailroomStore: () => "hosted",
+      hostedMailCopies: () => null,
+    })
+    expect(results[0].mailroomCopies).toBeNull()
   })
 
   it("keeps going when one agent's pass throws", async () => {
