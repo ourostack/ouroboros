@@ -11,7 +11,8 @@
  * session is cut off partway by another's spend. A session never takes a call that could pass its own credit
  * reservation either, so a cap can be passed only by what one call costs beyond its per-call estimate; the consumer
  * raises the estimate for later sessions from `maxCall`. Once the money really spent passes a cap, or `stop` is called (the
- * first 402 or 429), every later call and reservation is refused.
+ * first 402 or 429), every later call and reservation is refused. The same happens once `killSwitch` answers a reason
+ * (the `~/.ouro-eval/STOP` file, `kill-switch.ts`), which is asked before every reservation and every call.
  */
 import type { ProviderRuntime } from "../heart/core"
 import type { UsageData } from "../heart/streaming"
@@ -57,7 +58,12 @@ export function creditsOf(usage: UsageData, pricing: Pricing): number {
   return round((usage.input_tokens * pricing.creditsPerMillionInput + usage.output_tokens * pricing.creditsPerMillionOutput) / 1_000_000)
 }
 
-export function createBudgetLedger(caps: Caps): BudgetLedger {
+export type LedgerOptions = {
+  /** Why every reservation and call must stop now, or undefined while they may go on. */
+  killSwitch?: () => string | undefined
+}
+
+export function createBudgetLedger(caps: Caps, options: LedgerOptions = {}): BudgetLedger {
   for (const meter of METERS) {
     const cap = caps[meter]
     if (cap !== undefined && !finite(cap)) throw new Error(`the ${meter} cap must be a number of at least 0`)
@@ -77,6 +83,12 @@ export function createBudgetLedger(caps: Caps): BudgetLedger {
     const cap = caps[meter]
     if (cap !== undefined && spent[meter] > cap) stop(`${meter} cap ${cap} passed: ${spent[meter]} spent`)
   }
+  /** Stops the ledger when the kill switch is set; true when it is stopped, for whatever reason. */
+  const halted = (): boolean => {
+    const killed = stopReason === undefined ? options.killSwitch?.() : undefined
+    if (killed !== undefined) stop(killed)
+    return stopReason !== undefined
+  }
 
   return {
     stop,
@@ -85,7 +97,7 @@ export function createBudgetLedger(caps: Caps): BudgetLedger {
     reserve(label, worst) {
       if (!Number.isInteger(worst.calls) || worst.calls < 1) throw new Error("a reservation needs at least 1 call")
       if (!METERS.every((meter) => finite(worst.perCall[meter]))) throw new Error("a reservation's per-call cost must be numbers of at least 0")
-      if (stopReason !== undefined) return { refused: `stopped: ${stopReason}` }
+      if (halted()) return { refused: `stopped: ${stopReason}` }
       const total: Cost = { premium: round(worst.calls * worst.perCall.premium), credits: round(worst.calls * worst.perCall.credits) }
       for (const meter of METERS) {
         const cap = caps[meter]
@@ -110,7 +122,7 @@ export function createBudgetLedger(caps: Caps): BudgetLedger {
       emitNervesEvent({ component: "eval", event: "eval.budget_reserved", message: "reserved a session's worst-case model spend", meta: { label, ...total } })
       return {
         take() {
-          if (!open || stopReason !== undefined || taken >= worst.calls) return false
+          if (!open || taken >= worst.calls || halted()) return false
           if (worst.perCall.credits > 0 && round(mine.credits + worst.perCall.credits) > total.credits) {
             cut = true
             emitNervesEvent({ component: "eval", level: "warn", event: "eval.budget_cut_short", message: "refused a call past its session's credit reservation", meta: { label, spent: mine.credits } })
