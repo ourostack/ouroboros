@@ -76,6 +76,19 @@ describe("createRealOsCronDeps", () => {
     expect(fs.readFileSync(filePath, "utf-8")).toBe("<plist>test</plist>")
   })
 
+  it("readFile returns a plist's text or null, and isLoaded reports an unknown label as not loaded", async () => {
+    const { createRealOsCronDeps } = await import("../../../heart/daemon/os-cron-deps")
+    const deps = createRealOsCronDeps()
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-cron-test-"))
+    cleanup.push(tempDir)
+    const filePath = path.join(tempDir, "test.plist")
+    fs.writeFileSync(filePath, "<plist>read</plist>", "utf-8")
+    expect(deps.readFile!(filePath)).toBe("<plist>read</plist>")
+    expect(deps.readFile!(path.join(tempDir, "missing.plist"))).toBeNull()
+    expect(deps.isLoaded!("bot.ouro.no-such-agent.no-such-habit-for-tests")).toBe(false)
+  })
+
   it("removeFile removes existing file and is silent on missing", async () => {
     emitNervesEvent({
       component: "daemon",

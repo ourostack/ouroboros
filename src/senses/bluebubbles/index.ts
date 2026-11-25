@@ -639,6 +639,12 @@ const BLUEBUBBLES_CATCHUP_PAGE_SIZE = 50
 const BLUEBUBBLES_CATCHUP_MAX_PAGES = 20
 const BLUEBUBBLES_HEALTHY_CATCHUP_OVERLAP_MS = 90_000
 const BLUEBUBBLES_RECOVERY_CATCHUP_LOOKBACK_MS = 24 * 60 * 60 * 1000
+/**
+ * How long after an outage every catch-up keeps the outage lookback. Messages iMessage held while the Mac or
+ * BlueBubbles was down land minutes after the server answers, dated when they were sent, and BlueBubbles sends no
+ * webhook for a row older than its last poll, so one pass at the moment of recovery misses them (2026-11-25).
+ */
+const BLUEBUBBLES_RECOVERY_SETTLE_MS = 30 * 60 * 1000
 const BLUEBUBBLES_FIRST_CATCHUP_LOOKBACK_MS = 10 * 60 * 1000
 
 interface BlueBubblesHandleOptions {
@@ -3861,6 +3867,24 @@ function parseTimestampMs(value: string | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+type BlueBubblesCatchUpMode = "recovery" | "settling" | "healthy" | "first"
+
+function resolveBlueBubblesCatchUpWindow(
+  previousState: BlueBubblesRuntimeState,
+  nowMs = Date.now(),
+): { since: number; mode: BlueBubblesCatchUpMode } {
+  if (previousState.upstreamStatus === "error") {
+    return { since: nowMs - BLUEBUBBLES_RECOVERY_CATCHUP_LOOKBACK_MS, mode: "recovery" }
+  }
+  const settleUntil = parseTimestampMs(previousState.recoveryLookbackUntil)
+  const settleSince = parseTimestampMs(previousState.recoveryLookbackSince)
+  if (settleUntil !== null && settleSince !== null && nowMs < settleUntil) {
+    return { since: settleSince, mode: "settling" }
+  }
+  const since = resolveBlueBubblesCatchUpSince(previousState, nowMs)
+  return { since, mode: parseTimestampMs(previousState.catchUpThrough ?? previousState.lastCheckedAt) === null ? "first" : "healthy" }
+}
+
 function resolveBlueBubblesCatchUpSince(previousState: BlueBubblesRuntimeState, nowMs = Date.now()): number {
   if (previousState.upstreamStatus === "error") {
     return nowMs - BLUEBUBBLES_RECOVERY_CATCHUP_LOOKBACK_MS
@@ -3982,6 +4006,13 @@ async function syncBlueBubblesRuntime(
     })
     options.lifecycleSignal?.throwIfAborted()
     const failed = catchUp.failed
+    // Open (or keep) the settling window: catch-ups keep reaching back to the outage until it closes.
+    const recoveryLookback = previousState.upstreamStatus === "error"
+      ? {
+          recoveryLookbackSince: new Date(resolveBlueBubblesCatchUpSince(previousState, Date.parse(checkedAt))).toISOString(),
+          recoveryLookbackUntil: new Date(Date.parse(checkedAt) + BLUEBUBBLES_RECOVERY_SETTLE_MS).toISOString(),
+        }
+      : {}
     const pendingAfterCatchup = blueBubblesPendingRecoverySnapshot(agentName)
     const activeAfterCatchup = snapshotBlueBubblesActiveTurns(agentName, BLUEBUBBLES_LIVE_TURN_STALLED_MS)
     const queued = pendingAfterCatchup.pendingRecoveryCount
@@ -3994,6 +4025,7 @@ async function syncBlueBubblesRuntime(
       detail: formatBlueBubblesRuntimeDetail(pendingAfterCatchup, failed, activeAfterCatchup),
       lastCheckedAt: checkedAt,
       catchUpThrough: checkedAt,
+      ...recoveryLookback,
       proofMethod: "bluebubbles.checkHealth",
       ...pendingAfterCatchup,
       ...activeAfterCatchup,
@@ -4137,10 +4169,13 @@ async function catchUpMissedBlueBubblesMessagesInScope(
   const result: BlueBubblesCatchUpResult = { inspected: 0, recovered: 0, skipped: 0, failed: 0 }
   const state = previousState ?? readBlueBubblesRuntimeState(agentName)
   const cutover = initializeBlueBubblesSemanticCutover(agentName)
+  const catchUpWindow = resolveBlueBubblesCatchUpWindow(state)
   const catchUpSince = Math.max(
-    resolveBlueBubblesCatchUpSince(state),
+    catchUpWindow.since,
     Date.parse(cutover.effectiveAt),
   )
+  // Healthy passes run every 30 s and stay at info; outage passes are logged, so a miss leaves evidence.
+  const catchUpLogLevel = catchUpWindow.mode === "recovery" || catchUpWindow.mode === "settling" ? "warn" : "info"
   const processTurns = options.processTurns !== false
   let pendingKeyHashes: ReadonlySet<string> | null = null
   const pendingCaptureKeyHashes = (): ReadonlySet<string> => {
@@ -4152,11 +4187,13 @@ async function catchUpMissedBlueBubblesMessagesInScope(
   if (!client.listRecentMessages) return result
 
   emitNervesEvent({
+    level: catchUpWindow.mode === "recovery" ? "warn" : "info",
     component: "senses",
     event: "senses.bluebubbles_catchup_start",
     message: "bluebubbles upstream catch-up pass started",
     meta: {
       since: new Date(catchUpSince).toISOString(),
+      mode: catchUpWindow.mode,
       pageSize: BLUEBUBBLES_CATCHUP_PAGE_SIZE,
       maxPages: BLUEBUBBLES_CATCHUP_MAX_PAGES,
     },
@@ -4354,12 +4391,14 @@ async function catchUpMissedBlueBubblesMessagesInScope(
     }
   }))
 
-  if (result.inspected > 0 || result.recovered > 0 || result.skipped > 0 || result.failed > 0) {
+  const foundWork = result.recovered > 0 || (result.queued ?? 0) > 0 || result.failed > 0
+  if (result.inspected > 0 || foundWork || catchUpWindow.mode === "recovery") {
     emitNervesEvent({
+      level: foundWork || catchUpWindow.mode === "recovery" ? catchUpLogLevel : "info",
       component: "senses",
       event: "senses.bluebubbles_catchup_complete",
       message: "bluebubbles upstream catch-up pass completed",
-      meta: { ...result },
+      meta: { ...result, mode: catchUpWindow.mode },
     })
   }
 

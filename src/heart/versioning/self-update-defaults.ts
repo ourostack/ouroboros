@@ -7,6 +7,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { parseStatusPayload } from "../daemon/cli-render"
 import { DEFAULT_DAEMON_SOCKET_PATH, checkDaemonSocketAlive, sendDaemonCommand } from "../daemon/socket-client"
 import { DAEMON_PLIST_LABEL } from "../daemon/launchd"
+import { finalHandoffBlockers, judgeRestartAfterUpFailure, type HandoffBlocker } from "../daemon/handoff-blockers"
 import { isRuntimeReplacementStranded, runtimeReplacementMarkerPath } from "../daemon/runtime-replacement-handoff"
 import { activateVersion, getCurrentVersion, getOuroCliHome, pruneOldVersions, validateInstalledVersionForActivation } from "./ouro-version-manager"
 import { installRelease, lookupLatestRelease, selfUpdateE2eOverrides, type ReleaseSourceDeps } from "./release-sources"
@@ -59,9 +60,12 @@ async function fetchJson(url: string, timeoutMs: number): Promise<unknown> {
  */
 function runDetachedFromStdin(command: string, args: string[], timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, OURO_UNATTENDED: "1" } })
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, OURO_UNATTENDED: "1" } })
     let stderr = ""
+    let stdout = ""
     child.stderr?.on("data", (chunk) => { stderr = (stderr + String(chunk)).slice(-4000) })
+    // `ouro up` reports why it failed on stdout, so without it a failure reads "exited 1: " with nothing after.
+    child.stdout?.on("data", (chunk) => { stdout = (stdout + String(chunk)).slice(-4000) })
     const timer = setTimeout(() => {
       child.kill("SIGTERM")
       reject(new Error(`${command} ${args.join(" ")} timed out after ${Math.round(timeoutMs / 1000)}s`))
@@ -73,9 +77,25 @@ function runDetachedFromStdin(command: string, args: string[], timeoutMs: number
     child.on("close", (code) => {
       clearTimeout(timer)
       if (code === 0) resolve()
-      else reject(new Error(`${args.join(" ")} exited ${code}: ${stderr.trim().split("\n").slice(-3).join(" ")}`))
+      else reject(new Error(`${args.join(" ")} exited ${code}: ${failureTail(stderr) || failureTail(stdout) || "no output"}`))
     })
   })
+}
+
+/** The last three non-empty lines of a command's output, without terminal colour codes. */
+function failureTail(output: string): string {
+  // eslint-disable-next-line no-control-regex -- strips ANSI escape sequences
+  return output.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").split("\n").map((line) => line.trim()).filter(Boolean).slice(-3).join(" ")
+}
+
+async function daemonHandoffBlockers(socketPath: string): Promise<HandoffBlocker[] | null> {
+  try {
+    const response = await sendDaemonCommand(socketPath, { kind: "daemon.status" })
+    const payload = parseStatusPayload(response.data)
+    return payload ? finalHandoffBlockers(payload) : null
+  } catch {
+    return null
+  }
 }
 
 export const releaseSourceDeps: ReleaseSourceDeps = { fetchJson, execFile: execFileText, ...selfUpdateE2eOverrides(process.env) }
@@ -177,18 +197,26 @@ export function createDefaultSelfUpdateDeps(options: { homeDir?: string; socketP
     isDaemonRunning: () => checkDaemonSocketAlive(socketPath),
     runningDaemonVersion: async () => (await checkDaemonSocketAlive(socketPath)) ? runningDaemonVersion(socketPath) : null,
     restartDaemon: async (expectedVersion) => {
+      // What already blocks handoff on the daemon being replaced: a release is not at fault for those.
+      const before = (await checkDaemonSocketAlive(socketPath)) ? await daemonHandoffBlockers(socketPath) : []
+      let upFailure: string | null = null
       try {
         await runDetachedFromStdin(process.execPath, [launcher, "up"], DAEMON_UP_TIMEOUT_MS)
       } catch (error) {
-        return { ok: false, detail: error instanceof Error ? error.message : String(error) }
+        upFailure = error instanceof Error ? error.message : String(error)
       }
       const deadline = Date.now() + DAEMON_HEALTH_WAIT_MS
       let seen: string | null = null
       while (Date.now() < deadline) {
         seen = await runningDaemonVersion(socketPath)
-        if (seen === expectedVersion) return { ok: true }
+        if (seen === expectedVersion) break
         await new Promise((resolve) => setTimeout(resolve, 2_000))
       }
+      if (upFailure !== null) {
+        const after = seen === expectedVersion ? await daemonHandoffBlockers(socketPath) : null
+        return judgeRestartAfterUpFailure({ upFailure, expectedVersion, seenVersion: seen, before, after })
+      }
+      if (seen === expectedVersion) return { ok: true }
       return { ok: false, detail: seen ? `daemon answered with ${seen}, expected ${expectedVersion}` : "daemon did not answer after ouro up" }
     },
     isDevMode: () => fs.existsSync(path.join(cliHome, "dev-config.json")),

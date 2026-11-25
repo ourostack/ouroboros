@@ -62,6 +62,7 @@ import type { LettersCommand, LettersWriter } from "../letters/writer"
 import { FrontendSessionService, lazyFrontendAuthority } from "../frontend-session-service"
 import { frontendSocketPathForDaemon, startFrontendSocketServer, type FrontendSocketServer } from "../frontend-socket"
 import { FrontendJournalStore } from "../frontend-journal"
+import { cadenceRetrySuffix } from "./cadence"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -1794,7 +1795,7 @@ export class OuroDaemon {
     return {
       kind: "ready",
       habit,
-      occurrenceId: `${options.trigger}:last-run:${habit.lastRun}:cadence:${habit.cadence}`,
+      occurrenceId: `${options.trigger}:last-run:${habit.lastRun}:cadence:${habit.cadence}${cadenceRetrySuffix(habit.cadence, habit.lastRun, Date.now())}`,
     }
   }
 
@@ -2277,6 +2278,23 @@ export class OuroDaemon {
     })
 
     if (!decision.executable) {
+      const habitWake = habitMessageFromPrivateWakeCommand(command)
+      if (habitWake && decision.duplicateOf) {
+        // Quiet duplicates are how a lost run hid a stopped heartbeat for 14 hours; say so where logs keep it.
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.habit_wake_duplicate_suppressed",
+          message: "habit wake refused as a duplicate of an earlier run of the same occurrence",
+          meta: {
+            agent: command.agent,
+            habitName: habitWake.habitName,
+            trigger: habitWake.trigger,
+            idempotencyKey: decision.idempotencyKey,
+            duplicateOf: decision.duplicateOf,
+          },
+        })
+      }
       return {
         ok: true,
         message: `private-runtime wake denied for ${command.agent}: ${decision.deniedReason}`,

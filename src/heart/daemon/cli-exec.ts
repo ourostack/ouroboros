@@ -5,6 +5,7 @@
  * handler (local execution, daemon socket, or interactive flow).
  */
 
+import { finalHandoffBlockers } from "./handoff-blockers"
 import { execFileSync, execSync, spawn } from "child_process"
 import { checkBlueBubblesHostTarget, currentOsAccount } from "../bluebubbles-host-account"
 import { sanctuaryGitExcludeText } from "./sanctuary-bundle-migration"
@@ -1146,32 +1147,6 @@ function finalDaemonFailureMessage(deps: OuroCliDeps, reason: string): string {
   return lines.join("\n")
 }
 
-function finalHandoffBlockingHealthChecks(payload: StatusPayload): string[] {
-  return payload.healthChecks
-    .filter((check) => {
-      if (check.status === "ok") return false
-      if (check.status === "critical") return true
-      return check.name === "agent-processes"
-        || check.name === "cron-health"
-        || check.name === "sense-probes"
-        || check.name.startsWith("sense-probe:")
-    })
-    .map((check) => `${check.name}: ${check.status} - ${check.message}`)
-}
-
-function finalHandoffBlockingWorkers(payload: StatusPayload): string[] {
-  return payload.workers
-    .filter((worker) => !(worker.autoStart === false && worker.status === "stopped") && worker.status !== "running")
-    .map((worker) => {
-      const detail = [
-        worker.errorReason,
-        worker.fixHint ? `fix: ${worker.fixHint}` : null,
-      ].filter((part): part is string => part !== null).join("; ")
-      const suffix = detail.length > 0 ? ` - ${detail}` : ""
-      return `${worker.agent}/${worker.worker}: ${worker.status}${suffix}`
-    })
-}
-
 async function verifyDaemonReadyForHandoff(
   deps: OuroCliDeps,
   options: {
@@ -1248,12 +1223,7 @@ async function verifyDaemonReadyForHandoffOnce(
       }
     }
     if (payload.overview.health !== "ok") {
-      const blockingWorkers = finalHandoffBlockingWorkers(payload)
-      const degradedSenses = payload.senses
-        .filter((sense) => sense.enabled && !["running", "interactive", "disabled", "not_attached"].includes(sense.status))
-        .map((sense) => `${sense.agent}/${sense.sense}: ${sense.status} - ${sense.detail}`)
-      const blockingHealthChecks = finalHandoffBlockingHealthChecks(payload)
-      const details = [...blockingWorkers, ...degradedSenses, ...blockingHealthChecks]
+      const details = finalHandoffBlockers(payload).map((blocker) => blocker.text)
       const detail = details.length > 0 ? `; ${details.join("; ")}` : ""
       if (options.allowDegradedHealth) {
         return {
@@ -1261,7 +1231,7 @@ async function verifyDaemonReadyForHandoffOnce(
           summary: `runtime health ${payload.overview.health}`,
         }
       }
-      if (blockingWorkers.length === 0 && degradedSenses.length === 0 && blockingHealthChecks.length === 0) {
+      if (details.length === 0) {
         return {
           ok: true,
           summary: "daemon answered with advisory health warnings",
