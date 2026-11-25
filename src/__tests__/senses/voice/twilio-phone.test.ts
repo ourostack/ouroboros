@@ -658,6 +658,14 @@ describe("turn-owned realtime selection", () => {
     const accepted = Promise.withResolvers<Response>()
     const acquire = vi.spyOn(mcp, "getSharedMcpManager").mockImplementation(async () => phase === "configuration" ? pending.promise : null)
     const events = vi.spyOn(nerves, "emitNervesEvent")
+    if (phase === "configuration") {
+      // The call stops "during configuration" only if the 250 ms bootstrap deadline has not already moved it on to
+      // acceptance. That deadline is a real timer, so a slow runner could pass it before the stop arrives; hold it open
+      // and wait past it, so the fixture owns the ordering instead of the machine's speed.
+      const realSetTimeout = globalThis.setTimeout
+      vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: TimerHandler, ms?: number, ...args: unknown[]) =>
+        realSetTimeout(handler, ms === 250 ? 60_000 : ms, ...args)) as typeof setTimeout)
+    }
     let fixture: Awaited<ReturnType<typeof startToolSelectionVoice>> | undefined
     try {
       await writeTwilioOutboundCallJob(outputDir, {
@@ -678,6 +686,7 @@ describe("turn-owned realtime selection", () => {
       })
       if (phase !== "preclassified") {
         if (phase === "configuration") await vi.waitFor(() => expect(acquire).toHaveBeenCalledOnce())
+        if (phase === "configuration") await new Promise((resolve) => setTimeout(resolve, 300))
         else await vi.waitFor(() => expect(fixture!.mock.openaiRequests.some(({ input }) => input.endsWith("/accept"))).toBe(true))
         expect((await fixture.bridge.handle({
           method: "POST", path: "/voice/twilio/outgoing/out-stopped/amd", headers: {},
