@@ -351,6 +351,31 @@ describe("rotation.new-scheme", () => {
   })
 
   describe("createNdjsonFileSink — rotation trigger path", () => {
+    it("rotates an oversized file on a short-lived process's first write, before the check interval fills", async () => {
+      const filePath = path.join(dir, "events.ndjson")
+      fs.writeFileSync(filePath, "x".repeat(500) + "\n", "utf-8")
+      const sink = createNdjsonFileSink(filePath, { maxSizeBytes: 400, maxGenerations: 2, compress: true })
+
+      sink({
+        ts: "2026-04-08T12:00:00.000Z",
+        level: "info",
+        event: "test.first_write",
+        trace_id: "t-first",
+        component: "test",
+        message: "first write of a new process",
+        meta: {},
+      })
+
+      const rotated = path.join(dir, "events.1.ndjson.gz")
+      for (let i = 0; i < 100; i++) {
+        if (fs.existsSync(rotated)) break
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      }
+      expect(fs.existsSync(rotated)).toBe(true)
+      expect(zlib.gunzipSync(fs.readFileSync(rotated)).toString("utf-8")).toContain("xxxx")
+      expect(fs.readFileSync(filePath, "utf-8")).toContain("test.first_write")
+    })
+
     it("rotates after a single oversized append even when no later event arrives", async () => {
       const filePath = path.join(dir, "events.ndjson")
       const sink = createNdjsonFileSink(filePath, {
