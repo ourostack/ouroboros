@@ -162,6 +162,32 @@ describe("LaunchdCronManager", () => {
     )
   })
 
+  it("sync leaves a loaded job with an unchanged plist alone, so its StartInterval clock keeps running", () => {
+    const job = makeJob()
+    const xml = generatePlistXml(job, "/usr/bin")
+    const deps = makeLaunchdDeps({ envPath: "/usr/bin", readFile: vi.fn(() => xml), isLoaded: vi.fn(() => true) })
+    const manager = new LaunchdCronManager(deps, { ownsLabel: () => true })
+
+    manager.sync([job])
+
+    expect(deps.isLoaded).toHaveBeenCalledWith("bot.ouro.slugger.heartbeat")
+    expect(deps.exec).not.toHaveBeenCalled()
+    expect(deps.writeFile).not.toHaveBeenCalled()
+  })
+
+  it("sync reloads a job whose plist changed or that launchd does not have loaded", () => {
+    const job = makeJob()
+    const xml = generatePlistXml(job, "/usr/bin")
+    const changed = makeLaunchdDeps({ envPath: "/usr/bin", readFile: vi.fn(() => "<plist>old</plist>"), isLoaded: vi.fn(() => true) })
+    new LaunchdCronManager(changed, { ownsLabel: () => true }).sync([job])
+    expect(changed.writeFile).toHaveBeenCalledWith(expect.stringContaining("bot.ouro.slugger.heartbeat.plist"), xml)
+    expect(changed.exec).toHaveBeenCalledWith(expect.stringContaining("launchctl load"))
+
+    const unloaded = makeLaunchdDeps({ envPath: "/usr/bin", readFile: vi.fn(() => xml), isLoaded: vi.fn(() => false) })
+    new LaunchdCronManager(unloaded, { ownsLabel: () => true }).sync([job])
+    expect(unloaded.exec).toHaveBeenCalledWith(expect.stringContaining("launchctl load"))
+  })
+
   it("sync removes stale plists not in job list", () => {
     const deps = makeLaunchdDeps({
       listDir: vi.fn(() => ["bot.ouro.slugger.heartbeat.plist", "bot.ouro.slugger.old-task.plist"]),
