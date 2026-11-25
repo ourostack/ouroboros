@@ -1818,7 +1818,9 @@ const effectsLine = (r: Report) => (r.effects.length ? `Effects the X-ray caused
 
 function renderText(report: Report, max = 6): string {
   const s = report.summary;
-  const out = [`ax-xray: ${targetLine(report.target)}`, pinLine(report), verdictLine(report), `Claims holding: ${s.holding} of ${s.claims} (must: ${s.mustHolding} of ${s.must}). Checks: ${s.checks.pass} pass, ${s.checks.fail} fail, ${s.checks.skip} skipped.`, safetyLine(report), effectsLine(report), ""];
+  // Conforming is said with the bar beside it, the moment someone might call the door done.
+  const bar = report.conformant ? ["Conforming is the floor, not the bar: before agents rely on a new door, pass the AX gate (https://ui.ouroboros.bot/docs/design-craft/#the-ax-gate)."] : [];
+  const out = [`ax-xray: ${targetLine(report.target)}`, pinLine(report), verdictLine(report), ...bar, `Claims holding: ${s.holding} of ${s.claims} (must: ${s.mustHolding} of ${s.must}). Checks: ${s.checks.pass} pass, ${s.checks.fail} fail, ${s.checks.skip} skipped.`, safetyLine(report), effectsLine(report), ""];
   for (const c of order(report.claims)) {
     out.push(`${mark(c)} ${c.id} [${c.tier}] ${c.rule} (${c.pass} of ${c.pass + c.fail}${c.skip ? `, ${c.skip} skipped` : ""})`);
     for (const f of c.failing.slice(0, max)) out.push(`    ${f.surface}: ${f.note}`);
