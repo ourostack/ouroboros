@@ -1,0 +1,1 @@
+Test-only: the "SIP call stopped at configuration" voice test no longer depends on runner speed. It could fail on a slow runner because the call's real 250 ms bootstrap deadline passed before the test's simulated stop, so the call was already accepted and connected. No change to call behaviour.
