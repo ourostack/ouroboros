@@ -808,6 +808,32 @@ describe("readDiskFreeBytes", () => {
   })
 })
 
+describe("HealthMonitor afterChecks", () => {
+  const base = {
+    processManager: { listAgentSnapshots: () => [{ name: "slugger", status: "running" }] },
+    scheduler: { listJobs: () => [{ id: "daily-review", lastRun: "2026-03-07T00:00:00.000Z" }] },
+  }
+
+  it("hands each pass's results to afterChecks without waiting on it", async () => {
+    let release: () => void = () => undefined
+    const afterChecks = vi.fn(() => new Promise<void>((resolve) => { release = resolve }))
+    const monitor = new HealthMonitor({ ...base, afterChecks })
+    const results = await monitor.runChecks()
+    await Promise.resolve()
+    expect(afterChecks).toHaveBeenCalledWith(results)
+    expect(afterChecks.mock.calls[0]![0]).not.toBe(results)
+    release()
+  })
+
+  it("logs an afterChecks failure instead of failing the pass", async () => {
+    const monitor = new HealthMonitor({ ...base, afterChecks: async () => { throw new Error("watcher broke") } })
+    await expect(monitor.runChecks()).resolves.toHaveLength(3)
+    const other = new HealthMonitor({ ...base, afterChecks: () => { throw "sync failure" } })
+    await expect(other.runChecks()).resolves.toHaveLength(3)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+})
+
 describe("readDiskUsagePercent", () => {
   it("reports the share of the volume in use, as df does", () => {
     expect(readDiskUsagePercent("/bundles", () => ({ blocks: 242837545, bavail: 12904290 }))).toBe(95)
