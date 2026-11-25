@@ -1,0 +1,1 @@
+The Desk built into every agent is now release 3.2.546 (was 3.2.461). It includes Desk's fix for its MCP server's signal handling, so a Desk server told to stop with SIGTERM, SIGINT or SIGHUP now exits instead of spinning on the CPU.
