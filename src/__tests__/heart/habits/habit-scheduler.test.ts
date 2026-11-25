@@ -31,7 +31,8 @@ const mockParseCadenceToMs = vi.fn()
 const mockEvaluateCadenceDue = vi.fn()
 const mockCadenceFallbackDelayMs = vi.fn()
 const mockNextCadenceRunAt = vi.fn()
-vi.mock("../../../heart/daemon/cadence", () => ({
+vi.mock("../../../heart/daemon/cadence", async () => ({
+  cadenceRetrySuffix: (await vi.importActual<typeof import("../../../heart/daemon/cadence")>("../../../heart/daemon/cadence")).cadenceRetrySuffix,
   parseCadenceToCron: (...args: any[]) => mockParseCadenceToCron(...args),
   parseCadenceToMs: (...args: any[]) => mockParseCadenceToMs(...args),
   evaluateCadenceDue: (...args: any[]) => mockEvaluateCadenceDue(...args),
@@ -1237,6 +1238,12 @@ describe("HabitScheduler", () => {
       expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue", {
         occurrenceId: "overdue:last-run:2026-03-27T10:00:00.000Z:cadence:30m",
       })
+      // Two hours on a 30-minute cadence: earlier runs were lost, which must show in kept (warn) logs.
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "warn",
+        event: "daemon.habit_overdue",
+        meta: expect.objectContaining({ habitName: "heartbeat", lastRun: "2026-03-27T10:00:00.000Z" }),
+      }))
     })
 
     it("does not re-fire recently-fired habits on reconcile", () => {

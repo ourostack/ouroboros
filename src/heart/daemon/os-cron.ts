@@ -19,6 +19,10 @@ export interface OsCronDeps {
   mkdirp: (dir: string) => void
   homeDir: string
   envPath?: string
+  /** The plist on disk, or null when there is none. Without it every sync reloads every job. */
+  readFile?: (filePath: string) => string | null
+  /** Whether launchd has the job loaded. Without it every sync reloads every job. */
+  isLoaded?: (label: string) => boolean
 }
 
 export interface LaunchdCronManagerOptions {
@@ -164,6 +168,10 @@ export class LaunchdCronManager implements OsCronManager {
       const filename = `${label}.plist`
       const fullPath = `${this.launchAgentsDir}/${filename}`
       const xml = generatePlistXml(job, this.deps.envPath)
+      // Reloading restarts a StartInterval job's clock, and the scheduler syncs every 5 minutes, so a 30-minute
+      // job reloaded on every sync never fires: launchd ran the heartbeat 0 times in 14 hours (2026-11-25).
+      // Leave a loaded job with an unchanged plist alone.
+      if (this.deps.readFile?.(fullPath) === xml && this.deps.isLoaded?.(label) === true) continue
       try { this.deps.exec(`launchctl unload "${fullPath}"`) } catch { /* best effort */ }
       this.deps.writeFile(fullPath, xml)
       try { this.deps.exec(`launchctl load "${fullPath}"`) } catch { /* best effort */ }

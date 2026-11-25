@@ -30,6 +30,21 @@ export function createRealOsCronDeps(): OsCronDeps {
       }
     },
     existsFile: (p: string) => fs.existsSync(p),
+    readFile: (p: string) => {
+      try {
+        return fs.readFileSync(p, "utf-8")
+      } catch {
+        return null
+      }
+    },
+    isLoaded: (label: string) => {
+      try {
+        execSync(`launchctl list "${label}"`, { stdio: "ignore" })
+        return true
+      } catch {
+        return false
+      }
+    },
     listDir: (dir: string) => {
       try {
         return fs.readdirSync(dir)
