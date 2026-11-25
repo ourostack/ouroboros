@@ -316,7 +316,11 @@ export class OwnerChannelOutageWatcher {
         }
         if (nowMs - Date.parse(outage.healthySince) < this.recoveryConfirmMs) continue
       } else if (!gone) {
-        // Told, and configured but with no process yet: "back" waits until it is running.
+        // Told, and configured but with no process yet: "back" waits until it is running, for a fresh two minutes.
+        if (outage.healthySince) {
+          delete outage.healthySince
+          changed = true
+        }
         continue
       }
       if (!outage.alertedAt || gone) {

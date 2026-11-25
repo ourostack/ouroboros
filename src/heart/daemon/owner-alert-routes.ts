@@ -28,7 +28,7 @@ export interface OwnerAlertRouteDeps {
   confirmSend?: typeof confirmMailDraftSend
   resolveTransport?: typeof resolveOutboundTransport
   providerClient?: (agent: string, transport: ReturnType<typeof resolveOutboundTransport>) => Promise<Parameters<typeof confirmMailDraftSend>[0]["providerClient"]>
-  sendTelegram?: (agent: string, input: { noticeId: string; text: string; signal?: AbortSignal }) => Promise<"sent" | "not_sent">
+  sendTelegram?: (agent: string, input: { noticeId: string; text: string; signal?: AbortSignal; nowOrNever?: boolean }) => Promise<"sent" | "not_sent">
 }
 
 const SEND_TIMEOUT_MS = 30_000
@@ -136,9 +136,10 @@ export function createOwnerAlertMailSender(agent: string, agentRoot: string, dep
 export function createOwnerAlertTelegramSender(agent: string, deps: OwnerAlertRouteDeps = {}): OwnerAlertSend {
   const d = withDefaults(deps)
   return async (message: OwnerAlertMessage) => {
-    const outcome = await d.sendTelegram(agent, { noticeId: message.noticeId, text: message.text, signal: AbortSignal.timeout(SEND_TIMEOUT_MS) })
-    // Held for quiet hours or a handoff, or handed to the owner route (which may relay over the channel that is down).
-    if (outcome !== "sent") throw new Error("Telegram held the notice or handed it to the owner route instead of sending it now")
+    const outcome = await d.sendTelegram(agent, { noticeId: message.noticeId, text: message.text, signal: AbortSignal.timeout(SEND_TIMEOUT_MS), nowOrNever: true })
+    // Quiet hours, a handoff, or an owner route (which may relay over the channel that is down): dropped, not held, so the
+    // owner never gets a stale copy later; the next route carries it.
+    if (outcome !== "sent") throw new Error("Telegram couldn't send the notice to the owner's chat now")
   }
 }
 

@@ -223,9 +223,17 @@ describe("OwnerChannelOutageWatcher", () => {
   it("waits for a process before saying a told outage is back", async () => {
     await h.advance(0)
     await h.advance(OWNER_OUTAGE_THRESHOLD_MS)
+    h.rows[0] = row("bluebubbles", "running")
+    await h.advance(MIN)
     h.rows[0] = row("bluebubbles", "ready")
     await h.advance(10 * MIN)
     expect(h.sent).toHaveLength(1)
+    // Running again starts a fresh confirmation.
+    h.rows[0] = row("bluebubbles", "running")
+    await h.advance(OWNER_OUTAGE_RECOVERY_CONFIRM_MS)
+    expect(h.sent).toHaveLength(1)
+    h.rows[0] = row("bluebubbles", "ready")
+    await h.advance(MIN)
     h.rows[0] = row("bluebubbles", "interactive")
     await h.advance(CONFIRMED)
     expect(h.sent.map((item) => item.message.subject)).toEqual(["Slugger: iMessage has been down for 15 min", "Slugger: iMessage is back"])

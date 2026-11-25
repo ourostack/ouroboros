@@ -202,8 +202,12 @@ export interface TelegramSenseApp {
   sendExternalEventDecision(input: ExternalEventDecisionInput): Promise<ExternalEventOwnerDelivery>
   sendAwaitFollowUp(request: CrossChatDeliveryRequest): Promise<CrossChatDirectDeliveryResult>
   /** Posts a Butler-authored notice to the owner's chat and records it in the owner session. */
-  /** "sent" when it went to the owner's Telegram chat now; "not_sent" when it was held or handed to the owner route. */
-  sendOwnerNotice(input: { noticeId: string; text: string; signal?: AbortSignal }): Promise<TelegramOwnerNoticeOutcome>
+  /**
+   * "sent" when it went to the owner's Telegram chat now; "not_sent" when it was held or handed to the owner route. With
+   * `nowOrNever`, a notice that can't go to the owner's chat now is dropped instead of held or handed on, for a caller
+   * that tells the owner some other way (the daemon's owner-channel outage alert).
+   */
+  sendOwnerNotice(input: { noticeId: string; text: string; signal?: AbortSignal; nowOrNever?: boolean }): Promise<TelegramOwnerNoticeOutcome>
   /**
    * Posts a delegated command's audit notice (`delegated:<commandId>`) to the owner's own chat, now. It never goes to the owner
    * route, which could hand it to the peer that sent the command, and never waits for quiet hours, the daily cap or a handoff:
@@ -2473,6 +2477,10 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       let outcome: TelegramOwnerNoticeOutcome = "not_sent"
       await runWithAcceptanceAuditOwner(async () => {
         const text = requiredText(input.text, "owner notice")
+        if (input.nowOrNever && (options.ownerRoute || ownerChatIsHandedOff() || (options.proactivePacing && !isCriticalNoticeKey(`owner-notice:${noticeId}`) && proactiveHoldReason(proactiveLedgerPath, new Date(), options.proactivePacing)))) {
+          emitNervesEvent({ component: "senses", event: "senses.telegram_owner_notice_dropped", message: "an owner notice that had to go now couldn't, so it was dropped rather than held", meta: { agentName: options.agentName } })
+          return
+        }
         const telegramText = await routeSelfStarted(text, `owner-notice:${noticeId}`, undefined, input.signal)
         if (telegramText === null) return
         if (holdNoticeDuringHandoff(telegramText, `owner-notice:${noticeId}`)) return
@@ -2795,7 +2803,7 @@ export async function sendTelegramDelegatedAuditNotice(agentName: string, input:
 }
 
 /** Sends an owner notice; "not_sent" when Telegram held it or handed it to the owner route instead of sending it now. */
-export async function sendTelegramOwnerNotice(agentName: string, input: { noticeId: string; text: string; signal?: AbortSignal }): Promise<TelegramOwnerNoticeOutcome> {
+export async function sendTelegramOwnerNotice(agentName: string, input: { noticeId: string; text: string; signal?: AbortSignal; nowOrNever?: boolean }): Promise<TelegramOwnerNoticeOutcome> {
   const app = await startTelegramSenseApp(agentName)
   try {
     return await app.sendOwnerNotice(input)

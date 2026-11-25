@@ -2103,6 +2103,8 @@ describe("Telegram sense", () => {
       await f.app.sendProactive("Self-recovered; the shelf was down for about 15 minutes.")
       // Held during the handoff, so the caller learns it was not sent.
       await expect(f.app.sendOwnerNotice({ noticeId: "restart:sonarr", text: "Sonarr restarted itself." })).resolves.toBe("not_sent")
+      // Now-or-never is dropped, not held (the held count below stays three).
+      await expect(f.app.sendOwnerNotice({ noticeId: "outage", text: "iMessage is down.", nowOrNever: true })).resolves.toBe("not_sent")
       await f.app.sendOwnerNotice({ noticeId: "restart:sonarr", text: "Sonarr restarted itself." })
       // A delegated command's notice can't wait and can't go to Sam, so it is refused, and so is the command.
       await expect(f.app.sendOwnerNotice({ noticeId: "delegated:task-9", text: "Delegated command ran." })).rejects.toThrow("handed to someone else")
@@ -2127,6 +2129,7 @@ describe("Telegram sense", () => {
     try {
       const f = fixture({ proactivePacing: { timeZone: "America/Los_Angeles" } })
       const sends = () => f.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage").map(([, body]: [string, any]) => body.text)
+      await expect(f.app.sendOwnerNotice({ noticeId: "night-0", text: "iMessage is down.", nowOrNever: true })).resolves.toBe("not_sent")
       await f.app.sendOwnerNotice({ noticeId: "night-1", text: "Sonarr restarted itself." })
       await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "endpoint:media", generation: 2, text: "The shelf is down." })
       await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "parity:stale-or-failed", generation: 1, text: "The parity check failed." })
@@ -2134,6 +2137,7 @@ describe("Telegram sense", () => {
 
       vi.setSystemTime(Date.parse("2026-10-20T16:00:00.000Z")) // 9am
       await expect(f.app.sendOwnerNotice({ noticeId: "day-1", text: "Downloads are flowing again." })).resolves.toBe("sent")
+      expect(sends()).not.toContain("iMessage is down.")
       expect(sends()).toEqual(["The parity check failed.", "While you were away:\n• Sonarr restarted itself.\n• The shelf is down.", "Downloads are flowing again."])
       // That was three today (the critical one counts too); the fourth waits.
       await f.app.sendProactive("A fourth note.")
@@ -2176,6 +2180,9 @@ describe("Telegram sense", () => {
         await f.app.sendDelegatedAuditNotice({ noticeId: "delegated:cmd-1", text: "Slugger asked me, on your behalf, to restart Plex.", signal: new AbortController().signal })
         expect(ownerRoute).not.toHaveBeenCalled()
         expect(bodies(f)).toEqual([expect.objectContaining({ text: "Slugger asked me, on your behalf, to restart Plex.", disable_notification: true })])
+        // A notice that must go now or never is dropped rather than handed to the primary agent.
+        await expect(f.app.sendOwnerNotice({ noticeId: "owner-channel-outage:x:down", text: "iMessage is down.", nowOrNever: true })).resolves.toBe("not_sent")
+        expect(ownerRoute).not.toHaveBeenCalled()
         // Any other owner notice still goes to the primary agent.
         await f.app.sendOwnerNotice({ noticeId: "failure-fixed:7", text: "Plex is back up." })
         expect(ownerRoute).toHaveBeenCalledTimes(1)
@@ -2373,6 +2380,16 @@ describe("Telegram sense", () => {
     } finally {
       await f.app.stop()
       setRuntimeLogger(null)
+    }
+  })
+
+  it("sends a now-or-never owner notice at once when nothing holds it", async () => {
+    const f = fixture()
+    try {
+      await expect(f.app.sendOwnerNotice({ noticeId: "now-1", text: "Sent now.", nowOrNever: true })).resolves.toBe("sent")
+      expect(f.api.request).toHaveBeenCalledTimes(1)
+    } finally {
+      await f.app.stop()
     }
   })
 

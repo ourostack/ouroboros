@@ -125,11 +125,11 @@ describe("createOwnerAlertTelegramSender", () => {
   it("sends the text as the agent's Telegram owner notice under the alert's id", async () => {
     const sendTelegram = vi.fn(async () => "sent" as const)
     await createOwnerAlertTelegramSender("slugger", { sendTelegram })(message)
-    expect(sendTelegram).toHaveBeenCalledWith("slugger", expect.objectContaining({ noticeId: message.noticeId, text: message.text }))
+    expect(sendTelegram).toHaveBeenCalledWith("slugger", expect.objectContaining({ noticeId: message.noticeId, text: message.text, nowOrNever: true }))
   })
 
   it("fails when Telegram held the notice or handed it to the owner route, so mail is tried", async () => {
-    await expect(createOwnerAlertTelegramSender("slugger", { sendTelegram: async () => "not_sent" })(message)).rejects.toThrow("instead of sending it now")
+    await expect(createOwnerAlertTelegramSender("slugger", { sendTelegram: async () => "not_sent" })(message)).rejects.toThrow("couldn't send the notice to the owner's chat now")
   })
 })
 
