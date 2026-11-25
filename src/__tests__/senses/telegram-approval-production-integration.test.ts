@@ -910,11 +910,11 @@ describe("production-composed Telegram approval lifecycle", () => {
   ])("A006 terminalizes %s before a real owner callback reaches the restart handler", async (change) => {
     const phases = createPhaseTimer(`A006 terminalizes ${change}`, { watchdogMs: 4000 })
     try {
+    phases.enter("fixture")
     const agentRoot = root()
     setRuntimeLogger(createLogger({ sinks: [createNdjsonFileSink(path.join(agentRoot, "telegram-audit.ndjson"))] }))
     const restart = vi.fn(async () => ({ ok: true, data: { container: { id: "container-1", name: "calibre-web" }, beforeState: "running", afterState: "running", observedRestart: true, degraded: false } }))
     const owner = await ownerFixture(agentRoot, restart)
-    phases.mark("fixture")
     if (change === "different runtime root") owner.runtimeContext.agentRoot = path.join(agentRoot, "other")
     if (change === "missing runtime") delete owner.runtimeContext.sanctuary
     let ownerReads = 0
@@ -934,11 +934,12 @@ describe("production-composed Telegram approval lifecycle", () => {
       } } : {}),
       dependencies: { agentRoot, acceptanceMarker: () => null, runProvider: async () => ({ outcome: "settled" }) },
     })
+    phases.enter("propose")
     const suspension = await runtime.coordinator(owner).propose(proposalRequest(owner.requestContext))
-    phases.mark("propose")
     const databasePath = path.join(agentRoot, "state", "approvals", "approvals.sqlite")
     const store = openApprovalStore({ databasePath })
     try {
+      phases.enter("mutate")
       if (change.startsWith("different bound") || change === "legacy binding" || change === "different record session" || change === "changed frozen arguments") {
         const database = new Database(databasePath)
         try {
@@ -990,18 +991,18 @@ describe("production-composed Telegram approval lifecycle", () => {
         provenance: "stated", source: "current authenticated fixture owner",
       }, owner.requestContext)
       if (change === "standing grant" || change === "installed grant") await grantFixture(owner, change === "standing grant" ? "stated" : "installed_explicit_policy")
-      phases.mark("mutate")
+      phases.enter("callback")
       const bound = pending(agentRoot)[0]!
       if (roleChanged) await expect(runtime.transport.handleUpdate(callback(String(bound.approveCallbackData)))).rejects.toThrow("Telegram effect authorization denied")
       else {
         const decision = await runtime.transport.handleUpdate(callback(String(bound.approveCallbackData)))
         expect(decision.accepted).toBe(false)
       }
-      phases.mark("callback")
+      phases.enter("verification")
       expect(store.read(suspension.approvalId)).toMatchObject({ state: change === "new request" ? "session_head_changed" : "drifted", attemptedAt: null })
       if (change === "late capability removal") expect(ownerReads).toBeGreaterThanOrEqual(4)
       expect(restart).not.toHaveBeenCalled()
-    } finally { store.close(); runtime.close() }
+    } finally { phases.enter("cleanup"); store.close(); runtime.close() }
     } catch (error) { throw phases.annotate(error) } finally { phases.done() }
   })
 
