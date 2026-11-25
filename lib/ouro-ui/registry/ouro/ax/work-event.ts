@@ -5,7 +5,7 @@ export type { WorkActor, WorkEvent, WorkFold, WorkKind };
 // first statement, which would take the JSDoc below with it.
 
 import type { Effect } from "./effects.ts";
-import type { AxRef, Outcome } from "./outcome.ts";
+import { isAxRefShape, type AxRef, type Outcome } from "./outcome.ts";
 
 /**
  * An attributed work event: who acted and for whom, on what, why, with which receipt, when. An agent interface emits
@@ -70,7 +70,7 @@ function checkWorkEvent(v: unknown): { ok: true; event: WorkEvent } | { ok: fals
   if (who.kind === "agent" && (typeof v["onBehalfOf"] !== "string" || !v["onBehalfOf"])) return no("an agent's event names no person", 'onBehalfOf: "<the person the agent acts for>"');
   if (who.kind === "person" && v["onBehalfOf"] !== null) return no("the person acts on their own behalf", "onBehalfOf: null");
   const t = v["target"];
-  if (t !== null && !(isRecord(t) && typeof t["kind"] === "string" && typeof t["id"] === "string")) return no("target is not { kind, id } or null", 'target: { kind: "conversation", id: "<id>" }');
+  if (t !== null && !isAxRefShape(t)) return no("target is not { kind, id } or null", 'target: { kind: "conversation", id: "<id>" }');
   if (!textOrNull(v["why"])) return no("why is not text or null", "why: \"<the stated reason>\" or null");
   if (v["effect"] !== "private" && v["effect"] !== "others") return no(`effect is ${JSON.stringify(v["effect"])}`, 'effect: "private" or "others"');
   if (!textOrNull(v["receipt"])) return no("receipt is not text or null", 'receipt: "<the action\'s receipt id>" or null');
