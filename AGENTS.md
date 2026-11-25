@@ -16,6 +16,7 @@ This harness is built for the agent inhabiting it. Two principles guide everythi
 2. Make the first cut restraint: for each thing, name the job it serves and ask what breaks if it goes; if nothing does, leave it out and say why. Give each job one way in, not one per item or function, and extend the one that exists before adding another.
 3. Build what is left well, the basics people use daily among it, for the person and for agents, with a result that says what it did.
 4. Write how fresh people or fresh agents doing a real job will prove it, and rerun them after each small change.
+5. Before you show a scope or design, follow the [`the-bar` skill](.agents/skills/the-bar/SKILL.md): a fresh agent that didn't write it checks every item against these steps, and you fix what it finds.
 <!-- /ouro-ui:bar -->
 
 ## The Copilot app's sessions are Shepherd's
