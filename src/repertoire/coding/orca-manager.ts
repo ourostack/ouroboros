@@ -31,6 +31,12 @@ export interface OrcaCodingSessionManagerOptions {
   writeFileSync?: (target: string, data: string, encoding: "utf-8") => void
   mkdirSync?: (target: string, options: { recursive: true }) => unknown
   pollIntervalMs?: number
+  /** How long a launched agent has to show up in its pane before the launch counts as failed. */
+  launchStartTimeoutMs?: number
+  /** How often to look for the launched agent while waiting. */
+  launchStartPollMs?: number
+  sleep?: (ms: number) => Promise<void>
+  nowMs?: () => number
   /** Hears every session's updates, including sessions restored from the state file. */
   onUpdate?: Listener
 }
@@ -46,6 +52,9 @@ interface OrcaRecord {
 
 /** Refreshes in a row that must miss a session's terminal before it counts as gone; one miss may be Orca restarting or asleep. */
 export const ORCA_MISSES_BEFORE_GONE = 3
+
+/** What a launch left in its pane: the agent running there, or the screen that shows why not. */
+type LaunchCheck = { started: true; paneKey: string } | { started: false; screen: string }
 
 
 /** A session is closed once its Orca terminal is gone (killed, failed, or closed after it finished). */
@@ -104,6 +113,10 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
   private readonly writeFileSync: (target: string, data: string, encoding: "utf-8") => void
   private readonly mkdirSync: (target: string, options: { recursive: true }) => unknown
   private readonly pollIntervalMs: number
+  private readonly launchStartTimeoutMs: number
+  private readonly launchStartPollMs: number
+  private readonly sleep: (ms: number) => Promise<void>
+  private readonly nowMs: () => number
   private readonly onUpdate?: Listener
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private polling = false
@@ -119,6 +132,10 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
     this.writeFileSync = options.writeFileSync ?? fs.writeFileSync
     this.mkdirSync = options.mkdirSync ?? fs.mkdirSync
     this.pollIntervalMs = options.pollIntervalMs ?? 30_000
+    this.launchStartTimeoutMs = options.launchStartTimeoutMs ?? 90_000
+    this.launchStartPollMs = options.launchStartPollMs ?? 2_000
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
+    this.nowMs = options.nowMs ?? Date.now
     this.onUpdate = options.onUpdate
     this.loadState()
     this.syncPolling()
@@ -140,7 +157,7 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
     // so parallel jobs never collide.
     const existing = await this.cli.showWorktree(normalized.workdir)
     const inExisting = existing !== null && !existing.isMainWorktree
-    const launch: OrcaLaunch = inExisting
+    let launch: OrcaLaunch = inExisting
       ? await this.cli.launchAgent({ worktree: existing, agent: normalized.runner, prompt })
       : await this.cli.createWorktreeWithAgent({
         repoDir: normalized.workdir,
@@ -150,20 +167,29 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
         prompt,
       })
 
-    if (launch.promptDelivered === false) {
+    // Orca's "handed-to-terminal" means bytes reached the PTY, not that the agent ran: a shell still in its
+    // rc files can eat them (2026-11-24, `laude`). The agent showing up in its pane is the proof; one relaunch
+    // in the same worktree covers a lost launch line.
+    let check = await this.checkLaunch(launch)
+    if (!check.started) {
+      await this.cli.closeTerminal(launch.terminalHandle).catch(() => undefined)
+      emitNervesEvent({
+        level: "warn",
+        component: "repertoire",
+        event: "repertoire.orca_agent_launch_retried",
+        message: "Orca launched no agent; relaunching once in the same worktree",
+        meta: { id, runner: normalized.runner, worktreePath: launch.worktree.path, screen: clip(check.screen) },
+      })
+      launch = await this.cli.launchAgent({ worktree: launch.worktree, agent: normalized.runner, prompt })
+      check = await this.checkLaunch(launch)
+    }
+    if (!check.started) {
       await this.cli.closeTerminal(launch.terminalHandle).catch(() => undefined)
       throw new Error(
-        `Orca opened ${normalized.runner} in ${launch.worktree.path} but did not deliver its task prompt, so its tab was closed; the worktree stays. Spawn again with workdir ${launch.worktree.path}`,
+        `Orca opened ${normalized.runner} in ${launch.worktree.path} twice but the agent never started, so its tabs were closed; the worktree stays. Its terminal showed: ${clip(check.screen) || "(nothing)"}. Spawn again with workdir ${launch.worktree.path}`,
       )
     }
-
-    let paneKey: string | undefined
-    try {
-      const terminal = (await this.cli.listTerminals(launch.worktree.id)).find((item) => item.handle === launch.terminalHandle)
-      paneKey = terminal?.tabId && terminal.leafId ? `${terminal.tabId}:${terminal.leafId}` : undefined
-    } catch (error) {
-      this.reportOrcaUnreachable(id, error)
-    }
+    const paneKey = check.paneKey
 
     const session: CodingSession = {
       id,
@@ -184,9 +210,7 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
       evolutionCaseId: normalized.evolutionCaseId,
       scopeFile: normalized.scopeFile,
       stateFile: normalized.stateFile,
-      checkpoint: launch.promptDelivered === null
-        ? "Orca did not confirm the task prompt arrived; read coding_tail to check"
-        : launch.detail,
+      checkpoint: launch.detail,
       status: "running",
       stdoutTail: "",
       stderrTail: "",
@@ -377,6 +401,28 @@ export class OrcaCodingSessionManager implements RefreshableCodingSessionManager
       this.persistState()
       this.notify(session.id, { kind: updateKindFor(session.status), session: cloneSession(session) })
     }
+  }
+
+  /** Waits for the launched agent to appear in its pane; Orca's own prompt receipt only rules a launch out. */
+  private async checkLaunch(launch: OrcaLaunch): Promise<LaunchCheck> {
+    if (launch.promptDelivered !== false) {
+      const deadline = this.nowMs() + this.launchStartTimeoutMs
+      for (;;) {
+        try {
+          const terminal = (await this.cli.listTerminals(launch.worktree.id)).find((item) => item.handle === launch.terminalHandle)
+          const paneKey = terminal?.tabId && terminal.leafId ? `${terminal.tabId}:${terminal.leafId}` : undefined
+          if (paneKey && (await this.cli.listAgents(launch.worktree.id)).some((agent) => agent.paneKey === paneKey)) {
+            return { started: true, paneKey }
+          }
+        } catch {
+          // Orca busy or restarting: keep looking until the deadline.
+        }
+        if (this.nowMs() >= deadline) break
+        await this.sleep(this.launchStartPollMs)
+      }
+    }
+    const screen = await this.cli.readTerminal(launch.terminalHandle, 20).then((read) => read.tail, () => "")
+    return { started: false, screen }
   }
 
   private reportOrcaUnreachable(sessionId: string, error: unknown): void {
