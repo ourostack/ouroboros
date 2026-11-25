@@ -65,6 +65,52 @@ describe("diary write path", () => {
     expect(lines).toHaveLength(2);
   });
 
+  it("keeps a long new entry that shares a few words with a short old one", () => {
+    // 2026-11-25: three of an agent's dated entries (45 to 119 words) were dropped as near-duplicates of 3- and 4-word
+    // entries, because two of the short entry's three words appeared in the long one (2/3 > 0.6). Their shared words
+    // were 2 to 4% of all their words.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-short-prior-"));
+    const stores = ensureDiaryStorePaths(root);
+    const short: DiaryEntry = {
+      id: "short",
+      text: "ari likes tea",
+      source: "unit-test",
+      createdAt: "2026-02-01T00:00:00.000Z",
+      embedding: [],
+    };
+    const long: DiaryEntry = {
+      id: "long",
+      text: "2026-11-24 held for ari's batch: he likes the earlier train, so ask whether to move the dentist visit to "
+        + "thursday and whether the plumber can come on friday instead of monday",
+      source: "unit-test",
+      createdAt: "2026-11-25T02:04:00.000Z",
+      embedding: [],
+    };
+
+    appendEntriesWithDedup(stores, [short]);
+    expect(appendEntriesWithDedup(stores, [long])).toEqual({ added: 1, skipped: 0 });
+    expect(fs.readFileSync(stores.factsPath, "utf8").trim().split("\n")).toHaveLength(2);
+  });
+
+  it("names the entry a skipped one duplicates", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-skip-names-"));
+    const stores = ensureDiaryStorePaths(root);
+    const first: DiaryEntry = {
+      id: "first",
+      text: "moved the weekly review to thursday mornings at nine",
+      source: "unit-test",
+      createdAt: "2026-11-20T09:00:00.000Z",
+      embedding: [],
+    };
+    appendEntriesWithDedup(stores, [first]);
+    const again = { ...first, id: "again", createdAt: "2026-11-25T02:00:00.000Z" };
+    expect(appendEntriesWithDedup(stores, [again])).toEqual({
+      added: 0,
+      skipped: 1,
+      duplicates: [{ id: "first", createdAt: "2026-11-20T09:00:00.000Z" }],
+    });
+  });
+
   it("skips semantically duplicate facts even when word overlap is below threshold", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-semantic-dedup-"));
     const stores = ensureDiaryStorePaths(root);
@@ -89,7 +135,7 @@ describe("diary write path", () => {
     expect(firstWrite).toEqual({ added: 1, skipped: 0 });
 
     const secondWrite = appendEntriesWithDedup(stores, [paraphrase], opts);
-    expect(secondWrite).toEqual({ added: 0, skipped: 1 });
+    expect(secondWrite).toMatchObject({ added: 0, skipped: 1 });
   });
 
   it("allows facts through when embedding similarity is below semantic threshold", () => {
@@ -786,7 +832,7 @@ describe("diary write path", () => {
       idFactory: () => `sem-save-${++callCount}`,
       embeddingProvider: { embed: async () => [nearIdenticalVector] },
     });
-    expect(result2).toEqual({ added: 0, skipped: 1 });
+    expect(result2).toMatchObject({ added: 0, skipped: 1 });
 
     const factsPath = path.join(root, "facts.jsonl");
     const stored = fs.readFileSync(factsPath, "utf8").trim().split("\n");
