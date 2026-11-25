@@ -353,11 +353,50 @@ describe("ouro up: UpProgress integration", () => {
       }),
     })
 
-    const result = await runOuroCli(["up"], deps)
+    const setExitCode = vi.fn()
+    const result = await runOuroCli(["up"], { ...deps, setExitCode })
 
     expect(result).toContain("background service stopped before boot finished")
     expect(result).toContain("runtime health is warn")
     expect(result).toContain("slugger/bluebubbles: error - listener unreachable")
+    // The self-updater reads this exit code as "came up, but health blocked handoff".
+    expect(setExitCode).toHaveBeenCalledWith(3)
+  })
+
+  it("keeps exit code 1 when the final check fails for any reason other than health", async () => {
+    const deps = makeDeps({
+      finalDaemonHealthSettleTimeoutMs: 0,
+      checkSocketAlive: vi.fn().mockResolvedValue(true),
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "daemon.status") {
+          return {
+            ok: true,
+            summary: "stopping",
+            data: {
+              overview: {
+                daemon: "stopping",
+                health: "ok",
+                socketPath: "/tmp/ouro-test.sock",
+                version: "0.1.0-alpha.20",
+                lastUpdated: "2026-03-09T11:00:00.000Z",
+                workerCount: 0,
+                senseCount: 0,
+              },
+              senses: [],
+              workers: [],
+            },
+          }
+        }
+        return { ok: true, summary: "ok" }
+      }),
+    })
+
+    const setExitCode = vi.fn()
+    const result = await runOuroCli(["up"], { ...deps, setExitCode })
+
+    expect(result).toContain("the daemon reported state stopping")
+    expect(setExitCode).toHaveBeenCalledWith(1)
+    expect(setExitCode).not.toHaveBeenCalledWith(3)
   })
 
   it("hands off when runtime health only has advisory health warnings", async () => {
