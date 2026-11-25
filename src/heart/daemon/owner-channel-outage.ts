@@ -32,8 +32,23 @@ export const OWNER_OUTAGE_THRESHOLD_MS = 15 * 60_000
 export const OWNER_OUTAGE_ALERT_MIN_INTERVAL_MS = 60 * 60_000
 /** After every route failed, wait this long before trying again. */
 export const OWNER_OUTAGE_RETRY_MS = 5 * 60_000
+/**
+ * A channel must read healthy this long before its outage ends, so a sense that crash-loops or flaps between health
+ * checks is still one outage, and the owner hears "back" only once it has stayed up (two more 60-second checks).
+ */
+export const OWNER_OUTAGE_RECOVERY_CONFIRM_MS = 2 * 60_000
+/**
+ * A gap this long between two sightings of an outage that hasn't been told yet means the daemon couldn't see (the Mac
+ * slept or the daemon was stopped), so the outage's clock starts again rather than counting time nobody watched.
+ */
+export const OWNER_OUTAGE_SIGHTING_GAP_MS = 10 * 60_000
+/** One route's send that takes longer than this counts as failed, so a hung network call never stops the watcher. */
+export const OWNER_OUTAGE_SEND_TIMEOUT_MS = 60_000
 
+/** Statuses a channel can carry an alert on. */
 const HEALTHY_STATUSES = new Set(["running", "interactive", "ready"])
+/** Statuses that mean the channel itself is back (a process is running), so the owner hears "back". */
+const RECOVERED_STATUSES = new Set(["running", "interactive"])
 const DETAIL_MAX = 300
 
 const CHANNEL_LABEL: Record<OwnerChannelSense, string> = { bluebubbles: "iMessage", telegram: "Telegram", teams: "Teams" }
@@ -54,6 +69,10 @@ interface ChannelOutage {
   alertedAt?: string
   alertedVia?: OwnerAlertRoute
   lastAttemptAt?: string
+  /** The last pass that saw it down. */
+  lastSeenDownAt?: string
+  /** Since when it has read healthy, while the outage waits for `OWNER_OUTAGE_RECOVERY_CONFIRM_MS`. */
+  healthySince?: string
 }
 
 interface OwnerOutageState {
@@ -76,6 +95,9 @@ export interface OwnerChannelOutageWatcherOptions {
   thresholdMs?: number
   minIntervalMs?: number
   retryMs?: number
+  recoveryConfirmMs?: number
+  sightingGapMs?: number
+  sendTimeoutMs?: number
 }
 
 function errorText(error: unknown): string {
@@ -148,6 +170,7 @@ export function outageAlertMessage(input: { agent: string; name: string; sense: 
   }
 }
 
+/** `nowMs` is when it first read healthy again. */
 export function outageRecoveredMessage(input: { agent: string; name: string; sense: OwnerChannelSense; downSince: string; nowMs: number }): OwnerAlertMessage {
   const channel = CHANNEL_LABEL[input.sense]
   const duration = formatOutageDuration(input.nowMs - Date.parse(input.downSince))
@@ -164,6 +187,9 @@ export class OwnerChannelOutageWatcher {
   private readonly thresholdMs: number
   private readonly minIntervalMs: number
   private readonly retryMs: number
+  private readonly recoveryConfirmMs: number
+  private readonly sightingGapMs: number
+  private readonly sendTimeoutMs: number
   private running: Promise<void> | null = null
   /** Each agent's state, read from disk once; memory stays the authority when a write fails. */
   private readonly states = new Map<string, OwnerOutageState>()
@@ -174,6 +200,9 @@ export class OwnerChannelOutageWatcher {
     this.thresholdMs = options.thresholdMs ?? OWNER_OUTAGE_THRESHOLD_MS
     this.minIntervalMs = options.minIntervalMs ?? OWNER_OUTAGE_ALERT_MIN_INTERVAL_MS
     this.retryMs = options.retryMs ?? OWNER_OUTAGE_RETRY_MS
+    this.recoveryConfirmMs = options.recoveryConfirmMs ?? OWNER_OUTAGE_RECOVERY_CONFIRM_MS
+    this.sightingGapMs = options.sightingGapMs ?? OWNER_OUTAGE_SIGHTING_GAP_MS
+    this.sendTimeoutMs = options.sendTimeoutMs ?? OWNER_OUTAGE_SEND_TIMEOUT_MS
   }
 
   /** One pass over every agent's owner channels. A pass still sending makes this one a no-op. */
@@ -206,6 +235,8 @@ export class OwnerChannelOutageWatcher {
     if (row.sense === "bluebubbles") {
       const probe = results.find((result) => result.name === `sense-probe:bluebubbles-proof:${agent}` && result.status === "critical")
       if (probe) return probe.message
+      // A listener that has never written proof never trips the proof watch's staleness check, so it reads "running".
+      if (row.status === "running" && !row.lastProofAt) return "the iMessage listener is running but has never shown that it is connected to BlueBubbles"
     }
     return null
   }
@@ -219,7 +250,7 @@ export class OwnerChannelOutageWatcher {
     }
     const nowMs = this.now()
     const nowIso = new Date(nowMs).toISOString()
-    const name = this.options.displayName?.(agent) ?? agent
+    const name = (): string => this.options.displayName?.(agent) ?? agent
     let changed = false
 
     const rowFor = (sense: string): DaemonSenseRow | undefined => rows.find((row) => row.sense === sense && row.enabled)
@@ -252,7 +283,12 @@ export class OwnerChannelOutageWatcher {
           changed = true
           emitNervesEvent({ level: "warn", component: "daemon", event: "daemon.owner_outage_started", message: "an owner channel is down; the owner hears if it stays down", meta: { agent, sense, thresholdMs: this.thresholdMs } })
         }
-        if (current.detail !== detail) { current.detail = detail; changed = true }
+        if (current.detail !== detail) current.detail = detail
+        // Unseen time is not counted: the clock of an outage not yet told restarts after a gap in sightings.
+        if (!current.alertedAt && current.lastSeenDownAt && nowMs - Date.parse(current.lastSeenDownAt) > this.sightingGapMs) current.downSince = nowIso
+        current.lastSeenDownAt = nowIso
+        delete current.healthySince
+        changed = true
         if (current.alertedAt) continue
         if (nowMs - Date.parse(current.downSince) < this.thresholdMs) continue
         const lastAlert = state.lastAlertAt[sense]
@@ -260,7 +296,7 @@ export class OwnerChannelOutageWatcher {
         if (current.lastAttemptAt && nowMs - Date.parse(current.lastAttemptAt) < this.retryMs) continue
         current.lastAttemptAt = nowIso
         changed = true
-        const via = await this.deliver(agent, sense, "down", workingRoutes(sense), outageAlertMessage({ agent, name, sense, downSince: current.downSince, detail, nowMs }))
+        const via = await this.deliver(agent, sense, "down", workingRoutes(sense), outageAlertMessage({ agent, name: name(), sense, downSince: current.downSince, detail, nowMs }))
         if (via) {
           current.alertedAt = nowIso
           current.alertedVia = via
@@ -270,11 +306,29 @@ export class OwnerChannelOutageWatcher {
       }
       if (!outage) continue
       const row = rowFor(sense)
-      if (!outage.alertedAt || !row || !HEALTHY_STATUSES.has(row.status)) {
-        // Never told, or the channel was turned off or moved rather than recovered: nothing to close.
+      const status = row?.status ?? "disabled"
+      // Turned off, moved to another machine, or waiting on setup rather than recovered: nothing to wait for.
+      const gone = !row || !HEALTHY_STATUSES.has(status)
+      if (!gone && (outage.alertedAt ? RECOVERED_STATUSES.has(status) : true)) {
+        if (!outage.healthySince) {
+          outage.healthySince = nowIso
+          changed = true
+        }
+        if (nowMs - Date.parse(outage.healthySince) < this.recoveryConfirmMs) continue
+      } else if (!gone) {
+        // Told, and configured but with no process yet: "back" waits until it is running.
+        continue
+      }
+      if (!outage.alertedAt || gone) {
         delete state.outages[sense]
         changed = true
-        emitNervesEvent({ component: "daemon", event: "daemon.owner_outage_cleared", message: "an owner channel outage ended without a message to the owner", meta: { agent, sense, alerted: Boolean(outage.alertedAt), status: row?.status ?? "disabled" } })
+        emitNervesEvent({
+          level: outage.alertedAt ? "warn" : "info",
+          component: "daemon",
+          event: "daemon.owner_outage_cleared",
+          message: outage.alertedAt ? "an owner channel the owner was told is down stopped being watched before it came back" : "an owner channel outage ended before the owner needed to hear",
+          meta: { agent, sense, alerted: Boolean(outage.alertedAt), status },
+        })
         continue
       }
       // The alert's own attempt time no longer applies; the retry wait now spaces "back" attempts.
@@ -288,7 +342,7 @@ export class OwnerChannelOutageWatcher {
       if (own) routes.push([sense, own])
       routes.sort(([a], [b]) => Number(b === outage.alertedVia) - Number(a === outage.alertedVia))
       // Kept until "back" is sent, so a failed send is tried again.
-      if (await this.deliver(agent, sense, "back", routes, outageRecoveredMessage({ agent, name, sense, downSince: outage.downSince, nowMs }))) delete state.outages[sense]
+      if (await this.deliver(agent, sense, "back", routes, outageRecoveredMessage({ agent, name: name(), sense, downSince: outage.downSince, nowMs: Date.parse(outage.healthySince!) }))) delete state.outages[sense]
     }
 
     if (changed) writeState(agent, file, state)
@@ -299,7 +353,13 @@ export class OwnerChannelOutageWatcher {
     const failures: string[] = []
     for (const [route, send] of routes) {
       try {
-        await send(message)
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`timed out after ${this.sendTimeoutMs} ms`)), this.sendTimeoutMs) })
+        try {
+          await Promise.race([send(message), timeout])
+        } finally {
+          clearTimeout(timer)
+        }
         emitNervesEvent({ level: kind === "down" ? "warn" : "info", component: "daemon", event: "daemon.owner_outage_alert_sent", message: kind === "down" ? "told the owner an owner channel is down" : "told the owner an owner channel is back", meta: { agent, sense, kind, route, failedRoutes: failures } })
         return route
       } catch (error) {

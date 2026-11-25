@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   formatOutageDuration,
   OWNER_OUTAGE_ALERT_MIN_INTERVAL_MS,
+  OWNER_OUTAGE_RECOVERY_CONFIRM_MS,
+  OWNER_OUTAGE_SEND_TIMEOUT_MS,
   OWNER_OUTAGE_RETRY_MS,
   OWNER_OUTAGE_THRESHOLD_MS,
   OwnerChannelOutageWatcher,
@@ -19,9 +21,13 @@ import type { DaemonSenseRow } from "../../../heart/daemon/sense-manager"
 
 const MIN = 60_000
 const T0 = Date.parse("2026-11-25T08:00:00.000Z")
+/** The first healthy check starts the confirmation; the check that ends it comes this long after the last down one. */
+const CONFIRMED = OWNER_OUTAGE_RECOVERY_CONFIRM_MS + MIN
 
 function row(sense: DaemonSenseRow["sense"], status: DaemonSenseRow["status"], overrides: Partial<DaemonSenseRow> = {}): DaemonSenseRow {
-  return { agent: "slugger", sense, label: sense, enabled: true, status, detail: "", ...overrides }
+  // A running iMessage listener has shown proof unless a test says otherwise.
+  const proof = sense === "bluebubbles" && status === "running" ? { lastProofAt: "2026-11-25T07:59:30.000Z" } : {}
+  return { agent: "slugger", sense, label: sense, enabled: true, status, detail: "", ...proof, ...overrides }
 }
 
 interface Harness {
@@ -33,6 +39,7 @@ interface Harness {
   statePath: string
   results: DaemonHealthResult[]
   advance(ms: number): Promise<void>
+  jump(ms: number): Promise<void>
   restart(): void
 }
 
@@ -57,7 +64,16 @@ function harness(options: { rows?: DaemonSenseRow[]; routes?: OwnerAlertRoute[];
     statePath,
     results: [],
     watcher: null as unknown as OwnerChannelOutageWatcher,
+    // The daemon checks every minute, so time passes one check at a time.
     async advance(ms: number) {
+      if (ms === 0) return h.watcher.check(h.results)
+      for (let left = ms; left > 0; left -= MIN) {
+        clock.now += Math.min(MIN, left)
+        await h.watcher.check(h.results)
+      }
+    },
+    // Time the daemon didn't see (asleep or stopped), then one check.
+    async jump(ms: number) {
       clock.now += ms
       await h.watcher.check(h.results)
     },
@@ -117,15 +133,17 @@ describe("OwnerChannelOutageWatcher", () => {
     await h.advance(OWNER_OUTAGE_THRESHOLD_MS + MIN)
     expect(h.sent).toHaveLength(1)
     expect(h.sent[0]!.route).toBe("mail")
-    expect(h.sent[0]!.message.subject).toBe("Slugger: iMessage has been down for 16 min")
+    expect(h.sent[0]!.message.subject).toBe("Slugger: iMessage has been down for 15 min")
     expect(h.sent[0]!.message.text).toContain("Slugger can't reach you on iMessage")
     expect(h.sent[0]!.message.text).toContain("BlueBubbles listener exited")
 
     // Thirteen more hours down: still one message.
-    for (let i = 0; i < 13; i++) await h.advance(60 * MIN)
+    await h.advance(13 * 60 * MIN)
     expect(h.sent).toHaveLength(1)
 
     h.rows[0] = row("bluebubbles", "running")
+    await h.advance(CONFIRMED - MIN)
+    expect(h.sent).toHaveLength(1)
     await h.advance(MIN)
     expect(h.sent).toHaveLength(2)
     expect(h.sent[1]!.route).toBe("mail")
@@ -157,6 +175,22 @@ describe("OwnerChannelOutageWatcher", () => {
     expect(h.sent[0]!.message.text).toContain("exit 1")
   })
 
+  it("counts a route that hangs as failed and moves on", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    try {
+      h = harness({ routes: ["telegram", "mail"], rows: [row("bluebubbles", "error"), row("telegram", "running"), row("mail", "running")] })
+      ;(h.senders.telegram as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise(() => undefined))
+      await h.advance(0)
+      for (let i = 0; i < 14; i++) await h.advance(MIN)
+      const pass = h.advance(MIN)
+      await vi.advanceTimersByTimeAsync(OWNER_OUTAGE_SEND_TIMEOUT_MS)
+      await pass
+      expect(h.sent.map((item) => item.route)).toEqual(["mail"])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("does not alert over a channel that is down too, and alerts for each down channel", async () => {
     h = harness({ routes: ["telegram", "mail"], rows: [row("bluebubbles", "error"), row("telegram", "error"), row("mail", "running")] })
     await h.advance(0)
@@ -174,7 +208,7 @@ describe("OwnerChannelOutageWatcher", () => {
     await h.advance(OWNER_OUTAGE_THRESHOLD_MS)
     expect(h.sent.map((item) => item.route)).toEqual(["telegram"])
     h.rows[0] = row("bluebubbles", "running")
-    await h.advance(MIN)
+    await h.advance(CONFIRMED)
     expect(h.sent.map((item) => item.route)).toEqual(["telegram", "telegram"])
 
     const only = harness({ routes: ["bluebubbles", "mail"], failing: ["mail"], rows: [row("bluebubbles", "error"), row("mail", "running")] })
@@ -186,41 +220,77 @@ describe("OwnerChannelOutageWatcher", () => {
     expect(only.sent.map((item) => item.route)).toEqual(["bluebubbles"])
   })
 
+  it("waits for a process before saying a told outage is back", async () => {
+    await h.advance(0)
+    await h.advance(OWNER_OUTAGE_THRESHOLD_MS)
+    h.rows[0] = row("bluebubbles", "ready")
+    await h.advance(10 * MIN)
+    expect(h.sent).toHaveLength(1)
+    h.rows[0] = row("bluebubbles", "interactive")
+    await h.advance(CONFIRMED)
+    expect(h.sent.map((item) => item.message.subject)).toEqual(["Slugger: iMessage has been down for 15 min", "Slugger: iMessage is back"])
+  })
+
   it("survives a daemon restart without re-sending, and keeps the outage's start", async () => {
     await h.advance(0)
     await h.advance(OWNER_OUTAGE_THRESHOLD_MS)
     expect(h.sent).toHaveLength(1)
     h.restart()
-    await h.advance(MIN)
-    await h.advance(60 * MIN)
+    await h.advance(61 * MIN)
     expect(h.sent).toHaveLength(1)
     h.rows[0] = row("bluebubbles", "running")
     h.restart()
-    await h.advance(MIN)
+    await h.advance(CONFIRMED)
     expect(h.sent).toHaveLength(2)
     expect(h.sent[1]!.message.text).toContain("after 1 h 17 min down")
   })
 
-  it("counts an outage from its first sighting across a restart", async () => {
+  it("counts an outage from its first sighting across a quick restart", async () => {
     await h.advance(0)
     await h.advance(10 * MIN)
     h.restart()
-    await h.advance(5 * MIN)
+    await h.jump(MIN)
+    await h.advance(4 * MIN)
     expect(h.sent).toHaveLength(1)
   })
 
-  it("rate-limits a flapping channel to one alert an hour", async () => {
+  it("restarts the clock of an untold outage after time it couldn't see", async () => {
+    await h.advance(0)
+    await h.advance(10 * MIN)
+    // The Mac slept for an hour.
+    await h.jump(60 * MIN)
+    expect(h.sent).toEqual([])
+    await h.advance(OWNER_OUTAGE_THRESHOLD_MS - MIN)
+    expect(h.sent).toEqual([])
+    await h.advance(MIN)
+    expect(h.sent[0]!.message.subject).toBe("Slugger: iMessage has been down for 15 min")
+  })
+
+  it("keeps a flapping channel as one outage", async () => {
+    await h.advance(0)
+    for (let i = 0; i < 8; i++) {
+      h.rows[0] = row("bluebubbles", "running")
+      await h.advance(MIN)
+      h.rows[0] = row("bluebubbles", "error")
+      await h.advance(MIN)
+    }
+    expect(h.sent).toHaveLength(1)
+    expect(h.sent[0]!.message.subject).toBe("Slugger: iMessage has been down for 16 min")
+  })
+
+  it("rate-limits a channel that keeps going down to one alert an hour", async () => {
     await h.advance(0)
     await h.advance(OWNER_OUTAGE_THRESHOLD_MS)
     h.rows[0] = row("bluebubbles", "running")
-    await h.advance(MIN)
+    await h.advance(CONFIRMED)
     expect(h.sent).toHaveLength(2)
     h.rows[0] = row("bluebubbles", "error")
-    await h.advance(MIN)
     await h.advance(OWNER_OUTAGE_THRESHOLD_MS + MIN)
     expect(h.sent).toHaveLength(2)
     // Still down once the hour since the last alert has passed: it goes out then.
-    await h.advance(OWNER_OUTAGE_ALERT_MIN_INTERVAL_MS - OWNER_OUTAGE_THRESHOLD_MS - 2 * MIN)
+    await h.advance(OWNER_OUTAGE_ALERT_MIN_INTERVAL_MS - OWNER_OUTAGE_THRESHOLD_MS - CONFIRMED - 2 * MIN)
+    expect(h.sent).toHaveLength(2)
+    await h.advance(MIN)
     expect(h.sent).toHaveLength(3)
     expect(h.sent[2]!.message.subject).toContain("has been down for")
   })
@@ -231,7 +301,7 @@ describe("OwnerChannelOutageWatcher", () => {
     await h.advance(OWNER_OUTAGE_THRESHOLD_MS)
     await h.advance(MIN)
     expect(h.senders.mail).toHaveBeenCalledTimes(1)
-    await h.advance(OWNER_OUTAGE_RETRY_MS)
+    await h.advance(OWNER_OUTAGE_RETRY_MS - MIN)
     expect(h.senders.mail).toHaveBeenCalledTimes(2)
     expect(h.sent).toEqual([])
 
@@ -242,11 +312,11 @@ describe("OwnerChannelOutageWatcher", () => {
     const mail = back.senders.mail as ReturnType<typeof vi.fn>
     mail.mockImplementationOnce(async () => { throw "mail offline" })
     back.rows[0] = row("bluebubbles", "running")
-    await back.advance(MIN)
+    await back.advance(CONFIRMED)
     expect(mail).toHaveBeenCalledTimes(2)
     await back.advance(MIN)
     expect(mail).toHaveBeenCalledTimes(2)
-    await back.advance(OWNER_OUTAGE_RETRY_MS)
+    await back.advance(OWNER_OUTAGE_RETRY_MS - MIN)
     expect(mail).toHaveBeenCalledTimes(3)
     expect(back.sent.map((item) => item.message.subject)).toEqual(["Slugger: iMessage has been down for 15 min", "Slugger: iMessage is back"])
   })
@@ -261,12 +331,19 @@ describe("OwnerChannelOutageWatcher", () => {
     expect(state.outages.bluebubbles.lastAttemptAt).toBeDefined()
   })
 
-  it("treats a stale BlueBubbles proof as down, from the health result", async () => {
+  it("treats a stale BlueBubbles proof from the health result as down", async () => {
     h = harness({ rows: [row("bluebubbles", "running"), row("mail", "running")] })
     h.results = [{ name: "sense-probe:bluebubbles-proof:slugger", status: "critical", message: "BlueBubbles proof has not changed in 10m" }]
     await h.advance(0)
     await h.advance(OWNER_OUTAGE_THRESHOLD_MS)
     expect(h.sent[0]!.message.text).toContain("BlueBubbles proof has not changed in 10m")
+  })
+
+  it("treats a running iMessage listener that has never shown proof as down", async () => {
+    h = harness({ rows: [row("bluebubbles", "running", { lastProofAt: undefined }), row("mail", "running")] })
+    await h.advance(0)
+    await h.advance(OWNER_OUTAGE_THRESHOLD_MS)
+    expect(h.sent[0]!.message.text).toContain("has never shown that it is connected")
   })
 
   it("updates the detail it reports as the outage changes", async () => {
@@ -279,17 +356,23 @@ describe("OwnerChannelOutageWatcher", () => {
   it("drops an outage without a message when it was never told or the channel was turned off", async () => {
     await h.advance(0)
     h.rows[0] = row("bluebubbles", "running")
-    await h.advance(MIN)
+    await h.advance(CONFIRMED)
     expect(h.sent).toEqual([])
     expect(JSON.parse(fs.readFileSync(h.statePath, "utf-8")).outages).toEqual({})
 
     h.rows[0] = row("bluebubbles", "error")
-    await h.advance(MIN)
-    await h.advance(OWNER_OUTAGE_THRESHOLD_MS)
+    await h.advance(OWNER_OUTAGE_THRESHOLD_MS + MIN)
     expect(h.sent).toHaveLength(1)
     h.rows[0] = row("bluebubbles", "disabled", { enabled: false })
     await h.advance(MIN)
     expect(h.sent).toHaveLength(1)
+    expect(JSON.parse(fs.readFileSync(h.statePath, "utf-8")).outages).toEqual({})
+
+    // An untold outage on a channel that moved to another machine ends at once.
+    h.rows[0] = row("bluebubbles", "error")
+    await h.advance(MIN)
+    h.rows[0] = row("bluebubbles", "not_attached")
+    await h.advance(MIN)
     expect(JSON.parse(fs.readFileSync(h.statePath, "utf-8")).outages).toEqual({})
   })
 
@@ -338,6 +421,7 @@ describe("OwnerChannelOutageWatcher", () => {
       },
       routes: () => ({ mail: send }),
       now: () => clock.now,
+      sightingGapMs: OWNER_OUTAGE_THRESHOLD_MS,
     })
     await watcher.check([])
     clock.now += OWNER_OUTAGE_THRESHOLD_MS

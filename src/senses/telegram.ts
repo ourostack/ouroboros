@@ -202,7 +202,8 @@ export interface TelegramSenseApp {
   sendExternalEventDecision(input: ExternalEventDecisionInput): Promise<ExternalEventOwnerDelivery>
   sendAwaitFollowUp(request: CrossChatDeliveryRequest): Promise<CrossChatDirectDeliveryResult>
   /** Posts a Butler-authored notice to the owner's chat and records it in the owner session. */
-  sendOwnerNotice(input: { noticeId: string; text: string; signal?: AbortSignal }): Promise<void>
+  /** "sent" when it went to the owner's Telegram chat now; "not_sent" when it was held or handed to the owner route. */
+  sendOwnerNotice(input: { noticeId: string; text: string; signal?: AbortSignal }): Promise<TelegramOwnerNoticeOutcome>
   /**
    * Posts a delegated command's audit notice (`delegated:<commandId>`) to the owner's own chat, now. It never goes to the owner
    * route, which could hand it to the peer that sent the command, and never waits for quiet hours, the daily cap or a handoff:
@@ -217,6 +218,8 @@ export interface TelegramSenseApp {
   checkOwnerRoute(): Promise<void>
   stop(): Promise<void>
 }
+
+export type TelegramOwnerNoticeOutcome = "sent" | "not_sent"
 
 type TelegramTurnRunner = (options: RunSenseTurnOptions) => Promise<RunSenseTurnResult>
 type TelegramLongPollFactory = (options: TelegramLongPollOptions) => TelegramLongPoll
@@ -2463,7 +2466,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     async sendOwnerNotice(input) {
       const noticeId = requiredText(input.noticeId, "owner notice id")
       if (Buffer.byteLength(noticeId) > 512) throw new Error("Telegram owner notice id is invalid")
-      if (noticeId.startsWith("delegated:")) return sendDelegatedAuditNotice({ ...input, noticeId })
+      if (noticeId.startsWith("delegated:")) {
+        await sendDelegatedAuditNotice({ ...input, noticeId })
+        return "sent"
+      }
+      let outcome: TelegramOwnerNoticeOutcome = "not_sent"
       await runWithAcceptanceAuditOwner(async () => {
         const text = requiredText(input.text, "owner notice")
         const telegramText = await routeSelfStarted(text, `owner-notice:${noticeId}`, undefined, input.signal)
@@ -2471,10 +2478,12 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         if (holdNoticeDuringHandoff(telegramText, `owner-notice:${noticeId}`)) return
         await releaseHeldNotices(input.signal)
         const effect = await deliverButlerEffect(telegramText, `owner-notice:${noticeId}`, input.signal)
+        outcome = "sent"
         countProactiveSend()
         const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
         await recordAcceptedEffects(sessionPath, [effect])
       })
+      return outcome
     },
     sendDelegatedAuditNotice,
     stop() {
@@ -2785,10 +2794,11 @@ export async function sendTelegramDelegatedAuditNotice(agentName: string, input:
   }
 }
 
-export async function sendTelegramOwnerNotice(agentName: string, input: { noticeId: string; text: string; signal?: AbortSignal }): Promise<void> {
+/** Sends an owner notice; "not_sent" when Telegram held it or handed it to the owner route instead of sending it now. */
+export async function sendTelegramOwnerNotice(agentName: string, input: { noticeId: string; text: string; signal?: AbortSignal }): Promise<TelegramOwnerNoticeOutcome> {
   const app = await startTelegramSenseApp(agentName)
   try {
-    await app.sendOwnerNotice(input)
+    return await app.sendOwnerNotice(input)
   } finally {
     await app.stop()
   }

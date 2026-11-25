@@ -105,6 +105,10 @@ describe("createOwnerAlertMailSender", () => {
     await expect(createOwnerAlertMailSender("slugger", "/bundle", deps({
       resolveMailroom: async () => mailroom({ autonomousSendPolicy: { killSwitch: true } as never }),
     }))(message)).rejects.toThrow("kill switch")
+    const failing = deps({ providerClient: async () => { throw new Error("no ACS key") } })
+    await expect(createOwnerAlertMailSender("slugger", "/bundle", failing)(message)).rejects.toThrow("no ACS key")
+    // A send that can't go out leaves no draft behind.
+    expect(failing.createDraft).not.toHaveBeenCalled()
     const none = deps({ listFriends: async () => [] })
     await expect(createOwnerAlertMailSender("slugger", "/bundle", none)(message)).rejects.toThrow("no owner mail address")
     expect(none.createDraft).not.toHaveBeenCalled()
@@ -119,9 +123,13 @@ describe("createOwnerAlertMailSender", () => {
 
 describe("createOwnerAlertTelegramSender", () => {
   it("sends the text as the agent's Telegram owner notice under the alert's id", async () => {
-    const sendTelegram = vi.fn(async () => undefined)
+    const sendTelegram = vi.fn(async () => "sent" as const)
     await createOwnerAlertTelegramSender("slugger", { sendTelegram })(message)
     expect(sendTelegram).toHaveBeenCalledWith("slugger", expect.objectContaining({ noticeId: message.noticeId, text: message.text }))
+  })
+
+  it("fails when Telegram held the notice or handed it to the owner route, so mail is tried", async () => {
+    await expect(createOwnerAlertTelegramSender("slugger", { sendTelegram: async () => "not_sent" })(message)).rejects.toThrow("instead of sending it now")
   })
 })
 

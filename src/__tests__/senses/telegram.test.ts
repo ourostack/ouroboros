@@ -2101,7 +2101,8 @@ describe("Telegram sense", () => {
       // A held notice already speaks for the rest of its batch.
       await expect(f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "endpoint:books", generation: 9, relatedEvents: [{ source: "sanctuary-health", eventId: "endpoint:media", generation: 23 }], text: "Books is down too." })).resolves.toMatchObject({ status: "covered" })
       await f.app.sendProactive("Self-recovered; the shelf was down for about 15 minutes.")
-      await f.app.sendOwnerNotice({ noticeId: "restart:sonarr", text: "Sonarr restarted itself." })
+      // Held during the handoff, so the caller learns it was not sent.
+      await expect(f.app.sendOwnerNotice({ noticeId: "restart:sonarr", text: "Sonarr restarted itself." })).resolves.toBe("not_sent")
       await f.app.sendOwnerNotice({ noticeId: "restart:sonarr", text: "Sonarr restarted itself." })
       // A delegated command's notice can't wait and can't go to Sam, so it is refused, and so is the command.
       await expect(f.app.sendOwnerNotice({ noticeId: "delegated:task-9", text: "Delegated command ran." })).rejects.toThrow("handed to someone else")
@@ -2132,7 +2133,7 @@ describe("Telegram sense", () => {
       expect(sends()).toEqual(["The parity check failed."])
 
       vi.setSystemTime(Date.parse("2026-10-20T16:00:00.000Z")) // 9am
-      await f.app.sendOwnerNotice({ noticeId: "day-1", text: "Downloads are flowing again." })
+      await expect(f.app.sendOwnerNotice({ noticeId: "day-1", text: "Downloads are flowing again." })).resolves.toBe("sent")
       expect(sends()).toEqual(["The parity check failed.", "While you were away:\n• Sonarr restarted itself.\n• The shelf is down.", "Downloads are flowing again."])
       // That was three today (the critical one counts too); the fourth waits.
       await f.app.sendProactive("A fourth note.")
@@ -2377,7 +2378,7 @@ describe("Telegram sense", () => {
 
   it("posts one owner notice per notice id through the effect journal and owner session", async () => {
     const f = fixture()
-    await f.app.sendOwnerNotice({ noticeId: "delegated:task-1", text: "Delegated command from you via Claude Code." })
+    await expect(f.app.sendOwnerNotice({ noticeId: "delegated:task-1", text: "Delegated command from you via Claude Code." })).resolves.toBe("sent")
     await f.app.sendOwnerNotice({ noticeId: "delegated:task-1", text: "Delegated command from you via Claude Code." })
     expect(f.api.request).toHaveBeenCalledTimes(1)
     const effectRoot = path.join(f.agentRoot, "state", "telegram", "effects")

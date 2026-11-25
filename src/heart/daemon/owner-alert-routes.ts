@@ -28,7 +28,7 @@ export interface OwnerAlertRouteDeps {
   confirmSend?: typeof confirmMailDraftSend
   resolveTransport?: typeof resolveOutboundTransport
   providerClient?: (agent: string, transport: ReturnType<typeof resolveOutboundTransport>) => Promise<Parameters<typeof confirmMailDraftSend>[0]["providerClient"]>
-  sendTelegram?: (agent: string, input: { noticeId: string; text: string; signal?: AbortSignal }) => Promise<void>
+  sendTelegram?: (agent: string, input: { noticeId: string; text: string; signal?: AbortSignal }) => Promise<"sent" | "not_sent">
 }
 
 const SEND_TIMEOUT_MS = 30_000
@@ -102,6 +102,9 @@ export function createOwnerAlertMailSender(agent: string, agentRoot: string, dep
     if (resolved.config.autonomousSendPolicy?.killSwitch) throw new Error("the mail autonomy kill switch is on")
     const to = await resolveOwnerAlertAddress(agentRoot, resolved.config, deps)
     if (!to) throw new Error("no owner mail address: link the owner's email-address id on their friend record")
+    // Transport and provider first, so a send that can't go out leaves no draft behind.
+    const transport = d.resolveTransport(resolved.config)
+    const providerClient = await d.providerClient(agent, transport)
     const reason = `harness owner-channel outage notice ${message.noticeId}`
     const actor = { kind: "system" as const, agentId: agent }
     const draft = await d.createDraft({
@@ -114,7 +117,6 @@ export function createOwnerAlertMailSender(agent: string, agentRoot: string, dep
       actor,
       reason,
     })
-    const transport = d.resolveTransport(resolved.config)
     await d.confirmSend({
       store: resolved.store,
       agentId: resolved.agentName,
@@ -123,7 +125,7 @@ export function createOwnerAlertMailSender(agent: string, agentRoot: string, dep
       confirmation: "CONFIRM_SEND",
       autonomous: false,
       autonomyPolicy: resolved.config.autonomousSendPolicy,
-      providerClient: await d.providerClient(agent, transport),
+      providerClient,
       actor,
       reason,
     })
@@ -134,7 +136,9 @@ export function createOwnerAlertMailSender(agent: string, agentRoot: string, dep
 export function createOwnerAlertTelegramSender(agent: string, deps: OwnerAlertRouteDeps = {}): OwnerAlertSend {
   const d = withDefaults(deps)
   return async (message: OwnerAlertMessage) => {
-    await d.sendTelegram(agent, { noticeId: message.noticeId, text: message.text, signal: AbortSignal.timeout(SEND_TIMEOUT_MS) })
+    const outcome = await d.sendTelegram(agent, { noticeId: message.noticeId, text: message.text, signal: AbortSignal.timeout(SEND_TIMEOUT_MS) })
+    // Held for quiet hours or a handoff, or handed to the owner route (which may relay over the channel that is down).
+    if (outcome !== "sent") throw new Error("Telegram held the notice or handed it to the owner route instead of sending it now")
   }
 }
 
