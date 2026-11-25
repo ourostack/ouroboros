@@ -7089,6 +7089,46 @@ describe("BlueBubbles sense runtime", () => {
     closableServer.close()
   })
 
+  it("still reaches back to the outage when the recovery pass is cut short before it finishes", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const { writeBlueBubblesRuntimeState, readBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
+    writeBlueBubblesRuntimeState("testagent", {
+      upstreamStatus: "error",
+      detail: "Cannot reach BlueBubbles",
+      lastCheckedAt: new Date().toISOString(),
+      pendingRecoveryCount: 0,
+    })
+    const recoveredAt = Date.now()
+    const stuckPage = createDeferred<never[]>()
+    mocks.checkHealth.mockResolvedValue(undefined)
+    // The recovery pass hangs in catch-up and is abandoned, as a restart would cut it short.
+    mocks.listRecentMessages.mockImplementation(() => Date.now() === recoveredAt ? stuckPage.promise : Promise.resolve([]))
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    // Upstream already reads ok mid-pass, so the window has to be open already.
+    expect(readBlueBubblesRuntimeState("testagent")).toEqual(expect.objectContaining({
+      upstreamStatus: "ok",
+      recoveryLookbackSince: new Date(recoveredAt - 24 * 60 * 60 * 1000).toISOString(),
+      recoveryLookbackUntil: new Date(recoveredAt + 30 * 60_000).toISOString(),
+    }))
+    await vi.advanceTimersByTimeAsync(180_000)
+    await flushAsyncWork()
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_runtime_sync_timeout" }))
+    const starts = mocks.emitNervesEvent.mock.calls.map(([event]) => event).filter((event) => event.event === "senses.bluebubbles_catchup_start")
+    expect(starts.at(-1)!.meta).toEqual(expect.objectContaining({
+      mode: "settling",
+      since: new Date(recoveredAt - 24 * 60 * 60 * 1000).toISOString(),
+    }))
+    closableServer.close()
+  })
+
   it("lets a slow catch-up that keeps making progress finish, however long it takes", async () => {
     vi.useFakeTimers()
     const tempAgentRoot = makeTempDir()

@@ -7,7 +7,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { parseStatusPayload } from "../daemon/cli-render"
 import { DEFAULT_DAEMON_SOCKET_PATH, checkDaemonSocketAlive, sendDaemonCommand } from "../daemon/socket-client"
 import { DAEMON_PLIST_LABEL } from "../daemon/launchd"
-import { finalHandoffBlockers, judgeRestartAfterUpFailure, type HandoffBlocker } from "../daemon/handoff-blockers"
+import { HANDOFF_HEALTH_REFUSED_EXIT_CODE, handoffSnapshot, judgeRestartAfterUpFailure, unsettledReason, type HandoffSnapshot } from "../daemon/handoff-blockers"
 import { isRuntimeReplacementStranded, runtimeReplacementMarkerPath } from "../daemon/runtime-replacement-handoff"
 import { activateVersion, getCurrentVersion, getOuroCliHome, pruneOldVersions, validateInstalledVersionForActivation } from "./ouro-version-manager"
 import { installRelease, lookupLatestRelease, selfUpdateE2eOverrides, type ReleaseSourceDeps } from "./release-sources"
@@ -77,7 +77,10 @@ function runDetachedFromStdin(command: string, args: string[], timeoutMs: number
     child.on("close", (code) => {
       clearTimeout(timer)
       if (code === 0) resolve()
-      else reject(new Error(`${args.join(" ")} exited ${code}: ${failureTail(stderr) || failureTail(stdout) || "no output"}`))
+      else reject(Object.assign(
+        new Error(`${args.join(" ")} exited ${code}: ${failureTail(stderr) || failureTail(stdout) || "no output"}`),
+        { exitCode: code },
+      ))
     })
   })
 }
@@ -88,15 +91,17 @@ function failureTail(output: string): string {
   return output.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").split("\n").map((line) => line.trim()).filter(Boolean).slice(-3).join(" ")
 }
 
-async function daemonHandoffBlockers(socketPath: string): Promise<HandoffBlocker[] | null> {
+async function daemonHandoffSnapshot(socketPath: string): Promise<HandoffSnapshot | null> {
   try {
     const response = await sendDaemonCommand(socketPath, { kind: "daemon.status" })
     const payload = parseStatusPayload(response.data)
-    return payload ? finalHandoffBlockers(payload) : null
+    return payload ? handoffSnapshot(payload) : null
   } catch {
     return null
   }
 }
+
+const EMPTY_HANDOFF_SNAPSHOT: HandoffSnapshot = { blockers: [], workers: [], healthCheckCount: 0 }
 
 export const releaseSourceDeps: ReleaseSourceDeps = { fetchJson, execFile: execFileText, ...selfUpdateE2eOverrides(process.env) }
 
@@ -198,12 +203,14 @@ export function createDefaultSelfUpdateDeps(options: { homeDir?: string; socketP
     runningDaemonVersion: async () => (await checkDaemonSocketAlive(socketPath)) ? runningDaemonVersion(socketPath) : null,
     restartDaemon: async (expectedVersion) => {
       // What already blocks handoff on the daemon being replaced: a release is not at fault for those.
-      const before = (await checkDaemonSocketAlive(socketPath)) ? await daemonHandoffBlockers(socketPath) : []
+      const before = (await checkDaemonSocketAlive(socketPath)) ? await daemonHandoffSnapshot(socketPath) : EMPTY_HANDOFF_SNAPSHOT
       let upFailure: string | null = null
+      let upRefusedOnHandoffHealth = false
       try {
         await runDetachedFromStdin(process.execPath, [launcher, "up"], DAEMON_UP_TIMEOUT_MS)
       } catch (error) {
         upFailure = error instanceof Error ? error.message : String(error)
+        upRefusedOnHandoffHealth = (error as { exitCode?: unknown }).exitCode === HANDOFF_HEALTH_REFUSED_EXIT_CODE
       }
       const deadline = Date.now() + DAEMON_HEALTH_WAIT_MS
       let seen: string | null = null
@@ -213,8 +220,18 @@ export function createDefaultSelfUpdateDeps(options: { homeDir?: string; socketP
         await new Promise((resolve) => setTimeout(resolve, 2_000))
       }
       if (upFailure !== null) {
-        const after = seen === expectedVersion ? await daemonHandoffBlockers(socketPath) : null
-        return judgeRestartAfterUpFailure({ upFailure, expectedVersion, seenVersion: seen, before, after })
+        let after: HandoffSnapshot | null = null
+        if (upRefusedOnHandoffHealth && seen === expectedVersion) {
+          // Judge only a settled status: one read before health checks run or workers register hides problems.
+          const settleDeadline = Date.now() + DAEMON_HEALTH_WAIT_MS
+          for (;;) {
+            after = await daemonHandoffSnapshot(socketPath)
+            if (after === null || before === null || unsettledReason(before, after) === null) break
+            if (Date.now() >= settleDeadline) break
+            await new Promise((resolve) => setTimeout(resolve, 2_000))
+          }
+        }
+        return judgeRestartAfterUpFailure({ upFailure, upRefusedOnHandoffHealth, expectedVersion, seenVersion: seen, before, after })
       }
       if (seen === expectedVersion) return { ok: true }
       return { ok: false, detail: seen ? `daemon answered with ${seen}, expected ${expectedVersion}` : "daemon did not answer after ouro up" }

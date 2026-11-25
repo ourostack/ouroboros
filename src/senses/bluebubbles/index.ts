@@ -3986,12 +3986,21 @@ async function syncBlueBubblesRuntime(
         meta: { previousDetail: previousState.detail, previousCheckedAt: previousState.lastCheckedAt },
       })
     }
+    // Open the settling window in the same write that marks upstream ok: a recovery pass cut short by a restart
+    // must still leave later catch-ups reaching back to the outage.
+    const recoveryLookback = previousState.upstreamStatus === "error"
+      ? {
+          recoveryLookbackSince: new Date(resolveBlueBubblesCatchUpSince(previousState, Date.parse(checkedAt))).toISOString(),
+          recoveryLookbackUntil: new Date(Date.parse(checkedAt) + BLUEBUBBLES_RECOVERY_SETTLE_MS).toISOString(),
+        }
+      : {}
     const pendingBeforeCatchup = blueBubblesPendingRecoverySnapshot(agentName)
     const activeBeforeCatchup = snapshotBlueBubblesActiveTurns(agentName, BLUEBUBBLES_LIVE_TURN_STALLED_MS)
     writeBlueBubblesRuntimeState(agentName, {
       upstreamStatus: "ok",
       detail: "upstream reachable; recovery pass running",
       lastCheckedAt: checkedAt,
+      ...recoveryLookback,
       proofMethod: "bluebubbles.checkHealth",
       ...pendingBeforeCatchup,
       ...activeBeforeCatchup,
@@ -4006,13 +4015,6 @@ async function syncBlueBubblesRuntime(
     })
     options.lifecycleSignal?.throwIfAborted()
     const failed = catchUp.failed
-    // Open (or keep) the settling window: catch-ups keep reaching back to the outage until it closes.
-    const recoveryLookback = previousState.upstreamStatus === "error"
-      ? {
-          recoveryLookbackSince: new Date(resolveBlueBubblesCatchUpSince(previousState, Date.parse(checkedAt))).toISOString(),
-          recoveryLookbackUntil: new Date(Date.parse(checkedAt) + BLUEBUBBLES_RECOVERY_SETTLE_MS).toISOString(),
-        }
-      : {}
     const pendingAfterCatchup = blueBubblesPendingRecoverySnapshot(agentName)
     const activeAfterCatchup = snapshotBlueBubblesActiveTurns(agentName, BLUEBUBBLES_LIVE_TURN_STALLED_MS)
     const queued = pendingAfterCatchup.pendingRecoveryCount

@@ -62,7 +62,7 @@ import type { LettersCommand, LettersWriter } from "../letters/writer"
 import { FrontendSessionService, lazyFrontendAuthority } from "../frontend-session-service"
 import { frontendSocketPathForDaemon, startFrontendSocketServer, type FrontendSocketServer } from "../frontend-socket"
 import { FrontendJournalStore } from "../frontend-journal"
-import { cadenceRetrySuffix } from "./cadence"
+import { cadenceRetrySuffix, evaluateCadenceDue } from "./cadence"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -1792,10 +1792,17 @@ export class OuroDaemon {
     if (habit.lastRun === null) {
       return { kind: "ready", habit, occurrenceId: `${options.trigger}:first-run:${habit.cadence}` }
     }
+    const nowMs = Date.now()
+    // The idempotency key carries the trigger, so a launchd fire minutes after the overdue sweep ran the habit
+    // would get a fresh key and run it twice in one interval. Only a due habit runs from a timer.
+    const dueState = evaluateCadenceDue(habit.cadence, habit.lastRun, nowMs)
+    if (dueState !== null && !dueState.due) {
+      return { kind: "skipped", habit, skipReason: `habit not due yet: last ran ${habit.lastRun}, cadence ${habit.cadence}` }
+    }
     return {
       kind: "ready",
       habit,
-      occurrenceId: `${options.trigger}:last-run:${habit.lastRun}:cadence:${habit.cadence}${cadenceRetrySuffix(habit.cadence, habit.lastRun, Date.now())}`,
+      occurrenceId: `${options.trigger}:last-run:${habit.lastRun}:cadence:${habit.cadence}${cadenceRetrySuffix(habit.cadence, habit.lastRun, nowMs)}`,
     }
   }
 

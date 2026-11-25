@@ -5,7 +5,7 @@
  * handler (local execution, daemon socket, or interactive flow).
  */
 
-import { finalHandoffBlockers } from "./handoff-blockers"
+import { finalHandoffBlockers, HANDOFF_HEALTH_REFUSED_EXIT_CODE } from "./handoff-blockers"
 import { execFileSync, execSync, spawn } from "child_process"
 import { checkBlueBubblesHostTarget, currentOsAccount } from "../bluebubbles-host-account"
 import { sanctuaryGitExcludeText } from "./sanctuary-bundle-migration"
@@ -1134,6 +1134,8 @@ interface FinalDaemonCheckResult {
   message?: string
   retryable?: boolean
   reason?: string
+  /** The daemon answered and runs, but its health blocks handoff. */
+  healthRefusal?: boolean
 }
 
 function finalDaemonFailureMessage(deps: OuroCliDeps, reason: string): string {
@@ -1244,6 +1246,7 @@ async function verifyDaemonReadyForHandoffOnce(
         message: finalDaemonFailureMessage(deps, reason),
         retryable: true,
         reason,
+        healthRefusal: true,
       }
     }
     const workerCount = payload.workers.length
@@ -8675,7 +8678,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       )
       progress.end()
       const message = finalDaemonCheck.message ?? "background service stopped before boot finished"
-      return returnCliFailure(deps, message)
+      // A distinct exit code lets the self-updater tell a health refusal from up itself failing.
+      return returnCliFailure(deps, message, finalDaemonCheck.healthRefusal ? HANDOFF_HEALTH_REFUSED_EXIT_CODE : 1)
     }
     progress.completePhase("final daemon check", finalDaemonCheck.summary)
     progress.end()

@@ -3060,8 +3060,29 @@ describe("daemon command plane branches", () => {
     }
   })
 
-  it("deduplicates repeated scheduled habit pokes while lastRun has not advanced", async () => {
+  it("skips a launchd poke for a habit that ran within its cadence, so one interval never runs it twice", async () => {
     vi.useFakeTimers({ toFake: ["Date"], now: Date.parse("2026-07-03T23:40:00.000Z") })
+    try {
+      const socketPath = tmpSocketPath("daemon-habit-poke-not-due")
+      const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-habit-poke-not-due-bundles-"))
+      const ledgerPath = path.join(os.tmpdir(), `habit-poke-not-due-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+      const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+      // The overdue sweep ran it ten minutes ago; launchd's own timer fires now.
+      writeHabitFile({ bundlesRoot, agent: "slugger", habitName: "heartbeat", cadence: "30m", lastRun: "2026-07-03T23:30:00.000Z" })
+      const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+      processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+      const result = await daemon.handleCommand({ kind: "habit.poke", agent: "slugger", habitName: "heartbeat", trigger: "launchd" })
+
+      expect(result).toMatchObject({ ok: true, message: expect.stringContaining("habit not due yet: last ran 2026-07-03T23:30:00.000Z, cadence 30m") })
+      expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("deduplicates repeated scheduled habit pokes while lastRun has not advanced", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.parse("2026-07-04T00:05:00.000Z") })
     try {
     const socketPath = tmpSocketPath("daemon-habit-poke-stable-occurrence")
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-habit-poke-stable-bundles-"))
