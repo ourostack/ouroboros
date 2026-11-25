@@ -2,7 +2,7 @@ import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { parseHabitFile, type HabitFile } from "./habit-parser"
 import { applyHabitRuntimeState } from "./habit-runtime-state"
-import { cadenceFallbackDelayMs, evaluateCadenceDue, nextCadenceRunAt, parseCadenceToCron, parseCadenceToMs } from "../daemon/cadence"
+import { cadenceFallbackDelayMs, cadenceRetrySuffix, evaluateCadenceDue, nextCadenceRunAt, parseCadenceToCron, parseCadenceToMs } from "../daemon/cadence"
 import { isRsvpHabitName } from "../../rsvp/habit-policy"
 import type { OsCronManager } from "../daemon/os-cron"
 import type { ScheduledTaskJob } from "../daemon/task-scheduler"
@@ -159,6 +159,17 @@ export class HabitScheduler {
       if (dueState === null) continue
 
       if (dueState.due) {
+        const missedRuns = cadenceRetrySuffix(habit.cadence, habit.lastRun, nowMs)
+        if (missedRuns) {
+          // A whole interval past due means a run was lost or refused. Warn, so the gap shows in kept logs.
+          emitNervesEvent({
+            level: "warn",
+            component: "daemon",
+            event: "daemon.habit_overdue",
+            message: "habit is more than one interval overdue; an earlier run did not record completion",
+            meta: { habitName: habit.name, agent: this.agent, lastRun: habit.lastRun, elapsedMs: dueState.elapsedMs },
+          })
+        }
         emitNervesEvent({
           component: "daemon",
           event: "daemon.habit_fire",

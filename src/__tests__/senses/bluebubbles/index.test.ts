@@ -7025,6 +7025,110 @@ describe("BlueBubbles sense runtime", () => {
     closableServer.close()
   })
 
+  it("keeps the outage lookback for half an hour after recovery so messages iMessage delivers late are still found", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const { writeBlueBubblesRuntimeState, readBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
+    writeBlueBubblesRuntimeState("testagent", {
+      upstreamStatus: "error",
+      detail: "Cannot reach BlueBubbles",
+      lastCheckedAt: new Date().toISOString(),
+      pendingRecoveryCount: 0,
+    })
+    const recoveredAt = Date.now()
+    // Sent four hours ago while the Mac was down; it lands in the Messages database two minutes after recovery.
+    const lateMessage = makeCatchUpMessage({
+      messageGuid: "late-landing-outage-guid",
+      timestamp: recoveredAt - 4 * 60 * 60 * 1000,
+      textForAgent: "sent while you were down",
+    })
+    mocks.checkHealth.mockResolvedValue(undefined)
+    mocks.listRecentMessages.mockImplementation(() => Promise.resolve(Date.now() - recoveredAt >= 120_000 ? [lateMessage] : []))
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    expect(readBlueBubblesRuntimeState("testagent")).toEqual(expect.objectContaining({
+      upstreamStatus: "ok",
+      recoveryLookbackUntil: new Date(recoveredAt + 30 * 60_000).toISOString(),
+    }))
+    await vi.advanceTimersByTimeAsync(150_000)
+    await flushAsyncWork()
+
+    const events = mocks.emitNervesEvent.mock.calls.map(([event]) => event)
+    const starts = events.filter((event) => event.event === "senses.bluebubbles_catchup_start")
+    expect(starts[0]).toEqual(expect.objectContaining({ level: "warn", meta: expect.objectContaining({ mode: "recovery" }) }))
+    expect(starts.at(-1)!.meta).toEqual(expect.objectContaining({
+      mode: "settling",
+      since: new Date(recoveredAt - 24 * 60 * 60 * 1000).toISOString(),
+    }))
+    expect(events).toContainEqual(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_catchup_complete",
+      meta: expect.objectContaining({ mode: "settling", queued: 1 }),
+    }))
+    // The queued recovery pass then turns it, so the agent sees and answers it.
+    expect(mocks.runAgent).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ role: "user", content: expect.stringContaining("sent while you were down") })]),
+      expect.any(Object),
+      "bluebubbles",
+      expect.any(AbortSignal),
+      expect.any(Object),
+    )
+
+    // Once the window closes, catch-ups return to the healthy overlap.
+    await vi.advanceTimersByTimeAsync(30 * 60_000)
+    await flushAsyncWork()
+    const lastStart = mocks.emitNervesEvent.mock.calls.map(([event]) => event)
+      .filter((event) => event.event === "senses.bluebubbles_catchup_start").at(-1)!
+    expect(lastStart.meta.mode).toBe("healthy")
+    expect(Date.parse(lastStart.meta.since)).toBeGreaterThan(Date.now() - 5 * 60_000)
+    closableServer.close()
+  })
+
+  it("still reaches back to the outage when the recovery pass is cut short before it finishes", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const { writeBlueBubblesRuntimeState, readBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
+    writeBlueBubblesRuntimeState("testagent", {
+      upstreamStatus: "error",
+      detail: "Cannot reach BlueBubbles",
+      lastCheckedAt: new Date().toISOString(),
+      pendingRecoveryCount: 0,
+    })
+    const recoveredAt = Date.now()
+    const stuckPage = createDeferred<never[]>()
+    mocks.checkHealth.mockResolvedValue(undefined)
+    // The recovery pass hangs in catch-up and is abandoned, as a restart would cut it short.
+    mocks.listRecentMessages.mockImplementation(() => Date.now() === recoveredAt ? stuckPage.promise : Promise.resolve([]))
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    // Upstream already reads ok mid-pass, so the window has to be open already.
+    expect(readBlueBubblesRuntimeState("testagent")).toEqual(expect.objectContaining({
+      upstreamStatus: "ok",
+      recoveryLookbackSince: new Date(recoveredAt - 24 * 60 * 60 * 1000).toISOString(),
+      recoveryLookbackUntil: new Date(recoveredAt + 30 * 60_000).toISOString(),
+    }))
+    await vi.advanceTimersByTimeAsync(180_000)
+    await flushAsyncWork()
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_runtime_sync_timeout" }))
+    const starts = mocks.emitNervesEvent.mock.calls.map(([event]) => event).filter((event) => event.event === "senses.bluebubbles_catchup_start")
+    expect(starts.at(-1)!.meta).toEqual(expect.objectContaining({
+      mode: "settling",
+      since: new Date(recoveredAt - 24 * 60 * 60 * 1000).toISOString(),
+    }))
+    closableServer.close()
+  })
+
   it("lets a slow catch-up that keeps making progress finish, however long it takes", async () => {
     vi.useFakeTimers()
     const tempAgentRoot = makeTempDir()

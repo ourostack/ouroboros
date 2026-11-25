@@ -5,6 +5,7 @@ import {
   parseCadenceToMs,
   cadenceFallbackDelayMs,
   DEFAULT_CADENCE_MS,
+  cadenceRetrySuffix,
   evaluateCadenceDue,
   nextCadenceRunAt,
 } from "../../../heart/daemon/cadence"
@@ -135,16 +136,37 @@ describe("fixed-time cadence helpers", () => {
       elapsedMs: 0,
       occurrenceId: null,
     })
+    expect(evaluateCadenceDue("30m", "2026-07-09T11:20:00.000Z", start.getTime())).toEqual({
+      due: true,
+      elapsedMs: 40 * 60 * 1000,
+      occurrenceId: "overdue:last-run:2026-07-09T11:20:00.000Z:cadence:30m",
+    })
+    // A whole interval past due: the run under the first occurrence was lost, so this is a new occurrence.
     expect(evaluateCadenceDue("30m", "2026-07-09T11:00:00.000Z", start.getTime())).toEqual({
       due: true,
       elapsedMs: 60 * 60 * 1000,
-      occurrenceId: "overdue:last-run:2026-07-09T11:00:00.000Z:cadence:30m",
+      occurrenceId: "overdue:last-run:2026-07-09T11:00:00.000Z:cadence:30m:retry:1",
     })
     expect(evaluateCadenceDue("30m", "2026-07-09T11:45:00.000Z", start.getTime())).toEqual({
       due: false,
       elapsedMs: 15 * 60 * 1000,
       occurrenceId: null,
     })
+  })
+
+  it("moves a stuck interval habit to a new occurrence once per missed interval", () => {
+    const lastRun = "2026-11-25T06:47:10.759Z"
+    const lastRunMs = Date.parse(lastRun)
+    const minute = 60_000
+    expect(cadenceRetrySuffix("30m", lastRun, lastRunMs + 33 * minute)).toBe("")
+    expect(cadenceRetrySuffix("30m", lastRun, lastRunMs + 59 * minute)).toBe("")
+    expect(cadenceRetrySuffix("30m", lastRun, lastRunMs + 60 * minute)).toBe(":retry:1")
+    expect(cadenceRetrySuffix("30m", lastRun, lastRunMs + 89 * minute)).toBe(":retry:1")
+    // 14 hours after the lost 07:20 run, as on 2026-11-25.
+    expect(cadenceRetrySuffix("30m", lastRun, lastRunMs + 14 * 60 * minute)).toBe(":retry:27")
+    expect(cadenceRetrySuffix("30m", null, lastRunMs)).toBe("")
+    expect(cadenceRetrySuffix("30m", "not-a-date", lastRunMs)).toBe("")
+    expect(cadenceRetrySuffix("0 10 * * *", lastRun, lastRunMs + 3 * 24 * 60 * minute)).toBe("")
   })
 
   it("rejects invalid fixed daily cron shapes in timing helpers", () => {
