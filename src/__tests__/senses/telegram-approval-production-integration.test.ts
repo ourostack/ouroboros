@@ -30,6 +30,7 @@ import { createTelegramApprovalEffectPort, createTelegramAuthorizedEffectExecuto
 import { getSenseSessionPath } from "../../senses/shared-turn"
 import type { ToolContext } from "../../repertoire/tools-base"
 import { a003RetainedHistoryEnvelope } from "../fixtures/a003-session"
+import { createPhaseTimer } from "../test-helpers/phase-timer"
 
 const scenarioHandleDigest = "a".repeat(64)
 const roots: string[] = []
@@ -907,10 +908,13 @@ describe("production-composed Telegram approval lifecycle", () => {
     "different record session", "changed frozen arguments", "new request", "empty target id", "padded target id", "missing runtime", "late capability removal",
     ...Object.keys(invalidInventories),
   ])("A006 terminalizes %s before a real owner callback reaches the restart handler", async (change) => {
+    const phases = createPhaseTimer(`A006 terminalizes ${change}`, { watchdogMs: 4000 })
+    try {
     const agentRoot = root()
     setRuntimeLogger(createLogger({ sinks: [createNdjsonFileSink(path.join(agentRoot, "telegram-audit.ndjson"))] }))
     const restart = vi.fn(async () => ({ ok: true, data: { container: { id: "container-1", name: "calibre-web" }, beforeState: "running", afterState: "running", observedRestart: true, degraded: false } }))
     const owner = await ownerFixture(agentRoot, restart)
+    phases.mark("fixture")
     if (change === "different runtime root") owner.runtimeContext.agentRoot = path.join(agentRoot, "other")
     if (change === "missing runtime") delete owner.runtimeContext.sanctuary
     let ownerReads = 0
@@ -931,6 +935,7 @@ describe("production-composed Telegram approval lifecycle", () => {
       dependencies: { agentRoot, acceptanceMarker: () => null, runProvider: async () => ({ outcome: "settled" }) },
     })
     const suspension = await runtime.coordinator(owner).propose(proposalRequest(owner.requestContext))
+    phases.mark("propose")
     const databasePath = path.join(agentRoot, "state", "approvals", "approvals.sqlite")
     const store = openApprovalStore({ databasePath })
     try {
@@ -985,16 +990,19 @@ describe("production-composed Telegram approval lifecycle", () => {
         provenance: "stated", source: "current authenticated fixture owner",
       }, owner.requestContext)
       if (change === "standing grant" || change === "installed grant") await grantFixture(owner, change === "standing grant" ? "stated" : "installed_explicit_policy")
+      phases.mark("mutate")
       const bound = pending(agentRoot)[0]!
       if (roleChanged) await expect(runtime.transport.handleUpdate(callback(String(bound.approveCallbackData)))).rejects.toThrow("Telegram effect authorization denied")
       else {
         const decision = await runtime.transport.handleUpdate(callback(String(bound.approveCallbackData)))
         expect(decision.accepted).toBe(false)
       }
+      phases.mark("callback")
       expect(store.read(suspension.approvalId)).toMatchObject({ state: change === "new request" ? "session_head_changed" : "drifted", attemptedAt: null })
       if (change === "late capability removal") expect(ownerReads).toBeGreaterThanOrEqual(4)
       expect(restart).not.toHaveBeenCalled()
     } finally { store.close(); runtime.close() }
+    } catch (error) { throw phases.annotate(error) } finally { phases.done() }
   })
 
   it.each(["missing", "empty", "corrupt", "without ingress"])("A006 records no attempt when the stored callback session is %s", async (change) => {

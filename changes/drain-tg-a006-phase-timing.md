@@ -1,0 +1,1 @@
+Test-only: the Telegram approval lifecycle "A006 terminalizes …" cases now record per-phase timings (fixture, propose, mutate, callback). They are silent when the test passes; a failing case gets them appended to its error, and a case still running at 4s prints them once to stderr, so a 5s timeout shows which phase was running. Assertions and the 5s limit are unchanged.
