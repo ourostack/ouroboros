@@ -123,6 +123,11 @@ export interface AgentConfig {
    * (credit, auth, throttle, outage, network) carries on with the other lane's model, then each entry here in order.
    */
   providerFallback?: AgentFacingConfig[]
+  /**
+   * Opt-in: before a group-chat turn, ask a Microsoft-Decision model on the azure provider's Foundry resource how
+   * valuable a reply would be, and stay quiet without a model turn below `replyAtValue` (src/senses/reply-gate.ts).
+   */
+  replyGate?: ReplyGateConfig
   context?: {
     maxTokens?: number
     contextMargin?: number
@@ -174,6 +179,13 @@ export interface AgentConfig {
    * discovers the accounts; the runtime moves between them by quota tranche and on a 402 or 429.
    */
   accountPool?: AccountPoolSettings
+}
+
+export interface ReplyGateConfig {
+  /** The Microsoft-Decision deployment's name in the Foundry resource the azure provider's vault item points at. */
+  deployment: string
+  /** Reply when a reply is worth at least this, on the model's 0 to 3 scale. Defaults to 1.5. */
+  replyAtValue?: number
 }
 
 export interface PluginConfig {
@@ -722,6 +734,27 @@ function validateProviderFallback(raw: unknown, configFile: string): AgentFacing
   return entries.map((entry) => ({ provider: (entry as AgentFacingConfig).provider, model: (entry as AgentFacingConfig).model }))
 }
 
+export function validateReplyGate(raw: unknown, configFile: string): ReplyGateConfig {
+  const record = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : null
+  const deployment = typeof record?.deployment === "string" ? record.deployment.trim() : ""
+  const replyAtValue = record?.replyAtValue
+  const replyAtValid = replyAtValue === undefined
+    || (typeof replyAtValue === "number" && Number.isFinite(replyAtValue) && replyAtValue >= 0 && replyAtValue <= 3)
+  if (!deployment || !replyAtValid) {
+    emitNervesEvent({
+      level: "error",
+      event: "config_identity.error",
+      component: "config/identity",
+      message: "agent config has invalid replyGate",
+      meta: { path: configFile, replyGate: raw },
+    })
+    throw new Error(
+      `agent.json at ${configFile} replyGate must be { "deployment": "<Microsoft-Decision deployment>", "replyAtValue": <0 to 3, optional> }.`,
+    )
+  }
+  return replyAtValue === undefined ? { deployment } : { deployment, replyAtValue: replyAtValue as number }
+}
+
 /**
  * Load and parse `<agentRoot>/agent.json`.
  * Reads the explicit owner's file fresh, or preserves the legacy ambient override when no owner is supplied.
@@ -844,6 +877,7 @@ export function loadAgentConfig(owner?: Readonly<{ agentName: string; agentRoot:
     agentFacing,
     ...(parsed.providerFallback !== undefined ? { providerFallback: validateProviderFallback(parsed.providerFallback, configFile) } : {}),
     ...(parsed.desks !== undefined ? { desks: validateDesks(parsed.desks, configFile) } : {}),
+    ...(parsed.replyGate !== undefined ? { replyGate: validateReplyGate(parsed.replyGate, configFile) } : {}),
     senses: normalizeSenses(parsed.senses, configFile),
     phrases: parsed.phrases as AgentConfig["phrases"],
   }
