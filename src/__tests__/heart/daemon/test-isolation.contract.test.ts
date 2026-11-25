@@ -117,6 +117,10 @@ const RM_RECURSIVE_ALLOWLIST: Array<{ file: string; why: string }> = [
     why: "CLI version pruning: removes stale ~/.ouro-cli/versions/<version>/node_modules trees during `ouro up`. Not agent-callable — runs inside the version manager's retention GC.",
   },
   {
+    file: "src/repertoire/desk-mcp.ts",
+    why: "Desk runtime copy: replaces a half-made ~/.cache/ouroboros/desk/<tree> copy and clears its own <tree>.partial-<pid> staging folder, so an installed Desk can run outside node_modules. Only paths under that cache, named by a 40-hex tree. Not agent-callable — runs when the daemon lists an agent's MCP servers.",
+  },
+  {
     file: "src/heart/versioning/ouro-uti.ts",
     why: "macOS UTI icon pipeline: removes an intermediate iconset directory after `iconutil` has already produced the .icns. Not agent-callable — runs only during app registration.",
   },
