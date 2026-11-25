@@ -83,6 +83,68 @@ export function agentDesks(
   return desks
 }
 
+const DESK_STAMP = ".ouro-desk.json"
+const TREE = /^[0-9a-f]{40}$/
+
+function stampedTree(dir: string): string | null {
+  try {
+    const tree: unknown = JSON.parse(fs.readFileSync(path.join(dir, DESK_STAMP), "utf8")).tree
+    return typeof tree === "string" && TREE.test(tree) ? tree : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The folder to run the Desk copy at `deskDir` from. Desk's server imports TypeScript files, and Node refuses to strip
+ * types under node_modules (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING): from an installed package's vendor/desk, the
+ * server exits before it answers. So an installed Desk runs from a copy at `<cacheRoot>/<tree>`, named by the tree its
+ * stamp records (the cache `scripts/desk-vendor.cjs` keeps), made once and moved into place whole. A copy outside
+ * node_modules, or one that can't be stamped or copied, runs where it is.
+ */
+export function runnableDeskDir(
+  deskDir: string,
+  cacheRoot = path.join(os.homedir(), ".cache", "ouroboros", "desk"),
+  rename: (from: string, to: string) => void = fs.renameSync,
+): string {
+  if (!path.resolve(deskDir).split(path.sep).includes("node_modules")) return deskDir
+  const tree = stampedTree(deskDir)
+  const target = tree === null ? null : path.join(cacheRoot, tree)
+  const partial = `${target}.partial-${process.pid}`
+  try {
+    if (target === null) throw new Error(`${path.join(deskDir, DESK_STAMP)} names no Desk tree`)
+    if (stampedTree(target) === tree) return target
+    fs.rmSync(partial, { recursive: true, force: true })
+    fs.mkdirSync(cacheRoot, { recursive: true })
+    fs.cpSync(deskDir, partial, { recursive: true })
+    fs.rmSync(target, { recursive: true, force: true })
+    rename(partial, target)
+    emitNervesEvent({
+      event: "desk.copied_out_of_node_modules",
+      component: "repertoire",
+      message: "copied the installed Desk outside node_modules, where Node runs its TypeScript",
+      meta: { deskDir, target },
+    })
+    return target
+  } catch (error) {
+    try {
+      fs.rmSync(partial, { recursive: true, force: true })
+    } catch {
+      // A cache root that isn't a folder holds no partial copy.
+    }
+    // Another daemon process may have moved its own copy into place first.
+    if (target !== null && stampedTree(target) === tree) return target
+    emitNervesEvent({
+      level: "error",
+      event: "desk.copy_failed",
+      component: "repertoire",
+      message: "couldn't copy the installed Desk outside node_modules; its server may not start",
+      meta: { deskDir, target, reason: error instanceof Error ? error.message : String(error) },
+    })
+    return deskDir
+  }
+}
+
 /** The MCP server that serves the desk at `root` from the Desk copy at `deskDir`. */
 export function deskMcpServerConfig(root: string, deskDir = bundledDeskDir()): McpServerConfig {
   return {
@@ -114,8 +176,9 @@ export function listDeskMcpServers(
   }
   const servers: Record<string, McpServerConfig> = {}
   const missing: string[] = []
+  const runFrom = runnableDeskDir(deskDir, path.join(home, ".cache", "ouroboros", "desk"))
   for (const desk of agentDesks(owner, config, home)) {
-    if (desk.present) servers[desk.server] = deskMcpServerConfig(desk.root, deskDir)
+    if (desk.present) servers[desk.server] = deskMcpServerConfig(desk.root, runFrom)
     else missing.push(desk.server)
   }
   emitNervesEvent({
