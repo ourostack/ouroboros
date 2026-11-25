@@ -327,6 +327,10 @@ export const notesToolDefinitions: ToolDefinition[] = [
           locator: bundleRelativeLocator(path.join(resolveRecordDiaryRoot(), "facts.jsonl"), ctx),
         });
       }
+      const match = result.added === 0 ? result.duplicates?.[0] : undefined;
+      if (match) {
+        return `not saved: my diary already has this, entry ${match.id} from ${match.createdAt}. Read it with consult_diary; if this entry adds something, write only what is new.`;
+      }
       return `saved diary entry (added=${result.added}, skipped=${result.skipped})`;
     },
     summaryKeys: ["entry", "about"],

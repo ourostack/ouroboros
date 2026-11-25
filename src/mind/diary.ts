@@ -36,6 +36,8 @@ export interface DiaryEntry {
 export interface DiaryWriteResult {
   added: number;
   skipped: number;
+  /** The earlier entry each skipped one duplicates, in order; present only when something was skipped. */
+  duplicates?: Array<{ id: string; createdAt: string }>;
 }
 
 /** @deprecated Use EmbeddingProvider from ./embedding-provider instead. */
@@ -102,7 +104,9 @@ function overlapScore(left: string, right: string): number {
   for (const word of leftWords) {
     if (rightWords.has(word)) common++;
   }
-  return common / Math.min(leftWords.size, rightWords.size);
+  // Shared words over all distinct words (Jaccard). Dividing by the smaller entry's words instead made any short entry
+  // a "duplicate" of every long one that contained two of its three words.
+  return common / (leftWords.size + rightWords.size - common);
 }
 
 function readExistingEntries(factsPath: string): DiaryEntry[] {
@@ -180,10 +184,11 @@ export function appendEntriesWithDedup(stores: DiaryStorePaths, incoming: DiaryE
   const all = [...existing];
   let added = 0;
   let skipped = 0;
+  const duplicates: Array<{ id: string; createdAt: string }> = [];
   const semanticThreshold = options?.semanticThreshold;
 
   for (const fact of cappedIncoming) {
-    const duplicate = all.some((prior) => {
+    const duplicate = all.find((prior) => {
       if (overlapScore(prior.text, fact.text) > DEDUP_THRESHOLD) return true;
       if (
         semanticThreshold !== undefined &&
@@ -197,6 +202,7 @@ export function appendEntriesWithDedup(stores: DiaryStorePaths, incoming: DiaryE
     });
     if (duplicate) {
       skipped++;
+      duplicates.push({ id: duplicate.id, createdAt: duplicate.createdAt });
       continue;
     }
     all.push(fact);
@@ -212,7 +218,7 @@ export function appendEntriesWithDedup(stores: DiaryStorePaths, incoming: DiaryE
     message: "diary write completed",
     meta: { added, skipped },
   });
-  return { added, skipped };
+  return duplicates.length > 0 ? { added, skipped, duplicates } : { added, skipped };
 }
 
 async function buildEmbedding(text: string, embeddingProvider?: EmbeddingProvider): Promise<number[]> {
