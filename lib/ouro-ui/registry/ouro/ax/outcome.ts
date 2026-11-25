@@ -1,4 +1,4 @@
-export { DEFAULT_OUTCOME_EXITS, isGenericAudience, isOutcome, nextStep, OUTCOME_STATES, OUTCOME_VERSION, outcome, outcomeExit, outcomeText, validateOutcome };
+export { DEFAULT_OUTCOME_EXITS, isAxRefShape, isGenericAudience, isOutcome, nextStep, OUTCOME_STATES, OUTCOME_VERSION, outcome, outcomeExit, outcomeText, validateOutcome };
 export type { AxRef, NextStep, Outcome, OutcomeExits, OutcomeFields, OutcomeHuman, OutcomeState, Postcondition, Receipt, Validation };
 
 // The export list comes first because the shadcn CLI drops comments before a file's
@@ -28,11 +28,23 @@ const OUTCOME_VERSION = "outcome/1";
 const OUTCOME_STATES = Object.freeze(["done", "queued", "planned", "needs-human", "uncertain", "refused", "failed"] as const);
 type OutcomeState = (typeof OUTCOME_STATES)[number];
 
-/** A thing an agent holds a reference to: a conversation, a message, a meeting, a request. `id` is what the tool takes back. */
+/**
+ * A thing an agent holds a reference to: a conversation, a message, a meeting, a request. `id` is what the tool takes
+ * back, and `kind` is its one name: use it, never a second field name for the same id elsewhere (`conversationId` in
+ * an event, `chatId` in a read's output). A feed item's ref is the exact ref its own read and action commands accept.
+ * When it also names something else a command can take instead, say so with `also`: a message's ref also names its
+ * conversation, so a read of the conversation and a reply to the thread both take the message's ref, not only the
+ * conversation's own id.
+ *
+ * @claim "use it, never a second field name for the same id elsewhere" registry/ouro/ax/outcome.test.mts verify:testExists(registry/ouro/ax/outcome.test.mts::validateOutcome accepts a target whose also names another ref, and rejects a malformed also entry)
+ * @claim "say so with `also`" registry/ouro/ax/outcome.test.mts verify:testExists(registry/ouro/ax/outcome.test.mts::validateOutcome accepts a target whose also names another ref, and rejects a malformed also entry)
+ */
 interface AxRef {
   kind: string;
   id: string;
   name?: string;
+  /** What else this id names: a ref that names the same thing a command accepts instead. */
+  also?: readonly AxRef[];
 }
 
 /**
@@ -148,6 +160,16 @@ const isText = (v: unknown): v is string => typeof v === "string" && v.trim().le
 const isStep = (v: unknown): v is NextStep => isRecord(v) && isText(v["command"]) && isText(v["why"]);
 
 /**
+ * Whether a value is an {@link AxRef}'s shape: `kind` and `id` as text, and, when given, `also` as a list of the
+ * same shape. Shared by {@link validateOutcome} and `checkWorkEvent`, so a target is checked the same way in both.
+ *
+ * @claim "a target is checked the same way in both" registry/ouro/ax/work-event.test.mts verify:testExists(registry/ouro/ax/work-event.test.mts::checkWorkEvent rejects a malformed target the same way validateOutcome does, also included)
+ */
+function isAxRefShape(v: unknown): v is AxRef {
+  return isRecord(v) && isText(v["kind"]) && isText(v["id"]) && (v["also"] === undefined || (Array.isArray(v["also"]) && v["also"].every(isAxRefShape)));
+}
+
+/**
  * Whether an audience's `who` names no one in particular ("other people", "someone", "everyone"), so an agent reading
  * the JSON learns less than one reading the text.
  *
@@ -182,7 +204,7 @@ function validateOutcome(v: unknown): Validation {
   if (!isRecord(v.audience) || typeof v.audience.only !== "boolean" || !isText(v.audience.who)) errors.push("audience needs only (true or false) and who (words)");
   else if (v.effect === "others" && v.audience.only) errors.push("an effect other people see cannot have an audience of only you");
   else if (v.effect === "others" && isGenericAudience(v.audience.who)) warnings.push(`audience.who is "${v.audience.who}", which names no one: say who will see it, as the text does (everyone in "Design sync", Jo Park)`);
-  if (v.target !== null && !(isRecord(v.target) && isText(v.target.kind) && isText(v.target.id))) errors.push("target is null or { kind, id }");
+  if (v.target !== null && !isAxRefShape(v.target)) errors.push("target is null or { kind, id }");
   if (!isText(v.summary)) errors.push("summary is empty");
   const p: unknown = v.postcondition;
   const pOk = isRecord(p) && typeof p["checked"] === "boolean" && (p["holds"] === null || typeof p["holds"] === "boolean") && isText(p["how"]);
