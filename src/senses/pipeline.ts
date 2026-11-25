@@ -66,6 +66,7 @@ import { projectCareEvidence, type CareRecord } from "../arc/cares"
 import { withTurnExecutionLease } from "../heart/turn-execution-lease"
 import { beginTurnInFlight, isWatchedSense, watchTurnCallbacks } from "./turn-watch"
 import { parseLinkCode, redeemLinkCode } from "../mind/friend-link-codes"
+import { appendGatedObserve, askReplyGate, readReplyGateConfig, type ReplyGateVerdict } from "./reply-gate"
 
 export interface FailoverState {
   pending: FailoverContext | null
@@ -726,6 +727,25 @@ function prepareInboundRunLedger(input: Omit<Parameters<typeof buildInboundRunLe
  * the reply is not held for the network. A later edit is not in this commit;
  * the next turn commits it whole.
  */
+async function askGroupReplyGate(messages: ChatCompletionMessageParam[], signal?: AbortSignal): Promise<ReplyGateVerdict> {
+  let agentName
+  let config
+  try {
+    agentName = getAgentName()
+    config = readReplyGateConfig(agentName)
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.reply_gate_config_error",
+      message: "could not read replyGate from agent.json, so the turn runs without the gate",
+      meta: { error: error instanceof Error ? error.message : String(error) },
+    })
+    return { reply: true, reason: "failed" }
+  }
+  return askReplyGate({ agentName, config, messages, signal })
+}
+
 export function startPostTurnSync(agentRoot: string, config: SyncConfig): void {
   let result: ReturnType<typeof postTurnPush>
   try {
@@ -1383,13 +1403,28 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
 
   let result: Awaited<ReturnType<InboundTurnInput["runAgent"]>>
   try {
-    result = await input.runAgent(
-      sessionMessages,
-      turnCallbacks,
-      input.channel,
-      input.signal,
-      runAgentOptions,
-    )
+    // Step 5a: Reply gate (opt-in, group chats only). A decision model says whether a reply is worth a model turn.
+    // Never when something is queued for this turn (pending messages, deferred returns, wake sections): only the
+    // model turn delivers those, and a quiet turn would settle them unseen. Never in Teams, where a bot in a group
+    // hears only messages that @mention it, so every Teams group turn is someone talking to the agent.
+    const replyGate = input.isGroupChat === true
+      && input.channel !== "teams"
+      && pending.length === 0
+      && extraPrefixSections.length === 0
+      ? await askGroupReplyGate(sessionMessages, input.signal)
+      : undefined
+    if (replyGate && !replyGate.reply) {
+      appendGatedObserve(sessionMessages, replyGate.value)
+      result = { outcome: "observed" }
+    } else {
+      result = await input.runAgent(
+        sessionMessages,
+        turnCallbacks,
+        input.channel,
+        input.signal,
+        runAgentOptions,
+      )
+    }
   } catch (error) {
     if (runLedger) appendRunLedgerRecordNonFatal(runLedger.agentRoot, createRunLedgerRecord({
       ...runLedger.recordInput,

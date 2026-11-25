@@ -123,6 +123,16 @@ This is not silent. Every switch is an `engine.provider_fallback` nerves event, 
 
 Without `providerFallback`, nothing falls back automatically.
 
+### Reply gate in group chats
+
+In a group chat most messages are people talking to each other, and a full model turn that ends in `observe` still pays for the agent's instructions, tools and memory. An agent can opt in to asking a small decision model first:
+
+```json
+"replyGate": { "deployment": "decision-1-1", "replyAtValue": 1.5 }
+```
+
+Before each group-chat turn, one call to [Microsoft-Decision-1.1](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-microsoft-decision) scores how valuable a reply would be, from 0 to 3. Below `replyAtValue` (default 1.5) the agent stays quiet without a model turn, and the session records the same `observe` call a quiet turn writes. `deployment` is the model's deployment name in the Foundry resource the `providers/azure` vault item points at; the gate uses that item's endpoint and API key, or Azure sign-in when there is no key, so `ouro auth --agent <agent> --provider azure` sets it up. The gate does not run in Teams, where a bot in a group hears only messages that @mention it, or when something is queued for the turn (a pending message, a deferred return), since only a model turn delivers it. A message that names the agent, a message with no words, a missing endpoint, an error or a reply slower than 4 seconds all run the turn as if the gate were off. The idea and its first eval come from [ourostack/chime-in](https://github.com/ourostack/chime-in). Without `replyGate`, every group message gets a model turn.
+
 ## Credentials
 
 Provider credentials are stored with:
