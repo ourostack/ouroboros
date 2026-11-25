@@ -658,13 +658,19 @@ describe("turn-owned realtime selection", () => {
     const accepted = Promise.withResolvers<Response>()
     const acquire = vi.spyOn(mcp, "getSharedMcpManager").mockImplementation(async () => phase === "configuration" ? pending.promise : null)
     const events = vi.spyOn(nerves, "emitNervesEvent")
+    // The call stops "during configuration" only if the 250 ms bootstrap deadline has not already moved it on to
+    // acceptance. In configuration, the test owns that one timer (found by its `timeoutAfter` creator, not by its
+    // delay): it never fires, every other timer is untouched, and cleanup cancels it.
+    const heldDeadlines: ReturnType<typeof setTimeout>[] = []
     if (phase === "configuration") {
-      // The call stops "during configuration" only if the 250 ms bootstrap deadline has not already moved it on to
-      // acceptance. That deadline is a real timer, so a slow runner could pass it before the stop arrives; hold it open
-      // and wait past it, so the fixture owns the ordering instead of the machine's speed.
       const realSetTimeout = globalThis.setTimeout
-      vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: TimerHandler, ms?: number, ...args: unknown[]) =>
-        realSetTimeout(handler, ms === 250 ? 60_000 : ms, ...args)) as typeof setTimeout)
+      vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: TimerHandler, ms?: number, ...args: unknown[]) => {
+        if (ms !== 250 || !new Error().stack?.includes("timeoutAfter")) return realSetTimeout(handler, ms, ...args)
+        const held = realSetTimeout(() => {}, 2 ** 31 - 1)
+        held.unref()
+        heldDeadlines.push(held)
+        return held
+      }) as typeof setTimeout)
     }
     let fixture: Awaited<ReturnType<typeof startToolSelectionVoice>> | undefined
     try {
@@ -685,9 +691,10 @@ describe("turn-owned realtime selection", () => {
         },
       })
       if (phase !== "preclassified") {
-        if (phase === "configuration") await vi.waitFor(() => expect(acquire).toHaveBeenCalledOnce())
-        if (phase === "configuration") await new Promise((resolve) => setTimeout(resolve, 300))
-        else await vi.waitFor(() => expect(fixture!.mock.openaiRequests.some(({ input }) => input.endsWith("/accept"))).toBe(true))
+        if (phase === "configuration") {
+          await vi.waitFor(() => expect(acquire).toHaveBeenCalledOnce())
+          await new Promise((resolve) => setTimeout(resolve, 300))
+        } else await vi.waitFor(() => expect(fixture!.mock.openaiRequests.some(({ input }) => input.endsWith("/accept"))).toBe(true))
         expect((await fixture.bridge.handle({
           method: "POST", path: "/voice/twilio/outgoing/out-stopped/amd", headers: {},
           body: formBody({ CallSid: "call_tool_selection", AnsweredBy: "machine_end_beep" }),
@@ -699,12 +706,14 @@ describe("turn-owned realtime selection", () => {
       pending.resolve(null)
       accepted.resolve(new Response("", { status: 200 }))
       await new Promise((resolve) => setImmediate(resolve))
+      expect(heldDeadlines).toHaveLength(phase === "configuration" ? 1 : 0)
       expect(fixture.mock.openaiSockets).toEqual([])
       const actions = fixture.mock.openaiRequests.map(({ input }) => input.split("/").at(-1))
       expect(actions).toEqual(phase === "preclassified" ? ["reject"] : phase === "accept" ? ["accept", "hangup"] : ["hangup"])
     } finally {
       pending.resolve(null)
       accepted.resolve(new Response("", { status: 200 }))
+      for (const held of heldDeadlines) clearTimeout(held)
       if (fixture) await fixture.close()
       vi.restoreAllMocks()
       await fs.rm(outputDir, { recursive: true, force: true })
