@@ -14,7 +14,14 @@ vi.mock("../../heart/identity", () => ({
   loadAgentConfig: () => identity.config,
 }))
 
-import { agentDesks, bundledDeskDir, deskMcpServerConfig, listDeskMcpServers, overrideBundledDeskDirForTests } from "../../repertoire/desk-mcp"
+import {
+  agentDesks,
+  bundledDeskDir,
+  deskMcpServerConfig,
+  listDeskMcpServers,
+  overrideBundledDeskDirForTests,
+  runnableDeskDir,
+} from "../../repertoire/desk-mcp"
 
 const temps: string[] = []
 function temp(prefix: string): string {
@@ -111,5 +118,84 @@ describe("desk-mcp", () => {
     } finally {
       overrideBundledDeskDirForTests(null)
     }
+  })
+
+  // Node won't strip TypeScript types under node_modules (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING), and Desk's
+  // server imports .ts files. Run from an installed package's vendor/desk on 0.1.0-alpha.1536 (2026-11-24), every
+  // agent's Desk server exited with code 1 before it answered. So the daemon serves an installed Desk from a copy
+  // outside node_modules, one per Desk tree, in the cache scripts/desk-vendor.cjs already uses.
+  describe("an installed package's Desk", () => {
+    const TREE = "de1293126e7d0c885bc0f66067abb144b0c42152"
+
+    function installedDesk(stamp: object | null = { tree: TREE }): string {
+      const dir = path.join(temp("pkg-"), "node_modules", "@ouro.bot", "cli", "vendor", "desk")
+      fs.mkdirSync(path.join(dir, "mcp"), { recursive: true })
+      fs.writeFileSync(path.join(dir, "mcp", "bootstrap.cjs"), "// bootstrap")
+      fs.writeFileSync(path.join(dir, "mcp", "problem.ts"), "export class AxError extends Error {}")
+      if (stamp !== null) fs.writeFileSync(path.join(dir, ".ouro-desk.json"), JSON.stringify(stamp))
+      return dir
+    }
+
+    function serve(deskDir: string, home: string) {
+      const bundle = temp("bundle-")
+      fs.mkdirSync(path.join(bundle, "desk"))
+      return listDeskMcpServers({ agentName: "a", agentRoot: bundle }, {}, deskDir, home).desk
+    }
+
+    it("is served from a copy outside node_modules, named by its tree", () => {
+      const home = temp("home-")
+      const copy = path.join(home, ".cache", "ouroboros", "desk", TREE)
+      const server = serve(installedDesk(), home)
+      expect(server.args[0]).toBe(path.join(copy, "mcp", "bootstrap.cjs"))
+      expect(server.cwd).toBe(copy)
+      expect(fs.readFileSync(path.join(copy, "mcp", "problem.ts"), "utf8")).toContain("AxError")
+      expect(JSON.parse(fs.readFileSync(path.join(copy, ".ouro-desk.json"), "utf8")).tree).toBe(TREE)
+      expect(fs.readdirSync(path.dirname(copy))).toEqual([TREE])
+    })
+
+    it("reuses a copy that holds its tree, and replaces one that doesn't", () => {
+      const home = temp("home-")
+      const deskDir = installedDesk()
+      const copy = path.join(home, ".cache", "ouroboros", "desk", TREE)
+      serve(deskDir, home)
+      fs.writeFileSync(path.join(copy, "kept"), "")
+      serve(deskDir, home)
+      expect(fs.existsSync(path.join(copy, "kept"))).toBe(true)
+      fs.writeFileSync(path.join(copy, ".ouro-desk.json"), "{")
+      expect(serve(deskDir, home).cwd).toBe(copy)
+      expect(fs.existsSync(path.join(copy, "kept"))).toBe(false)
+    })
+
+    it("is served in place when it has no stamp or can't be copied", () => {
+      const home = temp("home-")
+      const unstamped = installedDesk(null)
+      expect(serve(unstamped, home).cwd).toBe(unstamped)
+      expect(serve(installedDesk({ tree: "not-a-tree" }), home).cwd).not.toContain(".cache")
+      fs.mkdirSync(path.join(home, ".cache", "ouroboros"), { recursive: true })
+      fs.writeFileSync(path.join(home, ".cache", "ouroboros", "desk"), "a file where the cache folder goes")
+      const deskDir = installedDesk()
+      expect(serve(deskDir, home).cwd).toBe(deskDir)
+      expect(fs.readdirSync(path.join(home, ".cache", "ouroboros"))).toEqual(["desk"])
+    })
+
+    it("uses the copy another process finished first", () => {
+      const home = temp("home-")
+      const deskDir = installedDesk()
+      const copy = path.join(home, ".cache", "ouroboros", "desk", TREE)
+      const lose = (from: string, to: string): void => {
+        fs.cpSync(deskDir, copy, { recursive: true })
+        fs.renameSync(from, `${to}-lost`)
+        throw Object.assign(new Error("ENOTEMPTY"), { code: "ENOTEMPTY" })
+      }
+      expect(runnableDeskDir(deskDir, path.dirname(copy), lose)).toBe(copy)
+      expect(fs.readdirSync(path.dirname(copy)).sort()).toEqual([TREE, `${TREE}-lost`])
+    })
+
+    it("runs in place when the copy can't be moved into place, leaving no partial copy", () => {
+      const cacheRoot = path.join(temp("home-"), "desk")
+      const deskDir = installedDesk()
+      expect(runnableDeskDir(deskDir, cacheRoot, () => { throw "busy" })).toBe(deskDir)
+      expect(fs.readdirSync(cacheRoot)).toEqual([])
+    })
   })
 })
