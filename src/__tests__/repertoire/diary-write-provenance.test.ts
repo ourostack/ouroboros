@@ -63,6 +63,17 @@ describe("diary_write handler provenance extraction", () => {
     return def!.handler
   }
 
+  it("says plainly when nothing was saved, and which entry already says it", async () => {
+    const handler = await getDiaryWriteHandler()
+    const entry = "moved the weekly review to thursday mornings at nine"
+    expect(await handler({ entry }, {} as ToolContext)).toBe("saved diary entry (added=1, skipped=0)")
+
+    const reply = await handler({ entry }, {} as ToolContext)
+
+    expect(reply).toMatch(/^not saved: my diary already has this, entry [0-9a-f-]{36} from \d{4}-\d{2}-\d{2}T/)
+    expect(reply).toContain("consult_diary")
+  })
+
   it("passes full provenance when ToolContext has channel + friend + trust", async () => {
     const handler = await getDiaryWriteHandler()
     const friend = makeFriend({ id: "f-1", name: "alice", trustLevel: "family" })

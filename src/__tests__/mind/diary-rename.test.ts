@@ -313,7 +313,7 @@ describe("diary_write tool handler", () => {
       habitSession: { recordProducedRef } as never,
     } as never)
 
-    expect(result).toContain("added=0")
+    expect(result).toMatch(/^not saved: /)
     expect(recordProducedRef).not.toHaveBeenCalled()
   })
 })
