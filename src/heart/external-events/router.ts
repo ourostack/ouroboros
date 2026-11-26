@@ -5,7 +5,7 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getOuroCliHome } from "../versioning/ouro-version-manager"
 import { writeFileAtomicSync } from "../atomic-file"
-import { isButlerAgent, type ButlerAgentName } from "../butler-agent"
+import { BUTLER_AGENT_NAMES, isButlerAgent, managedButlerAgent, type ButlerAgentName } from "../butler-agent"
 
 export type ExternalEventTransition = "opened" | "unchanged" | "changed" | "escalated" | "recovered"
 export type ExternalEventExecutionState = "received" | "queued" | "running" | "handled" | "retry_wait" | "dead_letter"
@@ -436,15 +436,85 @@ function isRecord(value: unknown): value is ExternalEventRecord {
     && validGrant
 }
 
-export function readExternalEventRecord(recordPath: string): ExternalEventRecord {
+// The Butler this daemon runs, set once at daemon start. Records saved under the Butler's other name are its records.
+let runningButler: ButlerAgentName | null = null
+
+/** The agent a record or new event belongs to: a Butler name means the running Butler, or the Butler folder it sits in. */
+function eventAgent(agent: string, folder?: string): string {
+  if (!isButlerAgent(agent)) return agent
+  if (runningButler) return runningButler
+  return folder !== undefined && isButlerAgent(folder) ? folder : agent
+}
+
+/** The record as the daemon sees it: owned by the running Butler, at the path it was read from. */
+function normaliseButlerRecord(record: ExternalEventRecord, recordPath: string): ExternalEventRecord {
+  const agent = eventAgent(record.agent, path.basename(path.dirname(path.dirname(recordPath))))
+  return agent === record.agent && record.recordPath === recordPath ? record : { ...record, agent, recordPath }
+}
+
+/** The record exactly as saved, after checking it sits where its identity says (or in the other Butler name's folder). */
+function readStoredExternalEventRecord(recordPath: string): ExternalEventRecord {
   const parsed: unknown = JSON.parse(fs.readFileSync(recordPath, "utf8"))
   if (!isRecord(parsed)) throw new Error(`External event record is invalid: ${recordPath}`)
   const root = path.dirname(path.dirname(path.dirname(recordPath)))
-  const expectedPath = externalEventRecordPath(root, parsed)
-  if (path.resolve(parsed.recordPath) !== path.resolve(recordPath) || path.resolve(expectedPath) !== path.resolve(recordPath)) {
-    throw new Error(`External event record identity is invalid: ${recordPath}`)
-  }
+  const here = path.resolve(recordPath)
+  const expectedPath = path.resolve(externalEventRecordPath(root, parsed))
+  if (path.resolve(parsed.recordPath) === here && expectedPath === here) return parsed
+  // A Butler record whose folder was adopted under the Butler's other name: it names the folder it was written in, or this one.
+  const folder = path.basename(path.dirname(path.dirname(recordPath)))
+  const adopted = isButlerAgent(parsed.agent) && isButlerAgent(folder)
+    && path.resolve(externalEventRecordPath(root, { ...parsed, agent: folder })) === here
+    && [here, expectedPath].includes(path.resolve(parsed.recordPath))
+  if (!adopted) throw new Error(`External event record identity is invalid: ${recordPath}`)
   return parsed
+}
+
+export function readExternalEventRecord(recordPath: string): ExternalEventRecord {
+  return normaliseButlerRecord(readStoredExternalEventRecord(recordPath), recordPath)
+}
+
+export type ButlerExternalEventAdoption = "none" | "adopted" | "both-present" | "failed"
+
+/**
+ * At daemon start, the running Butler takes over the event folder saved under its other name (from before the rename,
+ * or from the release a rollback left). A same-filesystem rename; with both folders present, both stay and it warns.
+ */
+export function prepareButlerExternalEvents(root: string, managedAgents: readonly string[]): ButlerExternalEventAdoption {
+  const butler = managedButlerAgent(managedAgents)
+  runningButler = butler
+  if (!butler) return "none"
+  const own = path.join(root, butler)
+  const others = BUTLER_AGENT_NAMES.filter((name) => name !== butler).map((name) => path.join(root, name)).filter((dir) => fs.existsSync(dir))
+  if (others.length === 0) return "none"
+  if (fs.existsSync(own)) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.external_events_adoption_conflict",
+      message: "both Butler names have external-event folders; leaving both in place",
+      meta: { butler, own, others },
+    })
+    return "both-present"
+  }
+  try {
+    fs.renameSync(others[0]!, own)
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.external_events_adoption_failed",
+      message: "could not move the Butler's other-name external-event folder",
+      meta: { butler, from: others[0], to: own, error: error instanceof Error ? error.message : /* v8 ignore next -- fs throws Error objects @preserve */ String(error) },
+    })
+    return "failed"
+  }
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.external_events_adopted",
+    message: "moved the Butler's other-name external-event folder to the running Butler",
+    meta: { butler, from: others[0], to: own },
+  })
+  return "adopted"
 }
 
 interface ExternalEventRepairEntry {
@@ -542,9 +612,17 @@ function parseRepairManifest(manifestPath: string): ExternalEventRepairManifest 
   return value as ExternalEventRepairManifest
 }
 
+/** The folder a reviewed repair's record is in: its own agent's, or the other Butler name's once the daemon adopted it. */
+function repairFolderAgent(root: string, entry: ExternalEventRepairEntry): string {
+  if (!isButlerAgent(entry.agent)) return entry.agent
+  const names = [entry.agent, ...BUTLER_AGENT_NAMES.filter((name) => name !== entry.agent)]
+  return names.find((agent) => fs.existsSync(externalEventRecordPath(root, { ...entry, agent }))) ?? entry.agent
+}
+
 function assertRepairRecordPath(root: string, entry: ExternalEventRepairEntry): string {
   const resolvedRoot = path.resolve(root)
-  const recordPath = externalEventRecordPath(resolvedRoot, entry)
+  const folderAgent = repairFolderAgent(resolvedRoot, entry)
+  const recordPath = externalEventRecordPath(resolvedRoot, { ...entry, agent: folderAgent })
   const relative = path.relative(resolvedRoot, path.resolve(recordPath))
   /* v8 ignore next -- defense in depth: safePathSegment cannot emit traversal @preserve */
   if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error(`External event repair path escapes its root for ${repairIdentity(entry)}`)
@@ -555,8 +633,8 @@ function assertRepairRecordPath(root: string, entry: ExternalEventRepairEntry): 
   }
   const expected = [
     [resolvedRoot, "directory"],
-    [path.join(resolvedRoot, safePathSegment(entry.agent)), "directory"],
-    [path.join(resolvedRoot, safePathSegment(entry.agent), safePathSegment(entry.source)), "directory"],
+    [path.join(resolvedRoot, safePathSegment(folderAgent)), "directory"],
+    [path.join(resolvedRoot, safePathSegment(folderAgent), safePathSegment(entry.source)), "directory"],
     [recordPath, "file"],
   ] as const
   for (const [candidate, kind] of expected) {
@@ -597,7 +675,7 @@ export function repairExternalEventsFromManifest(manifestPath: string, options: 
       const recordPath = assertRepairRecordPath(root, entry)
       const raw = fs.readFileSync(recordPath)
       const digest = digestBytes(raw)
-      const record = readExternalEventRecord(recordPath)
+      const record = readStoredExternalEventRecord(recordPath)
       if (digest === entry.postimageSha256) {
         assertRepairPostimage(record, entry, manifest.repairedAt)
         prepared.push({ entry, recordPath, state: "post" })
@@ -630,12 +708,12 @@ export function repairExternalEventsFromManifest(manifestPath: string, options: 
         const raw = fs.readFileSync(item.recordPath)
         const digest = digestBytes(raw)
         if (digest === item.entry.postimageSha256) {
-          assertRepairPostimage(readExternalEventRecord(item.recordPath), item.entry, manifest.repairedAt)
+          assertRepairPostimage(readStoredExternalEventRecord(item.recordPath), item.entry, manifest.repairedAt)
           result.alreadyApplied.push(identity)
           return
         }
         if (digest !== item.entry.preimageSha256) throw new Error("record advanced after prevalidation")
-        const record = readExternalEventRecord(item.recordPath)
+        const record = readStoredExternalEventRecord(item.recordPath)
         atomicWrite(item.recordPath, repairedRecord(record, manifest.repairedAt))
         result.applied.push(identity)
       })
@@ -842,7 +920,7 @@ function readExisting(recordPath: string): { record: ExternalEventRecord | null;
   if (!fs.existsSync(recordPath)) return { record: null, corruptDuplicateCount: 0 }
   try {
     const parsed: unknown = JSON.parse(fs.readFileSync(recordPath, "utf8"))
-    if (isRecord(parsed)) return { record: parsed, corruptDuplicateCount: 0 }
+    if (isRecord(parsed)) return { record: normaliseButlerRecord(parsed, recordPath), corruptDuplicateCount: 0 }
     const duplicateCount = parsed && typeof parsed === "object" && !Array.isArray(parsed) && typeof (parsed as { duplicateCount?: unknown }).duplicateCount === "number"
       ? Number((parsed as { duplicateCount: number }).duplicateCount) + 1
       : 1
@@ -903,8 +981,10 @@ function exhaustedRecoverySlot(record: { agent: string; source: string; eventId:
   return createHash("sha256").update(`${record.agent}\0${record.source}\0${record.eventId}`).digest().readUInt32BE(0) % EXHAUSTED_RECOVERY_SLOTS
 }
 
-function recordExternalEventInternal(input: ExternalEventInput, options: RecordExternalEventOptions = {}): ExternalEventRecord {
-  validateExternalEventInput(input)
+function recordExternalEventInternal(given: ExternalEventInput, options: RecordExternalEventOptions = {}): ExternalEventRecord {
+  validateExternalEventInput(given)
+  // An event naming the Butler's other name is the running Butler's, filed in its folder.
+  const input = { ...given, agent: eventAgent(given.agent) }
   const now = options.now?.() ?? new Date().toISOString()
   const root = options.root ?? getExternalEventRoot()
   const recordPath = externalEventRecordPath(root, input)

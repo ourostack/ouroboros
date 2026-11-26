@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { fillHouseNames, houseNameFields, type HouseNameKey } from "../../mind/house-names"
+import { BUTLER_AGENT_NAMES, isButlerAgent, type ButlerAgentName } from "../butler-agent"
 
 export const SANCTUARY_PACKAGE_MANAGED_FILES = [
   "provider-readiness.json",
@@ -165,6 +166,8 @@ const CANONICAL_EMPTY_PACKAGED_POLICY = { schemaVersion: 1, version: 0, desiredS
 
 export interface SanctuaryBundleMigrationResult {
   managedFilesUpdated: number
+  /** Present when the migrate pointed allowlisted files at the Butler's container path. */
+  bundlePathsRewritten?: number
 }
 function readObject(filePath: string): Record<string, unknown> {
   const value: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"))
@@ -291,6 +294,60 @@ function writeAtomic(filePath: string, content: string | Buffer, mode = 0o600): 
 
 const SNAPSHOT_RELATIVES = [...SANCTUARY_PACKAGE_MANAGED_FILES, "bundle-meta.json"] as const
 
+/**
+ * The install's own files that name the bundle's container path, and so follow the Butler's name on a migrate. Nothing
+ * else is rewritten: never psyche/, friends/, sessions or logs. `skills/*.md` stands for every skill file at the top of skills/.
+ */
+export const SANCTUARY_BUNDLE_PATH_FILES = ["agent.json", "state/replay-client/provision.json", "state/attachments/recent.json", "skills/*.md", "house/HOUSE.md"] as const
+const SKILL_FILE = /^skills\/[^/]+\.md$/u
+
+function isBundlePathFile(relative: string): boolean {
+  return SKILL_FILE.test(relative) || (SANCTUARY_BUNDLE_PATH_FILES as readonly string[]).includes(relative)
+}
+
+const containerBundlePath = (name: ButlerAgentName): string => `/home/ouro/AgentBundles/${name}.ouro`
+
+/**
+ * The Butler a migrate runs for: the one it is told, or the one its agent root is named after; null for any other bundle,
+ * and for `null`, which the host passes when it names no Butler: its folder keeps the name `sanctuary` whatever the image runs.
+ */
+function migrationButlerName(agentRoot: string, given: ButlerAgentName | null | undefined): ButlerAgentName | null {
+  if (given !== undefined) return given
+  const name = path.basename(agentRoot).replace(/\.ouro$/u, "")
+  return isButlerAgent(name) ? name : null
+}
+
+interface BundlePathRewrite { relative: string; content: Buffer; mode: number }
+
+/** The allowlisted files that name the other Butler's container path, with that path changed to `name`'s. */
+function planBundlePathRewrites(agentRoot: string, name: ButlerAgentName | null): BundlePathRewrite[] {
+  if (!name) return []
+  const other = BUTLER_AGENT_NAMES.find((candidate) => candidate !== name)!
+  // The other bundle's path, and not a longer folder name that starts with it.
+  const escaped = containerBundlePath(other).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")
+  const pattern = new RegExp(`${escaped}(?![A-Za-z0-9._-])`, "gu")
+  const skills = path.join(agentRoot, "skills")
+  let skillFiles: string[] = []
+  try {
+    if (fs.statSync(skills).isDirectory()) skillFiles = fs.readdirSync(skills).filter((entry) => entry.endsWith(".md")).sort().map((entry) => `skills/${entry}`)
+  } catch (error) {
+    if (!isMissing(error)) throw error
+  }
+  const relatives = [...SANCTUARY_BUNDLE_PATH_FILES.filter((relative) => !relative.includes("*")), ...skillFiles]
+  const rewrites: BundlePathRewrite[] = []
+  for (const relative of relatives) {
+    const filePath = path.join(agentRoot, relative)
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) continue
+    const text = fs.readFileSync(filePath, "utf8")
+    const next = text.replace(pattern, containerBundlePath(name))
+    if (next === text) continue
+    // Only a file that needs the rewrite must be a real one inside the bundle; anything else is left as it is.
+    validateDestination(agentRoot, relative)
+    rewrites.push({ relative, content: Buffer.from(next, "utf8"), mode: fs.lstatSync(filePath).mode & 0o777 })
+  }
+  return rewrites
+}
+
 function packageManagedArtifactPaths(agentRoot: string): string[] {
   return SNAPSHOT_RELATIVES.map((relative) => path.join(agentRoot, relative))
 }
@@ -360,8 +417,8 @@ function snapshotDirectoryRelatives(): string[] {
   return [...directories].sort((left, right) => left.length - right.length)
 }
 
-function captureMigrationSnapshot(agentRoot: string): MigrationSnapshot {
-  const files = SNAPSHOT_RELATIVES.map((relative): FileSnapshot => {
+function captureMigrationSnapshot(agentRoot: string, extraRelatives: readonly string[] = []): MigrationSnapshot {
+  const files = [...SNAPSHOT_RELATIVES, ...extraRelatives].map((relative): FileSnapshot => {
     const filePath = path.join(agentRoot, relative)
     if (!fs.existsSync(filePath)) return { path: filePath, content: null, mode: null }
     const stat = fs.lstatSync(filePath)
@@ -415,8 +472,11 @@ function readDurableRecord(agentRoot: string): { snapshot: MigrationSnapshot; ro
   const fileRelatives = record.files.map((file) => file?.relative)
   const directoryRelatives = record.directories.map((directory) => directory?.relative)
   const expectedDirectories = snapshotDirectoryRelatives()
-  if (JSON.stringify(fileRelatives) !== JSON.stringify(SNAPSHOT_RELATIVES) || JSON.stringify(directoryRelatives) !== JSON.stringify(expectedDirectories)) throw new Error("Sanctuary bundle rollback record paths are invalid")
-  for (const relative of SNAPSHOT_RELATIVES) validateDestination(agentRoot, relative)
+  // After the managed files come any bundle-path files the migrate rewrote, each once and each on the allowlist.
+  const extraRelatives = fileRelatives.slice(SNAPSHOT_RELATIVES.length)
+  const validExtras = extraRelatives.every((relative) => typeof relative === "string" && isBundlePathFile(relative)) && new Set(extraRelatives).size === extraRelatives.length
+  if (JSON.stringify(fileRelatives.slice(0, SNAPSHOT_RELATIVES.length)) !== JSON.stringify(SNAPSHOT_RELATIVES) || !validExtras || JSON.stringify(directoryRelatives) !== JSON.stringify(expectedDirectories)) throw new Error("Sanctuary bundle rollback record paths are invalid")
+  for (const relative of [...SNAPSHOT_RELATIVES, ...(extraRelatives as string[])]) validateDestination(agentRoot, relative)
   const validMode = (mode: unknown): mode is number | null => mode === null || (Number.isInteger(mode) && (mode as number) >= 0 && (mode as number) <= 0o777)
   const files = record.files.map((file): FileSnapshot => {
     if (!file || typeof file.relative !== "string" || !validMode(file.mode) || (file.contentBase64 !== null && typeof file.contentBase64 !== "string") || (file.contentBase64 === null) !== (file.mode === null)) throw new Error("Sanctuary bundle rollback record file is invalid")
@@ -797,7 +857,7 @@ function restoreMigrationSnapshot(snapshot: MigrationSnapshot, agentRoot: string
   }
 }
 
-export function migrateSanctuaryPackageManagedBundle(input: { packageRoot: string; agentRoot: string; retainRollback?: boolean; rollbackImageId?: string; targetImageId?: string }): SanctuaryBundleMigrationResult {
+export function migrateSanctuaryPackageManagedBundle(input: { packageRoot: string; agentRoot: string; retainRollback?: boolean; rollbackImageId?: string; targetImageId?: string; butlerName?: ButlerAgentName | null }): SanctuaryBundleMigrationResult {
   emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_bundle_migration_start", message: "starting Sanctuary package-managed bundle migration", meta: { agentRoot: input.agentRoot } })
   let snapshot: MigrationSnapshot | null = null
   try {
@@ -820,8 +880,10 @@ export function migrateSanctuaryPackageManagedBundle(input: { packageRoot: strin
     const packagedMeta = readObject(path.join(input.packageRoot, "bundle-meta.json"))
     for (const field of BUNDLE_META_VERSION_FIELDS) if (!(field in packagedMeta)) throw new Error(`packaged bundle-meta.json is missing ${field}`)
     validatePackagedPolicy(input.packageRoot)
-    cleanupInterruptedWrites(packageManagedArtifactPaths(input.agentRoot))
-    snapshot = captureMigrationSnapshot(input.agentRoot)
+    const rewrites = planBundlePathRewrites(input.agentRoot, migrationButlerName(input.agentRoot, input.butlerName))
+    const rewriteModes = new Map(rewrites.map((rewrite) => [path.join(input.agentRoot, rewrite.relative), rewrite.mode]))
+    cleanupInterruptedWrites([...packageManagedArtifactPaths(input.agentRoot), ...rewriteModes.keys()], rewriteModes)
+    snapshot = captureMigrationSnapshot(input.agentRoot, rewrites.map((rewrite) => rewrite.relative))
     if (input.retainRollback) {
       writeAtomic(existingRollback, `${JSON.stringify(durableSnapshot(input.agentRoot, snapshot, input.rollbackImageId!, input.targetImageId!))}\n`)
     }
@@ -849,9 +911,13 @@ export function migrateSanctuaryPackageManagedBundle(input: { packageRoot: strin
       try { fs.fsyncSync(meta) } finally { fs.closeSync(meta) }
     }
 
+    // The install's own files that name the bundle's container path now name the Butler this release runs.
+    for (const rewrite of rewrites) writeAtomic(path.join(input.agentRoot, rewrite.relative), rewrite.content, rewrite.mode)
+    if (rewrites.length > 0) emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_bundle_paths_rewritten", message: "pointed the bundle's own container paths at the Butler's name", meta: { agentRoot: input.agentRoot, files: rewrites.map((rewrite) => rewrite.relative) } })
+
     if (!seedSanctuaryPsycheIfAbsent({ packageRoot: input.packageRoot, agentRoot: input.agentRoot }).ok) throw new Error("psyche must be a real directory, not a symlink or file")
 
-    const result = { managedFilesUpdated }
+    const result = { managedFilesUpdated, ...(rewrites.length > 0 ? { bundlePathsRewritten: rewrites.length } : {}) }
     emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_bundle_migration_end", message: "completed Sanctuary package-managed bundle migration", meta: result })
     return result
   } catch (error) {
