@@ -7606,7 +7606,8 @@ describe("tool_choice required and settle", () => {
       mustResolveBeforeHandoff: true,
     })
 
-    expect(callCount).toBe(2)
+    // The blocked settle is asked once about report_failure (#1660), then goes out.
+    expect(callCount).toBe(3)
     expect(result.outcome).toBe("blocked")
     expect(textChunks).toEqual(["blocked on credentials"])
     expect((result as any).completion).toEqual({
@@ -7654,7 +7655,8 @@ describe("tool_choice required and settle", () => {
       { toolChoiceRequired: true, mustResolveBeforeHandoff: true },
     )
 
-    expect(callCount).toBe(2)
+    // The blocked settle is asked once about report_failure (#1660), then goes out.
+    expect(callCount).toBe(3)
     expect(result.outcome).toBe("blocked")
     expect(irrevocableOutput).toEqual(["blocked on credentials"])
   })
