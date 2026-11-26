@@ -407,8 +407,11 @@ export function createTeamsCallbacks(
 
   // Safely send a status update to the stream.
   // On error (e.g. 403 from Teams stop button), abort the controller.
+  // The SDK opens a new stream for any update and can only close one that holds text. An update after the stream
+  // was closed, or before any text on a turn that sends none, would leave a stream Teams shows as stopped.
   function safeUpdate(text: string): void {
-    if (stopped) return
+    if (stopped || streamFinalized) return
+    if (options?.suppressEmptyStreamMessage && !streamHasContent) return
     try {
       catchAsync(stream.update(text))
     } catch (err) {
