@@ -148,6 +148,94 @@ describe("Ouro ACP server", () => {
     server.stop()
   })
 
+  it("gives each tool call in a turn its own ACP id, even when one tool runs twice", async () => {
+    const { input, client, server, messages } = await setup()
+    input.write('{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}\n')
+    const created = await waitFor(messages, (message) => message.id === 1)
+    const sessionKey = created.result.sessionId
+    input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sessionKey, prompt: [{ type: "text", text: "read both" }] } })}\n`)
+    const started = await waitFor(client.requests, (request) => request.method === "turn.start")
+    const turnId = started.params.turnId
+    client.emit({ event: "tool.started", sessionKey, turnId, name: "read_file", args: { path: "/a" } })
+    client.emit({ event: "tool.started", sessionKey, turnId, name: "shell", args: { command: "ls" } })
+    client.emit({ event: "tool.started", sessionKey, turnId, name: "read_file", args: { path: "/b" } })
+    client.emit({ event: "tool.completed", sessionKey, turnId, name: "read_file", summary: "a", success: true })
+    client.emit({ event: "tool.completed", sessionKey, turnId, name: "shell", summary: "ls", success: true })
+    client.emit({ event: "tool.completed", sessionKey, turnId, name: "read_file", summary: "b", success: false })
+    client.emit({ event: "tool.completed", sessionKey, turnId, name: "read_file", summary: "late", success: true })
+    client.emit({ event: "turn.completed", sessionKey, turnId })
+    await waitFor(messages, (message) => message.id === 2)
+
+    const updates = messages.filter((message) => message.method === "session/update").map((message) => message.params.update)
+    const calls = updates.filter((update) => update.sessionUpdate === "tool_call")
+    expect(calls.map((call) => [call.title, call.rawInput])).toEqual([
+      ["read_file", { path: "/a" }],
+      ["shell", { command: "ls" }],
+      ["read_file", { path: "/b" }],
+    ])
+    expect(new Set(calls.map((call) => call.toolCallId)).size).toBe(3)
+    const ends = updates.filter((update) => update.sessionUpdate === "tool_call_update")
+    expect(ends.slice(0, 3).map((end) => [end.toolCallId, end.status, end.content[0].content.text])).toEqual([
+      [calls[0].toolCallId, "completed", "a"],
+      [calls[1].toolCallId, "completed", "ls"],
+      [calls[2].toolCallId, "failed", "b"],
+    ])
+    // A completion with no open call has no row to update, so it sends nothing.
+    expect(ends).toHaveLength(3)
+    server.stop()
+  })
+
+  it("numbers a reloaded session's tool calls afresh and closes them from live events", async () => {
+    const { input, client, server, messages } = await setup()
+    client.loadResult = {
+      events: [
+        { type: "tool_started", data: { name: "read_file", args: { path: "/old" } }, turnId: "turn-done" },
+        { type: "tool_started", data: { name: "read_file", args: { path: "/crashed" } }, turnId: "turn-dead" },
+        { type: "turn_failed", data: {}, turnId: "turn-dead" },
+        { type: "tool_completed", data: { name: "read_file", summary: "old", success: true }, turnId: "turn-done" },
+        { type: "turn_completed", data: {}, turnId: "turn-done" },
+        { type: "tool_started", data: { name: "read_file", args: { path: "/live" } }, turnId: "turn-live" },
+      ],
+      lastSequence: 6,
+      hasMore: false,
+      degraded: false,
+      incompleteTurnIds: ["turn-live"],
+    }
+    const load = (id: number) => input.write(`${JSON.stringify({ jsonrpc: "2.0", id, method: "session/load", params: { sessionId: "existing-session", cwd: "/tmp", mcpServers: [] } })}\n`)
+    load(1)
+    await waitFor(messages, (message) => message.id === 1)
+    // A live start arrives while the second load is pending; the journal the load returns holds it too.
+    const pendingLoad = Promise.withResolvers<any>()
+    const replay = client.loadResult
+    client.loadResult = pendingLoad.promise
+    load(2)
+    await waitFor(client.requests, (request) => request.method === "session.load" && client.requests.filter((r) => r.method === "session.load").length === 2)
+    client.emit({ event: "tool.started", sessionKey: "existing-session", turnId: "turn-live", name: "read_file", args: { path: "/live" } })
+    pendingLoad.resolve(replay)
+    await waitFor(messages, (message) => message.id === 2)
+    const updates = () => messages.filter((message) => message.method === "session/update").map((message) => message.params.update)
+    const firstLoad = updates().slice(0, 4)
+    expect(updates()[4]).toMatchObject({ sessionUpdate: "tool_call", toolCallId: "turn-live:read_file:2" })
+    const secondLoad = updates().slice(5)
+    expect(secondLoad.map((update) => update.toolCallId)).toEqual(firstLoad.map((update) => update.toolCallId))
+    expect(secondLoad.map((update) => update.toolCallId)).toEqual([
+      "turn-done:read_file:1",
+      "turn-dead:read_file:1",
+      "turn-done:read_file:1",
+      "turn-live:read_file:1",
+    ])
+
+    client.emit({ event: "tool.completed", sessionKey: "existing-session", turnId: "turn-live", name: "read_file", summary: "live", success: true })
+    client.emit({ event: "tool.completed", sessionKey: "existing-session", turnId: "turn-dead", name: "read_file", summary: "ghost", success: true })
+    client.emit({ event: "turn.completed", sessionKey: "existing-session", turnId: "turn-live" })
+    client.emit({ event: "tool.completed", sessionKey: "existing-session", turnId: "turn-live", name: "read_file", summary: "after end", success: true })
+    await waitFor(messages, (message) => message.params?.update?.content?.[0]?.content?.text === "live")
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const live = updates().slice(9)
+    expect(live.map((update) => [update.toolCallId, update.content[0].content.text])).toEqual([["turn-live:read_file:1", "live"]])
+    server.stop()
+  })
+
   it("marks observe-only prompts as tool-free frontend turns", async () => {
     const { input, client, server, messages } = await setup({ disableTools: true })
     input.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n')
