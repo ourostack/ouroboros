@@ -1,5 +1,6 @@
 import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { isButlerAgent, managedButlerAgent, type ButlerAgentName } from "../butler-agent"
 import {
   ensureSanctuaryPackageManagedBundle,
   inspectSanctuaryDirectoryFromBase,
@@ -15,10 +16,11 @@ export type SanctuaryPackageManagementDecision =
   | { kind: "active"; packageRoot: string; agentRoot: string; runtimePackageVersion: string }
   | { kind: "invalid"; failure: Error }
 
-export function resolveSanctuaryPackageManagedRoots(input: { repoRoot: string; bundlesRoot: string }): { packageRoot: string; agentRoot: string } {
+/** The packaged starter bundle stays at deploy/unraid/sanctuary.ouro; the live bundle is named for the agent (`butler` or `sanctuary`). */
+export function resolveSanctuaryPackageManagedRoots(input: { repoRoot: string; bundlesRoot: string; agent?: ButlerAgentName }): { packageRoot: string; agentRoot: string } {
   return {
     packageRoot: path.join(input.repoRoot, "deploy", "unraid", "sanctuary.ouro"),
-    agentRoot: path.join(input.bundlesRoot, "sanctuary.ouro"),
+    agentRoot: path.join(input.bundlesRoot, `${input.agent ?? "sanctuary"}.ouro`),
   }
 }
 
@@ -39,12 +41,14 @@ export function resolveSanctuaryPackageManagementActivation(input: {
   if (indices.length === 0) return { kind: "inactive" }
   if (indices.length !== 1) return invalidDecision()
   const value = input.argv[indices[0]! + 1]
-  if (value !== "sanctuary" || input.managedAgents.length !== 1 || input.managedAgents[0] !== "sanctuary") return invalidDecision()
+  // The flag names the Butler; the one bundle this daemon manages says which name it has. Two Butler bundles never boot.
+  const agent = input.managedAgents.length === 1 ? managedButlerAgent(input.managedAgents) : null
+  if (!isButlerAgent(value) || !agent) return invalidDecision()
   if (!path.isAbsolute(input.repoRoot) || !path.isAbsolute(input.bundlesRoot) || input.runtimePackageVersion.trim() !== input.runtimePackageVersion || input.runtimePackageVersion.length === 0) return invalidDecision()
-  const roots = resolveSanctuaryPackageManagedRoots(input)
+  const roots = resolveSanctuaryPackageManagedRoots({ ...input, agent })
   try {
     const packageIdentity = inspectSanctuaryDirectoryFromBase(input.repoRoot, ["deploy", "unraid", "sanctuary.ouro"])
-    const agentIdentity = inspectSanctuaryDirectoryFromBase(input.bundlesRoot, ["sanctuary.ouro"])
+    const agentIdentity = inspectSanctuaryDirectoryFromBase(input.bundlesRoot, [`${agent}.ouro`])
     if (!packageIdentity || !agentIdentity || sanctuaryDirectoriesShareIdentity(packageIdentity, agentIdentity)) return invalidDecision()
   } catch {
     return invalidDecision()

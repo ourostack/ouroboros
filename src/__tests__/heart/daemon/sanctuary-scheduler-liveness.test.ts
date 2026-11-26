@@ -15,7 +15,7 @@ const authenticated = {
 }
 const durableFs = { mkdirSync: fs.mkdirSync, openSync: fs.openSync, writeFileSync: fs.writeFileSync, fsyncSync: fs.fsyncSync, closeSync: fs.closeSync, linkSync: fs.linkSync, unlinkSync: fs.unlinkSync }
 
-function setup() {
+function setup(name = "sanctuary", jobAgent = name) {
   const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-scheduler-liveness-"))
   const statePath = path.join(agentRoot, "state/health/sanctuary-health.json")
   fs.mkdirSync(path.dirname(statePath), { recursive: true })
@@ -23,17 +23,17 @@ function setup() {
   const child = Object.assign(new EventEmitter(), { pid: 42, kill: vi.fn() })
   const supervisor = new SupercronicSupervisor({
     binaryPath: "/usr/local/bin/supercronic",
-    crontabPath: "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab",
+    crontabPath: `/home/ouro/.ouro-cli/scheduler/${name}.crontab`,
     deps: {
       mkdir: vi.fn(), readFile: (target) => files.get(target)!, durableWrite: (target, content) => { files.set(target, content) },
       removeFile: (target) => { files.delete(target) }, processAlive: () => true, spawn: () => child,
       setTimer: vi.fn(), clearTimer: vi.fn(),
     },
   })
-  supervisor.namespace("habit:sanctuary").sync([{
-    id: "sanctuary:sanctuary-health", agent: "sanctuary", taskId: "sanctuary-health", schedule: "*/15 * * * *", lastRun: null,
-    command: "/usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron",
-    taskPath: "/home/ouro/AgentBundles/sanctuary.ouro/habits/sanctuary-health.md",
+  supervisor.namespace(`habit:${name}`).sync([{
+    id: `${name}:sanctuary-health`, agent: jobAgent, taskId: "sanctuary-health", schedule: "*/15 * * * *", lastRun: null,
+    command: `/usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke ${name} --habit sanctuary-health --trigger cron`,
+    taskPath: `/home/ouro/AgentBundles/${name}.ouro/habits/sanctuary-health.md`,
   }])
   supervisor.start()
   const before = { incidents: {}, lastDigestDay: "2026-08-18", updatedAt: "2026-08-18T15:00:00.000Z", outbox: null, indeterminateDeliveries: [], deliveredReceipts: [], sweepReceipts: [] }
@@ -41,11 +41,11 @@ function setup() {
   return { agentRoot, statePath, supervisor }
 }
 
-function readyInput(f: ReturnType<typeof setup>) {
+function readyInput(f: ReturnType<typeof setup>, namespace = "habit:sanctuary") {
   const state = JSON.parse(fs.readFileSync(f.statePath, "utf8"))
   state.sweepReceipts.push({ sweepId: "sweep-1", opened: 0, recovered: 0, digestDue: false, scenarioHandleDigest })
   fs.writeFileSync(f.statePath, `${JSON.stringify(state)}\n`)
-  return { agentRoot: f.agentRoot, trigger: "cron" as const, occurrenceId: "cron:2026-08-18T17:00:00.000Z", runnerId: "11111111-1111-4111-8111-111111111111", scenario: { label: "unit-16f-cron-fingerprint", scenarioHandleDigest }, supervisor: f.supervisor.authenticatedSnapshot("habit:sanctuary"), before: { sweepCount: 0, deliveryCount: 0 }, providerInvocationCount: 0, privateTurnCount: 0, ...authenticated }
+  return { agentRoot: f.agentRoot, trigger: "cron" as const, occurrenceId: "cron:2026-08-18T17:00:00.000Z", runnerId: "11111111-1111-4111-8111-111111111111", scenario: { label: "unit-16f-cron-fingerprint", scenarioHandleDigest }, supervisor: f.supervisor.authenticatedSnapshot(namespace), before: { sweepCount: 0, deliveryCount: 0 }, providerInvocationCount: 0, privateTurnCount: 0, ...authenticated }
 }
 
 describe("Sanctuary scheduler liveness receipt", () => {
@@ -106,6 +106,17 @@ describe("Sanctuary scheduler liveness receipt", () => {
       expect(verifySanctuarySchedulerLivenessReceiptMac(authenticated.identityKey, receipt as unknown as Record<string, unknown>)).toBe(true)
       expect(verifySanctuarySchedulerLivenessReceiptMac(authenticated.identityKey, { ...receipt, occurrenceId: "cron:tampered" })).toBe(false)
     } finally { fs.rmSync(f.agentRoot, { recursive: true, force: true }) }
+  })
+
+  it("attests the supervisor of the Butler under its new name, and refuses a job for another agent", () => {
+    for (const [name, jobAgent, ok] of [["butler", "butler", true], ["slugger", "slugger", false], ["butler", "sanctuary", false]] as const) {
+      const f = setup(name, jobAgent)
+      const input = readyInput(f, `habit:${name}`)
+      try {
+        if (ok) expect(recordSanctuarySchedulerLivenessReceipt(input).supervisor).toMatchObject({ namespace: "habit:butler", args: ["-split-logs", "-inotify", "/home/ouro/.ouro-cli/scheduler/butler.crontab"] })
+        else expect(() => recordSanctuarySchedulerLivenessReceipt(input)).toThrow("Sanctuary scheduler supervisor attestation is invalid")
+      } finally { fs.rmSync(f.agentRoot, { recursive: true, force: true }) }
+    }
   })
 
   it("commits the first receipt without replacement", () => {
