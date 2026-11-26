@@ -1,0 +1,1 @@
+- The edge benchmark's ratchet now lets a linux turn's peak process count read up to a quarter over main's (4 may read 5), because linux-arm64 read 5 against 4 on a change that starts no process (#1938). The idle process count still allows no increase, so a process that stays is still caught.

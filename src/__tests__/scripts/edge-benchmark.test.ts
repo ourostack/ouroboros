@@ -119,11 +119,18 @@ describe("edge-benchmark ratchet", () => {
   const linuxArm = { platform: "linux", arch: "arm64" }
   const run = (host: Record<string, string>, values: Record<string, Record<string, number>>) => ({ host, ...values })
 
+  it("lets turn peak processes read one over a baseline of 4 but not two", () => {
+    const baseline = run(linuxArm, { turn: { peakProcesses: 4 } })
+    expect(bench.ratchetViolations(run(linuxArm, { turn: { peakProcesses: 5 } }), baseline)).toEqual([])
+    expect(bench.ratchetViolations(run(linuxArm, { turn: { peakProcesses: 6 } }), baseline).map((row: { key: string }) => row.key)).toEqual(["turn.peakProcesses"])
+  })
+
   it("gates counts everywhere, Linux memory, and timings only on linux-arm64", () => {
     expect(bench.ratchetLimit("install.packages", { platform: "darwin" })).toBe(0)
     expect(bench.ratchetLimit("cli.modules", { platform: "darwin" })).toBe(0.01)
     expect(bench.ratchetLimit("install.bytes", { platform: "darwin" })).toBe(0.02)
-    expect(bench.ratchetLimit("turn.peakProcesses", linuxArm)).toBe(0)
+    expect(bench.ratchetLimit("turn.peakProcesses", linuxArm)).toBe(0.25)
+    expect(bench.ratchetLimit("stack.processes", linuxArm)).toBe(0)
     expect(bench.ratchetLimit("turn.peakProcesses", { platform: "darwin" })).toBeNull()
     expect(bench.ratchetLimit("daemon.idleRssKb", { platform: "linux", arch: "x64" })).toBe(0.05)
     expect(bench.ratchetLimit("turn.peakPssKb", linuxArm)).toBe(0.2)
