@@ -233,7 +233,7 @@ BlueBubbles sends iMessages as whichever Apple ID is signed in to the macOS acco
 
 ### Sanctuary Jellyfin catalog access
 
-The Sanctuary media-optimization read uses one dedicated Jellyfin user, not an administrator API key and not a Jellyfin database scrape. In Jellyfin's Users dashboard, create a user for your Butler, leave administrator access off, disable access to all libraries, and grant exactly the Movies and TV libraries. Disable all devices and allow only the Butler's device id: its name from `house/house.json` as a lowercase slug followed by `-sanctuary` (for example `the-butler-sanctuary` for "the Butler"). Keep playback, transcoding, remuxing, conversion, remote access/control, live TV, public sharing, deletion, download, and management permissions off. Signing in or issuing a token is `human-required` because it can involve the Jellyfin dashboard and secret entry.
+The Sanctuary media-optimization read uses one dedicated Jellyfin user, not an administrator API key and not a Jellyfin database scrape. In Jellyfin's Users dashboard, create a user for your Butler, leave administrator access off, disable access to all libraries, and grant exactly the Movies and TV libraries. Disable all devices and allow only the Butler's device id: its name from `house/house.json` as a lowercase slug followed by `-sanctuary` (for example `the-butler-sanctuary` for "the Butler"). Keep playback, transcoding, remuxing, conversion, remote access/control, live TV, public sharing, deletion, download, and management permissions off.
 
 Store the dedicated user's ID, exact two library IDs, and access token in Sanctuary's existing machine-scoped vault config from inside the canonical Butler container. The nonsecret IDs may use `--value`; omit `--value` for the token so the CLI reads it through its hidden prompt instead of command history:
 
@@ -255,7 +255,7 @@ If Ouro is already running, the connector recycles the daemon once so the local 
 
 `ouro connect voice` describes the current voice foundation and the required config fields. Voice is one sense with multiple transports. Spoken voice belongs to the agent's identity, but the product should expose one coherent current phone voice rather than asking people to reconcile multiple provider voices. `voice.openaiRealtimeVoice` is the current native Realtime phone voice, `voice.openaiRealtimeVoiceStyle` is the spoken identity target applied from the first audible greeting, and `voice.openaiRealtimeVoiceSpeed` is a small cadence nudge. ElevenLabs TTS credentials (`integrations.elevenLabsApiKey` and `integrations.elevenLabsVoiceId`) remain portable runtime config for the legacy cascade path, not a second canonical phone identity. Whisper.cpp STT uses this machine's `voice.whisperCliPath` and `voice.whisperModelPath` in `runtime/machines/<machine-id>/config`. Enabling `senses.voice.enabled` gives the agent first-class `voice` sessions; those sessions are transcript-first and are stored as text. Meeting links have URL intake plus BlackHole/Multi-Output readiness checks. The managed Twilio phone transport attaches to the Voice entrypoint when this machine has `voice.twilioPublicUrl`; its default managed route is `/voice/agents/<agent>/twilio/incoming`. `voice.twilioTransportMode=record-play` keeps the conservative Twilio Record -> Whisper.cpp -> voice session -> tool-delivered `speak`/`settle` text -> ElevenLabs -> Twilio Play path. `voice.twilioTransportMode=media-stream` can run the cascade stream path or `voice.twilioConversationEngine=openai-realtime`. Native Realtime paths route Twilio audio through OpenAI Realtime speech-to-speech, use a compact voice-native identity prompt with recent transcript instead of the full general prompt, expose action tools plus `voice_end_call` and `voice_play_audio`, and keep turn detection separate from permission to speak by using Ouro floor-control over manual `response.create`. That floor-control contract is replayable: trace fixtures can assert floor-state and speech-policy events before a transport change reaches a live call. `voice.twilioConversationEngine=openai-sip` is the preferred low-latency inbound phone path when a phone-number transport can speak SIP: Twilio answers the existing number and returns `<Dial><Sip>` to OpenAI's project SIP endpoint, OpenAI sends `realtime.call.incoming` webhooks to Ouro at `/voice/agents/<agent>/sip/openai`, and Ouro verifies, accepts, monitors, transcripts, tools, and hangs up the call while keeping the same stable voice session. When SIP is paired with `media-stream`, outbound defaults to native OpenAI Realtime Media Streams to avoid the current Twilio outbound `<Dial><Sip>` post-pickup ringback; `voice.twilioOutboundConversationEngine` may override that default. Voice phone transports resolve known callers through the canonical friend record, preferring an existing explicit friend id and otherwise matching normalized phone numbers with `imessage-handle`, so trust and tool permissions stay consistent with text and mail. SIP exposes `voice_end_call` and model-rendered `voice_play_audio` tone cues; arbitrary URL/file clip bytes still need a media bridge such as a Twilio Conference/SIP mixer before the transport can inject raw audio while keeping the Realtime leg alive. Twilio phone sessions are keyed to the stable phone voice channel (friend/caller plus dialed line when available), while CallSid/OpenAI call id stay transport metadata for per-call artifacts. `voice.twilioPlaybackMode=buffered` remains available for local Record/Play compatibility testing. Live browser join/injection remains a handoff edge until provider automation lands.
 
-Ouro Workbench is a local machine sense for terminal/TUI agents, but it is not enabled by a synced `agent.json` entry. When the native Workbench app launches a boss agent, it starts `ouro acp-serve --agent <agent> --workbench-mcp`, which injects the `ouro_workbench` tools for that served turn without writing `senses.workbench.enabled` or `mcpServers.ouro_workbench` into the bundle. The native app supplies the exact Bun executable, bundled cmux CLI, live control socket, and inherited cmux socket capability as turn-local MCP environment; the daemon forwards only those four values to the MCP child and does not journal them. The authoritative active signal is the presence of `workbench_*` tools in that turn. `ouro connect workbench --agent <agent>` verifies the installed `OuroWorkbenchMCP` binary and removes stale Workbench bundle entries left by old setups; it does not persist a Workbench server or sense. A leftover `senses.workbench: { enabled: false }` reads as disabled, not stale. Workbench setup does not require provider secrets beyond the selected boss agent's existing vault-backed provider lanes; browser login, MFA, raw secret entry, and Apple Developer notarization remain human-required when they are actually needed.
+Ouro Workbench is a local machine sense for terminal/TUI agents, but it is not enabled by a synced `agent.json` entry. When the native Workbench app launches a boss agent, it starts `ouro acp-serve --agent <agent> --workbench-mcp`, which injects the `ouro_workbench` tools for that served turn without writing `senses.workbench.enabled` or `mcpServers.ouro_workbench` into the bundle. The native app supplies the exact Bun executable, bundled cmux CLI, live control socket, and inherited cmux socket capability as turn-local MCP environment; the daemon forwards only those four values to the MCP child and does not journal them. The authoritative active signal is the presence of `workbench_*` tools in that turn. `ouro connect workbench --agent <agent>` verifies the installed `OuroWorkbenchMCP` binary and removes stale Workbench bundle entries left by old setups; it does not persist a Workbench server or sense. A leftover `senses.workbench: { enabled: false }` reads as disabled, not stale. Workbench setup does not require provider secrets beyond the selected boss agent's existing vault-backed provider lanes.
 
 When a CLI auth/connect/vault repair command mutates the bundle, such as writing vault coordinates or enabling BlueBubbles in `agent.json`, Ouro runs the existing bundle sync path if `sync.enabled` is true. A successful command stays successful even if the bundle push fails, but the output includes a compact `bundle sync` line so the human and agent know whether the bundle change reached the remote.
 
@@ -409,40 +409,10 @@ If the vault does not answer at all (a network timeout, refused or reset connect
 Repair guidance must include an actor:
 
 - `agent-runnable`: safe for the agent to run when it has tool access, such as status, verify, and refresh commands.
-- `human-required`: requires browser login, MFA, provider dashboard access, API token creation, or secret entry.
+- `human-required`: only the person's body can do it: approve a number or prompt on their own phone (MFA, GitHub Mobile, passkey), pay with their card, or make an irreversible call that is theirs. Browser login, provider dashboards and API-token creation are the agent's, with its vault and browser.
 - `human-choice`: requires the human to decide which provider/model this machine should use.
 
-Agents may run agent-runnable checks and refreshes. Agents must not ask the user to paste secrets into chat. When repair requires a human, the agent should say why and direct the human to the terminal, browser auth flow, or provider console.
-
-Example human-required repair:
-
-```text
-openai-codex / gpt-5.5 failed after refresh retry.
-
-Why I cannot fix this automatically:
-  OpenAI Codex auth requires a human browser login or refreshed OAuth credentials.
-
-Do this in your terminal:
-  ouro auth --agent <agent> --provider openai-codex
-
-Then verify:
-  ouro auth verify --agent <agent> --provider openai-codex
-```
-
-Example manual API-key repair:
-
-```text
-anthropic / claude-opus-5-5 has no valid credentials.
-
-Why I cannot fix this automatically:
-  Anthropic API keys must be created or rotated by a human in the provider console.
-
-Do this:
-  1. Create a new Anthropic API key in the Anthropic console.
-  2. Run:
-     ouro auth --agent <agent> --provider anthropic
-  3. Paste the key into the terminal prompt, not into chat.
-```
+Agents may run agent-runnable checks and refreshes. Agents must not ask the user to paste secrets into chat. When repair requires a human, the agent does every other step itself and hands them only that approval, payment or call.
 
 ## Agent-Facing Knowledge
 

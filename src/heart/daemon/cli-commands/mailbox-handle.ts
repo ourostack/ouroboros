@@ -1,9 +1,17 @@
 // `ouro mailbox handle set`, declared by hand outside the generated mailbox group, so it has a CLI door only: no MCP
 // tool, in-turn tool or A2A door reaches it (design §3.4). Only the owner, at a shell, says whose messages answer.
 import type { CliCommandDeclaration } from "../cli-manifest"
-import { agentErrors, unknownFlag, usageError } from "./cards"
+import { agentErrors, needsSubcommand, unknownFlag, usageError } from "./cards"
 
 export const MAILBOX_HANDLE_COMMANDS: readonly CliCommandDeclaration[] = [
+  {
+    name: "mailbox handle", effect: "private", readOnly: true, summary: "The command for the handles that answer letters.",
+    ax: {
+      id: "cli:mailbox handle", group: "mailbox", effect: "read",
+      when: "Names the one handle command, set, which says whose iMessages answer a person's letters.",
+      errors: [needsSubcommand("mailbox handle", "set"), unknownFlag("mailbox handle")],
+    },
+  },
   {
     name: "mailbox handle set", effect: "private", summary: "Set the iMessage handle whose messages answer a person's letters.",
     example: "mailbox handle set friend-ari +15551234567 --agent slugger",

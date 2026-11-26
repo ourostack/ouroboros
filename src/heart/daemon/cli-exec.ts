@@ -161,6 +161,9 @@ import { setAnsweringHandle } from "../letters/answering"
 import { MailboxDoorError, renderMailboxResult, runMailboxAction } from "../letters/doors"
 
 /** The codes the mailbox commands fail with: the doors' own checks and the daemon's letters writer. */
+/** The codes `ouro mailbox handle set` refuses with, from src/heart/letters/answering.ts. */
+export const HANDLE_SET_REFUSAL_CODES: ReadonlySet<string> = new Set(["bad-handle", "no-person", "which-person", "not-recipient", "answering-unreadable"])
+
 export const MAILBOX_CLI_REFUSAL_CODES: ReadonlySet<string> = new Set([
   "daemon-down", "bad-input", "no-agent", "not-found",
   "invalid-letter", "no-person", "not-sender", "not-waiting", "no-answering-handle", "already-delivered", "chat-unavailable", "send-failed", "send-uncertain", "sent-unrecorded",
@@ -10161,7 +10164,15 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── mailbox handle set (local: the owner names whose messages answer a person's letters) ──
   if (command.kind === "mailbox.handle.set") {
     const bundlesRoot = deps.bundlesRoot ?? /* v8 ignore next -- production default @preserve */ getAgentBundlesRoot()
-    const message = await setAnsweringHandle(path.join(bundlesRoot, `${command.agent}.ouro`), command.person, command.handle)
+    let message: string
+    try {
+      message = await setAnsweringHandle(path.join(bundlesRoot, `${command.agent}.ouro`), command.person, command.handle)
+    } catch (error) {
+      // A refusal the card names keeps its code; anything else is a failure, not a refusal.
+      const code = (error as { code?: unknown }).code
+      if (typeof code === "string" && HANDLE_SET_REFUSAL_CODES.has(code)) throw error
+      throw new Error((error as Error).message)
+    }
     deps.writeStdout(message)
     return message
   }

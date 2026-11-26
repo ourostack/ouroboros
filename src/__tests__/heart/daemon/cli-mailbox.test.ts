@@ -162,14 +162,23 @@ describe("ouro mailbox handle set", () => {
       await expect(runOuroCli(["mailbox", "handle", "set", "ari", "+1 (555) 123-4567", "--agent", "slugger"], out)).resolves.toMatch(/^Ari \(friend-ari\) answers letters from \+15551234567\./)
       expect(readAnsweringHandles(path.join(bundles, "slugger.ouro", "state", "letters"))).toEqual({ "friend-ari": "+15551234567" })
       await expect(runOuroCli(["mailbox", "handle", "set", "ari", "5551234567", "--agent", "slugger"], out)).rejects.toEqual(expect.objectContaining({ code: "bad-handle" }))
+      // A failure that isn't one of the card's refusals loses its code, so it reads as a failure.
+      const lettersDir = path.join(bundles, "slugger.ouro", "state", "letters")
+      fs.chmodSync(lettersDir, 0o500)
+      const failed = await runOuroCli(["mailbox", "handle", "set", "ari", "+15551234567", "--agent", "slugger"], out).then(() => null, (error: unknown) => error as Error & { code?: string })
+      fs.chmodSync(lettersDir, 0o700)
+      expect([failed?.message.length ? "message" : "", failed?.code]).toEqual(["message", undefined])
     } finally {
       fs.rmSync(bundles, { recursive: true, force: true })
     }
   })
 
-  it("has a CLI door only: no MCP tool and no in-turn tool", () => {
+  it("has a CLI door only: no MCP tool and no in-turn tool", async () => {
+    const { HANDLE_SET_REFUSAL_CODES } = await import("../../../heart/daemon/cli-exec")
     const card = CLI_COMMANDS.find((command) => command.name === "mailbox handle set")
     expect(card!.ax!.errors.map((error) => error.code)).toEqual(["usage", "bad-handle", "no-person", "which-person", "not-recipient", "answering-unreadable", "unknown-flag", "no-agent", "which-agent"])
+    expect([...HANDLE_SET_REFUSAL_CODES]).toEqual(["bad-handle", "no-person", "which-person", "not-recipient", "answering-unreadable"])
+    expect(CLI_COMMANDS.find((command) => command.name === "mailbox handle")!.ax!.errors.map((error) => error.code)).toEqual(["usage", "unknown-flag"])
     expect(mailboxMcpSchemas().map((tool) => tool.name)).not.toContain("mailbox_handle_set")
     expect(mailboxToolDefinitions().map((tool) => tool.tool.function.name).filter((name) => name.includes("handle"))).toEqual([])
   })

@@ -793,11 +793,11 @@ describe("send_message tool", () => {
     const chore = "Could you open #5312 on your phone and tell me if the pictures show?"
     mockSendProactiveTeamsMessageToSession.mockResolvedValue({ delivered: false, reason: "internal_content_blocked" })
     const teamsResult = await tool.handler({ friendId: "friend-uuid-4", channel: "teams", key: "target-thread", content: chore }, makeTrustedTeamsTurnContext())
-    expect(teamsResult).toContain("held back, not sent (routine_verification_request)")
+    expect(teamsResult).toContain("held back, not sent (not_theirs_to_do)")
 
     mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: false, reason: "internal_content_blocked" })
     const bbResult = await tool.handler({ friendId: "group-uuid", channel: "bluebubbles", key: "chat:any;+;project-group-123", content: chore }, makeTrustedBlueBubblesTurnContext())
-    expect(bbResult).toContain("held back, not sent (routine_verification_request)")
+    expect(bbResult).toContain("held back, not sent (not_theirs_to_do)")
     expect(fs.writeFileSync).not.toHaveBeenCalled()
   })
 

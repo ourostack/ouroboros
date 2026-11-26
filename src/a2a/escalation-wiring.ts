@@ -2,6 +2,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import type { ConfirmDeps } from "../heart/failure-reports"
 import { emitNervesEvent } from "../nerves/runtime"
+import { isButlerAgent } from "../heart/butler-agent"
 
 /**
  * The version of the harness that is running, read from its own package.json once when this module loads. A fix is
@@ -14,7 +15,7 @@ export const RUNNING_HARNESS_VERSION: string = (JSON.parse(fs.readFileSync(path.
  * owner-notice path as delegated commands. Only the Butler files and confirms failure reports.
  */
 export function escalationOptionsFor(agentName: string, sendOwnerNotice: (input: { noticeId: string; text: string }) => Promise<void>): { escalation?: ConfirmDeps } {
-  if (agentName !== "sanctuary") return {}
+  if (!isButlerAgent(agentName)) return {}
   emitNervesEvent({ component: "senses", event: "senses.a2a_escalation_wired", message: "A2A server will confirm resolved failure reports to the owner", meta: { agentName, runningVersion: RUNNING_HARNESS_VERSION } })
   return { escalation: { runningVersion: RUNNING_HARNESS_VERSION, notifyOwner: sendOwnerNotice } }
 }

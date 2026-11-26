@@ -1,0 +1,1 @@
+- Blind interviews, product U: every arm's sandbox container now has 4 GB of memory instead of 2 GB. Grading a component built on the shadcn kit peaks at about 2 GB, so at 2 GB it thrashed until the turn's time limit and the arm ended ungraded. A guest can now name its own container memory (`memory`, such as `4g`); the household and helper containers keep 2 GB.

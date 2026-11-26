@@ -78,7 +78,7 @@ describe("agent mail setup documentation contract", () => {
     expect(guide).toContain("Discard does not reject, bounce, or return mail to sender")
     expect(guide).toContain("retained recovery drawer")
     expect(guide).toContain("Verify the current `ouro.bot` DNS/MX state")
-    expect(guide).toContain("HEY browser export")
+    expect(guide).toContain("the agent does HEY export, forwarding, DNS and sign-ins with its vault and browser")
     expect(guide).toContain("confirmation=CONFIRM_SEND")
     expect(guide).toContain("Audit the whole story with the mail tools")
     expect(guide).not.toContain("Ouro Mailbox")
@@ -91,8 +91,8 @@ describe("agent mail setup documentation contract", () => {
   it("keeps HEY forwarding as an agent-managed browser workflow with explicit delegated alias recovery", () => {
     const guide = readGuide()
 
-    expect(guide).toContain("The agent drives the browser-automation portion")
-    expect(guide).toContain("The human remains at the keyboard for HEY login, MFA, CAPTCHA, export download, and final forwarding confirmation")
+    expect(guide).toContain("signing in to HEY with the password from its vault; the human only approves the sign-in on their phone")
+    expect(guide).not.toContain("at the keyboard")
     expect(guide).toContain("<source-label>.<agent>@ouro.bot")
     expect(guide).toContain("Do not forward the human's HEY mailbox to the agent's native `<agent>@ouro.bot`")
     expect(guide).toContain("sourceFreshThrough")
