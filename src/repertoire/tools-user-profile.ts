@@ -84,7 +84,7 @@ export const userProfileToolDefinitions: ToolDefinition[] = [
       function: {
         name: "user_profile_get",
         description:
-          "Retrieve a specific field from a user's profile. Only returns the requested field, never the full profile. Requires family trust level.",
+          "Retrieve a specific field from a user's profile. Returns only the requested field, not the full profile. Requires family trust level.",
         parameters: {
           type: "object",
           properties: {

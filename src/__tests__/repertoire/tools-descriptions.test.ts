@@ -79,7 +79,7 @@ describe("Phase 2: tool description enrichment", () => {
     it("coding_spawn description contains delegation guidance", () => {
       const desc = getCodingDescription("coding_spawn")
       expect(desc).toContain("Give it a COMPLETE, SELF-CONTAINED task description")
-      expect(desc).toContain("Never delegate understanding")
+      expect(desc).toContain("The worker knows only what the prompt says")
     })
 
     it("coding_status description contains progress check guidance", () => {
