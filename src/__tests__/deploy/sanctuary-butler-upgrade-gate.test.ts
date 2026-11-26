@@ -1148,6 +1148,41 @@ describe("the Butler's name follows the image", () => {
     expect(appDir).not.toBe(vaultUnlock.bitwardenAppDataDir("butler", vault, "/home/ouro"))
   })
 
+  describe("a rename's predecessor", () => {
+    const release = (files: Record<string, string>) => (file: string) => files[file] ?? null
+    const ready = release({ "deploy/unraid/migrate-sanctuary-bundle.mjs": "const BUTLER_NAME_KEY = \"--butler-name\"", "dist/heart/external-events/router.js": "function externalEventAwaitRecordPath(" })
+    it("lets an upgrade through when the name stays the same, whatever the running release holds", () => {
+      expect(upgrade.renamePredecessorProblem("sanctuary", "sanctuary", () => null)).toBeNull()
+      expect(upgrade.renamePredecessorProblem("butler", "butler", () => null)).toBeNull()
+    })
+    it.each([["sanctuary", "butler"], ["butler", "sanctuary"]])("lets a rename from %s to %s through only when the running release can take its rollback", (running, target) => {
+      expect(upgrade.renamePredecessorProblem(running, target, ready)).toBeNull()
+      expect(upgrade.renamePredecessorProblem(running, target, () => null)).toBe(`this upgrade renames the Butler from ${running} to ${target}, but the running release cannot take a rollback across that rename (its deploy/unraid/migrate-sanctuary-bundle.mjs and dist/heart/external-events/router.js predate it). Ship a release from after M2 step 4b ("Butler: what the rename needs first") with the name unchanged first, then the release that renames it`)
+      // An M2 step 4a release: it has --butler-name but not the event Await lookup.
+      expect(upgrade.renamePredecessorProblem(running, target, release({ "deploy/unraid/migrate-sanctuary-bundle.mjs": "--butler-name" }))).toContain("(its dist/heart/external-events/router.js predate it)")
+    })
+    it("names the markers the root lifecycle names, each found in this release's own source", async () => {
+      const lifecycle = await import("../../heart/daemon/sanctuary-authority-root-lifecycle")
+      expect(upgrade.BUTLER_RENAME_PREDECESSOR_MARKERS).toEqual(lifecycle.BUTLER_RENAME_PREDECESSOR_MARKERS)
+      for (const [file, marker] of upgrade.BUTLER_RENAME_PREDECESSOR_MARKERS as Array<[string, string]>) {
+        const sourceFile = file.replace(/^dist\//u, "src/").replace(/\.js$/u, ".ts")
+        expect(fs.readFileSync(path.resolve(__dirname, "../../..", sourceFile), "utf8")).toContain(marker)
+      }
+    })
+    it("is checked by preflight, the upgrade before it stages anything, and the install", () => {
+      const preflight = source.slice(source.indexOf("function preflight("), source.indexOf("// Does the target image's own #vault"))
+      expect(preflight).toContain("renamePredecessorIssue(version, runningImage)")
+      const upgradeBody = source.slice(source.indexOf("async function upgrade("), source.indexOf("// ---- verify"))
+      expect(upgradeBody.indexOf("renamePredecessorIssue(")).toBeLessThan(upgradeBody.indexOf("stageIncomingPackage(version)"))
+      const installBody = source.slice(source.indexOf("function install("), source.indexOf("// Kill any leaked authority host process"))
+      expect(installBody.indexOf("renamePredecessorIssue(version, rollbackImage)")).toBeLessThan(installBody.indexOf("  pauseCgroupReaper()\n  try {"))
+    })
+    it("tells the bundle migrate the target image's Butler name", () => {
+      const body = source.slice(source.indexOf("function migrateBundle("), source.indexOf("// Host supervision for the root-authority gateway"))
+      expect(body).toContain('"--operation", "migrate",\n      "--rollback-image-id", rollbackImage, "--target-image-id", imageId(version), "--butler-name", imageButlerName(image(version))]')
+    })
+  })
+
   describe("a leftover container-credentials handoff", () => {
     const runtime = "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli"
     const handoff = (...agents: unknown[]) => JSON.stringify({ credentials: agents.map((agentName) => ({ agentName })) })

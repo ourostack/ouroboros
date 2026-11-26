@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { claimExternalEvent, commitExternalEventDisposition, listExternalEventStatus, readExternalEventRecord, recordExternalEvent, scanPrivilegedEventSpool } from "../../../heart/external-events/router"
+import { claimExternalEvent, commitExternalEventDisposition, listExternalEventStatus, prepareButlerExternalEvents, readExternalEventRecord, recordExternalEvent, scanPrivilegedEventSpool } from "../../../heart/external-events/router"
 
 const spoolMock = vi.hoisted(() => ({ root: "", readOnly: false, authorityBarrierUsed: false, mountInfo: null as string | null, mountReadError: false, replaceLockOwner: false, failReplayLockMkdir: false, changeOpenedFile: false, preserveReplayLock: false, oversizedFdRead: false, skipDurabilityFsync: false }))
 vi.mock("node:fs", async (importOriginal) => {
@@ -231,6 +231,28 @@ describe("privileged external-event spool", () => {
     expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, agent, now: () => NOW })).toEqual({ accepted: 1, rejected: 0, replayed: 0 })
     expect(listExternalEventStatus(eventRoot)).toEqual([expect.objectContaining({ agent, source: "sanctuary-usenet", eventId: "spend-guard" })])
     expect(fs.existsSync(path.join(eventRoot, named))).toBe(false)
+  })
+
+  it.each([["butler", "sanctuary"], ["sanctuary", "butler"]] as const)("merging %s's folder with %s's unions the replay manifests, so neither name's accepted envelope is accepted again", (running, other) => {
+    const eventRoot = root(`ouro-privileged-merge-${running}-events`)
+    const spools = [running, other].map((agent) => {
+      const spoolRoot = root(`ouro-privileged-merge-${running}-${agent}`)
+      fs.chmodSync(spoolRoot, 0o755)
+      writeSpoolFile(spoolRoot, envelope({ agent, incidentKey: `guard-${agent}`, transitionId: `t-${agent}`, nonce: createHash("sha256").update(agent).digest("hex") }))
+      spoofRootOwnership(spoolRoot)
+      expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, agent, now: () => NOW })).toEqual({ accepted: 1, rejected: 0, replayed: 0 })
+      return spoolRoot
+    })
+    try {
+      expect(prepareButlerExternalEvents(eventRoot, [running], () => NOW)).toBe("merged")
+      expect(fs.existsSync(path.join(eventRoot, other))).toBe(false)
+      expect(JSON.parse(fs.readFileSync(path.join(eventRoot, running, "sanctuary-usenet", SOURCE_MANIFEST), "utf8"))).toMatchObject({ agent: running, observedCount: 2 })
+      for (const spoolRoot of spools) {
+        spoofRootOwnership(spoolRoot)
+        expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, agent: running, now: () => NOW })).toEqual({ accepted: 0, rejected: 0, replayed: 1 })
+      }
+      expect(listExternalEventStatus(eventRoot).map((row) => [row.agent, row.eventId]).sort()).toEqual([[running, `guard-${running}`], [running, `guard-${other}`]].sort())
+    } finally { prepareButlerExternalEvents("/nonexistent", []) }
   })
 
   it("retains replay authority after more than 128 transitions and a scanner restart", () => {
