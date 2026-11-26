@@ -4,6 +4,7 @@ import * as os from "os"
 import * as path from "path"
 import { randomUUID } from "node:crypto"
 import { getAgentBundlesRoot, getAgentRoot, getRepoRoot, setAgentName } from "../identity"
+import { isButlerAgent } from "../butler-agent"
 import { runAgentStateRetention } from "./state-retention"
 import {
   listAllBundleAgents,
@@ -2724,7 +2725,7 @@ export class OuroDaemon {
           return { ok: false, error: `invalid habit trigger: ${String(trigger)}` }
         }
         const schedulerOrigin = this.authenticatedSchedulerPokes.get(command)
-        if (command.agent === "sanctuary" && command.habitName === "sanctuary-health" && trigger === "cron" && !schedulerOrigin) {
+        if (isButlerAgent(command.agent) && command.habitName === "sanctuary-health" && trigger === "cron" && !schedulerOrigin) {
           return { ok: false, error: "Sanctuary cron habit requires authenticated Supercronic provenance" }
         }
         if (!isRsvpHabitName(command.habitName) && !this.hasManagedPrivateRuntime(command.agent)) {
