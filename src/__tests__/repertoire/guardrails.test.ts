@@ -391,6 +391,28 @@ describe("guardInvocation — structural guardrails", () => {
     expect(guardInvocation("shell", { command: "cat /bundle/state/letters/answering.json" }, { readPaths: new Set() })).toMatchObject({ allowed: true })
   })
 
+  it.each([
+    "echo x >> /bundle/state/letters/ltr_1.jsonl",
+    "echo x >>/bundle/state/letters/ltr_1.jsonl",
+    "echo x >| /bundle/state/letters/ltr_1.jsonl",
+    "echo x &> /bundle/state/letters/ltr_1.jsonl",
+    "echo x 2>> /bundle/state/letters/ltr_1.jsonl",
+    "echo a > /dev/null; echo b > /bundle/state/letters/ltr_1.jsonl",
+    "echo a > /tmp/a && echo b >> /bundle/state/letters/ltr_1.jsonl",
+    "echo x | tee -a /tmp/a /bundle/state/letters/ltr_1.jsonl",
+    "echo x | tee /tmp/a | tee /bundle/state/letters/ltr_1.jsonl",
+  ])("catches every redirect and tee target in %s", async (command) => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    expect(guardInvocation("shell", { command }, { readPaths: new Set() })).toMatchObject({ allowed: false })
+  })
+
+  it("lets redirects that land elsewhere through", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    for (const command of ["echo x > /tmp/a 2>&1", "echo x >> /tmp/log; cat /bundle/state/letters/ltr_1.jsonl", "echo x | tee -a /tmp/a /tmp/b"]) {
+      expect([command, guardInvocation("shell", { command }, { readPaths: new Set() }).allowed]).toEqual([command, true])
+    }
+  })
+
   it("still lets the model read what it may not write", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     expect(guardInvocation("read_file", { path: "/bundle/state/reports/x.json" }, { readPaths: new Set() })).toMatchObject({ allowed: true })

@@ -4622,6 +4622,8 @@ export function createBlueBubblesWebhookHandler(
     }
 
     if (!isWebhookPasswordValid(url, runtimeConfig.password)) {
+      // Seen in the logs, so a webhook registered without the password (or a stray post) shows up.
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.bluebubbles_webhook_unauthorized", message: "bluebubbles webhook post refused: wrong or missing password", meta: { hasPassword: url.searchParams.has("password") } })
       writeJson(res, 401, { error: "Unauthorized" })
       return
     }

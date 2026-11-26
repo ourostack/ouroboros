@@ -304,13 +304,18 @@ function splitShellCommands(command: string): string[] {
 
 // --- shell commands that write to protected paths ---
 
+// Every output redirect's target: `>`, `>>`, `>|`, `&>` and `2>`, each with or without a space before the path.
+const REDIRECT_TARGET = /&?\d*>>?\|?\s*([^\s>|&;]+)/g
+// Every file a `tee` writes, after its flags.
+const TEE_TARGETS = /\btee\s+((?:-\w+\s+)*)([^|;&]*)/g
+
 function shellWritesToProtectedPath(command: string): boolean {
-  const redirectMatch = command.match(/>\s*(\S+)/)
-  if (redirectMatch && isProtectedPath(redirectMatch[1])) return true
-
-  const teeMatch = command.match(/tee\s+(?:-\w+\s+)*(\S+)/)
-  if (teeMatch && isProtectedPath(teeMatch[1])) return true
-
+  for (const match of command.matchAll(REDIRECT_TARGET)) {
+    if (isProtectedPath(match[1])) return true
+  }
+  for (const match of command.matchAll(TEE_TARGETS)) {
+    if (match[2].split(/\s+/).filter(Boolean).some(isProtectedPath)) return true
+  }
   return false
 }
 
