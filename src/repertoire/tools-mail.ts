@@ -183,7 +183,8 @@ function vaultItemSecretField(rawSecret: string, item: string, field: string): s
   return value
 }
 
-async function outboundProviderClientForTransport(agentName: string, transport: MailOutboundTransport) {
+/** The outbound provider client for an agent's mail transport, reading its secret from that agent's vault. */
+export async function outboundProviderClientForTransport(agentName: string, transport: MailOutboundTransport) {
   return resolveOutboundProviderClient(transport, {
     readSecretField: async (item, field) => {
       const rawSecret = await getCredentialStore(agentName).getRawSecret(item, "password")

@@ -33,6 +33,8 @@ export interface HealthMonitorOptions {
   onCriticalSense?: (managedName: string, probeName: string) => void
   senseProbes?: SenseProbe[]
   senseProbeProvider?: () => SenseProbe[]
+  /** Runs after every pass with a copy of its results, unawaited, such as the owner-channel outage watcher. */
+  afterChecks?: (results: DaemonHealthResult[]) => Promise<void> | void
 }
 
 /** Percent of the volume holding `dir` that is in use, as `df` reports it, or null when it can't be read. */
@@ -76,6 +78,7 @@ export class HealthMonitor {
   private readonly onCriticalSense: (managedName: string, probeName: string) => void
   private readonly senseProbes: SenseProbe[]
   private readonly senseProbeProvider: () => SenseProbe[]
+  private readonly afterChecks: (results: DaemonHealthResult[]) => Promise<void> | void
   private intervalHandle: ReturnType<typeof setInterval> | null = null
   private lastResults: DaemonHealthResult[] = []
 
@@ -91,6 +94,7 @@ export class HealthMonitor {
     this.onCriticalSense = options.onCriticalSense ?? (() => undefined)
     this.senseProbes = options.senseProbes ?? []
     this.senseProbeProvider = options.senseProbeProvider ?? (() => [])
+    this.afterChecks = options.afterChecks ?? (() => undefined)
   }
 
   private triggerSenseRecovery(probe: SenseProbe, detail: string): void {
@@ -294,6 +298,19 @@ export class HealthMonitor {
         await this.alertSink(`[critical] ${result.name}: ${result.message}`)
       }
     }
+
+    const handed = results.map((result) => ({ ...result }))
+    void Promise.resolve()
+      .then(() => this.afterChecks(handed))
+      .catch((error: unknown) => {
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.health_after_checks_failed",
+          message: "a step after the health checks failed",
+          meta: { error: error instanceof Error ? error.message : String(error) },
+        })
+      })
 
     return results
   }
