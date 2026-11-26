@@ -23,8 +23,13 @@ export function answeringHandleSet(agentRoot: string): Set<string> | null {
   const lettersDir = path.join(agentRoot, "state", "letters")
   const current = checkAnsweringHandles(lettersDir)
   if (current === null) return null
-  const frozen = new LetterStore(lettersDir).loadOpen().flatMap((stored) => stored.letter.answeringHandle ?? [])
-  return new Set([...Object.values(current), ...frozen])
+  try {
+    const frozen = new LetterStore(lettersDir).loadOpen().flatMap((stored) => stored.letter.answeringHandle ?? [])
+    return new Set([...Object.values(current), ...frozen])
+  } catch {
+    // Letters that don't read count like an answering.json that doesn't: closed.
+    return null
+  }
 }
 
 /** The handle in a one-to-one chat GUID (`iMessage;-;+1555…`), `group` for a group GUID (`;+;`), or null for neither. */
@@ -38,14 +43,14 @@ function guidHandle(raw: string | undefined): string | "group" | null {
 /**
  * The handle of a one-to-one chat, normalised, or null for a group or a chat with no handle. Any field may carry a
  * chat GUID, since the client sends to an identifier that is a GUID as it is; the GUID's own shape decides whether
- * it is one-to-one, ahead of `isGroup`, which a display name alone can set.
+ * it is one-to-one, and `isGroup`, which a display name alone can set, is not read.
  */
 export function oneToOneHandle(chat: BlueBubblesChatRef): string | null {
   const target = chat.sendTarget.kind === "chat_identifier" ? chat.sendTarget.value : undefined
   const fields = [chat.chatGuid, chat.chatIdentifier, target]
   const fromGuid = fields.map(guidHandle).find((found) => found !== null)
   if (fromGuid === "group") return null
-  if (fromGuid === undefined && chat.isGroup) return null
+  // isGroup alone decides nothing: a display name can set it, and a group's identifier is no handle anyway.
   const raw = fromGuid ?? fields.find((field) => field)
   if (!raw) return null
   const checked = normalizeAnsweringHandle(raw)
@@ -79,13 +84,18 @@ export function letterChatRefusal(input: { what: string; chat: BlueBubblesChatRe
  * reply never left, so the person heard nothing until the agent says it again without the code.
  */
 export function tellAgentReplyRefused(agent: string, agentRoot: string, messageGuid: string, refusalText: string): void {
-  queuePendingMessageOnce(getPrivateRuntimePendingDir(agent, agentRoot), {
-    from: agent,
-    friendId: "self",
-    channel: "inner",
-    key: "dialog",
-    content: `my iMessage reply wasn't sent, so they haven't heard back from me: ${refusalText}`,
-    timestamp: Date.now(),
-    packetId: `letter-guard:${messageGuid}`,
-  })
+  try {
+    queuePendingMessageOnce(getPrivateRuntimePendingDir(agent, agentRoot), {
+      from: agent,
+      friendId: "self",
+      channel: "inner",
+      key: "dialog",
+      content: `my iMessage reply wasn't sent, so they haven't heard back from me: ${refusalText}`,
+      timestamp: Date.now(),
+      packetId: `letter-guard:${messageGuid}`,
+    })
+  } catch (error) {
+    // The refusal itself stands; only the note to the agent is lost, and the log says so.
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.bluebubbles_letter_guard_note_failed", message: "couldn't tell the agent its reply was refused", meta: { messageGuid, reason: (error as Error).message } })
+  }
 }

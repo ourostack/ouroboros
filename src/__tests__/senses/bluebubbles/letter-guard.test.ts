@@ -34,7 +34,7 @@ describe("oneToOneHandle", () => {
   })
 
   it("has no handle for a group, a chat with none, or one that isn't a handle", () => {
-    expect(oneToOneHandle(direct("+15551234567", { isGroup: true }))).toBeNull()
+    expect(oneToOneHandle(direct("chat123456", { isGroup: true }))).toBeNull()
     expect(oneToOneHandle({ isGroup: false, sessionKey: "k", sendTarget: { kind: "chat_guid", value: "g" }, participantHandles: [] })).toBeNull()
     expect(oneToOneHandle(direct("chat1234"))).toBeNull()
   })
@@ -52,7 +52,9 @@ describe("letterChatRefusal", () => {
   it("lets ordinary text, other chats, Ouro's own marked text and agents with no letters chat through", () => {
     expect(letterChatRefusal({ what: "message", chat: direct("+15551234567"), text: "At 12:30, v1.2 shipped, all 3 lanes wait until 5pm." }, agentRoot)).toBeNull()
     expect(letterChatRefusal({ what: "message", chat: direct("+15559999999"), text: "L7" }, agentRoot)).toBeNull()
-    expect(letterChatRefusal({ what: "message", chat: direct("+15551234567", { isGroup: true }), text: "L7" }, agentRoot)).toBeNull()
+    expect(letterChatRefusal({ what: "message", chat: direct("chat123456", { isGroup: true }), text: "L7" }, agentRoot)).toBeNull()
+    // A display name can mark a one-to-one chat a group; its handle still decides.
+    expect(letterChatRefusal({ what: "message", chat: direct("+15551234567", { isGroup: true }), text: "L7" }, agentRoot)).toMatch(/letters chat/)
     expect(letterChatRefusal({ what: "message", chat: direct("+15551234567"), text: "L7 · Slugger asks", mark: OURO_LETTER_SEND }, agentRoot)).toBeNull()
     const empty = fs.mkdtempSync(path.join(os.tmpdir(), "letter-guard-none-"))
     expect(answeringHandleSet(empty)!.size).toBe(0)
@@ -83,9 +85,20 @@ describe("letterChatRefusal", () => {
     fs.writeFileSync(path.join(agentRoot, "state", "letters", "answering.json"), "{torn")
     expect(answeringHandleSet(agentRoot)).toBeNull()
     expect(letterChatRefusal({ what: "message", chat: direct("+15559999999"), text: "L7" }, agentRoot)).toMatch(/only Ouro writes where letters go/)
-    expect(letterChatRefusal({ what: "message", chat: direct("+15559999999", { isGroup: true }), text: "L7" }, agentRoot)).toBeNull()
+    expect(letterChatRefusal({ what: "message", chat: direct("chat999999", { isGroup: true }), text: "L7" }, agentRoot)).toBeNull()
     expect(letterChatRefusal({ what: "message", chat: direct("+15559999999"), text: "hello" }, agentRoot)).toBeNull()
     expect(letterChatRefusal({ what: "message", chat: direct("+15559999999"), text: "L7" }, () => agentRoot)).toMatch(/where letters go/)
+  })
+
+  it("fails closed when an open letter doesn't read", () => {
+    fs.mkdirSync(path.join(agentRoot, "state", "letters", "ltr_B1.jsonl"))
+    expect(answeringHandleSet(agentRoot)).toBeNull()
+  })
+
+  it("logs, rather than throws, when the note to the agent can't be queued", () => {
+    const blocked = path.join(agentRoot, "blocked")
+    fs.writeFileSync(blocked, "")
+    expect(() => tellAgentReplyRefused("slugger", blocked, "m-2", "refused")).not.toThrow()
   })
 
   it("queues a note for the agent when its reply was refused, once per message", () => {

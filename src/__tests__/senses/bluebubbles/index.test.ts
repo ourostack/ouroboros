@@ -3665,6 +3665,24 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
+  it("refuses a speak into the letters chat before it is reserved or counted as seen (2026-11-26)", async () => {
+    const agentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(agentRoot)
+    const { writeAnsweringHandle } = await import("../../../heart/letters/answering")
+    writeAnsweringHandle(path.join(agentRoot, "state", "letters"), "friend-uuid", "owner@example.test")
+    let refused: unknown
+    mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
+      callbacks.onModelStart()
+      callbacks.onTextChunk("About L7: pick 2")
+      refused = await callbacks.flushNow().catch((error: unknown) => error)
+      return { usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 } }
+    })
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+    expect(refused).toMatchObject({ name: "BlueBubblesSendError", errorCode: "letter_guard" })
+    expect(mocks.sendText).not.toHaveBeenCalledWith(expect.objectContaining({ text: "About L7: pick 2" }))
+  })
+
   it("reuses existing session state and allows callback lifecycle hooks to no-op safely", async () => {
     mocks.loadSession.mockReturnValueOnce({
       messages: [{ role: "system", content: "existing prompt" }],
@@ -13336,6 +13354,24 @@ describe("drainAndSendPendingBlueBubbles", () => {
     expect(mocks.sendText).not.toHaveBeenCalled()
     expect(fs.existsSync(file)).toBe(false)
     expect(queue).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ channel: "inner", content: expect.stringContaining(text) }))
+  })
+
+  it("drops a message the letter guard refuses, rather than retrying it on every drain, and tells the agent (2026-11-26)", async () => {
+    const queue = vi.fn()
+    vi.doMock("../../../mind/pending", async (original) => ({ ...await original<typeof import("../../../mind/pending")>(), queuePendingMessageOnce: queue }))
+    const friendStore = { get: vi.fn().mockResolvedValue(makeFriend()), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn(), hasAnyFriends: vi.fn(), listAll: vi.fn() }
+    const file = writePendingFile("friend-uuid-1", "session", { from: "testagent", friendId: "friend-uuid-1", channel: "bluebubbles", key: "session", content: "About L7: pick 2", timestamp: Date.now() })
+    const { BlueBubblesSendError } = await import("../../../senses/bluebubbles/client")
+    mocks.sendText.mockRejectedValueOnce(new BlueBubblesSendError({ message: "This message names a letter code.", httpStatus: null, errorCode: "letter_guard", transportInvoked: false }))
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.drainAndSendPendingBlueBubbles({
+      createClient: () => ({ sendText: mocks.sendText, editMessage: mocks.editMessage, setTyping: mocks.setTyping, markChatRead: mocks.markChatRead, repairEvent: mocks.repairEvent, getMessageText: mocks.getMessageText }),
+      createFriendStore: () => friendStore as any,
+    }, pendingRoot)
+    vi.doUnmock("../../../mind/pending")
+    expect(result).toMatchObject({ sent: 0, skipped: 1, failed: 0 })
+    expect(fs.existsSync(file)).toBe(false)
+    expect(queue).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ channel: "inner", content: expect.stringContaining("This message names a letter code.") }))
   })
 
   it("deletes the pending file after successful send", async () => {

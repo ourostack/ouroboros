@@ -1556,6 +1556,9 @@ export function createBlueBubblesCallbacks(
         return
       }
       if (!await canRunOutbound()) return
+      // Checked before the speak is reserved or counted as seen, since a refused speak never leaves.
+      const letterRefusal = letterChatRefusal({ what: "message", chat, text: trimmed }, getAgentRoot)
+      if (letterRefusal) throw new BlueBubblesSendError({ message: letterRefusal, httpStatus: null, errorCode: "letter_guard", transportInvoked: false })
       const replyToMessageGuid = replyTarget.getReplyToMessageGuid()
       const speakRecord = reserveMidTurnSpeak(trimmed, replyToMessageGuid)
       /* v8 ignore next 4 -- see reserveMidTurnSpeak: a fresh key is never already reserved @preserve */
@@ -5295,6 +5298,13 @@ export async function drainAndSendPendingBlueBubbles(
         meta: { friendId, handle },
       })
     } catch (error) {
+      if (error instanceof BlueBubblesSendError && error.errorCode === "letter_guard") {
+        // Refused before anything left: sending it again is refused again, so it goes, and the agent hears why.
+        result.skipped++
+        try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+        tellAgentReplyRefused(resolvedDeps.getAgentName(), getAgentRoot(), path.basename(filePath), error.message)
+        continue
+      }
       result.failed++
       emitNervesEvent({
         level: "error",
