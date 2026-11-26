@@ -60,6 +60,7 @@ export async function runSanctuaryHealthHabit(agentName: string, options: Sanctu
     await refreshMachineRuntimeCredentialConfig(agentName, machine.machineId, { preserveCachedOnFailure: true })
   }
   const sweep = options.createSweep?.(agentName) ?? createSanctuaryHealthSweep({
+    agentName,
     toolContext: createSanctuaryToolContext(agentName),
     house: readSanctuaryHouse(getAgentRoot(agentName)),
     statePath: path.join(getAgentRoot(agentName), "state", "health", "sanctuary-health.json"),

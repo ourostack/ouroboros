@@ -491,7 +491,7 @@ export const tripToolDefinitions: ToolDefinition[] = [
     },
     summaryKeys: [],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "creates trip ledger state" },
-    ax: { id: "tool:trip_ensure_ledger", group: "turn-travel", when: "Pick this first on an agent that has never kept trips, before any trip_upsert; calling it again changes nothing.", effect: "write", idempotent: true, errors: [TRIP_PRIVATE_ERROR] },
+    ax: { id: "tool:trip_ensure_ledger", group: "turn-travel", when: "Pick this first on an agent with no trip ledger yet, before any trip_upsert; calling it again changes nothing.", effect: "write", idempotent: true, errors: [TRIP_PRIVATE_ERROR] },
   },
   {
     tool: {

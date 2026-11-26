@@ -1271,12 +1271,12 @@ describe("a fair gate (2026-10-25: live 911 failed its own gate)", () => {
     const makeHost = () => fakeHost({ sessions: { "*": { events: [] } } }).host
     const seen: string[] = []
     const loadBaseline = (file: string) => { seen.push(file); return { cases: [{ id: "failure-report", status: "fail" }] } }
-    expect(await gate.main(["run", "--cases", "failure-report"], io, { makeHost, provision: () => undefined, loadBaseline }, { OURO_REPLAY_BASELINE: "/var/log/ouro-baseline-1.log" })).toBe(0)
+    expect(await gate.main(["run", "--cases", "failure-report"], io, { butlerName: () => "sanctuary", makeHost, provision: () => undefined, loadBaseline }, { OURO_REPLAY_BASELINE: "/var/log/ouro-baseline-1.log" })).toBe(0)
     expect(seen).toEqual(["/var/log/ouro-baseline-1.log"])
     expect(out).toContain("FAILING ON LIVE TOO (does not block; the live version fails these as well): failure-report")
     expect(JSON.parse(out.at(-1)!).summary.failingOnLiveToo).toEqual(["failure-report"])
     out.length = 0
-    expect(await gate.main(["run", "--cases", "failure-report", "--baseline", "/b"], io, { makeHost, provision: () => undefined, loadBaseline: () => ({ cases: [], problem: "the baseline /b is 9 hours old" }) }, {})).toBe(1)
+    expect(await gate.main(["run", "--cases", "failure-report", "--baseline", "/b"], io, { butlerName: () => "sanctuary", makeHost, provision: () => undefined, loadBaseline: () => ({ cases: [], problem: "the baseline /b is 9 hours old" }) }, {})).toBe(1)
     expect(out[0]).toBe("BASELINE IGNORED (every failure blocks): the baseline /b is 9 hours old")
     expect(gate.parseArgs(["run", "--baseline", "/b"])).toEqual({ command: "run", baseline: "/b" })
   })
@@ -1434,6 +1434,26 @@ describe("provision and the real host", () => {
     expect(gate.NAMES_SCRIPT).toContain("addHouseVocabulary")
     expect(gate.NAMES_SCRIPT).toContain("/opt/ouro/dist/senses/sanctuary-house.js")
   })
+  it("names the Butler the image runs in every container path and command, from the same host folder", async () => {
+    const first = fakeCli()
+    gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: first.run, ...uid(), agentName: "butler" })
+    const agents = first.calls.filter((a) => a.includes("--agent")).map((a) => a[a.indexOf("--agent") + 1])
+    expect(agents.length).toBeGreaterThan(0)
+    expect(new Set(agents)).toEqual(new Set(["butler"]))
+    const retired: string[][] = []
+    const second = fakeCli()
+    gate.provision({ bundle, log: () => undefined, run: second.run, rotate: true, ...uid(), agentName: "butler", retireRecord: (id: string, did: string, root: string) => retired.push([id, did, root]) })
+    expect(new Set(retired.map((r) => r[2]))).toEqual(new Set(["/home/ouro/AgentBundles/butler.ouro"]))
+    expect(second.calls.filter((a) => a.includes("revoked")).every((a) => a[a.indexOf("--agent") + 1] === "butler")).toBe(true)
+    const calls: Array<[string, string[]]> = []
+    const host = gate.makeHost({ ...hostRoot(bundle), stage: fakeStage(), bundle, log: () => undefined, agentName: "butler", exec: (file: string, args: string[]) => { calls.push([file, args]); return "[\"Ziel\"]\n" } })
+    host.names("Ziel", {})
+    expect(calls[0]![1]).toEqual(["exec", "-i", "-u", gate.BUTLER_USER, gate.CONTAINER, "node", "-e", gate.namesScript("/home/ouro/AgentBundles/butler.ouro")])
+    await host.windowTrusted()
+    expect(calls[1]![1].at(-1)).toContain('isReplayWindowOpen("/home/ouro/AgentBundles/butler.ouro",id)')
+    expect(gate.namesScript("/home/ouro/AgentBundles/butler.ouro")).toContain('readSanctuaryHouse("/home/ouro/AgentBundles/butler.ouro")')
+    expect(gate.NAMES_SCRIPT).toBe(gate.namesScript("/home/ouro/AgentBundles/sanctuary.ouro"))
+  })
   it("writes the root-owned replay list into the trust directory, keeps earlier entries, and never lets a symlink stand in for it", () => {
     fs.mkdirSync(trust, { recursive: true })
     fs.writeFileSync(path.join(trust, "replay-identities.json"), JSON.stringify({ schemaVersion: 1, grants: { "old-replay": { who: "principal", name: "retired", did: "did:key:old" } } }), { mode: 0o644 })
@@ -1586,7 +1606,7 @@ describe("provision and the real host", () => {
     it("parses the flag and passes it to provision", async () => {
       expect(gate.parseArgs(["provision", "--rotate-replay-identities"])).toMatchObject({ command: "provision", rotate: true })
       const seen: unknown[] = []
-      const code = await gate.main(["provision", "--rotate-replay-identities"], { out: () => undefined, err: () => undefined }, { makeHost: gate.makeHost, provision: (options: unknown) => { seen.push(options) } })
+      const code = await gate.main(["provision", "--rotate-replay-identities"], { out: () => undefined, err: () => undefined }, { butlerName: () => "sanctuary", makeHost: gate.makeHost, provision: (options: unknown) => { seen.push(options) } })
       expect(code).toBe(0)
       expect(seen[0]).toMatchObject({ rotate: true })
     })
@@ -2506,9 +2526,9 @@ describe("cli", () => {
   it("provision reports success and failure", async () => {
     const a = io()
     let received: Record<string, unknown> = {}
-    expect(await gate.main(["provision", "--bundle", "/b", "--card-url", "http://c"], a.io, { makeHost: () => null, provision: (o: Record<string, unknown>) => { received = o } })).toBe(0)
+    expect(await gate.main(["provision", "--bundle", "/b", "--card-url", "http://c"], a.io, { butlerName: () => "sanctuary", makeHost: () => null, provision: (o: Record<string, unknown>) => { received = o } })).toBe(0)
     expect(received).toMatchObject({ bundle: "/b", cardUrl: "http://c" })
-    expect(await gate.main(["provision"], a.io, { makeHost: () => null, provision: () => { throw new Error("no docker") } })).toBe(1)
+    expect(await gate.main(["provision"], a.io, { butlerName: () => "sanctuary", makeHost: () => null, provision: () => { throw new Error("no docker") } })).toBe(1)
     expect(a.err.join("\n")).toContain("provision failed: no docker")
   })
 
@@ -2516,15 +2536,15 @@ describe("cli", () => {
     const trace = { events: [{ role: "assistant", toolCalls: [{ id: "1", function: { name: "media_search", arguments: "{\"seriesId\":191}" } }] }, { role: "tool", toolCallId: "1", content: "" }] }
     const a = io()
     const makeHost = () => fakeHost({ sessions: { "*": trace } }).host
-    expect(await gate.main(["run", "--cases", "chef-question"], a.io, { makeHost, provision: () => undefined })).toBe(0)
+    expect(await gate.main(["run", "--cases", "chef-question"], a.io, { butlerName: () => "sanctuary", makeHost, provision: () => undefined })).toBe(0)
     expect(a.out.map((l) => JSON.parse(l)).map((r) => r.id ?? "summary")).toEqual(["chef-question", "owner-policy-untouched", "no-telegram", "replay-friend-restored", "summary"])
     const b = io()
-    expect(await gate.main(["run", "--cases", "chef-question", "--plant", "chef-question", "--window-minutes", "3", "--bundle", "/b", "--card-url", "c"], b.io, { makeHost, provision: () => undefined })).toBe(1)
+    expect(await gate.main(["run", "--cases", "chef-question", "--plant", "chef-question", "--window-minutes", "3", "--bundle", "/b", "--card-url", "c"], b.io, { butlerName: () => "sanctuary", makeHost, provision: () => undefined })).toBe(1)
     const c = io()
-    expect(await gate.main(["run", "--cases", "nope"], c.io, { makeHost, provision: () => undefined })).toBe(1)
+    expect(await gate.main(["run", "--cases", "nope"], c.io, { butlerName: () => "sanctuary", makeHost, provision: () => undefined })).toBe(1)
     expect(c.err.join("\n")).toMatch(/could not run/)
     const d = io()
-    expect(await gate.main(["run"], d.io, { makeHost: () => { throw new Error("not provisioned") }, provision: () => undefined })).toBe(1)
+    expect(await gate.main(["run"], d.io, { butlerName: () => "sanctuary", makeHost: () => { throw new Error("not provisioned") }, provision: () => undefined })).toBe(1)
     expect(d.err[0]).toBe("not provisioned")
   })
 
@@ -2813,7 +2833,7 @@ describe("bundle sync around the run (M1c)", () => {
     // No host git: git appears only as the command docker exec runs, and nothing names the bundle's .git or work tree from the host.
     const gitCalls = source.split("\n").filter((line) => /["'`]git["'`]/u.test(line) && !line.trim().startsWith("*") && !line.trim().startsWith("//"))
     expect(gitCalls).toHaveLength(1)
-    expect(gitCalls[0]).toContain('run("docker", ["exec", "-u", BUTLER_USER, ...envArgs, CONTAINER, "git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", CONTAINER_BUNDLE')
+    expect(gitCalls[0]).toContain('run("docker", ["exec", "-u", BUTLER_USER, ...envArgs, CONTAINER, "git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", agentRoot, ...args]')
     expect(source).not.toMatch(/--git-dir|--work-tree|execFileSync\(\s*["'`]git|spawnSync\(\s*["'`]git|spawn\(\s*["'`]git/u)
     expect(gate.BUTLER_USER).toBe("10001:10001")
 
@@ -3256,7 +3276,7 @@ describe("bundle sync around the run (M1c)", () => {
     expect(gate.parseArgs(["run", "--backup-dir", "/b"])).toEqual({ command: "run", backupDir: "/b" })
     let received: Record<string, unknown> = {}
     const out: string[] = []
-    await gate.main(["run", "--backup-dir", "/b", "--cases", "nope"], { out: (t: string) => out.push(t), err: (t: string) => out.push(t) }, { makeHost: (o: Record<string, unknown>) => { received = o; return fakeHost().host }, provision: () => undefined })
+    await gate.main(["run", "--backup-dir", "/b", "--cases", "nope"], { out: (t: string) => out.push(t), err: (t: string) => out.push(t) }, { butlerName: () => "sanctuary", makeHost: (o: Record<string, unknown>) => { received = o; return fakeHost().host }, provision: () => undefined })
     expect(received).toMatchObject({ backupDir: "/b" })
   })
 })
@@ -3280,5 +3300,65 @@ describe("the offline eval's copy of the reply word rules", () => {
     expect(samples).toHaveLength(20)
     for (const text of samples) expect(findHedges(text, REPLY_HEDGE_TERMS), text).toEqual(gate.findHedges(text, gate.REPLY_HEDGE_TERMS))
     expect(samples.filter(text => findHedges(text, REPLY_HEDGE_TERMS).length > 0).length).toBeGreaterThan(10)
+  })
+})
+
+describe("the Butler's name in the container follows the live image", () => {
+  const daemon = ["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js", "--package-managed-agent"]
+  it("reads the name from an entrypoint by the same rule as butler-agent.ts", async () => {
+    const { butlerNameFromEntrypoint } = await import("../../heart/butler-agent")
+    for (const entrypoint of [[...daemon, "butler"], [...daemon, "sanctuary"], [...daemon, "slugger"], daemon, null, "x"]) {
+      expect(gate.butlerNameFromEntrypoint(entrypoint), JSON.stringify(entrypoint)).toBe(butlerNameFromEntrypoint(entrypoint))
+    }
+    expect(gate.containerBundle("butler")).toBe("/home/ouro/AgentBundles/butler.ouro")
+    expect(gate.CONTAINER_BUNDLE).toBe("/home/ouro/AgentBundles/sanctuary.ouro")
+    expect(gate.DEFAULT_BUNDLE).toBe("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro")
+  })
+  it("asks docker for the live container's image, then that image's entrypoint", () => {
+    const calls: string[][] = []
+    const run = (entrypoint: string) => (file: string, args: string[]) => { calls.push([file, ...args]); return args[0] === "inspect" ? "sha256:abc\n" : entrypoint }
+    expect(gate.liveButlerName(run(`${JSON.stringify([...daemon, "butler"])}\n`))).toBe("butler")
+    expect(calls).toEqual([["docker", "inspect", "--format", "{{.Image}}", "ouro-butler"], ["docker", "image", "inspect", "--format", "{{json .Config.Entrypoint}}", "sha256:abc"]])
+    expect(gate.liveButlerName(run(""))).toBe("sanctuary")
+    expect(() => gate.liveButlerName(() => { throw new Error("no such container") })).toThrow("no such container")
+  })
+  it("hands the name to provision and the run's host, and refuses to guess when docker cannot say", async () => {
+    const out: string[] = []
+    const io = { out: (t: string) => out.push(t), err: (t: string) => out.push(t) }
+    let provisioned: Record<string, unknown> = {}
+    expect(await gate.main(["provision"], io, { butlerName: () => "butler", makeHost: () => null, provision: (o: Record<string, unknown>) => { provisioned = o } })).toBe(0)
+    expect(provisioned.agentName).toBe("butler")
+    let hosted: Record<string, unknown> = {}
+    await gate.main(["run", "--cases", "nope"], io, { butlerName: () => "butler", makeHost: (o: Record<string, unknown>) => { hosted = o; throw new Error("stop") }, provision: () => undefined })
+    expect(hosted.agentName).toBe("butler")
+    expect(await gate.main(["run"], io, { butlerName: () => { throw new Error("Error: No such object: ouro-butler\nmore") }, makeHost: () => null, provision: () => undefined })).toBe(1)
+    expect(out.at(-1)).toBe("could not read the Butler's name from the ouro-butler container's image: Error: No such object: ouro-butler")
+  })
+  it("retires a record in the container at the bundle path it is given", () => {
+    const calls: string[][] = []
+    gate.retireRecordInContainer("friend-1", undefined, "/home/ouro/AgentBundles/butler.ouro", (file: string, args: string[]) => { calls.push([file, ...args]) })
+    expect(calls[0]!.slice(-3)).toEqual(["/home/ouro/AgentBundles/butler.ouro", "friend-1", ""])
+    expect(calls[0]!.slice(0, 8)).toEqual(["docker", "exec", "-u", gate.BUTLER_USER, gate.CONTAINER, "node", "-e", gate.RETIRE_RECORD_SCRIPT])
+  })
+  it("syncs, reads git and judges events as the image's Butler while the host folder keeps its name", () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "replay-gate-butler-")))
+    try {
+      const bundle = path.join(root, "agent", "sanctuary.ouro")
+      fs.mkdirSync(path.join(bundle, "state", "daemon", "logs"), { recursive: true })
+      const calls: string[][] = []
+      const exec = (file: string, args: string[]) => { calls.push([file, ...args]); return args.includes("ls-remote") ? `${"a".repeat(40)}\trefs/heads/main\n` : "" }
+      const sync = gate.makeSyncHost({ bundle, backupDir: root, exec, agentName: "butler" })
+      sync.runSync()
+      expect(calls[0]!.slice(-3)).toEqual(["sync", "--agent", "butler"])
+      sync.head()
+      expect(calls[1]).toContain("/home/ouro/AgentBundles/butler.ouro")
+      sync.agentChanges("b".repeat(40))
+      expect(calls[2]!.slice(calls[2]!.indexOf("-C"), calls[2]!.indexOf("-C") + 3)).toEqual(["-C", "/home/ouro/AgentBundles/butler.ouro", "ls-remote"])
+      expect(calls[3]).toContain("--author=<butler@ouro.local>")
+      const entry = (agentRoot: string) => JSON.stringify({ ts: "2026-11-06T10:00:00.000Z", event: "heart.sync_pull_start", meta: { agentRoot } })
+      fs.writeFileSync(path.join(bundle, "state", "daemon", "logs", "a.ndjson"), [entry("/home/ouro/AgentBundles/butler.ouro"), entry("/home/ouro/AgentBundles/sanctuary.ouro")].join("\n"))
+      expect(sync.events(0)).toEqual([{ event: "heart.sync_pull_start", at: Date.parse("2026-11-06T10:00:00.000Z") }])
+      expect(gate.makeSyncHost({ bundle, backupDir: root, exec }).events(0)).toEqual([{ event: "heart.sync_pull_start", at: Date.parse("2026-11-06T10:00:00.000Z") }])
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 })

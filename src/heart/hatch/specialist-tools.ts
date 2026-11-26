@@ -16,7 +16,7 @@ const completeAdoptionTool: OpenAI.ChatCompletionFunctionTool = {
   function: {
     name: "complete_adoption",
     description:
-      "finalize the agent bundle and hatch the new agent. call this only when you have written all 5 psyche files and agent.json to the temp directory, and the human has approved the bundle. tool execution asks the human for the hatchling vault unlock secret through a hidden terminal prompt; do not ask for or include vault unlock secrets in chat or tool args.",
+      "finalize the agent bundle and hatch the new agent. call this only when you have written all 5 psyche files and agent.json to the temp directory, and the human has approved the bundle. tool execution asks the human for the hatchling vault unlock secret through a hidden terminal prompt, so the secret stays out of chat and tool args.",
     parameters: {
       type: "object",
       properties: {
