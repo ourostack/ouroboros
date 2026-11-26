@@ -187,8 +187,8 @@ describe("daemon socket framing", () => {
     const handled = vi.spyOn(daemon, "handleRawPayload")
     await daemon.start()
     try {
-      // More arrives after the cap is crossed; it is ignored, and the daemon answers once.
-      const answer = await exchange(socketPath, [Buffer.alloc(MAX_SOCKET_COMMAND_BYTES + 1, "a"), Buffer.from('{"kind":"daemon.status"}\n')])
+      // The cap is crossed well before the first write ends, so more arrives after it; that is ignored, and the daemon answers once.
+      const answer = await exchange(socketPath, [Buffer.alloc(MAX_SOCKET_COMMAND_BYTES + 256 * 1024, "a"), Buffer.from('{"kind":"daemon.status"}\n')])
       expect(JSON.parse(answer)).toEqual({ ok: false, error: `The daemon command is larger than ${MAX_SOCKET_COMMAND_BYTES} bytes.` })
       expect(handled).not.toHaveBeenCalled()
     } finally {

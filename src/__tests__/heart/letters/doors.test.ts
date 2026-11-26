@@ -168,6 +168,16 @@ describe("running an action", () => {
     expect(socket.calls).toEqual([])
   })
 
+  it("lets a list with no declared maximum hold any number of items", async () => {
+    readMailboxDoors(fakeRoot({
+      "mailbox/commands.json": { commands: [] },
+      "mailbox/mcp.json": { tools: [{ name: "mailbox_tag", inputSchema: { type: "object", required: [], properties: { tags: { type: "array", description: "d", items: { type: "string", description: "t" } } } } }] },
+      "mailbox-tools/tools.json": { tools: [] }, "mailbox/actions.json": { actions: [] },
+    }))
+    await runMailboxAction("mailbox_tag", { tags: Array.from({ length: 50 }, (_, i) => `t${i}`) }, slugger)
+    expect(socket.calls).toHaveLength(1)
+  })
+
   it("refuses an action the group doesn't have, and answers a person-only one with its refusal", async () => {
     expect((await refusalOf(runMailboxAction("mailbox_frobnicate", {}, slugger))).code).toBe("unknown-door")
     expect((await refusalOf(runMailboxAction("constructor", {}, slugger))).code).toBe("unknown-door")
