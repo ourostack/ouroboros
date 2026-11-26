@@ -70,8 +70,8 @@ const EXPECTED_TEMPLATE_URLS: ReadonlySet<string> = new Set([
 const EXPECTED_ICON = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
 const EXACT_IMAGE = /^sha256:[a-f0-9]{64}$/u
 const VERSION_REFERENCE = /^ghcr\.io\/ourostack\/ouroboros-butler:[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/u
-const PACKAGE_DAEMON_ARGS = ["/opt/ouro/dist/heart/daemon/daemon-entry.js", "--package-managed-agent", "sanctuary"] as const
-const PACKAGE_ENTRYPOINT = ["node", ...PACKAGE_DAEMON_ARGS] as const
+// The image names the Butler `butler` from M2 on; images from before the rename name it `sanctuary`. Either runs its one bundle.
+const PACKAGE_DAEMON_ARGS_BY_NAME = ["butler", "sanctuary"].map((name) => ["/opt/ouro/dist/heart/daemon/daemon-entry.js", "--package-managed-agent", name])
 const LEGACY_DAEMON_ARGS = ["/opt/ouro/dist/heart/daemon/daemon-entry.js"] as const
 const LEGACY_ENTRYPOINT = ["node", ...LEGACY_DAEMON_ARGS] as const
 
@@ -138,8 +138,9 @@ export function auditSanctuaryContainerSpec(
     if (mountContract !== "canonical-pre-gateway" && mountContract !== "canonical-gateway" && mountContract !== "legacy-alpha742") violations.push("unsupported mount contract")
     if (mountContract === "legacy-alpha742" && options.expectedImage !== LEGACY_ALPHA742_IMAGE) violations.push("legacy mount exception requires the pinned alpha.742 image ID")
     const acceptedMounts = mountContract === "legacy-alpha742" ? [LEGACY_ALPHA742_MOUNTS] : mountContract === "canonical-pre-gateway" ? [PRE_GATEWAY_MOUNTS] : gatewayMounts(options.syncEnabled === true)
-    const expectedArgs = mountContract !== "legacy-alpha742" ? PACKAGE_DAEMON_ARGS : LEGACY_DAEMON_ARGS
-    const expectedEntrypoint = mountContract !== "legacy-alpha742" ? PACKAGE_ENTRYPOINT : LEGACY_ENTRYPOINT
+    const packageArgs = PACKAGE_DAEMON_ARGS_BY_NAME.find((args) => JSON.stringify(root.Args) === JSON.stringify(args)) ?? PACKAGE_DAEMON_ARGS_BY_NAME[1]!
+    const expectedArgs = mountContract !== "legacy-alpha742" ? packageArgs : LEGACY_DAEMON_ARGS
+    const expectedEntrypoint = mountContract !== "legacy-alpha742" ? ["node", ...packageArgs] : LEGACY_ENTRYPOINT
     if (root.Image !== options.expectedImage) violations.push("image does not match the reviewed exact local Docker image ID")
     if (root.Path !== "node") violations.push("effective container path must be node")
     if (JSON.stringify(root.Args) !== JSON.stringify(expectedArgs)) violations.push("effective container arguments must be the reviewed direct daemon entry")
