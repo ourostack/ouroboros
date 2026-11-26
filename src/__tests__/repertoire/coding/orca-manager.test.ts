@@ -50,6 +50,8 @@ function setup(overrides: Partial<OrcaCodingSessionManagerOptions> = {}) {
       files.set(target, data)
     },
     mkdirSync: vi.fn(),
+    sleep: async () => undefined,
+    launchStartTimeoutMs: 0,
     ...overrides,
   }
   return { manager: new OrcaCodingSessionManager(options), cli, files, options }
@@ -140,30 +142,92 @@ describe("OrcaCodingSessionManager spawn", () => {
     expect(cli.ensureRepo).not.toHaveBeenCalled()
   })
 
-  it("closes the tab and fails the spawn when Orca says the prompt was not delivered", async () => {
+  it("relaunches once in the same worktree when the agent never shows up in its pane", async () => {
     const { manager, cli } = setup()
-    cli.createWorktreeWithAgent.mockResolvedValueOnce({ ...launch, promptDelivered: false })
-    cli.closeTerminal.mockRejectedValueOnce(new Error("already gone"))
+    const retried = { ...launch, terminalHandle: "term_2" }
+    cli.launchAgent.mockResolvedValueOnce(retried)
+    cli.listTerminals.mockImplementation(async () => [terminal, { handle: "term_2", tabId: "tab2", leafId: "leaf2" }])
+    cli.listAgents.mockImplementation(async () => (cli.launchAgent.mock.calls.length > 0 ? [{ state: "working", paneKey: "tab2:leaf2" }] : []))
+    cli.readTerminal.mockResolvedValueOnce({ status: "running", tail: "zsh: command not found: laude" })
 
-    await expect(manager.spawnSession(request)).rejects.toThrow("did not deliver its task prompt, so its tab was closed; the worktree stays. Spawn again with workdir /wt/fix-login")
+    const session = await manager.spawnSession(request)
+
     expect(cli.closeTerminal).toHaveBeenCalledWith("term_1")
+    expect(cli.launchAgent).toHaveBeenCalledWith(expect.objectContaining({ worktree, agent: "claude" }))
+    expect(session.orca).toEqual(expect.objectContaining({ terminalHandle: "term_2", paneKey: "tab2:leaf2" }))
+    expect(session.checkpoint).toBe("terminal per settings")
+  })
+
+  it("fails the spawn with what the terminal showed when the relaunch starts no agent either", async () => {
+    const { manager, cli } = setup()
+    cli.listAgents.mockResolvedValue([])
+    cli.readTerminal.mockResolvedValue({ status: "running", tail: "zsh: permission denied: /tmp/orca-launch-1.sh" })
+    cli.closeTerminal.mockRejectedValue(new Error("already gone"))
+
+    await expect(manager.spawnSession(request)).rejects.toThrow(
+      "Orca opened claude in /wt/fix-login twice but the agent never started, so its tabs were closed; the worktree stays. Its terminal showed: zsh: permission denied: /tmp/orca-launch-1.sh. Spawn again with workdir /wt/fix-login",
+    )
+    expect(cli.closeTerminal).toHaveBeenCalledTimes(2)
     expect(manager.listSessions()).toEqual([])
   })
 
-  it("says so when Orca can't confirm the prompt arrived", async () => {
+  it("relaunches at once when Orca says the prompt was not delivered, and says so when the terminal is unreadable", async () => {
     const { manager, cli } = setup()
-    cli.createWorktreeWithAgent.mockResolvedValueOnce({ ...launch, promptDelivered: null })
-    expect((await manager.spawnSession(request)).checkpoint).toBe("Orca did not confirm the task prompt arrived; read coding_tail to check")
+    cli.createWorktreeWithAgent.mockResolvedValueOnce({ ...launch, promptDelivered: false })
+    cli.launchAgent.mockResolvedValueOnce({ ...launch, promptDelivered: false })
+    cli.readTerminal.mockRejectedValue(new Error("gone"))
+
+    await expect(manager.spawnSession(request)).rejects.toThrow("Its terminal showed: (nothing).")
+    expect(cli.listAgents).not.toHaveBeenCalled()
   })
 
-  it("spawns without a pane key when Orca can't list the terminal yet", async () => {
-    const { manager, cli } = setup()
-    cli.listTerminals.mockRejectedValueOnce(new Error("busy"))
-    expect((await manager.spawnSession(request)).orca?.paneKey).toBeUndefined()
+  it("keeps looking while Orca is busy, and trusts the pane over Orca's unconfirmed receipt", async () => {
+    let now = 0
+    const { manager, cli } = setup({ launchStartTimeoutMs: 90_000, nowMs: () => now, sleep: async (ms) => { now += ms } })
+    cli.createWorktreeWithAgent.mockResolvedValueOnce({ ...launch, promptDelivered: null })
+    cli.listTerminals.mockRejectedValueOnce(new Error("busy")).mockResolvedValueOnce([{ handle: "term_1" }])
 
-    const other = setup({ newId: () => "orca-2" })
-    other.cli.listTerminals.mockResolvedValueOnce([{ handle: "term_1" }])
-    expect((await other.manager.spawnSession(request)).orca?.paneKey).toBeUndefined()
+    const session = await manager.spawnSession(request)
+
+    expect(session.orca?.paneKey).toBe("tab:leaf")
+    expect(cli.listTerminals).toHaveBeenCalledTimes(3)
+    expect(now).toBe(4_000)
+    expect(cli.launchAgent).not.toHaveBeenCalled()
+  })
+
+  it("counts an agent waiting with its task on screen, or after it has replied, as started", async () => {
+    const { manager, cli } = setup()
+    cli.listAgents.mockResolvedValueOnce([{ state: "waiting", paneKey: "tab:leaf" }])
+    cli.readTerminal.mockResolvedValueOnce({ status: "running", tail: "❯ Execution   contract:\n- You are a subordinate\n⏺ Which login page?" })
+    const onScreen = await manager.spawnSession(request)
+
+    cli.listAgents.mockResolvedValueOnce([{ state: "blocked", paneKey: "tab:leaf", lastAssistantMessage: "Which login page?" }])
+    const replied = await manager.spawnSession(request)
+
+    expect([onScreen.status, replied.status]).toEqual(["running", "running"])
+    expect(cli.readTerminal).toHaveBeenCalledTimes(1)
+    expect(cli.launchAgent).not.toHaveBeenCalled()
+  })
+
+  it("keeps an agent that asks a question before taking its task, without relaunching, and says a person must answer", async () => {
+    let now = 0
+    const { manager, cli } = setup({ launchStartTimeoutMs: 4_000, nowMs: () => now, sleep: async (ms) => { now += ms } })
+    cli.listAgents.mockResolvedValue([{ state: "waiting", paneKey: "tab:leaf" }])
+    cli.readTerminal.mockResolvedValue({ status: "running", tail: "Hooks need review\n6 hooks are new or changed." })
+
+    const session = await manager.spawnSession({ ...request, runner: "codex" })
+
+    expect(cli.launchAgent).not.toHaveBeenCalled()
+    expect(cli.closeTerminal).not.toHaveBeenCalled()
+    expect(cli.readTerminal).toHaveBeenCalledTimes(3)
+    expect(session.status).toBe("waiting_input")
+    expect(session.orca?.paneKey).toBe("tab:leaf")
+    expect(session.checkpoint).toBe(
+      "codex is asking a question before it takes its task; a person has to answer it in its Orca tab. Its terminal showed: Hooks need review\n6 hooks are new or changed.",
+    )
+    cli.listAgents.mockResolvedValueOnce([{ state: "working", paneKey: "tab:leaf" }])
+    await manager.refreshSessions()
+    expect(manager.getSession(session.id)?.status).toBe("running")
   })
 
   it("tells subscribers it spawned", async () => {
@@ -239,9 +303,10 @@ describe("OrcaCodingSessionManager refresh", () => {
     cli.listTerminals.mockResolvedValueOnce([terminal])
     await manager.spawnSession(request)
     cli.createWorktreeWithAgent.mockResolvedValueOnce({ ...launch, terminalHandle: "term_2" })
-    cli.listTerminals.mockRejectedValueOnce(new Error("busy"))
+    cli.listTerminals.mockResolvedValueOnce([{ ...terminal, handle: "term_2" }])
     await manager.spawnSession({ ...request, taskRef: "second" })
-    expect(manager.getSession("orca-2")?.orca?.paneKey).toBeUndefined()
+    // A session saved before launches were checked can lack a pane key.
+    ;(manager as unknown as { records: Map<string, { session: { orca: { paneKey?: string } } }> }).records.get("orca-2")!.session.orca.paneKey = undefined
 
     // orca-1's handle went stale; its pane now shows term_2, which orca-2 already holds.
     cli.listTerminals.mockResolvedValueOnce([{ ...terminal, handle: "term_2" }])
@@ -516,9 +581,12 @@ describe("OrcaCodingSessionManager polling and persistence", () => {
     manager.shutdown()
 
     const written: string[] = []
+    const cli = fakeCli()
+    cli.listAgents.mockResolvedValueOnce([])
     const live = new OrcaCodingSessionManager({
       agentName: "test-agent",
-      cli: fakeCli(),
+      cli,
+      launchStartPollMs: 1,
       existsSync: () => false,
       mkdirSync: () => undefined,
       writeFileSync: (target) => {
