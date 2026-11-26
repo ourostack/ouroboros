@@ -6,6 +6,8 @@
 
 import { DEFAULT_NERVES_PROCESS } from "../../nerves/review/core"
 import { mailboxHelp } from "../letters/doors"
+import { CLI_COMMANDS } from "./cli-manifest"
+import { wrap } from "../../ouro-ax/help"
 
 // ── Types ──
 
@@ -774,37 +776,25 @@ export function suggestCommand(input: string): string | null {
   return bestDistance <= 2 ? bestMatch : null
 }
 
-// ── Category display order ──
-
-const CATEGORY_ORDER: CommandCategory[] = [
-  "Lifecycle",
-  "Agents",
-  "Chat",
-  "Tasks",
-  "Habits",
-  "Friends",
-  "Auth",
-  "Internal",
-  "System",
-]
-
 // ── Grouped help output ──
 
+/**
+ * The overview, from the commands' declarations: each Ouro AX card group on one line with the words that start its
+ * commands, wrapped to the kit's width, so it fits one screen and names every command family `help --json` lists.
+ */
 export function getGroupedHelp(): string {
-  const lines: string[] = ["Usage: ouro <command> [options]", ""]
-
-  for (const category of CATEGORY_ORDER) {
-    lines.push(`  ${category}:`)
-    for (const [name, entry] of Object.entries(COMMAND_REGISTRY)) {
-      if (entry.hidden) continue
-      if (entry.category === category) {
-        lines.push(`    ${name.padEnd(16)} ${entry.description}`)
-      }
-    }
-    lines.push("")
+  const groups = new Map<string, string[]>()
+  const seen = new Set<string>()
+  for (const command of CLI_COMMANDS) {
+    if (command.hidden || !command.ax) continue
+    const word = command.name.split(" ")[0]!
+    if (seen.has(word)) continue
+    seen.add(word)
+    groups.set(command.ax.group, [...(groups.get(command.ax.group) ?? []), word])
   }
-
-  lines.push("Run 'ouro help <command>' for details on a specific command.")
+  const lines: string[] = ["Usage: ouro <command> [options]", ""]
+  for (const [group, words] of groups) lines.push(...wrap(words.join(", "), 18).map((line, index) => (index === 0 ? `  ${group.padEnd(15)} ${line.trimStart()}` : line)))
+  lines.push("", "Run ouro <command> --help for one command, or ouro help --json for every command as data.")
   return lines.join("\n")
 }
 

@@ -3254,5 +3254,5 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   const suggestion = suggestCommand(head)
   const hint = suggestion ? ` Did you mean '${suggestion}'?` : ""
   // The CLI's unknown-door card (cli-manifest.ts serverErrors) names this answer.
-  throw Object.assign(new Error(`Unknown command '${args.join(" ")}'.${hint}\n${usage()}`), { code: "unknown-door" })
+  throw Object.assign(new Error(`Unknown command '${args.join(" ")}'.${hint} Fix: run ouro --help for the commands, or ouro help --json for them as data.`), { code: "unknown-door" })
 }

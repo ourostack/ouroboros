@@ -1,0 +1,4 @@
+- `ouro --help` is one screen: each command family on one line under its group, built from the commands' own declarations, so it can no longer drift from `ouro help --json`.
+- `ouro <command> --help` answers with that command's help only (its usage, when to pick it and the errors it can give), never the whole CLI's usage, and every help line fits 100 columns.
+- A failed command prints one line on stderr that says what to do instead, with its code at the end; a usage mistake names that command's usage rather than dumping every command's.
+- Piping `ouro` into `head` or another reader that closes early no longer prints a stack trace.

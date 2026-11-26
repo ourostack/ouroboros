@@ -75,7 +75,7 @@ describe("the mailbox group's CLI commands, dispatched from the generated comman
     expect(getCommandHelp("mailbox list")).toContain(summary)
     expect(getCommandHelp("mailbox list")).toContain("ouro mailbox list [--all] [--mine]")
     expect(getCommandHelp("mailbox")).toContain("send")
-    expect(getGroupedHelp()).toMatch(/\n {4}mailbox +/)
+    expect(getGroupedHelp()).toMatch(/\n  mailbox +mailbox\n/)
     await expect(runOuroCli(["mailbox", "list", "--help"], deps())).resolves.toContain(summary)
   })
 

@@ -36,8 +36,8 @@ describe("ouro CLI entrypoint", () => {
     await Promise.resolve()
     expect(runOuroCli).not.toHaveBeenCalled()
     expect(stderr).toHaveBeenCalledWith(expect.stringContaining("needs --why"))
-    // The last line is the code the command's Ouro AX card names, so an agent can find its fix.
-    expect(stderr).toHaveBeenCalledWith(expect.stringMatching(/\ncode: needs-why\n$/))
+    // The line ends with the code the command's Ouro AX card names, so an agent can find its fix.
+    expect(stderr).toHaveBeenCalledWith(expect.stringMatching(/ \(code: needs-why\)\n$/))
     expect(process.exitCode).toBe(1)
     process.exitCode = exitCode
   })
@@ -151,7 +151,7 @@ describe("ouro CLI entrypoint", () => {
     await Promise.resolve()
     await Promise.resolve()
 
-    expect(stderrSpy).toHaveBeenCalledWith("daemon unavailable\ncode: daemon-down\n")
+    expect(stderrSpy).toHaveBeenCalledWith("daemon unavailable (code: daemon-down)\n")
     expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "daemon.cli_entry_error",
       meta: { error: "daemon unavailable", code: "daemon-down" },

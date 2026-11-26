@@ -3,7 +3,8 @@ import { ouroCompileCacheDirectory } from "./compile-cache"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { redactCliArgs } from "./cli-arg-redaction"
 import { runOuroCli } from "./daemon-cli"
-import { gateCommandArgs } from "./cli-gate"
+import { errorText, gateCommandArgs } from "./cli-gate"
+import { quietPipes } from "../../ouro-ax/cli"
 import { configureDaemonRuntimeLogger } from "./runtime-logging"
 import { activatePortableGit } from "./portable-git"
 
@@ -20,9 +21,11 @@ export function runOuroEntry(args: string[]): void {
     meta: { args: redactCliArgs(args), compileCache: ouroCompileCacheDirectory },
   })
 
+  // A reader that closes the pipe early (`ouro --help | head -1`) ends the command quietly, not with a stack trace.
+  quietPipes(process)
   const gate = gateCommandArgs(args)
-  // A failure ends with the code its Ouro AX card names (see `ouro help --json`), so an agent can look up the fix.
-  const withCode = (message: string, code: unknown): string => (typeof code === "string" ? `${message}\ncode: ${code}\n` : `${message}\n`)
+  // A failure is one stderr line ending with the code its Ouro AX card names (see `ouro help --json`).
+  const withCode = (message: string, code: unknown): string => `${errorText(args, message, typeof code === "string" ? code : undefined)}\n`
 
   if (gate.kind === "refuse") {
     process.stderr.write(withCode(gate.message, gate.code))

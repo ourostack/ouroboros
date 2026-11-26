@@ -1,6 +1,8 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 import { usage } from "./cli-parse"
 import { CLI_COMMANDS, type CliCommandDeclaration } from "./cli-manifest"
+import { getCommandHelp } from "./cli-help"
+import { DEFAULT_WIDTH, wrap } from "../../ouro-ax/help"
 
 // The flag and argument gate in front of the legacy dispatcher, in the Ouro AX kit's terms: an unknown flag is
 // refused with the nearest real one, a command that reaches other people needs --why, and --dry-run says who
@@ -142,6 +144,62 @@ function refuse(name: string, code: GateRefusal, message: string): GateResult {
   return { kind: "refuse", code, message };
 }
 
+/** Every line at most the kit's width: a longer one wraps under its own indent, continuing two columns in. */
+export function fitWidth(text: string): string {
+  return text
+    .split("\n")
+    .flatMap((line) => {
+      if ([...line].length <= DEFAULT_WIDTH) return [line];
+      const indent = line.length - line.trimStart().length;
+      return wrap(line, indent + 2, indent);
+    })
+    .join("\n");
+}
+
+/**
+ * One command's help: its own page from cli-help.ts when it has one, else its usage lines and summary; then its card's
+ * when and errors, and for a command other people see, the --why and --dry-run it takes. Never the whole CLI's usage.
+ */
+export function commandHelp(declaration: CliCommandDeclaration): string {
+  const name = declaration.name;
+  const own = getCommandHelp(name);
+  const usageLines = usageLinesFor(name);
+  const lines = own
+    ? [own]
+    : [`ouro ${name} - ${declaration.summary}`, "", "Usage:", ...(usageLines.length > 0 ? usageLines : [`  ouro ${name}`])];
+  if (declaration.ax) {
+    lines.push("", `When: ${declaration.ax.when}`);
+    if (declaration.ax.errors.length > 0) lines.push("", "Errors:", ...declaration.ax.errors.map((error) => `  ${error.code}: ${error.fix}`));
+  }
+  if (declaration.effect === "others") {
+    lines.push(
+      "",
+      "Flags:",
+      '  --why "<who asked you, and what they said>"   Needed: other people will see this.',
+      "  --dry-run                                   Say who will see it, and do nothing.",
+    );
+  }
+  return fitWidth(lines.join("\n"));
+}
+
+/**
+ * A failure as one stderr line. A parser's `Usage` error, which carries the whole CLI's usage, becomes the usage of the
+ * command the words name; any other message has its line breaks folded. The card's code goes on the end.
+ */
+export function errorText(args: readonly string[], message: string, code?: string): string {
+  let text = message;
+  if (message.startsWith("Usage\n")) {
+    const match = matchCommand([...args]);
+    const name = match?.shape.declaration.name ?? commandWords(args).slice(0, 1).join(" ");
+    const lines = name ? usageLinesFor(name).map((line) => line.trim()) : [];
+    text = lines.length > 0
+      ? `ouro ${name}: these arguments don't fit its usage: ${lines.join(" | ")}. Fix: run ouro ${name} --help for what each takes.`
+      : "ouro: these arguments don't fit any command's usage. Fix: run ouro --help for the commands.";
+  }
+  text = text.replace(/\s*[\r\n]+\s*/g, " ").trim();
+  return code ? `${text} (code: ${code})` : text;
+}
+
 /** Checks a command line against its declaration; a pass returns the words the legacy dispatcher should read. */
 export function gateCommandArgs(args: string[]): GateResult {
   const match = matchCommand(args);
@@ -152,19 +210,7 @@ export function gateCommandArgs(args: string[]): GateResult {
   const others = declaration.effect === "others";
   const known = [...new Set([...PARSER_FLAGS, ...GLOBAL_FLAGS, ...flags.keys()])];
 
-  if (others && rest.includes("--help")) {
-    const text = [
-      "Usage:",
-      ...usageLinesFor(name),
-      "",
-      declaration.summary,
-      "",
-      "Flags:",
-      '  --why "<who asked you, and what they said>"   Needed: other people will see this.',
-      "  --dry-run                                   Say who will see it, and do nothing.",
-    ].join("\n");
-    return { kind: "help", text };
-  }
+  if (rest.includes("--help")) return { kind: "help", text: commandHelp(declaration) };
 
   for (let index = 0; index < rest.length; index++) {
     const token = rest[index]!;

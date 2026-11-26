@@ -1,6 +1,6 @@
 // The error cards many ouro commands share in kind, each written for the one command it sits on, so an agent reads
 // that command's own fix. Where each code is raised: `usage`, `no-agent` and `which-agent` in cli-exec, the flag
-// refusals in cli-gate, `daemon-down` at cli-exec's daemonDown. A failure prints its code as its last stderr line.
+// refusals in cli-gate, `daemon-down` at cli-exec's daemonDown. A failure prints its code at the end of its one stderr line.
 import type { CliErrorCard } from "../cli-manifest"
 
 /** The flag gate's refusal of a flag this command doesn't take. */

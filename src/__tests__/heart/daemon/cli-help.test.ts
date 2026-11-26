@@ -90,45 +90,28 @@ describe("COMMAND_REGISTRY", () => {
 })
 
 describe("getGroupedHelp()", () => {
-  it("returns a string", () => {
+  it("fits one screen, every line within the kit's 100 columns", () => {
     emitNervesEvent({ component: "daemon", event: "cli_help_grouped_test", message: "testing grouped help" })
-    const result = getGroupedHelp()
-    expect(typeof result).toBe("string")
-    expect(result.length).toBeGreaterThan(0)
+    const lines = getGroupedHelp().split("\n")
+    expect(lines[0]).toBe("Usage: ouro <command> [options]")
+    expect(lines.length).toBeLessThanOrEqual(60)
+    for (const line of lines) expect([...line].length).toBeLessThanOrEqual(100)
   })
 
-  it("contains all category headers", () => {
+  it("names the first word of every listed command, once, under its card's group", () => {
     const result = getGroupedHelp()
-    const categories = [
-      "Lifecycle", "Agents", "Chat", "Tasks", "Habits",
-      "Friends", "Auth", "Internal", "System",
-    ]
-    for (const cat of categories) {
-      expect(result).toContain(cat)
-    }
+    const listed = CLI_COMMANDS.filter((command) => !command.hidden && command.ax)
+    for (const command of listed) expect(result).toMatch(new RegExp(`[ ,]${command.name.split(" ")[0]}(,|\n|$)`))
+    expect(result).toMatch(/\n  lifecycle +clone, dev, /)
+    expect(result).toMatch(/\n  mailbox +mailbox/)
+    expect(result.match(/[ ,]up(,|\n)/g)).toHaveLength(1)
   })
 
-  it("contains command names within their category sections", () => {
+  it("keeps a word whose commands are all hidden out of the overview", () => {
+    const hiddenOnly = [...new Set(CLI_COMMANDS.filter((command) => command.hidden).map((command) => command.name.split(" ")[0]!))]
+      .filter((word) => !CLI_COMMANDS.some((command) => !command.hidden && command.name.split(" ")[0] === word))
     const result = getGroupedHelp()
-    // up should appear in the Lifecycle section
-    expect(result).toContain("up")
-    expect(result).toContain("stop")
-    // chat should appear in the Chat section
-    expect(result).toContain("chat")
-    // poke should appear in the Tasks section
-    expect(result).toContain("poke")
-    // connect should appear in the Auth section
-    expect(result).toContain("connect")
-    expect(result).toContain("Set up providers, portable integrations, and local senses from one guided screen")
-    // The old page's command is gone; the generated mailbox group lists only its own words.
-    expect(result).not.toContain("outlook")
-    expect(result).toMatch(/\n {4}mailbox +See the letters an agent has filed for you\n/)
-  })
-
-  it("keeps deprecated aliases out of grouped help", () => {
-    const result = getGroupedHelp()
-    expect(COMMAND_REGISTRY["inner"].hidden).toBe(true)
-    expect(result).not.toContain("inner")
+    for (const word of hiddenOnly) expect(result).not.toMatch(new RegExp(`[ ,]${word}(,|\n)`))
   })
 
   it("documents the inner command only as a private-status legacy alias", () => {
@@ -137,19 +120,8 @@ describe("getGroupedHelp()", () => {
     expect(result).toContain("ouro inner [--agent <name>]")
   })
 
-  it("includes a Usage header line", () => {
-    const result = getGroupedHelp()
-    expect(result).toMatch(/usage:/i)
-  })
-
-  it("groups commands under category headers not as a flat list", () => {
-    const result = getGroupedHelp()
-    const lines = result.split("\n")
-    // There should be multiple category headers (lines that contain a category name)
-    const categoryLines = lines.filter((l) =>
-      ["Lifecycle", "Agents", "Chat", "Tasks", "Habits", "Friends", "Auth", "Internal", "System"].some((c) => l.includes(c)),
-    )
-    expect(categoryLines.length).toBeGreaterThanOrEqual(9)
+  it("ends by naming the per-command help and the help as data", () => {
+    expect(getGroupedHelp()).toMatch(/Run ouro <command> --help for one command, or ouro help --json for every command as data\.$/)
   })
 })
 
@@ -502,8 +474,8 @@ describe("runOuroCli help execution", () => {
     emitNervesEvent({ component: "daemon", event: "cli_help_exec_test", message: "testing help execution" })
     const deps = makeDeps()
     const result = await runOuroCli(["--help"], deps)
-    expect(result).toContain("Lifecycle")
-    expect(result).toContain("Chat")
+    expect(result).toContain("\n  lifecycle  ")
+    expect(result).toContain("\n  mind  ")
     expect(deps.writeStdout).toHaveBeenCalledWith(result)
   })
 
@@ -599,7 +571,7 @@ describe("runOuroCli help execution", () => {
   it("ouro -h outputs grouped help", async () => {
     const deps = makeDeps()
     const result = await runOuroCli(["-h"], deps)
-    expect(result).toContain("Lifecycle")
+    expect(result).toContain("\n  lifecycle  ")
     expect(result).not.toContain("config model")
     expect(result).not.toContain("auth switch")
   })
@@ -607,8 +579,8 @@ describe("runOuroCli help execution", () => {
   it("ouro help outputs grouped help via command routing", async () => {
     const deps = makeDeps()
     const result = await runOuroCli(["help"], deps)
-    expect(result).toContain("Lifecycle")
-    expect(result).toContain("Chat")
+    expect(result).toContain("\n  lifecycle  ")
+    expect(result).toContain("\n  mind  ")
   })
 
   it("ouro help chat outputs per-command help for chat", async () => {
@@ -669,7 +641,7 @@ describe("runOuroCli help execution", () => {
     const deps = makeDeps()
     const result = await runOuroCli(["help", "xyzzy"], deps)
     expect(result).toContain("Unknown command: xyzzy")
-    expect(result).toContain("Lifecycle")
+    expect(result).toContain("\n  lifecycle  ")
   })
 })
 

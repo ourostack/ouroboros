@@ -81,6 +81,7 @@ import {
   type OuroCliDeps,
 } from "../../../heart/daemon/daemon-cli"
 import { OuroDaemon } from "../../../heart/daemon/daemon"
+import { usage } from "../../../heart/daemon/cli-parse"
 import * as daemonThoughts from "../../../heart/daemon/thoughts"
 import * as identity from "../../../heart/identity"
 import * as sessionActivity from "../../../heart/session-activity"
@@ -629,14 +630,12 @@ describe("ouro CLI parsing", () => {
   })
 
   it("keeps the legacy inner alias out of generic usage", () => {
-    let error: Error | null = null
-    try {
-      parseOuroCommand(["definitely-not-a-command"])
-    } catch (caught) {
-      error = caught as Error
-    }
-    expect(error?.message).toContain("ouro private status [--agent <name>] [--json]")
-    expect(error?.message).not.toContain("ouro inner")
+    expect(usage()).toContain("ouro private status [--agent <name>] [--json]")
+    expect(usage()).not.toContain("ouro inner")
+  })
+
+  it("answers an unknown command in one line that names where the commands are", () => {
+    expect(() => parseOuroCommand(["definitely-not-a-command"])).toThrow(/^Unknown command 'definitely-not-a-command'\..* Fix: run ouro --help for the commands, or ouro help --json for them as data\.$/)
   })
 
   it("parses attention command (list)", () => {
@@ -4580,7 +4579,7 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
 
     expect(result).toContain("___    _   _")
     expect(result).toContain("Help")
-    expect(result).toContain("daemon")
+    expect(result).toContain("lifecycle")
     expect(result).toContain("connect")
   })
 
@@ -4672,7 +4671,7 @@ describe("ouro --help completeness (H10)", () => {
     const result = await runOuroCli(["--help"], deps)
 
     expect(result).toContain("friend")
-    expect(result).toContain("Friends")
+    expect(result).toContain("\n  friends  ")
   })
 
   it("includes whoami in help output", async () => {
@@ -4695,7 +4694,6 @@ describe("ouro --help completeness (H10)", () => {
 
     expect(result).toContain("up")
     expect(result).toContain("stop")
-    expect(result).toContain("down")
     expect(result).toContain("status")
     expect(result).toContain("logs")
     expect(result).toContain("hatch")
@@ -4703,7 +4701,7 @@ describe("ouro --help completeness (H10)", () => {
     expect(result).toContain("msg")
     expect(result).toContain("poke")
     expect(result).toContain("link")
-    expect(result).toContain("Lifecycle")
+    expect(result).toContain("\n  lifecycle  ")
   })
 })
 

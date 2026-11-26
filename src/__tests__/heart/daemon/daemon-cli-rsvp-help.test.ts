@@ -43,8 +43,8 @@ describe("ouro rsvp CLI help", () => {
     })
 
     const grouped = getGroupedHelp()
-    expect(grouped).toContain("rsvp")
-    expect(grouped).toContain("AislePlanner-backed RSVP habit")
+    expect(grouped).toMatch(/\n  rsvp +rsvp\n/)
+    expect(getCommandHelp("rsvp")).toContain("AislePlanner-backed RSVP habit")
   })
 
   it("includes RSVP usage in parser usage output", () => {

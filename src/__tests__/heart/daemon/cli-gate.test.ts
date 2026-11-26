@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { gateCommandArgs } from "../../../heart/daemon/cli-gate"
+import { commandHelp, errorText, fitWidth, gateCommandArgs } from "../../../heart/daemon/cli-gate"
+import type { CliCommandDeclaration } from "../../../heart/daemon/cli-manifest"
 
 describe("the flag gate in front of the ouro CLI", () => {
   it("lets a command line the gate does not know pass to the dispatcher, unchanged", () => {
@@ -69,8 +70,15 @@ describe("the flag gate in front of the ouro CLI", () => {
     expect(result.kind === "help" && result.text).toContain("--dry-run")
   })
 
-  it("passes a command the person sees its help unchanged", () => {
-    expect(gateCommandArgs(["check", "--help"])).toMatchObject({ kind: "pass" })
+  it("answers a command the person sees its own help, never the whole CLI's usage", () => {
+    const result = gateCommandArgs(["check", "--help"])
+    expect(result.kind).toBe("help")
+    const text = result.kind === "help" ? result.text : ""
+    expect(text).toContain("When: Make one live call on the outward or inner lane")
+    expect(text).toContain("Errors:")
+    expect(text).not.toContain("--dry-run")
+    expect(new TextEncoder().encode(text).length).toBeLessThanOrEqual(6000)
+    for (const line of text.split("\n")) expect([...line].length).toBeLessThanOrEqual(100)
   })
 
   it("skips the value of a flag that takes one when it counts words", () => {
@@ -81,5 +89,47 @@ describe("the flag gate in front of the ouro CLI", () => {
     const result = gateCommandArgs(["a2a", "serve", "serve", "--why", "they asked"])
     expect(result.kind === "refuse" && result.message).toContain("takes no words after its command")
     expect(result).toMatchObject({ code: "extra-words" })
+  })
+})
+
+describe("one command's help and one-line errors, on the Ouro AX kit's width", () => {
+  const widest = (text: string) => Math.max(...text.split("\n").map((line) => [...line].length))
+
+  it("keeps a short line as it is and wraps a long one under its own indent", () => {
+    expect(fitWidth("short\n  also short")).toBe("short\n  also short")
+    const long = `    ${"word ".repeat(40).trim()}`
+    const fitted = fitWidth(long)
+    expect(widest(fitted)).toBeLessThanOrEqual(100)
+    expect(fitted.split("\n").length).toBeGreaterThan(1)
+    expect(fitted.split("\n")[1]).toMatch(/^ {6}word/)
+  })
+
+  it("builds help from the declaration when a command has no page of its own", () => {
+    const bare: CliCommandDeclaration = { name: "zz-none", effect: "private", readOnly: true, summary: "A test command." }
+    expect(commandHelp(bare)).toBe("ouro zz-none - A test command.\n\nUsage:\n  ouro zz-none")
+    const carded = { ...bare, ax: { id: "cli:zz-none", group: "mind", effect: "read", when: "Pick this in a test.", errors: [] } } as CliCommandDeclaration
+    const text = commandHelp(carded)
+    expect(text).toContain("When: Pick this in a test.")
+    expect(text).not.toContain("Errors:")
+    const others = { ...bare, effect: "others" } as CliCommandDeclaration
+    expect(commandHelp(others)).toContain("--dry-run")
+  })
+
+  it("turns the parser's whole-CLI usage into the usage of the command the words name", () => {
+    const text = errorText(["check", "--lane"], "Usage\n  ouro check ...\n  ouro up")
+    expect(text).toMatch(/^ouro check: these arguments don't fit its usage: ouro check/)
+    expect(text).toContain("Fix: run ouro check --help")
+    expect(text).not.toContain("\n")
+  })
+
+  it("points at the overview when the words name no command with usage", () => {
+    const fallback = "ouro: these arguments don't fit any command's usage. Fix: run ouro --help for the commands."
+    expect(errorText(["zz-none"], "Usage\nwhatever")).toBe(fallback)
+    expect(errorText([], "Usage\nwhatever")).toBe(fallback)
+  })
+
+  it("folds any other message onto one line and puts the code on the end", () => {
+    expect(errorText(["up"], "first part\n  second part")).toBe("first part second part")
+    expect(errorText(["up"], "daemon unavailable", "daemon-down")).toBe("daemon unavailable (code: daemon-down)")
   })
 })
