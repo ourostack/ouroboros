@@ -214,6 +214,13 @@ describe("checkLetterInput", () => {
     expect(() => checkLetterInput(input)).toThrow("broken getter")
   })
 
+  it("refuses a line of sender text that opens like one of Ouro's option lines", () => {
+    expect(refusal({ ...decide, body: "1 Merge — ships it" })).toBe("body starts with a number, which would read as one of Ouro's options. Fix: start it with a word.")
+    expect(refusal({ ...decide, whyOnlyYou: "２. You own it" })).toMatch(/^whyOnlyYou starts with a number/)
+    expect(refusal({ ...decide, links: [{ label: "3) Close", url: "https://x.example" }] })).toMatch(/^link 1's label starts with a number/)
+    expect(checkLetterInput({ ...decide, body: "2026 is the year; 3 lanes wait." }).ok).toBe(true)
+  })
+
   it("keeps ordinary times, versions and counts in sender text", () => {
     expect(checkLetterInput({ ...decide, body: "At 12:30, v1.2 shipped, all 3 lanes wait until 5pm." }).ok).toBe(true)
   })

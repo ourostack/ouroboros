@@ -4,8 +4,6 @@ vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
 
-const execFileSync = vi.hoisted(() => vi.fn())
-vi.mock("child_process", () => ({ execFileSync }))
 
 describe("proactive content guard", () => {
   let getProactiveInternalContentBlockReason: typeof import("../../senses/proactive-content-guard").getProactiveInternalContentBlockReason
@@ -96,11 +94,15 @@ describe("proactive content guard", () => {
     })
   })
 
-  describe("routine verification chores and untested delivery claims", () => {
-    const incident = "The proof images on Tandem #5312, #5127 and #5046 have been re-attached in a way that should load on your phone. Whether they actually show in the GitHub Mobile app hasn't been tested yet. Could you open #5312 on your phone and tell me if the pictures show?"
+  describe("asks pass; untested delivery claims are held", () => {
+    const incident = "The proof images on Tandem #5312 have been re-attached. Whether they show in the GitHub Mobile app hasn't been tested yet."
 
-    it("holds the 2026-11-24 message that asked Ari to open a PR and report whether images show", () => {
-      expect(getProactiveInternalContentBlockReason(incident)).toBe("not_theirs_to_do")
+    it("never holds an ask: what to ask a person for is taught in the prompt, not enforced here", () => {
+      for (const ask of [
+        "Could you open #5312 on your phone and tell me if the pictures show?",
+        "Can you press 2 at the Orca prompt?",
+        "Tap 47 in GitHub Mobile to approve the sign-in.",
+      ]) expect(getProactiveInternalContentBlockReason(ask), ask).toBeNull()
     })
 
     it("holds an untested result offered as the news, with no ask", () => {
@@ -108,83 +110,9 @@ describe("proactive content guard", () => {
       expect(getProactiveInternalContentBlockReason("The fix should now load on mobile.")).toBe("untested_delivery_claim")
     })
 
-    it("holds other phrasings of the same ask", () => {
-      expect(getProactiveInternalContentBlockReason("Please check the dashboard and let me know whether it loads.")).toBe("not_theirs_to_do")
-      expect(getProactiveInternalContentBlockReason("Let me know if the page renders for you after the deploy.")).toBe("not_theirs_to_do")
-    })
-
     it("passes a verified done with proof", () => {
       expect(getProactiveInternalContentBlockReason("Done: I verified the images load in a mobile-web browser (screenshot attached). The native app was not checked.")).toBeNull()
       expect(getProactiveInternalContentBlockReason("I tested it and the page should load for everyone now; screenshot attached.")).toBeNull()
-    })
-
-    it("passes an ask only their body can do: a phone approval, a payment, an irreversible call", () => {
-      expect(getProactiveInternalContentBlockReason("Tap 47 in GitHub Mobile to approve the sign-in.")).toBeNull()
-      expect(getProactiveInternalContentBlockReason("Please approve the MFA prompt on your phone and let me know when it's done.")).toBeNull()
-      expect(getProactiveInternalContentBlockReason("You can now sign in to Spoonjoy with your passkey.")).toBeNull()
-      expect(getProactiveInternalContentBlockReason("The flight is $412; can you pay with your card? It's held until 6pm.")).toBeNull()
-      expect(getProactiveInternalContentBlockReason("Deleting the old bucket can't be undone. Do you want it gone?")).toBeNull()
-      expect(getProactiveInternalContentBlockReason("Can you plug in the printer and tell me whether the light turns green?")).toBeNull()
-      expect(getProactiveInternalContentBlockReason("Next I'll run `npm test` and send the result.")).toBeNull()
-      expect(getProactiveInternalContentBlockReason("Approve the passkey prompt on your phone so I can sign in to GitHub in Chrome.")).toBeNull()
-      expect(getProactiveInternalContentBlockReason("Can you approve the 2FA prompt on your phone? It's for HEY in Chrome on the Mac mini.")).toBeNull()
-      expect(getProactiveInternalContentBlockReason("Tap 47 on your phone to approve the gh auth login.")).toBeNull()
-      expect(getProactiveInternalContentBlockReason("Your vault is locked. Please run `ouro vault unlock --agent slugger` in a terminal; its secret isn't in the vault.")).not.toBe("not_theirs_to_do")
-    })
-
-    it("passes reports and owner decisions that only mention a chore", () => {
-      for (const report of [
-        "Ready: build 49 is on TestFlight. Open it and try the new share sheet.",
-        "Good news: you no longer need to run gh auth login; I fixed the token refresh.",
-        "Install complete: Ouro 1.4 is on your Mac.",
-        "I set your thermostat to 68 since the schedule broke.",
-        "I'll send you the code review notes tonight.",
-        "Do you want me to make the repo public? It can't be undone easily.",
-        "Do you want me to accept the invite from Dana for Thursday?",
-        "Let me know if the new layout works for you.",
-      ]) expect(getProactiveInternalContentBlockReason(report), report).toBeNull()
-    })
-
-    // Every ask that reached Ari's phone 2026-11-23..26 and wasn't his.
-    const notTheirs = [
-      "The lane needs you to run `gh auth login` in a terminal so it can push.",
-      "Could you run gh auth login again? The push still fails.",
-      "Please run `ouro up --latest` from Heeler so the daemon picks up the fix.",
-      "Orca is asking \"proceed?\" in the mailbox lane. Can you press 2?",
-      "Claude wants a login code. Can you paste the 6-digit code from your email?",
-      "Please sign in to GitHub in Edge on ouroboros-host so the browser lane can continue.",
-      "The owner needs to accept the GitHub Packages agreement in their account.",
-      "Can you make the package public by hand in the GitHub settings?",
-      "Could you restart the daemon on Heeler?",
-      "Please create an API token in the Cloudflare dashboard and drop it in the vault.",
-      "Can you open System Settings and grant Full Disk Access to ouro?",
-      "Can you check whether the deploy finished?",
-      "The browser lane needs a sign-in. Can you grab the code from your email and send it to me?",
-      "Can you login to gh again?",
-    ]
-
-    it.each(notTheirs)("sends back an ask that isn't theirs: %s", (ask) => {
-      execFileSync.mockImplementation(() => { throw new Error("not signed in") })
-      expect(getProactiveInternalContentBlockReason(ask)).toBe("not_theirs_to_do")
-    })
-
-    it("drops a sign-in ask whose claim is false, checked with the claim's own status command", () => {
-      execFileSync.mockReturnValue(Buffer.from(""))
-      expect(getProactiveInternalContentBlockReason(notTheirs[0]!)).toBe("false_sign_in_claim")
-      expect(execFileSync).toHaveBeenCalledWith("gh", ["auth", "status"], expect.objectContaining({ timeout: 5_000 }))
-      expect(getProactiveInternalContentBlockReason("Can you sign in to the GitHub CLI?")).toBe("false_sign_in_claim")
-      expect(getProactiveInternalContentBlockReason("Hey, gh needs a re-login: gh auth refresh -s workflow please.")).toBe("false_sign_in_claim")
-      execFileSync.mockClear()
-      expect(getProactiveInternalContentBlockReason(notTheirs[2]!)).toBe("not_theirs_to_do")
-      expect(execFileSync).not.toHaveBeenCalled()
-    })
-
-    it("tells the sender to do it itself, and what may still reach them", () => {
-      const guidance = proactiveContentBlockGuidance("not_theirs_to_do")
-      expect(guidance).toContain("do it yourself; you have standing authority")
-      expect(guidance).toContain("send only the number to approve")
-      expect(proactiveContentBlockGuidance("false_sign_in_claim")).toContain("already done")
-      expect(isReturnToSenderReason("false_sign_in_claim")).toBe(true)
     })
 
     it("passes a status update the person asked for, honestly marked unverified", () => {
@@ -194,6 +122,7 @@ describe("proactive content guard", () => {
     it("tells the sending lane to verify and what a mobile-web render proves", () => {
       const guidance = proactiveContentBlockGuidance("untested_delivery_claim")
       expect(guidance).toContain("Verify it yourself")
+      expect(getProactiveInternalContentBlockReason(incident)).toBe("untested_delivery_claim")
       expect(guidance).toContain("mobile-web browser render")
       expect(proactiveContentBlockGuidance("heartbeat_status")).toBe("blocked: this reads as internal status (heartbeat_status), so no chat sends it; rewrite it as plain words for them")
       expect(proactiveContentBlockGuidance(null)).toBe("blocked: this reads as internal status, so no chat sends it; rewrite it as plain words for them")
@@ -208,12 +137,12 @@ describe("proactive content guard", () => {
         getPrivateRuntimePendingDir: (agent: string) => `/root/${agent}/pending`,
         PRIVATE_RUNTIME_PENDING: { friendId: "self", channel: "inner", key: "dialog" },
       }))
-      await returnHeldProactiveMessage({ agentName: "ouro", friendId: "f1", text: incident, reason: "not_theirs_to_do" })
+      await returnHeldProactiveMessage({ agentName: "ouro", friendId: "f1", text: incident, reason: "untested_delivery_claim" })
       expect(queuePendingMessage).toHaveBeenCalledWith("/root/ouro/pending", expect.objectContaining({
         from: "ouro",
         channel: "inner",
         mode: "reflect",
-        content: expect.stringContaining("do it yourself"),
+        content: expect.stringContaining("Verify it yourself"),
       }))
       expect(queuePendingMessage.mock.calls[0]![1].content).toContain(incident)
       vi.doUnmock("../../mind/pending")
