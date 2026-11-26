@@ -31,6 +31,8 @@ BUNDLE_REPO_OWNER=arimendelow
 BUNDLE_REPO_NAME=sanctuary.ouro
 BUNDLE_REMOTE="git@github.com:${BUNDLE_REPO_OWNER}/${BUNDLE_REPO_NAME}.git"
 BUNDLE_BRANCH=main
+# The Butler's name inside the container, and the bundle's path there, follow the live container's image (use_image_agent_name).
+# The host folder ($BUNDLE below) keeps its name whichever name the image runs.
 AGENT_NAME=sanctuary
 # backup.sh's commit identity and the fetch refspec the moved repository must have.
 BACKUP_COMMIT_NAME="Sanctuary backup"
@@ -146,6 +148,19 @@ file_value() {
 # One saved value from the before-state.
 before_value() {
   file_value "$BEFORE" "$1" || die "$(basename "$BEFORE") has no \"$1\" line"
+}
+
+# Sets AGENT_NAME and CONTAINER_BUNDLE from the Butler name image $1 runs: its ENTRYPOINT's `--package-managed-agent <name>`.
+# Any other entrypoint means sanctuary, as src/heart/butler-agent.ts butlerNameFromEntrypoint reads it.
+use_image_agent_name() {
+  local entrypoint name
+  entrypoint=$(docker image inspect --format '{{json .Config.Entrypoint}}' "$1") || die "docker could not read the entrypoint of $1"
+  name=$(printf '%s' "$entrypoint" | sed -n 's/.*"--package-managed-agent","\([^"]*\)".*/\1/p')
+  case "$name" in
+    butler | sanctuary) AGENT_NAME=$name ;;
+    *) AGENT_NAME=sanctuary ;;
+  esac
+  CONTAINER_BUNDLE=/home/ouro/AgentBundles/$AGENT_NAME.ouro
 }
 
 container_image() {
@@ -309,6 +324,7 @@ preflight() {
   local image branch upstream remote merge stash tracked timings status_ms add_ms excluded secrets out
   local origin_url fetch bare worktree sshcmd ucache manyfiles agent_sync repo_stat repo_owner repo_mode key_state
   image=$(container_image)
+  use_image_agent_name "$image"
   print_exclude "$image" "$WORK/exclude"
   chmod 0644 "$WORK/exclude"
   timings=$(measure_git "$image" "$WORK/exclude")
@@ -910,9 +926,11 @@ butler_sync() { docker exec -u 10001 "$CONTAINER" timeout 60 node "$CLI_ENTRY" s
 
 verify_live() {
   [ -e "$MARKER" ] || die "the cutover is not done ($MARKER is missing)"
-  local heads uid start elapsed status out leftover
+  local heads uid start elapsed status out leftover image
   trap 'trap "" INT TERM HUP; exit 130' INT TERM
   trap 'trap "" INT TERM HUP; exit 129' HUP
+  image=$(container_image)
+  use_image_agent_name "$image"
 
   say "the sync path reaches GitHub as ouro-sync"
   heads=$(docker exec -u 10001 -e "GIT_SSH_COMMAND=sudo -n -u ouro-sync $SYNC_SSH_WRAPPER" -e GIT_SSH_VARIANT=ssh "$CONTAINER" \
