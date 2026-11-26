@@ -1260,6 +1260,9 @@ function checkTrustLevelGuardrails(toolName: string, args: Record<string, string
   if (toolName === "send_file" && context.trustLevel !== "family") {
     return deny("sending files from this machine requires family trust.")
   }
+  if (toolName === "surface" && args.imagePath && context.trustLevel !== "family") {
+    return deny("sending files from this machine requires family trust.")
+  }
   const cacheSyncResult = mailCacheSyncShellGuardrail(toolName, args, context)
   if (!cacheSyncResult.allowed) return cacheSyncResult
 
@@ -1379,6 +1382,9 @@ export function guardInvocation(
   if (READ_ONLY_TOOLS.has(toolName)) return syncSecretReadRefused(toolName, args, context.agentRoot) ? deny(REASONS.unreadablePath) : allow
   // send_file reads the file it sends, so the sync key's directory is closed to it the same way.
   if (toolName === "send_file" && syncSecretReadRefused("read_file", args, context.agentRoot)) return deny(REASONS.unreadablePath)
+
+  // surface's imagePath is read off this machine and sent, so the sync key's directory is closed to it too.
+  if (toolName === "surface" && args.imagePath && syncSecretReadRefused("read_file", { path: args.imagePath }, context.agentRoot)) return deny(REASONS.unreadablePath)
 
   // Layer 1: structural guardrails (always on)
   const structuralResult = checkStructuralGuardrails(toolName, args, context)

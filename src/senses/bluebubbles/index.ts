@@ -50,7 +50,8 @@ import {
 import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesRepliedMessage } from "./client"
 import { renderChatInteraction, resolveChatInteractionTarget } from "../../heart/chat-interaction"
 import { reactInBlueBubbles } from "./reactions"
-import { sendFileInBlueBubbles } from "./send-file"
+import { MAX_IMESSAGE_FILE_BYTES, sendFileInBlueBubbles } from "./send-file"
+import { readChatFile, type ChatFile } from "../chat-file"
 import { chatActionsForTurn } from "../../repertoire/tools-chat"
 import { BlueBubblesHostAccountError, verifyBlueBubblesServerAccount } from "./host-account-verifier"
 import { createBlueBubblesWebhookReconciler } from "./webhook-registration"
@@ -571,11 +572,15 @@ export interface ProactiveBlueBubblesSessionSendParams {
   deliveryId?: string
   /** Who is sending, for the `[you sent this via ...]` prefix the saved message carries. Defaults to `proactive`. */
   origin?: OutboundOrigin
+  /** Absolute path of a local image sent just before the text; the text becomes its caption. */
+  imagePath?: string
 }
 
 export interface ProactiveBlueBubblesSessionSendResult {
   delivered: boolean
-  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "group_blocked" | "internal_content_blocked" | "blocked_meta_content" | "host_account_refused"
+  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "group_blocked" | "internal_content_blocked" | "blocked_meta_content" | "host_account_refused" | "image_unsendable"
+  /** For image_unsendable: why the image could not go, so nothing was sent. */
+  detail?: string
   /** On send_error, present when the server got the send and did not refuse it, so it may have gone out. */
   delivery?: { state: "unknown" }
 }
@@ -4890,6 +4895,17 @@ async function watchForTimedOutProactiveSend(
     meta: { friendId: friend.id, sessionKey: params.sessionKey, checks: BLUEBUBBLES_PROACTIVE_ARRIVAL_CHECKS } })
 }
 
+/** An image to send off-turn, read before anything goes out so an unreadable one sends nothing. */
+async function readProactiveImage(client: BlueBubblesClient, imagePath: string): Promise<ChatFile | { unsendable: string }> {
+  if (!client.sendAttachment) return { unsendable: "this iMessage connection can't send files" }
+  try {
+    const file = await readChatFile(imagePath, MAX_IMESSAGE_FILE_BYTES)
+    return file.contentType.startsWith("image/") ? file : { unsendable: `${file.name} is not an image` }
+  } catch (error) {
+    return { unsendable: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 export async function sendProactiveBlueBubblesMessageToSession(
   params: ProactiveBlueBubblesSessionSendParams,
   deps: Partial<RuntimeDeps> = {},
@@ -5019,8 +5035,24 @@ export async function sendProactiveBlueBubblesMessageToSession(
     return { delivered: false, reason: "internal_content_blocked" }
   }
 
+  let image: Awaited<ReturnType<typeof readProactiveImage>> | undefined
+  if (params.imagePath) {
+    const read = await readProactiveImage(client, params.imagePath)
+    if ("unsendable" in read) {
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.bluebubbles_proactive_image_refused",
+        message: "proactive bluebubbles image not sent, so nothing was sent", meta: { friendId: params.friendId, sessionKey: params.sessionKey, why: read.unsendable } })
+      return { delivered: false, reason: "image_unsendable", detail: read.unsendable }
+    }
+    image = read
+  }
+
   const sentAt = Date.now()
+  let imageSent = false
   try {
+    if (image) {
+      await client.sendAttachment!({ chat, file: image })
+      imageSent = true
+    }
     const sent = await client.sendText({ chat, text: params.text })
     emitNervesEvent({
       component: "senses",
@@ -5068,8 +5100,8 @@ export async function sendProactiveBlueBubblesMessageToSession(
       },
     })
     const refused = error instanceof BlueBubblesSendError && error.httpStatus !== null && error.httpStatus >= 400 && error.httpStatus < 500 && error.httpStatus !== 408 && error.httpStatus !== 409
-    const mayHaveGoneOut = error instanceof BlueBubblesSendError && error.transportInvoked && !refused
-    if (mayHaveGoneOut) void watchForTimedOutProactiveSend(resolvedDeps, client, friend, params, chat, sentAt)
+    const mayHaveGoneOut = imageSent || (error instanceof BlueBubblesSendError && error.transportInvoked && !refused)
+    if (mayHaveGoneOut && !imageSent) void watchForTimedOutProactiveSend(resolvedDeps, client, friend, params, chat, sentAt)
     return { delivered: false, reason: "send_error", ...(mayHaveGoneOut ? { delivery: { state: "unknown" as const } } : {}) }
   }
 }
