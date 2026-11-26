@@ -12,13 +12,16 @@ import { migrateSanctuaryAuthorityVault } from "./sanctuary-authority-vault-migr
 import { withSessionTurnLease } from "../../mind/session-transaction"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { failureCodeLine } from "./cli-commands/failure-code"
+import { BUTLER_AGENT_NAMES, butlerContainerPaths, butlerNameFromEntrypoint, butlerOnDisk, type ButlerAgentName } from "../butler-agent"
 
 const ROOT = "/mnt/user/appdata/ouro-authority"
-const BUNDLE = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"
+// The host folder that holds the Butler's bundle. The bundle in it keeps the name it has on disk (the live host's stays
+// sanctuary.ouro through the rename); only where it is mounted inside the container follows the image's name.
+const AGENT = "/mnt/user/appdata/ouro-butler/agent"
 const RUNTIME = "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli"
-const OFFSET = `${BUNDLE}/state/senses/telegram/offset.json`
+const OFFSET = "state/senses/telegram/offset.json"
 const SOCKET = "/run/ouro-authority"
-// Operator-set grants, root-owned on the host and mounted read-only into the Butler at /etc/ouro/trust/sanctuary.
+// Operator-set grants, root-owned on the host and mounted read-only into the Butler at /etc/ouro/trust/<the image's Butler name>.
 const TRUST = "/mnt/user/appdata/ouro-butler/trust/sanctuary"
 // The bundle sync deploy key's host folder, mounted read-only where the sync wrapper reads it (from alpha.991).
 const SYNC = "/mnt/user/appdata/ouro-butler/sync"
@@ -51,6 +54,8 @@ const GATEWAY_LOG_TAIL_CHARS = 2_000
 // Read more than is shown, so masking sees whole tokens before the tail is cut.
 const GATEWAY_LOG_READ_BYTES = 4_096
 const GATEWAY_LOG_MAX_BYTES = 5 * 1024 * 1024
+// A container mounting the host bundle under either name could poll Telegram directly.
+const HOST_BUNDLES: readonly string[] = BUTLER_AGENT_NAMES.map((name) => `${AGENT}/${name}.ouro`)
 const TEMPLATE_JOURNAL = "/boot/config/custom/ouro-butler/docker-man-template-transaction.json"
 // In-place upgrade of an installed authority: same epoch (token, issuer, cursor,
 // gateway state), new reviewed package and resident image. Every root record it
@@ -259,8 +264,8 @@ export class SanctuaryAuthorityRootLifecycle {
             || fs.existsSync(this.#p(`${ROOT}/activation.json`))) throw new Error("Sanctuary previous epoch handoff is incomplete")
         }
         // A missing cursor is not a fresh install: it is lost handoff evidence.
-        fs.lstatSync(this.#p(OFFSET))
-        const predecessorCursor = new FileTelegramOffsetStore(this.#p(OFFSET)).load()
+        fs.lstatSync(this.#p(this.#offset()))
+        const predecessorCursor = new FileTelegramOffsetStore(this.#p(this.#offset())).load()
         const snapshot = this.#vault("snapshot") as { token: string; botId: string; ownerUserId: string; ownerChatId: string }
         if (["botId", "ownerUserId", "ownerChatId"].some((key) => snapshot[key as keyof typeof snapshot] !== this.#request[key as keyof Request])) throw new Error("Sanctuary predecessor identity changed")
         this.#write(`${ROOT}/epochs/${this.#request.epochId}/previous-token`, snapshot.token)
@@ -657,7 +662,7 @@ export class SanctuaryAuthorityRootLifecycle {
       || !fs.existsSync(this.#p(`${this.#epochRoot()}/handoff.json`)) || fs.existsSync(this.#p(`${this.#epochRoot()}/current-token`)) || fs.existsSync(this.#p(`${ROOT}/incoming-token`))) return false
     this.#record(`${this.#epochRoot()}/restored.json`, { tokenDigest: this.#epoch().tokenDigest, cursor: this.#epoch().terminalCursor })
     const token = this.#vault("snapshot") as { token: string }
-    return digest(token.token) === this.#epoch().tokenDigest && new FileTelegramOffsetStore(this.#p(OFFSET)).load() >= this.#epoch().terminalCursor!
+    return digest(token.token) === this.#epoch().tokenDigest && new FileTelegramOffsetStore(this.#p(this.#offset())).load() >= this.#epoch().terminalCursor!
   }
   #restoreToken(): void {
     this.#requireStopped()
@@ -668,12 +673,12 @@ export class SanctuaryAuthorityRootLifecycle {
       ? this.#private(`${this.#epochRoot()}/current-token`).trim() : (this.#vault("snapshot") as { token: string }).token
     if (digest(token) !== epoch.tokenDigest) throw new Error("Sanctuary current token handoff identity changed")
     this.#vault("restore", { token, botId: epoch.botId, ownerUserId: epoch.ownerUserId, ownerChatId: epoch.ownerChatId })
-    new FileTelegramOffsetStore(this.#p(OFFSET)).save(epoch.terminalCursor!)
+    new FileTelegramOffsetStore(this.#p(this.#offset())).save(epoch.terminalCursor!)
     // Restore the original resident ownership; root must not strand a root-owned cursor.
-    fs.chownSync(this.#p(OFFSET), this.#uid === 0 ? 10001 : this.#uid, this.#uid === 0 ? 10001 : this.#gid)
+    fs.chownSync(this.#p(this.#offset()), this.#uid === 0 ? 10001 : this.#uid, this.#uid === 0 ? 10001 : this.#gid)
     this.#write(`${this.#epochRoot()}/restored.json`, JSON.stringify({ tokenDigest: epoch.tokenDigest, cursor: epoch.terminalCursor }))
     const restored = this.#vault("snapshot") as { token: string }
-    if (digest(restored.token) !== epoch.tokenDigest || new FileTelegramOffsetStore(this.#p(OFFSET)).load() !== epoch.terminalCursor) throw new Error("Sanctuary token and cursor handoff readback failed")
+    if (digest(restored.token) !== epoch.tokenDigest || new FileTelegramOffsetStore(this.#p(this.#offset())).load() !== epoch.terminalCursor) throw new Error("Sanctuary token and cursor handoff readback failed")
     releaseSanctuaryAuthorityToken(this.#p(this.#epochRoot()), { expectedUid: this.#uid, expectedGid: this.#gid, tokenDigest: epoch.tokenDigest, cursor: epoch.terminalCursor! })
     if (fs.existsSync(this.#p(`${ROOT}/incoming-token`))) {
       if (digest(this.#private(`${ROOT}/incoming-token`).trim()) !== epoch.tokenDigest) throw new Error("Sanctuary incoming token changed during handoff")
@@ -902,13 +907,18 @@ export class SanctuaryAuthorityRootLifecycle {
    * release's audit refuses it.
    */
   #recreateResident(reference: string, imageId: string, { psycheMount, syncMount }: { psycheMount: boolean; syncMount: boolean }): void {
+    // The image names where its bundle and trust are mounted; the host folders stay where they are. `--mount` refuses a
+    // missing source, where `-v` would have Docker create an empty folder in its place. Both are read before the resident
+    // goes, so a failed inspect leaves it standing.
+    const bundle = this.#hostBundle()
+    const { agentRoot, trustRoot } = butlerContainerPaths(this.#imageButler(imageId))
     if (this.#containers().some((container) => container.Name === "/ouro-butler")) this.#docker(["rm", "-f", "ouro-butler"])
     this.#docker(["create", "--name", "ouro-butler", "--network", "host", "--restart", "unless-stopped", "--user", "10001:10001",
       "-l", "net.unraid.docker.managed=dockerman", "-l", `net.unraid.docker.icon=${ICON}`, "-l", "org.opencontainers.image.source=https://github.com/ourostack/ouroboros",
-      "-v", `${RUNTIME}:/home/ouro/.ouro-cli:rw`, "-v", `${BUNDLE}:/home/ouro/AgentBundles/sanctuary.ouro:rw`,
+      "-v", `${RUNTIME}:/home/ouro/.ouro-cli:rw`, "--mount", `type=bind,src=${bundle},dst=${agentRoot}`,
       "-v", `${EVENTS}:/run/ouro-events:ro`, "-v", `${SOCKET}:${SOCKET}:ro`,
-      ...(psycheMount ? ["-v", `${BUNDLE}/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro`] : []),
-      "-v", `${TRUST}:/etc/ouro/trust/sanctuary:ro`,
+      ...(psycheMount ? ["--mount", `type=bind,src=${bundle}/psyche,dst=${agentRoot}/psyche,readonly`] : []),
+      "--mount", `type=bind,src=${TRUST},dst=${trustRoot},readonly`,
       ...(syncMount ? ["-v", `${SYNC}:/run/ouro-sync:ro`] : []), reference])
     const resident = this.#containers().find((container) => container.Name === "/ouro-butler")
     if (resident?.Image !== imageId || resident.State.Running) throw new Error("Sanctuary resident recreation readback failed")
@@ -917,10 +927,10 @@ export class SanctuaryAuthorityRootLifecycle {
   /** Run the installed package's bundle migration CLI, then return the bundle to the resident. */
   #bundle(operation: string[]): void {
     execFileSync(this.#p("/usr/local/bin/node"), [this.#p(`${ROOT}/package/deploy/unraid/migrate-sanctuary-bundle.mjs`),
-      "--package-root", this.#p(`${ROOT}/package/deploy/unraid/sanctuary.ouro`), "--agent-root", this.#p(BUNDLE), ...operation], {
+      "--package-root", this.#p(`${ROOT}/package/deploy/unraid/sanctuary.ouro`), "--agent-root", this.#p(this.#hostBundle()), ...operation], {
       encoding: "utf8", timeout: 300_000, stdio: ["ignore", "pipe", "pipe"], env: { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" }, cwd: "/",
     })
-    execFileSync("/bin/chown", ["-R", "10001:10001", this.#p(BUNDLE)], { stdio: "ignore" })
+    execFileSync("/bin/chown", ["-R", "10001:10001", this.#p(this.#hostBundle())], { stdio: "ignore" })
     this.#restoreReplayRoot()
   }
 
@@ -936,7 +946,7 @@ export class SanctuaryAuthorityRootLifecycle {
    * `state` itself may be a link too: compare realpaths before any chown or chmod ever runs.
    */
   #stateChild(name: string): string | null {
-    const bundle = this.#p(BUNDLE)
+    const bundle = this.#p(this.#hostBundle())
     const directory = path.join(bundle, "state", name)
     let stat: fs.Stats
     try { stat = fs.lstatSync(directory) } catch { return null }
@@ -986,6 +996,15 @@ export class SanctuaryAuthorityRootLifecycle {
     return !fs.readFileSync(file, "utf8").split("\n").some((line) => /^ouro-butler(?:-rollback|-staging|-legacy-evidence)?(?:\s|$)/u.test(line))
   }
   #p(absolute: string) { return `${this.#prefix}${absolute}` }
+  /** The host bundle folder, by the name it has on disk; sanctuary.ouro when neither or both are there. */
+  #hostBundle(): string {
+    return `${AGENT}/${butlerOnDisk(this.#p(AGENT), fs.existsSync) ?? "sanctuary"}.ouro`
+  }
+  #offset(): string { return `${this.#hostBundle()}/${OFFSET}` }
+  /** The Butler an image runs, from its own ENTRYPOINT. */
+  #imageButler(imageId: string): ButlerAgentName {
+    return butlerNameFromEntrypoint(JSON.parse(this.#docker(["image", "inspect", "--format", "{{json .Config.Entrypoint}}", imageId])))
+  }
   #bootScript(): { text: string; mode: number } {
     const mode = fs.lstatSync(this.#p("/boot/config/go")).mode & 0o7777
     if (![0o600, 0o644, 0o700, 0o755].includes(mode)) throw new Error("Sanctuary boot script metadata is unsafe")
@@ -1059,7 +1078,7 @@ export class SanctuaryAuthorityRootLifecycle {
         emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_poller_scan_container_gone", message: "skipped a container that stopped during the direct-poller scan", meta: { name } })
         continue
       }
-      if (containers.some((container) => container.Mounts.some((mount) => mount.Source === BUNDLE || mount.Source === RUNTIME))) throw new Error("Sanctuary has an unowned possible direct poller")
+      if (containers.some((container) => container.Mounts.some((mount) => HOST_BUNDLES.includes(mount.Source) || mount.Source === RUNTIME))) throw new Error("Sanctuary has an unowned possible direct poller")
     }
   }
   #vault(operation: string, input?: unknown): unknown {
@@ -1093,7 +1112,7 @@ export class SanctuaryAuthorityRootLifecycle {
       "--cap-drop=ALL", "--cap-add=DAC_OVERRIDE", "--security-opt=no-new-privileges", "--entrypoint", "/bin/sh",
       "--mount", `type=bind,src=${RUNTIME},dst=/home/ouro/.ouro-cli,readonly`,
       ...bitwarden,
-      "--mount", `type=bind,src=${BUNDLE},dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly`,
+      "--mount", `type=bind,src=${this.#hostBundle()},dst=${butlerContainerPaths(this.#imageButler(this.#transaction.targetImageId)).agentRoot},readonly`,
       "--tmpfs", "/home/ouro/.config:rw,nosuid,nodev,noexec,mode=0700",
       "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,mode=0700",
       "--env", `OURO_AUTHORITY_REMOVE_INTERLOCK=${this.#request.epochId}`,
