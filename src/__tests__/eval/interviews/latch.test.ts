@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { ProviderRuntime, ProviderTurnRequest } from "../../../heart/core"
 import { createBudgetLedger } from "../../../eval/budget"
-import { CALL_LIMITS, createInterviewLatch, guardedRuntime, RefusedCall, requestText, SESSION_CALLS, type SessionLatch } from "../../../eval/interviews/latch"
+import { BACKOFF_FROM_VERSION, CALL_LIMITS, createInterviewLatch, guardedRuntime, RATE_LIMIT_BACKOFF_MS, RefusedCall, requestText, SESSION_CALLS, SESSION_GAP_MS, sleep, type SessionLatch } from "../../../eval/interviews/latch"
 import { brandHits, scannedText } from "../../../eval/interviews/protocol"
 
 const usage = { input_tokens: 20_000, output_tokens: 1_000, reasoning_tokens: 0, total_tokens: 21_000 }
@@ -136,6 +136,40 @@ describe("the guarded runtime", () => {
     const g2 = fresh.latch.gate("job")
     await guardedRuntime({ inner: noUsage, latch: fresh.latch, ledger: fresh.ledger, pricing, gateFor: () => g2, log: () => undefined }).streamTurn(request("x"))
     expect(fresh.latch.calls()).toEqual([{ kind: "job", usage: null, credits: 0, sent: true }])
+  })
+
+  it("pre-registers version 3's backoff and session gap in one place", async () => {
+    expect(RATE_LIMIT_BACKOFF_MS).toEqual([15_000, 45_000, 120_000])
+    expect(RATE_LIMIT_BACKOFF_MS.reduce((a, b) => a + b, 0)).toBe(180_000)
+    expect(SESSION_GAP_MS).toBe(60_000)
+    expect(BACKOFF_FROM_VERSION).toBe(3)
+    await expect(sleep(0)).resolves.toBeUndefined()
+  })
+
+  it("with a backoff, sends a 429'd call again, resetting the provider's state first, and counts the retry on the session", async () => {
+    const { latch, ledger } = session()
+    let n = 0
+    const inner = runtime(async () => {
+      n += 1
+      if (n === 1) throw Object.assign(new Error("busy"), { status: 429 })
+      return { content: "ok", toolCalls: [], outputItems: [], usage }
+    })
+    const resets: unknown[] = []
+    inner.resetTurnState = (messages) => { resets.push(messages) }
+    const waits: number[] = []
+    const gate = latch.gate("job")
+    const guarded = guardedRuntime({ inner, latch, ledger, pricing, gateFor: () => gate, log: () => undefined, backoff: { delays: RATE_LIMIT_BACKOFF_MS, sleep: async (ms) => { waits.push(ms) } } })
+    expect(latch.rateLimitRetries()).toBe(0)
+    await expect(guarded.streamTurn(request("find it"))).resolves.toMatchObject({ content: "ok" })
+    expect(inner.sent).toBe(2)
+    expect(waits).toEqual([15_000])
+    // The first attempt and the retry each rebuild the provider's body from the scanned messages.
+    expect(resets).toEqual([[{ role: "user", content: "find it" }], [{ role: "user", content: "find it" }]])
+    expect(gate.calls()).toBe(1)
+    expect(latch.calls()).toEqual([{ kind: "job", usage, credits: 0.72, sent: true }])
+    expect(latch.rateLimitRetries()).toBe(1)
+    expect(ledger.stopped()).toBeUndefined()
+    expect(latch.release().premium).toBe(1)
   })
 
   it("rewrites a request with the arm's replacement list before the scan, sends the rewritten one, and gives the harness its own tool names back", async () => {

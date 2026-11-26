@@ -89,6 +89,9 @@ export function gradeU(run: SandboxRun): Verdict {
   return { passed: failed.length === 0, reason: failed.length === 0 ? null : `failed ${failed.join(", ")}`, checks }
 }
 
+/** U's container memory, the same in every arm: grading a component bundled from the shadcn kit needs more than 2g. */
+export const U_MEMORY = "4g"
+
 /** What is recorded about each U arm before any session (section 3): where it differs from the kit it stands for. */
 export const U_FIDELITY: Readonly<Record<string, string[]>> = {
   "U:all": [
@@ -101,6 +104,7 @@ export const U_FIDELITY: Readonly<Record<string, string[]>> = {
     "the system prompt is the Butler's persona and the label line, as in every U and X arm",
     "the page runs in jsdom with no-op stand-ins for browser features jsdom lacks (CSS.supports answering false, ResizeObserver, IntersectionObserver, matchMedia never matching, scrollIntoView, pointer capture, getAnimations, dialog show, showModal and close), the same for every arm; the kits' own tests run in real browsers",
     "every word of the brand pattern is rewritten wherever it appears, inside words too (hourOffset becomes hkitffset), in the kit and in node_modules; a scan then finds none left in the template",
+    `every arm's container has ${U_MEMORY} of memory, where other guests have 2g: grading the shadcn arm's reference peaks at about 2,058 MiB (ouro's about 802, mui's about 491, sampled once a second), so under 2g it thrashed past the turn's time limit and the U pilot's shadcn arm ended ungraded; the limit is the same in every arm, and the shadcn arm's checks still take longer (about 79 s to grade, against 23 s and 21 s), which the model doesn't see`,
   ],
   "U:ouro": [
     "Ouro UI at 45b39c4a632b ships as copy-in source; here its 135 components (each folder's component.json list) and the 280 files they import are one package, @kit/ui, with a barrel of 668 exports, an ES module build and type declarations, without its stylesheet or design tokens",
@@ -128,6 +132,7 @@ export const U_KIT: ProductKit = {
     turn: { product: session.product, arm: arm.arm, labelLine: labelLine(session.product, arm.label), prefix: [], userText: U_JOB_MESSAGE, followUps: [debrief] },
     // The U image (deploy/eval/u): the agent image with the three kits' templates and the checking tools.
     image: U_IMAGE,
+    memory: U_MEMORY,
   }),
   canonical: (_arm, obs) => obs,
   job: (id) => id === U_JOB ? U_CASE : undefined,

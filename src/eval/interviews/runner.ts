@@ -7,7 +7,9 @@
  *
  * A void (brand words in a request), a provider error or a crash ends the session there: it counts as `ouro` not
  * chosen first and is never rerun. A refused call (a conversation's limit) ends only that conversation, and its job
- * does not pass. A 402 or 429 stops the study.
+ * does not pass. A 402 stops the study. A 429 stops it too under versions 1 and 2; from version 3 a 429 is waited out
+ * and the call sent again (`RATE_LIMIT_BACKOFF_MS`), and only a 429 that outlasts the retries stops it. From version 3
+ * the runner also waits `SESSION_GAP_MS` between one session's end and the next one's start.
  *
  * Products plug in through `ProductKit`: X is built here, with its arms run by the neutral loop in the sandbox; H's
  * alternatives (item 4) and the U sandbox (item 6) add their own kits later, with the same session flow.
@@ -29,7 +31,7 @@ import type { BooksCore } from "./guest/books-core"
 import { messageOf } from "./guest/loop"
 import { U_ARMS } from "./guest/u/arms"
 import { argvOf, commandLine } from "./guest/operations"
-import { createInterviewLatch, guardedRuntime, SESSION_CALLS, type CallRecord, type ConversationKind, type Gate, type SessionLatch } from "./latch"
+import { BACKOFF_FROM_VERSION, createInterviewLatch, guardedRuntime, RATE_LIMIT_BACKOFF_MS, SESSION_CALLS, SESSION_GAP_MS, sleep, type CallRecord, type ConversationKind, type Gate, type SessionLatch } from "./latch"
 import type { Replacement, RewriteCounts } from "./rewrite"
 import { debriefQuestion, IDENTIFY_QUESTION, labelLine, ratingOf, type Note, type Product } from "./protocol"
 
@@ -155,6 +157,8 @@ export type InterviewDeps = {
   monthLedger?: Pick<MonthLedger, "add">
   /** The registered versions' Appendix B SHA-256s; the real ones unless a test gives its own table. */
   allocations?: Readonly<Record<string, number>>
+  /** The wait behind version 3's 429 backoff and session gap; the real one unless a test gives its own. */
+  sleep?: (ms: number) => Promise<void>
 }
 
 export type ArmRecord = {
@@ -191,6 +195,8 @@ export type SessionRecord = {
   ouroFirst: boolean
   voidedBy: string[] | null
   calls: CallRecord[]
+  /** How many times a rate-limited call was sent again (version 3 on; always 0 before). */
+  rateLimitRetries: number
   spent: Cost
 }
 
@@ -245,7 +251,7 @@ function caseOf(kit: ProductKit, cases: Map<string, Case>, session: Session): Ca
   return kit.job?.(session.job) ?? cases.get(session.job)
 }
 
-/** Runs one session. Returns its record; `stop` when the study must stop (402, 429 or a cap). */
+/** Runs one session. Returns its record; the ledger is stopped when the study must stop (402, an unretried 429 or a cap). */
 async function runSession(input: {
   session: Session
   kit: ProductKit
@@ -256,17 +262,19 @@ async function runSession(input: {
   pricing: Pricing
   runCase: RunCase
   version: number
+  sleep(ms: number): Promise<void>
   log(line: string): void
 }): Promise<SessionRecord> {
   const { session, latch } = input
   const record: SessionRecord = {
     id: session.id, product: session.product, model: session.model, job: session.job, pilot: session.pilot,
     labels: Object.fromEntries(session.arms.map((arm) => [arm.label, arm.arm])), status: "complete", ended: null, arms: [], final: null,
-    ouroFirst: false, voidedBy: null, calls: [], spent: ZERO,
+    ouroFirst: false, voidedBy: null, calls: [], rateLimitRetries: 0, spent: ZERO,
   }
   const c = caseOf(input.kit, input.cases, session)!
+  const backoff = input.version >= BACKOFF_FROM_VERSION ? { backoff: { delays: RATE_LIMIT_BACKOFF_MS, sleep: input.sleep } } : {}
   const guard = (gateFor: (request: ProviderTurnRequest) => Gate, replacements?: readonly Replacement[], rewrites?: RewriteCounts): ProviderRuntime => guardedRuntime({
-    inner: input.target.runtime, latch, ledger: input.ledger, pricing: input.pricing, gateFor, ...(replacements ? { replacements, rewrites } : {}),
+    inner: input.target.runtime, latch, ledger: input.ledger, pricing: input.pricing, gateFor, ...(replacements ? { replacements, rewrites } : {}), ...backoff,
     log: (entry) => input.log(JSON.stringify({ session: session.id, preregistrationVersion: input.version, ...entry })),
   })
   const end = (status: SessionStatus, why: string): void => {
@@ -318,6 +326,7 @@ async function runSession(input: {
   record.ouroFirst = record.status === "complete" && record.final?.choice?.first === ouroLabel
   record.voidedBy = latch.voided()
   record.calls = latch.calls()
+  record.rateLimitRetries = latch.rateLimitRetries()
   record.spent = latch.release()
   emitNervesEvent({ component: "eval", event: "eval.interview_session_end", message: "finished an interview session", meta: { session: session.id, status: record.status, calls: record.calls.length } })
   return record
@@ -329,7 +338,7 @@ export function summarizeSessions(records: SessionRecord[], spent: Cost, stopped
     const passed = r.arms.filter((arm) => arm.passed).length
     const usage = r.calls.reduce((sum, call) => ({ input: sum.input + (call.usage?.input_tokens ?? 0), output: sum.output + (call.usage?.output_tokens ?? 0) }), { input: 0, output: 0 })
     const rewrites = r.arms.map((arm) => `${arm.arm}:${Object.entries(arm.rewrites).map(([tier, n]) => `${tier} ${n}`).join(",") || "none"}`).join(";")
-    return `${r.id} ${r.status} ouro-first=${r.ouroFirst ? "yes" : "no"} jobs-passed=${passed}/${r.arms.length} calls=${r.calls.length} tokens-in=${usage.input} tokens-out=${usage.output} credits=${r.spent.credits.toFixed(3)} premium=${r.spent.premium}${rewrites ? ` rewrites=${rewrites}` : ""}`
+    return `${r.id} ${r.status} ouro-first=${r.ouroFirst ? "yes" : "no"} jobs-passed=${passed}/${r.arms.length} calls=${r.calls.length} tokens-in=${usage.input} tokens-out=${usage.output} credits=${r.spent.credits.toFixed(3)} premium=${r.spent.premium} rate-limit-retries=${r.rateLimitRetries}${rewrites ? ` rewrites=${rewrites}` : ""}`
   })
   return [...lines, `spent: ${spent.credits.toFixed(3)} credits, ${spent.premium} premium requests${stopped ? `; stopped: ${stopped}` : ""}`].join("\n")
 }
@@ -391,6 +400,9 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
 
   const records: SessionRecord[] = []
   let stopped: string | null = null
+  const wait = deps.sleep ?? sleep
+  const paced = version >= BACKOFF_FROM_VERSION
+  let ranOne = false
   const writeReport = (): void => {
     const totals = ledger.totals()
     deps.writeReport(args.output, {
@@ -405,11 +417,16 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
     const notRun = (why: string): SessionRecord => ({
       id: session.id, product: session.product, model: session.model, job: session.job, pilot: session.pilot,
       labels: Object.fromEntries(session.arms.map((arm) => [arm.label, arm.arm])), status: "not-run", ended: why, arms: [], final: null,
-      ouroFirst: false, voidedBy: null, calls: [], spent: ZERO,
+      ouroFirst: false, voidedBy: null, calls: [], rateLimitRetries: 0, spent: ZERO,
     })
     if (stopped) {
       records.push(notRun(`the study stopped: ${stopped}`))
       continue
+    }
+    // From version 3, a pause between one session's end and the next one's start, so a run doesn't hammer the account.
+    if (paced && ranOne) {
+      emitNervesEvent({ component: "eval", event: "eval.interview_session_gap", message: "waiting between interview sessions", meta: { session: session.id, gapMs: SESSION_GAP_MS } })
+      await wait(SESSION_GAP_MS)
     }
     const latch = interviewLatch.reserve(session.id, SESSION_CALLS)
     if ("refused" in latch) {
@@ -418,12 +435,13 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
       continue
     }
     deps.started.add(startedKey(version, session.id))
+    ranOne = true
     let record: SessionRecord
     try {
-      record = await runSession({ session, kit: deps.kits[session.product]!, cases, latch, target, ledger, pricing, runCase: deps.runCase, version, log })
+      record = await runSession({ session, kit: deps.kits[session.product]!, cases, latch, target, ledger, pricing, runCase: deps.runCase, version, sleep: wait, log })
     } catch (error) {
       // Nothing that goes wrong in one session loses the sessions already run, or holds its reservation.
-      record = { ...notRun(messageOf(error)), status: "crashed", voidedBy: latch.voided(), calls: latch.calls(), spent: latch.release() }
+      record = { ...notRun(messageOf(error)), status: "crashed", voidedBy: latch.voided(), calls: latch.calls(), rateLimitRetries: latch.rateLimitRetries(), spent: latch.release() }
     }
     records.push(record)
     // The month ledger only hears what the session spent: it never blocks or stops the study, whose pre-registered
