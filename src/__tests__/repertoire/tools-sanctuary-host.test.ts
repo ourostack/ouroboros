@@ -111,6 +111,16 @@ describe("S5 host command contract", () => {
     vi.setSystemTime(now + 300_001)
     expect((await preflightToolCall(name, argumentsValue() as any, f.ctx)).kind).toBe("rejected_before_handler")
   })
+  it("names each missing argument before asking the root authority", async () => {
+    const f = await fixture()
+    await f.activate()
+    const result = await preflightToolCall(name, {} as any, f.ctx)
+    expect(result.kind).toBe("rejected_before_handler")
+    const text = (result as { text: string }).text
+    expect(text).toContain("(code: invalid-arguments)")
+    for (const field of rootHostToolDefinition.tool.function.parameters!.required as string[]) expect(text).toContain(field)
+    expect((await preflightToolCall(name, argumentsValue() as any, f.ctx)).kind).toBe("ready")
+  })
   it("rejects a selected call when expired transport health cannot be refreshed", async () => {
     const f = await fixture()
     await f.activate()
