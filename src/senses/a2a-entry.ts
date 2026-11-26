@@ -19,6 +19,7 @@ import { configureDaemonRuntimeLogger } from "../heart/daemon/runtime-logging"
 import { emitNervesEvent } from "../nerves/runtime"
 import { A2A_PRINCIPAL_PROFILE_ID } from "../a2a/delegated-command"
 import { getAgentRoot } from "../heart/identity"
+import { isButlerAgent } from "../heart/butler-agent"
 
 configureDaemonRuntimeLogger("a2a")
 emitNervesEvent({
@@ -89,7 +90,7 @@ Promise.all([
       identity,
       // The Butler accepts delegated commands from explicitly granted peers; each
       // one is announced in the owner's own Telegram chat before it runs (never through the owner route, never held).
-      ...(agentName === "sanctuary" ? {
+      ...(isButlerAgent(agentName) ? {
         delegation: {
           principalProfileId: A2A_PRINCIPAL_PROFILE_ID,
           agentRoot: getAgentRoot(agentName),
