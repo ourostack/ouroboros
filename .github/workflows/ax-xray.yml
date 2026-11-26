@@ -105,7 +105,7 @@ jobs:
       - name: Ouro AX X-ray
         run: |
           mkdir -p xray
-          node lib/ouro-ui/registry/ouro/ax/xray.ts \
+          node src/ouro-ax/xray.ts \
             --cli "node dist/heart/daemon/ouro-entry.js" --name ouro \
             --inventory inventory.json \
             --conformance \
@@ -132,7 +132,7 @@ jobs:
       - name: Ouro AX X-ray over mcp-serve
         run: |
           mkdir -p xray-mcp
-          node lib/ouro-ui/registry/ouro/ax/xray.ts \
+          node src/ouro-ax/xray.ts \
             --mcp "node dist/heart/daemon/ouro-entry.js mcp-serve --agent ax-xray" --name ouro \
             --inventory ax-census/inventory.json \
             --conformance \
@@ -159,7 +159,7 @@ jobs:
           # Every tool the census found declared, weak cards included: the census reports a weak card, and the
           # X-ray's inventory claim is about which tools are registered, not how well their cards read.
           node -e "const i = require('./ax-census/inventory.json'), c = require('./ax-census/census.json'); const weak = c.products.flatMap((p) => p.weak).filter((d) => d.kind === 'tool').map((d) => d.id.slice('tool:'.length)); process.stdout.write(JSON.stringify({ tools: [...(i.tool ?? []), ...weak] }))" > xray-tools/inventory.json
-          node lib/ouro-ui/registry/ouro/ax/xray.ts \
+          node src/ouro-ax/xray.ts \
             --tools "node .github/scripts/ax-tools-serve.mjs" --name ouro \
             --inventory xray-tools/inventory.json \
             --conformance \

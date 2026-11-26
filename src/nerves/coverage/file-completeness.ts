@@ -169,6 +169,8 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // Ouro AX v1.3.445's ax files, vendored unchanged for the blind interviews' `ouro` X arm; the arm that loads them
   // (eval/interviews/guest/arms.ts) emits its own events.
   "eval/interviews/guest/ax/",
+  // The Ouro AX kit, vendored from Ouro UI through upstream-sources.lock.json; the CLI code that uses it emits the events.
+  "ouro-ax/",
 ]
 
 function isDispatchExempt(filePath: string): boolean {

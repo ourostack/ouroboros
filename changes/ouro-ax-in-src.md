@@ -1,0 +1,1 @@
+The Ouro AX kit the harness vendors from Ouro UI now lives in `src/ouro-ax/` instead of `lib/ouro-ui/`, so the ouro CLI's own code can import it and compile it into the package. Ouro Current keeps updating it there each release. Nothing the CLI does changes yet.
