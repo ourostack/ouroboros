@@ -3,6 +3,7 @@ import * as net from "net"
 import * as os from "os"
 import * as path from "path"
 import { randomUUID } from "node:crypto"
+import { StringDecoder } from "node:string_decoder"
 import { getAgentBundlesRoot, getAgentRoot, getRepoRoot, setAgentName } from "../identity"
 import { runAgentStateRetention } from "./state-retention"
 import {
@@ -893,6 +894,21 @@ const STATE_RETENTION_INTERVAL_MS = 24 * 60 * 60_000
 const UPDATER_AGENT_WATCH_FIRST_DELAY_MS = 5 * 60_000
 const UPDATER_AGENT_WATCH_INTERVAL_MS = 60 * 60_000
 
+/** The most one socket command may hold; a bigger one is refused rather than read on. */
+export const MAX_SOCKET_COMMAND_BYTES = 1024 * 1024
+
+/** Whether the text read so far is a whole command: it has the newline clients end with, or is JSON on its own. */
+export function socketCommandComplete(raw: string): boolean {
+  if (raw.includes("\n")) return true
+  if (!raw.trimEnd().endsWith("}")) return false
+  try {
+    JSON.parse(raw)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export class OuroDaemon {
   private readonly socketPath: string
   private readonly processManager: DaemonProcessManagerLike
@@ -1298,11 +1314,24 @@ export class OuroDaemon {
         /* v8 ignore stop */
       }
 
-      connection.on("data", (chunk) => {
-        raw += chunk.toString("utf-8")
-        void flushResponse()
+      // One write can arrive in several chunks (macOS cuts a unix socket write at 8 KiB), and a chunk can end inside
+      // a UTF-8 character, so the command is decoded as a stream and read only once it is whole.
+      const decoder = new StringDecoder("utf8")
+      let bytes = 0
+      connection.on("data", (chunk: Buffer) => {
+        if (responded) return
+        bytes += chunk.length
+        raw += decoder.write(chunk)
+        if (bytes > MAX_SOCKET_COMMAND_BYTES) {
+          responded = true
+          emitNervesEvent({ level: "warn", component: "daemon", event: "daemon.command_too_large", message: "socket command over the size cap refused", meta: { bytes, cap: MAX_SOCKET_COMMAND_BYTES } })
+          connection.end(JSON.stringify({ ok: false, error: `The daemon command is larger than ${MAX_SOCKET_COMMAND_BYTES} bytes.` } satisfies DaemonResponse))
+          return
+        }
+        if (socketCommandComplete(raw)) void flushResponse()
       })
       connection.on("end", () => {
+        raw += decoder.end()
         void flushResponse()
       })
     })

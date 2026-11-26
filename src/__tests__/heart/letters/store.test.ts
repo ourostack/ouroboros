@@ -53,7 +53,32 @@ describe("LetterStore", () => {
     store.create(letter("A"))
     const file = path.join(dir, "ltr_A.jsonl")
     expect(fs.readFileSync(file, "utf8")).toBe(`${JSON.stringify(letter("A"))}\n`)
-    expect(synced).toEqual([file, dir])
+    // The new state/ and state/letters/ folders are synced into their parents first.
+    expect(synced).toEqual([path.dirname(dir), path.dirname(path.dirname(dir)), file, dir])
+  })
+
+  it("syncs only the folder when it already exists", () => {
+    const dir = tempDir()
+    fs.mkdirSync(dir, { recursive: true })
+    const { io, synced } = recordingIo()
+    new LetterStore(dir, io).create(letter("A"))
+    expect(synced).toEqual([path.join(dir, "ltr_A.jsonl"), dir])
+  })
+
+  it("discards a failed create's file and says when one is left", () => {
+    const dir = tempDir()
+    const { io, synced } = recordingIo()
+    const store = new LetterStore(dir, io)
+    store.create(letter("A"))
+    synced.length = 0
+    expect(store.discard("ltr_A")).toBe(true)
+    expect(fs.existsSync(path.join(dir, "ltr_A.jsonl"))).toBe(false)
+    expect(synced).toEqual([dir])
+    expect(store.discard("ltr_A")).toBe(true)
+    store.create(letter("B"))
+    const stuck = new LetterStore(dir, { ...fs, unlinkSync: () => { throw new Error("EPERM") } })
+    expect(stuck.discard("ltr_B")).toBe(false)
+    expect(fs.existsSync(path.join(dir, "ltr_B.jsonl"))).toBe(true)
   })
 
   it("refuses to create a letter whose file already exists", () => {
@@ -145,7 +170,8 @@ describe("LetterStore", () => {
     const closedDir = path.join(dir, "closed", "2027-02")
     expect(fs.existsSync(path.join(dir, "ltr_A.jsonl"))).toBe(false)
     expect(fs.existsSync(path.join(closedDir, "ltr_A.jsonl"))).toBe(true)
-    expect(synced).toEqual([closedDir, dir])
+    // closed/ and closed/2027-02/ are new, so their parents are synced before the rename.
+    expect(synced).toEqual([path.join(dir, "closed"), dir, closedDir, dir])
     expect(store.read("ltr_A")).toEqual({ letter: letter("A"), events: [withdrawn], closed: true })
   })
 
@@ -172,7 +198,7 @@ describe("LetterStore", () => {
     expect(store.readNextCode()).toBe(1)
     store.writeNextCode(8)
     expect(store.readNextCode()).toBe(8)
-    expect(synced).toEqual([path.join(dir, "next-code.tmp"), dir])
+    expect(synced).toEqual([path.dirname(dir), path.dirname(path.dirname(dir)), path.join(dir, "next-code.tmp"), dir])
     fs.writeFileSync(path.join(dir, "next-code.tmp"), "99")
     expect(store.readNextCode()).toBe(8)
     fs.writeFileSync(path.join(dir, "next-code"), "garbage")
