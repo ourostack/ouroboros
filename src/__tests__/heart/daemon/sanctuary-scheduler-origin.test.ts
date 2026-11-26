@@ -32,7 +32,7 @@ describe("Sanctuary scheduler origin", () => {
     fs.writeFileSync(file, "value")
     fs.symlinkSync(file, link)
     const marker = { schemaVersion: "sanctuary-acceptance-marker-v1" as const, label: "unit-16f-cron-fingerprint", scenarioHandleDigest, startedAt: "2026-08-21T07:14:00.000Z" }
-    const deps = defaultSanctuarySchedulerOriginDeps(root, () => marker)
+    const deps = defaultSanctuarySchedulerOriginDeps("sanctuary", root, () => marker)
     try {
       expect(deps.now()).toBeInstanceOf(Date)
       expect(deps.readFile(file)).toBe("value")
@@ -42,6 +42,7 @@ describe("Sanctuary scheduler origin", () => {
       expect(deps.randomId()).toMatch(/^[0-9a-f-]{36}$/u)
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
     expect(() => defaultSanctuarySchedulerOriginDeps().marker()).not.toThrow()
+    expect(() => defaultSanctuarySchedulerOriginDeps("butler").marker()).not.toThrow()
   })
   it("mints and verifies a slot-bound command only for a live direct Supercronic child", () => {
     const command = createSanctuarySchedulerFireCommand({ agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron" }, {
@@ -60,9 +61,10 @@ describe("Sanctuary scheduler origin", () => {
   })
 
   it.each(["butler", "sanctuary"])("mints and verifies a command for the Butler named %s, and none for another agent", (agent) => {
+    const cmdline = parentCmdline.replace("sanctuary.crontab", `${agent}.crontab`)
     const deps = {
       platform: "linux" as const, pid: 101, ppid: 42, now: () => new Date("2026-08-21T07:16:01.000Z"),
-      readFile: (file: string) => file === "/proc/101/stat" ? procStat(101, 42, "9001") : file === "/proc/42/stat" ? procStat(42, 1, "8001") : parentCmdline,
+      readFile: (file: string) => file === "/proc/101/stat" ? procStat(101, 42, "9001") : file === "/proc/42/stat" ? procStat(42, 1, "8001") : cmdline,
       readLink: () => "/usr/local/bin/supercronic", identityKey: () => identityKey, marker: () => null,
       randomId: () => "11111111-1111-4111-8111-111111111111",
     }
@@ -72,6 +74,8 @@ describe("Sanctuary scheduler origin", () => {
       childPid: 42, identityKey, now: () => new Date("2026-08-21T07:16:02.000Z"), readFile: deps.readFile, readLink: deps.readLink, scenarioHandleDigest: null,
     })).toEqual(expect.objectContaining({ slot }))
     expect(createSanctuarySchedulerFireCommand({ agent: "slugger", habitName: "sanctuary-health", trigger: "cron" }, deps)).toBeNull()
+    const otherName = agent === "butler" ? "sanctuary" : "butler"
+    expect(createSanctuarySchedulerFireCommand({ agent: otherName, habitName: "sanctuary-health", trigger: "cron" }, deps)).toBeNull()
     expect(() => verifySanctuarySchedulerFireCommand({ ...command!, agent: "slugger" as never }, {
       childPid: 42, identityKey, now: () => new Date("2026-08-21T07:16:02.000Z"), readFile: deps.readFile, readLink: deps.readLink, scenarioHandleDigest: null,
     })).toThrow("scheduler fire slot or binding is invalid")
