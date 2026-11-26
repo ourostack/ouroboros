@@ -108,7 +108,7 @@
           "required": true
         }
       ],
-      "output": "{ outcome, state, letter, events }"
+      "output": "{ outcome, state, seen, letter, events }"
     },
     {
       "name": "mailbox wait",

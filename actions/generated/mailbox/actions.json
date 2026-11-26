@@ -330,6 +330,12 @@
           "description": "waiting, answered, withdrawn or expired; Ouro derives it from the letter's events.",
           "kind": "string"
         },
+        "seen": {
+          "label": "Seen",
+          "description": "When the person read a waiting letter, such as \"seen 2h ago, not answered\", so it isn't asked again.",
+          "optional": true,
+          "kind": "string"
+        },
         "letter": {
           "label": "Letter",
           "description": "The letter as filed, as JSON.",

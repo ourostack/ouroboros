@@ -135,6 +135,7 @@ export const mailboxRead = defineAction({
   output: {
     outcome: outcome("done, when the letter was read."),
     state,
+    seen: field.string({ label: "Seen", description: "When the person read a waiting letter, such as \"seen 2h ago, not answered\", so it isn't asked again.", optional: true }),
     letter: field.string({ label: "Letter", description: "The letter as filed, as JSON." }),
     events: field.string({ label: "Events", description: "What has happened to it, one event per line, oldest first: time and what happened." }),
   },
