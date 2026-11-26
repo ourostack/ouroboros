@@ -5,6 +5,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { machineOwnerUsername, type FriendRecord } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { addAnsweredGuid, answerProblem, deliveryFloor, noteAnswerRefused, parseAnswer, readAnsweredGuids, type ServerMessage } from "./answer-reader"
 import { checkLetterInput, checkWithdrawReason, newLetterId, type Letter, type LetterEvent, type LetterKind } from "./letter"
 import { ownerFriendIds, readAnsweringHandles } from "./answering"
 import { renderLetter } from "./render"
@@ -66,6 +67,11 @@ export interface LettersCommand {
 }
 
 export type LetterResult = Record<string, unknown> & { outcome: string }
+
+/** What recordAnswer did with one message. */
+export type AnswerOutcome =
+  | { recorded: true; id: string; code: string; subject: string; option: string; label: string; note?: string; already?: true }
+  | { recorded: false; reason: string }
 
 /** Closed letters move to closed/YYYY-MM/ this long after they close (design §3.2); they are never deleted. */
 export const ROLL_AFTER_MS = 90 * 24 * 60 * 60 * 1000
@@ -176,7 +182,7 @@ export class LettersWriter {
   }
 
   /** Runs a write after every write queued before it; a failed write doesn't stop the ones after it. */
-  private serial(letters: AgentLetters, work: () => Promise<LetterResult>): Promise<LetterResult> {
+  private serial<T>(letters: AgentLetters, work: () => Promise<T>): Promise<T> {
     const next = letters.queue.then(work)
     letters.queue = next.catch(() => undefined)
     return next
@@ -248,6 +254,63 @@ export class LettersWriter {
     // The agent hears about each new letter once; a dedupe that refiles one says nothing new.
     this.deps.onFiled?.(letters.agent, letter).catch(() => undefined)
     return { outcome: "needs-human", id: letter.id, code: letter.code, state: "waiting", message: `Filed ${letter.code}, ${letter.subject}. It waits for the person's answer.` }
+  }
+
+  /**
+   * Records the person's answer from the BlueBubbles server's own copy of their message. No door reaches this: only
+   * the daemon calls it, after fetching the message by GUID. A message that isn't an answer, or doesn't answer its
+   * letter, records nothing and says so with the reason, for the log.
+   */
+  /** Whether the agent's bundle is on this machine, checked before anything is fetched for it. */
+  hasAgent(agent: string): boolean {
+    return AGENT_NAME.test(agent) && fs.existsSync(path.join(this.deps.bundlesRoot, `${agent}.ouro`))
+  }
+
+  /**
+   * Records the person's answer from the server's own copy of their message, when it is one. `sentAt` reads the
+   * server's time for the letter's sent message, so the delivery floor is on the server's clock. Past `deadlineAt`
+   * (epoch ms) nothing is recorded, so a caller that gave up waiting never has an answer recorded behind its back.
+   * A message that already answered this letter answers `already`, so a replay of it is no chat turn either.
+   */
+  recordAnswer(
+    agent: string,
+    message: ServerMessage,
+    hostTrust: "shared-apple-id" | "separate",
+    sentAt?: (messageGuid: string) => Promise<number | undefined>,
+    deadlineAt?: number,
+  ): Promise<AnswerOutcome> {
+    const answer = parseAnswer(message.text)
+    if (!answer) return Promise.resolve({ recorded: false, reason: "not-answer-form" })
+    const letters = this.open(agent, false)
+    return this.serial(letters, async (): Promise<AnswerOutcome> => {
+      const entry = letters.index.get(answer.code)
+      const answered = readAnsweredGuids(letters.store.dir)
+      const recorded = entry?.events.findLast((event) => event.t === "answered")
+      if (entry && recorded?.t === "answered" && answered.get(message.guid) === entry.letter.id) {
+        const { letter } = entry
+        const label = letter.options.find((option) => option.id === recorded.option)!.label
+        return { recorded: true, already: true, id: letter.id, code: letter.code, subject: letter.subject, option: recorded.option, label, ...(recorded.note ? { note: recorded.note } : {}) }
+      }
+      const floor = entry ? await deliveryFloor(entry, sentAt) : null
+      const late = deadlineAt !== undefined && this.now().getTime() > deadlineAt
+      const problem = !entry ? "no-such-letter" : late ? "past-deadline" : answerProblem(entry, message, answer, answered, floor)
+      if (problem) {
+        noteAnswerRefused(problem)
+        return { recorded: false, reason: problem }
+      }
+      const { letter } = entry!
+      const at = this.now().toISOString()
+      // The GUID is spent first, so a crash between the two lines can lose this answer but never record it twice.
+      addAnsweredGuid(letters.store.dir, message.guid, letter.id, at)
+      this.addEvent(letters, letter.id, {
+        t: "answered", at, option: answer.option, ...(answer.note ? { note: answer.note } : {}), via: "chat",
+        evidence: { friendId: letter.to, channel: "bluebubbles", chatGuid: message.chatGuids[0], messageGuid: message.guid, dateCreated: new Date(message.dateCreated!).toISOString() },
+        hostTrust,
+      })
+      const label = letter.options.find((option) => option.id === answer.option)!.label
+      emitNervesEvent({ component: "daemon", event: "letters.answer_recorded", message: "a person's answer was recorded", meta: { code: letter.code, hostTrust } })
+      return { recorded: true, id: letter.id, code: letter.code, subject: letter.subject, option: answer.option, label, ...(answer.note ? { note: answer.note } : {}) }
+    })
   }
 
   private list(letters: AgentLetters, input: Record<string, unknown>): LetterResult {
