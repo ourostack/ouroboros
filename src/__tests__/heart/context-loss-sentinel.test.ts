@@ -728,6 +728,7 @@ describe("context-loss Sentinel core", () => {
     const agentRoot = makeAgentRoot()
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "daemon_health",
+      bundleDirtyGraceMs: 0,
       now: () => new Date("2026-06-08T20:11:00.000Z"),
       createReceiptId: () => "sentinel-health-backslash-sibling-dirty",
       providerVisibility: providerVisibility(),
@@ -806,6 +807,7 @@ describe("context-loss Sentinel core", () => {
     const agentRoot = makeAgentRoot()
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "daemon_health",
+      bundleDirtyGraceMs: 0,
       now: () => new Date("2026-06-08T20:11:00.000Z"),
       createReceiptId: () => "sentinel-health-real-dirty",
       providerVisibility: providerVisibility(),
@@ -829,6 +831,121 @@ describe("context-loss Sentinel core", () => {
       meta: {
         dirtyEntries: [" M agent.json"],
       },
+    })
+  })
+
+  it("treats fresh runtime writes as in-flight on daemon-health refreshes", async () => {
+    const agentRoot = makeAgentRoot()
+    const now = new Date("2026-06-08T20:11:00.000Z")
+    fs.mkdirSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts"), { recursive: true })
+    const receiptPath = path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "heartbeat-1.json")
+    fs.writeFileSync(receiptPath, "{}\n", "utf-8")
+    const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000)
+    fs.utimesSync(receiptPath, fiveMinutesAgo, fiveMinutesAgo)
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => now,
+      createReceiptId: () => "sentinel-health-in-flight",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "?? arc/flight-recorder/habit-receipts/heartbeat-1.json" }),
+    })
+
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "pass",
+      verdictImpact: "none",
+      summary: "bundle has 1 fresh uncommitted change waiting for the next sync",
+      meta: { inFlightEntries: 1 },
+    })
+  })
+
+  it("warns about uncommitted bundle changes once they outlive the sync grace window", async () => {
+    const agentRoot = makeAgentRoot()
+    const now = new Date("2026-06-08T20:11:00.000Z")
+    const freshPath = path.join(agentRoot, "fresh.md")
+    const stalePath = path.join(agentRoot, "stale.md")
+    fs.writeFileSync(freshPath, "fresh\n", "utf-8")
+    fs.writeFileSync(stalePath, "stale\n", "utf-8")
+    const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000)
+    const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000)
+    fs.utimesSync(freshPath, tenMinutesAgo, tenMinutesAgo)
+    fs.utimesSync(stalePath, twoHoursAgo, twoHoursAgo)
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => now,
+      createReceiptId: () => "sentinel-health-stale",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: " M fresh.md\n M stale.md" }),
+    })
+
+    expect(receipt.verdict).toBe("watch")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      summary: "bundle has 1 uncommitted git status entry",
+      meta: { dirtyEntries: [" M stale.md"], inFlightEntries: 1 },
+    })
+  })
+
+  it("dates a deletion by its directory and keeps undatable changes visible", async () => {
+    const agentRoot = makeAgentRoot()
+    const now = new Date("2026-06-08T20:11:00.000Z")
+    fs.mkdirSync(path.join(agentRoot, "notes"), { recursive: true })
+    const minuteAgo = new Date(now.getTime() - 60 * 1000)
+    fs.utimesSync(path.join(agentRoot, "notes"), minuteAgo, minuteAgo)
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => now,
+      createReceiptId: () => "sentinel-health-deletions",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: " D notes/gone.md\n D missing-dir/gone.md" }),
+    })
+
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      meta: { dirtyEntries: [" D missing-dir/gone.md"], inFlightEntries: 1 },
+    })
+  })
+
+  it("dates a fresh rename by its oldest side against the real clock", async () => {
+    const agentRoot = makeAgentRoot()
+    fs.writeFileSync(path.join(agentRoot, "renamed.md"), "moved\n", "utf-8")
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      createReceiptId: () => "sentinel-health-fresh-rename",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "R  original.md -> renamed.md\n?? renamed.md" }),
+    })
+
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "pass",
+      summary: "bundle has 2 fresh uncommitted changes waiting for the next sync",
+      meta: { inFlightEntries: 2 },
+    })
+  })
+
+  it("keeps manual refresh strict about fresh bundle changes", async () => {
+    const agentRoot = makeAgentRoot()
+    const freshPath = path.join(agentRoot, "fresh.md")
+    fs.writeFileSync(freshPath, "fresh\n", "utf-8")
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "manual_cli",
+      createReceiptId: () => "sentinel-manual-fresh",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: " M fresh.md" }),
+    })
+
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      meta: { dirtyEntries: [" M fresh.md"] },
     })
   })
 
@@ -989,6 +1106,7 @@ describe("context-loss Sentinel core", () => {
 
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "daemon_health",
+      bundleDirtyGraceMs: 0,
       now: () => new Date("2026-06-08T20:17:00.000Z"),
       createReceiptId: () => "sentinel-mixed-replacement-visible",
       providerVisibility: providerVisibility(),
@@ -1054,6 +1172,7 @@ describe("context-loss Sentinel core", () => {
 
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "daemon_health",
+      bundleDirtyGraceMs: 0,
       now: () => new Date("2026-06-08T20:18:30.000Z"),
       createReceiptId: () => "sentinel-prefix-change-visible",
       providerVisibility: providerVisibility(),
@@ -1097,6 +1216,7 @@ describe("context-loss Sentinel core", () => {
 
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "daemon_health",
+      bundleDirtyGraceMs: 0,
       now: () => new Date("2026-06-08T20:19:00.000Z"),
       createReceiptId: () => "sentinel-staged-event-visible",
       providerVisibility: providerVisibility(),
@@ -1141,6 +1261,7 @@ describe("context-loss Sentinel core", () => {
 
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "daemon_health",
+      bundleDirtyGraceMs: 0,
       now: () => new Date("2026-06-08T20:22:00.000Z"),
       createReceiptId: () => "sentinel-ordinary-recorder-dirty",
       providerVisibility: providerVisibility(),
@@ -1244,6 +1365,7 @@ describe("context-loss Sentinel core", () => {
 
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "daemon_health",
+      bundleDirtyGraceMs: 0,
       now: () => new Date("2026-06-08T20:31:00.000Z"),
       createReceiptId: () => "sentinel-unproven-recorder-dirt",
       providerVisibility: providerVisibility(),
@@ -1287,6 +1409,7 @@ describe("context-loss Sentinel core", () => {
 
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "daemon_health",
+      bundleDirtyGraceMs: 0,
       now: () => new Date("2026-06-08T20:32:00.000Z"),
       createReceiptId: () => "sentinel-latest-delete-untracked-visible",
       providerVisibility: providerVisibility(),
@@ -1330,6 +1453,7 @@ describe("context-loss Sentinel core", () => {
 
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "daemon_health",
+      bundleDirtyGraceMs: 0,
       now: () => new Date("2026-06-08T20:34:00.000Z"),
       createReceiptId: () => "sentinel-latest-missing-event-visible",
       providerVisibility: providerVisibility(),
@@ -1369,6 +1493,7 @@ describe("context-loss Sentinel core", () => {
 
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "daemon_health",
+      bundleDirtyGraceMs: 0,
       now: () => new Date("2026-06-08T20:34:20.000Z"),
       createReceiptId: () => "sentinel-latest-no-head-visible",
       providerVisibility: providerVisibility(),
@@ -1412,6 +1537,7 @@ describe("context-loss Sentinel core", () => {
 
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "daemon_health",
+      bundleDirtyGraceMs: 0,
       now: () => new Date("2026-06-08T20:34:40.000Z"),
       createReceiptId: () => "sentinel-latest-blocked-wrong-event-visible",
       providerVisibility: providerVisibility(),
@@ -1452,6 +1578,7 @@ describe("context-loss Sentinel core", () => {
 
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "daemon_health",
+      bundleDirtyGraceMs: 0,
       now: () => new Date("2026-06-08T20:34:55.000Z"),
       createReceiptId: () => "sentinel-latest-cleared-wrong-event-visible",
       providerVisibility: providerVisibility(),
@@ -1493,6 +1620,7 @@ describe("context-loss Sentinel core", () => {
 
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "daemon_health",
+      bundleDirtyGraceMs: 0,
       now: () => new Date("2026-06-08T20:36:00.000Z"),
       createReceiptId: () => "sentinel-latest-bad-head-visible",
       providerVisibility: providerVisibility(),
@@ -1539,6 +1667,7 @@ describe("context-loss Sentinel core", () => {
 
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "daemon_health",
+      bundleDirtyGraceMs: 0,
       now: () => new Date("2026-06-08T20:38:00.000Z"),
       createReceiptId: () => "sentinel-latest-material-visible",
       providerVisibility: providerVisibility(),
@@ -3036,6 +3165,7 @@ describe("context-loss Sentinel core", () => {
     const agentRoot = makeAgentRoot()
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "daemon_health",
+      bundleDirtyGraceMs: 0,
       now: () => new Date("2026-06-08T20:19:30.000Z"),
       createReceiptId: () => "sentinel-warn-sense",
       providerVisibility: providerVisibility(),
@@ -3493,6 +3623,7 @@ describe("context-loss Sentinel core", () => {
 
     const recovered = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "daemon_health",
+      bundleDirtyGraceMs: 0,
       now: () => new Date("2026-06-08T20:52:00.000Z"),
       createReceiptId: () => "sentinel-watch-clear-recovered",
       providerVisibility: providerVisibility(),

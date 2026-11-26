@@ -123,6 +123,9 @@ export interface RefreshContextLossSentinelOptions {
   providerVisibility?: AgentProviderVisibility
   daemonHealthResults?: DaemonHealthResult[]
   gitStatus?: () => ContextLossSentinelGitStatus
+  /** On daemon-health refreshes, uncommitted bundle changes younger than this are in-flight
+   * runtime writes that the next bundle sync commits, not lost state. Defaults to 60 minutes. */
+  bundleDirtyGraceMs?: number
   delayBeforeWriteMs?: number
   lockTimeoutMs?: number
   homeDir?: string
@@ -134,6 +137,10 @@ export interface ReadContextLossSentinelViewOptions {
 
 const CONTEXT_LOSS_SENTINEL_RECEIPT_FILE_LIMIT = 512
 const CONTEXT_LOSS_SENTINEL_GIT_STATUS_TIMEOUT_MS = 5_000
+// The agent writes flight-recorder events, habit receipts and diary entries between bundle syncs,
+// so a daemon-health refresh almost always sees a few fresh uncommitted files. Only changes that
+// have sat unsynced past this window put context at risk.
+const CONTEXT_LOSS_SENTINEL_BUNDLE_DIRTY_GRACE_MS = 60 * 60 * 1000
 
 interface ContextLossSentinelOrder {
   generatedAt: string
@@ -1018,9 +1025,36 @@ function isContextLossSentinelOwnedGitStatusEntry(
     || isContextLossSentinelFlightRecorderGitStatusEntry(options.agentRoot, entry)
 }
 
+function pathMtimeMs(filePath: string): number | null {
+  try {
+    return fs.lstatSync(filePath).mtimeMs
+  } catch {
+    return null
+  }
+}
+
+/** Newest-change time for a git status entry: each path's own mtime, or its parent directory's
+ * when the path is gone (a deletion). Null when nothing on disk dates the change. */
+function gitStatusEntryChangedAtMs(agentRoot: string, entry: string): number | null {
+  let oldest: number | null = null
+  for (const entryPath of gitStatusPaths(entry)) {
+    const absolute = path.join(agentRoot, entryPath.replace(/\/$/, ""))
+    const changedAt = pathMtimeMs(absolute) ?? pathMtimeMs(path.dirname(absolute))
+    if (changedAt === null) return null
+    oldest = oldest === null ? changedAt : Math.min(oldest, changedAt)
+  }
+  return oldest
+}
+
+function isInFlightGitStatusEntry(agentRoot: string, entry: string, nowMs: number, graceMs: number): boolean {
+  if (graceMs <= 0) return false
+  const changedAt = gitStatusEntryChangedAtMs(agentRoot, entry)
+  return changedAt !== null && nowMs - changedAt < graceMs
+}
+
 function bundleSignal(
   status: ContextLossSentinelGitStatus,
-  options: { ignoreSentinelDirtyEntries?: boolean; agentRoot: string },
+  options: { ignoreSentinelDirtyEntries?: boolean; agentRoot: string; inFlightGrace?: { nowMs: number; graceMs: number } },
 ): ContextLossSentinelSignal {
   const gitStatusCommand = "git status --porcelain=v1 -uall"
   if (!status.ok) {
@@ -1037,17 +1071,34 @@ function bundleSignal(
   }
   const dirtyEntries = gitStatusEntries(status.porcelain)
     .filter((entry) => !(options.ignoreSentinelDirtyEntries && isContextLossSentinelOwnedGitStatusEntry(entry, options)))
-  if (dirtyEntries.length > 0) {
+  const grace = options.inFlightGrace
+  const inFlightEntries = grace
+    ? dirtyEntries.filter((entry) => isInFlightGitStatusEntry(options.agentRoot, entry, grace.nowMs, grace.graceMs))
+    : []
+  const staleEntries = dirtyEntries.filter((entry) => !inFlightEntries.includes(entry))
+  if (staleEntries.length > 0) {
     return {
       id: "bundle:git",
       kind: "bundle",
       status: "warn",
       severity: "warn",
       verdictImpact: "watch",
-      summary: `bundle has ${dirtyEntries.length} uncommitted git status entr${dirtyEntries.length === 1 ? "y" : "ies"}`,
+      summary: `bundle has ${staleEntries.length} uncommitted git status entr${staleEntries.length === 1 ? "y" : "ies"}`,
       source: { kind: "git", locator: gitStatusCommand },
       repair: repair("agent-runnable", "bundle-cleanup", "Resolve or intentionally preserve local bundle changes before handoff.", gitStatusCommand),
-      meta: { dirtyEntries },
+      meta: inFlightEntries.length > 0 ? { dirtyEntries: staleEntries, inFlightEntries: inFlightEntries.length } : { dirtyEntries: staleEntries },
+    }
+  }
+  if (inFlightEntries.length > 0) {
+    return {
+      id: "bundle:git",
+      kind: "bundle",
+      status: "pass",
+      severity: "info",
+      verdictImpact: "none",
+      summary: `bundle has ${inFlightEntries.length} fresh uncommitted change${inFlightEntries.length === 1 ? "" : "s"} waiting for the next sync`,
+      source: { kind: "git", locator: gitStatusCommand },
+      meta: { inFlightEntries: inFlightEntries.length },
     }
   }
   return {
@@ -1187,6 +1238,12 @@ function makeReceipt(
     bundleSignal((options.gitStatus ?? (() => defaultGitStatus(agentRoot)))(), {
       ignoreSentinelDirtyEntries: options.trigger === "daemon_health",
       agentRoot,
+      inFlightGrace: options.trigger === "daemon_health"
+        ? {
+            nowMs: (options.now ?? (() => new Date()))().getTime(),
+            graceMs: options.bundleDirtyGraceMs ?? CONTEXT_LOSS_SENTINEL_BUNDLE_DIRTY_GRACE_MS,
+          }
+        : undefined,
     }),
   ]
   const verdict = sentinelVerdict(signals)
