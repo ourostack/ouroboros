@@ -281,7 +281,7 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
       getNotifications: acceptanceRead("unraid_get_notifications", reads.getNotifications),
       getSystem: acceptanceRead("unraid_get_system", reads.getSystem),
       getInstallState: acceptanceRead("sanctuary_get_install_state", async () => inspectSanctuaryPackageManagedBundle({
-        ...resolveSanctuaryPackageManagedRoots({ repoRoot: getRepoRoot(), bundlesRoot: getAgentBundlesRoot() }),
+        ...resolveSanctuaryPackageManagedRoots({ repoRoot: getRepoRoot(), bundlesRoot: getAgentBundlesRoot(), ...(isButlerAgent(agentName) ? { agent: agentName } : {}) }),
         runtimePackageVersion: getPackageVersion(),
       })),
       checkServices: acceptanceRead("unraid_check_services", async () => {
