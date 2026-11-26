@@ -25,13 +25,17 @@ export async function answerLettersAnswerCommand(
   if (typeof command.agent !== "string" || typeof command.messageGuid !== "string" || !command.messageGuid.trim()) {
     return { ok: false, error: "letters.answer needs an agent and a messageGuid." }
   }
+  // Checked before the agent's vault or server is read for it.
+  if (!writer.hasAgent(command.agent)) return { ok: false, error: `No agent bundle ${command.agent}.ouro is on this machine.` }
   try {
     const source = await sourceFor(command.agent)
     // The server password travels in the fetch's query string, so only a server nobody between can read is asked.
     if (source.trust === "untrusted") return { ok: true, data: { recorded: false, reason: "untrusted-server-url" } }
-    const message = await source.getServerMessage(command.messageGuid.trim())
-    if (!message) return { ok: true, data: { recorded: false, reason: "unknown-message" } }
-    return { ok: true, data: await writer.recordAnswer(command.agent, message, source.hostTrust) }
+    const guid = command.messageGuid.trim()
+    const message = await source.getServerMessage(guid)
+    if (!message || message.guid !== guid) return { ok: true, data: { recorded: false, reason: "unknown-message" } }
+    const sentAt = async (sentGuid: string) => (await source.getServerMessage(sentGuid))?.dateCreated
+    return { ok: true, data: await writer.recordAnswer(command.agent, message, source.hostTrust, sentAt) }
   } catch (error) {
     emitNervesEvent({ level: "error", component: "daemon", event: "letters.answer_failed", message: "a possible answer couldn't be checked", meta: { reason: (error as Error).message } })
     return { ok: false, error: (error as Error).message }

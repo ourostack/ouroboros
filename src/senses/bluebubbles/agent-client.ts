@@ -3,6 +3,7 @@
 // process memory once read), and its host check uses the agent's declared iMessage host account.
 import * as os from "os"
 import * as path from "path"
+import { machineOwnerUsername } from "@ouro.bot/friends"
 import type { ServerMessage } from "../../heart/letters/answer-reader"
 import type { BlueBubblesChannelConfig, BlueBubblesConfig } from "../../heart/config"
 import { loadAgentConfig } from "../../heart/identity"
@@ -122,8 +123,8 @@ export function letterChatSender(bundlesRoot: string, clientFor?: (agent: string
 export interface LetterAnswerSource {
   trust: BlueBubblesUrlTrust
   /**
-   * `separate` only when the agent's iMessage runs under its own declared macOS account, not the one running the
-   * daemon, so a shell in the daemon's account can't send as it. Anything else counts as shared.
+   * `separate` only when the daemon runs under a macOS account other than the person's, so a shell beside the agent
+   * can't send iMessages from the person's Apple ID. Anything else, including an unknown owner, counts as shared.
    */
   hostTrust: "shared-apple-id" | "separate"
   getServerMessage(messageGuid: string): Promise<ServerMessage | null>
@@ -131,17 +132,17 @@ export interface LetterAnswerSource {
 
 export function letterAnswerSource(
   bundlesRoot: string,
-  deps: { clientFor?: (agent: string, agentRoot: string) => Promise<BlueBubblesClient>; daemonUser?: () => string } = {},
+  deps: { clientFor?: (agent: string, agentRoot: string) => Promise<BlueBubblesClient>; daemonUser?: () => string; ownerUsername?: () => string | null } = {},
 ): (agent: string) => Promise<LetterAnswerSource> {
   return async (agent) => {
     const agentRoot = path.join(bundlesRoot, `${agent}.ouro`)
     const settings = blueBubblesSettings(await agentMachineRuntimeConfig(agent))
     const client = await (deps.clientFor ?? blueBubblesClientForAgent)(agent, agentRoot)
-    const hostUsername = agentHostOptions(agent, agentRoot).hostUsername
     const daemonUser = (deps.daemonUser ?? (() => os.userInfo().username))()
+    const owner = (deps.ownerUsername ?? machineOwnerUsername)()
     return {
       trust: blueBubblesUrlTrust(settings.config.serverUrl),
-      hostTrust: hostUsername && hostUsername !== daemonUser ? "separate" : "shared-apple-id",
+      hostTrust: owner && owner !== daemonUser ? "separate" : "shared-apple-id",
       getServerMessage: async (messageGuid) => {
         if (!client.getServerMessage) throw new Error("this BlueBubbles client can't fetch a message's own record")
         return client.getServerMessage(messageGuid)

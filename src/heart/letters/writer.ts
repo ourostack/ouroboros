@@ -5,7 +5,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { machineOwnerUsername, type FriendRecord } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { addAnsweredGuid, answerProblem, noteAnswerRefused, parseAnswer, readAnsweredGuids, type ServerMessage } from "./answer-reader"
+import { addAnsweredGuid, answerProblem, deliveryFloor, noteAnswerRefused, parseAnswer, readAnsweredGuids, type ServerMessage } from "./answer-reader"
 import { checkLetterInput, checkWithdrawReason, newLetterId, type Letter, type LetterEvent, type LetterKind } from "./letter"
 import { ownerFriendIds, readAnsweringHandles } from "./answering"
 import { renderLetter } from "./render"
@@ -261,14 +261,28 @@ export class LettersWriter {
    * the daemon calls it, after fetching the message by GUID. A message that isn't an answer, or doesn't answer its
    * letter, records nothing and says so with the reason, for the log.
    */
-  recordAnswer(agent: string, message: ServerMessage, hostTrust: "shared-apple-id" | "separate"): Promise<AnswerOutcome> {
+  /** Whether the agent's bundle is on this machine, checked before anything is fetched for it. */
+  hasAgent(agent: string): boolean {
+    return AGENT_NAME.test(agent) && fs.existsSync(path.join(this.deps.bundlesRoot, `${agent}.ouro`))
+  }
+
+  /**
+   * Records the person's answer from the server's own copy of their message, when it is one. `sentAt` reads the
+   * server's time for the letter's sent message, so the delivery floor is on the server's clock.
+   */
+  recordAnswer(
+    agent: string,
+    message: ServerMessage,
+    hostTrust: "shared-apple-id" | "separate",
+    sentAt?: (messageGuid: string) => Promise<number | undefined>,
+  ): Promise<AnswerOutcome> {
     const answer = parseAnswer(message.text)
     if (!answer) return Promise.resolve({ recorded: false, reason: "not-answer-form" })
     const letters = this.open(agent, false)
     return this.serial(letters, async (): Promise<AnswerOutcome> => {
       const entry = letters.index.get(answer.code)
       const problem = entry
-        ? answerProblem(entry, message, answer, readAnsweredGuids(letters.store.dir), this.now().getTime())
+        ? answerProblem(entry, message, answer, readAnsweredGuids(letters.store.dir), await deliveryFloor(entry, sentAt))
         : "no-such-letter"
       if (problem) {
         noteAnswerRefused(problem)

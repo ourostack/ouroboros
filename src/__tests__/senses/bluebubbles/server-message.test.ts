@@ -15,7 +15,7 @@ describe("serverMessageFromPayload", () => {
 
   it("leaves out what is missing or of the wrong type, and returns null with no message", () => {
     expect(serverMessageFromPayload({ guid: "m-2", text: 5, isFromMe: "yes", handle: [], chats: "c", dateCreated: 0, dateEdited: null, threadOriginatorGuid: " " }))
-      .toEqual({ guid: "m-2", text: "", isFromMe: false, chatGuids: [] })
+      .toEqual({ guid: "m-2", text: "", chatGuids: [] })
     expect(serverMessageFromPayload({ data: { text: "L7 2" } })).toBeNull()
     expect(serverMessageFromPayload(null)).toBeNull()
     expect(serverMessageFromPayload([])).toBeNull()
@@ -25,8 +25,9 @@ describe("serverMessageFromPayload", () => {
 describe("blueBubblesUrlTrust", () => {
   it("trusts the same Mac, authenticated TLS and the tailnet, and nothing else", () => {
     for (const url of ["http://127.0.0.1:1234", "http://localhost:1234", "http://[::1]:1234", "http://127.8.9.1"]) expect(blueBubblesUrlTrust(url)).toBe("loopback")
-    expect(blueBubblesUrlTrust("https://bb.example.com")).toBe("tls")
-    for (const url of ["http://100.64.0.1:1234", "http://100.127.255.255", "http://mac-mini.tail1234.ts.net:1234"]) expect(blueBubblesUrlTrust(url)).toBe("tailnet")
-    for (const url of ["http://192.168.1.5:1234", "http://100.128.0.1", "http://100.63.0.1", "http://8.8.8.8", "http://bb.example.com", "not a url"]) expect(blueBubblesUrlTrust(url)).toBe("untrusted")
+    for (const url of ["https://bb.example.com", "https://mac-mini.tail1234.ts.net"]) expect(blueBubblesUrlTrust(url)).toBe("tls")
+    for (const url of ["http://100.64.0.1:1234", "http://100.127.255.255", "http://[fd7a:115c:a1e0::1]:1234"]) expect(blueBubblesUrlTrust(url)).toBe("tailnet")
+    // A MagicDNS name over plain http trusts whatever resolver answers, so it isn't trusted.
+    for (const url of ["http://192.168.1.5:1234", "http://100.128.0.1", "http://100.63.0.1", "http://8.8.8.8", "http://bb.example.com", "http://mac-mini.tail1234.ts.net:1234", "http://[fd7a:115c:a1e1::1]", "not a url"]) expect(blueBubblesUrlTrust(url)).toBe("untrusted")
   })
 })

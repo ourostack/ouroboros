@@ -920,7 +920,7 @@ export class OuroDaemon {
   private readonly senseManager: DaemonSenseManagerLike | null
   private readonly bundlesRoot: string
   /** The letters' single writer, made on the first mailbox call. */
-  private lettersWriter: LettersWriter | null = null
+  private lettersWriter: Promise<LettersWriter> | null = null
   private readonly mode: "dev" | "production"
   private server: net.Server | null = null
   private frontendSocketServer: FrontendSocketServer | null = null
@@ -1679,15 +1679,15 @@ export class OuroDaemon {
   }
 
   /** The one letters writer, loaded on the first mailbox call so a daemon with no letters pays nothing at start. */
-  private async letters(): Promise<LettersWriter> {
-    const letters = await import("../letters/writer")
-    this.lettersWriter ??= new letters.LettersWriter({
+  private letters(): Promise<LettersWriter> {
+    // The promise is kept, not the writer, so two first calls at once share one writer and its one queue.
+    this.lettersWriter ??= (async () => new (await import("../letters/writer")).LettersWriter({
       bundlesRoot: this.bundlesRoot,
       // A letter goes to its person's iMessage chat as the agent, through the agent's own BlueBubbles settings.
       deliverChat: (await import("../../senses/bluebubbles/agent-client")).letterChatSender(this.bundlesRoot),
       // Filing tells the agent, in its own private runtime, so it decides when its person sees the letter.
       onFiled: (await import("../letters/filed-note")).letterFiledTeller(this.bundlesRoot, (wake) => this.handlePrivateRuntimeWake(wake)),
-    })
+    }))()
     return this.lettersWriter
   }
 

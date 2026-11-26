@@ -29,7 +29,8 @@ export function serverMessageFromPayload(payload: unknown): ServerMessage | null
   return {
     guid,
     text: typeof data.text === "string" ? data.text : "",
-    isFromMe: data.isFromMe === true,
+    // Kept only as the server states it: a message whose direction isn't stated never counts as the person's.
+    ...(typeof data.isFromMe === "boolean" ? { isFromMe: data.isFromMe } : {}),
     ...(sender ? { sender } : {}),
     ...(service ? { service } : {}),
     chatGuids: chats.map((chat) => text(record(chat)?.guid)).filter((chatGuid): chatGuid is string => chatGuid !== undefined),

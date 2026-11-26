@@ -1,13 +1,16 @@
 // How far the BlueBubbles server's address can be trusted (design §3.4, R3-M3). Fetches put the server password in
 // the query string, so the letter answer reader runs only when nobody between the agent and the server can read or
-// fake that traffic: the same Mac, an authenticated TLS connection, or the tailnet, whose WireGuard tunnel does both.
+// fake that traffic: the same Mac, an authenticated TLS connection, or a tailnet address, whose WireGuard tunnel does both.
 import { emitNervesEvent } from "../../nerves/runtime"
 
 export type BlueBubblesUrlTrust = "loopback" | "tls" | "tailnet" | "untrusted"
 
-/** The tailnet's own address range, 100.64.0.0/10, and its MagicDNS names. */
+/**
+ * The tailnet's own address ranges: 100.64.0.0/10 and fd7a:115c:a1e0::/48. A MagicDNS name isn't trusted over plain
+ * http, since whatever resolver answers when Tailscale is down could point it anywhere; over https it counts as TLS.
+ */
 function isTailnetHost(host: string): boolean {
-  if (host.endsWith(".ts.net")) return true
+  if (/^fd7a:115c:a1e0:/.test(host)) return true
   const octets = host.split(".").map(Number)
   return octets.length === 4 && octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255) && octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127
 }

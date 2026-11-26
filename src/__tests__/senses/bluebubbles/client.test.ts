@@ -3419,7 +3419,7 @@ describe("BlueBubbles client", () => {
     it("reads the server's own record of a message by GUID, with its chats", async () => {
       const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: { guid: "m-1", text: "L7 2", handle: { address: "a@x.io", service: "iMessage" }, chats: [{ guid: "iMessage;-;a@x.io" }], dateCreated: 5 } }), { status: 200 }))
       global.fetch = fetchMock as typeof fetch
-      expect(await (await client()).getServerMessage!("m-1")).toEqual({ guid: "m-1", text: "L7 2", isFromMe: false, sender: "a@x.io", service: "iMessage", chatGuids: ["iMessage;-;a@x.io"], dateCreated: 5 })
+      expect(await (await client()).getServerMessage!("m-1")).toEqual({ guid: "m-1", text: "L7 2", sender: "a@x.io", service: "iMessage", chatGuids: ["iMessage;-;a@x.io"], dateCreated: 5 })
       expect(String(fetchMock.mock.calls[0][0])).toContain("/api/v1/message/m-1?")
     })
 
