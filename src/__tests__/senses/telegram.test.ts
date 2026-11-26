@@ -131,7 +131,7 @@ function fixture(input: {
     terminalizeRecovered: vi.fn(async () => undefined),
   }
   const app = createTelegramSenseApp({
-    agentName: input.agentName ?? "butler",
+    agentName: input.agentName ?? "slugger",
     credentials: { botToken: input.botToken ?? "test-token", authorizedUserId: "42", authorizedChatId: "42" },
     identityKey: "k".repeat(43),
     migrateIdentity: async () => undefined,
@@ -448,7 +448,7 @@ describe("Telegram sense", () => {
       identityKey: "k".repeat(43),
     })).toThrow(/token/u)
     expect(() => createTelegramSenseApp({
-      agentName: "butler",
+      agentName: "slugger",
       credentials: { botId: "777", authorizedUserId: "42", authorizedChatId: "42" },
       authorityTransport: { api, settleTransport, downloadFile: vi.fn(), admitChat: vi.fn(), revokeChat: vi.fn(), metadataForUpdate: vi.fn(() => null) },
       identityKey: "k".repeat(43),
@@ -501,7 +501,7 @@ describe("Telegram sense", () => {
   it("uses the packaged marker reader when no acceptance-marker override is supplied", () => {
     let acceptanceEventMeta!: (update: any, distinct: boolean) => Record<string, unknown>
     const app = createTelegramSenseApp({
-      agentName: "butler", credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" }, identityKey: "k".repeat(43),
+      agentName: "slugger", credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" }, identityKey: "k".repeat(43),
       api: { request: vi.fn(), stop: vi.fn() }, offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: (options) => { acceptanceEventMeta = options.acceptanceEventMeta!; return { pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() } },
       runTurn: vi.fn(async () => ({ response: "", deliveries: [], deliveryFailures: [], ponderDeferred: false })),
@@ -1029,7 +1029,7 @@ describe("Telegram sense", () => {
     await f.getOnMessage()({ updateId: 9, messageId: "10", userId: "42", chatId: "42", text: "health?" })
 
     expect(f.runTurn).toHaveBeenCalledWith(expect.objectContaining({
-      agentName: "butler",
+      agentName: "slugger",
       channel: "telegram",
       sessionKey: expect.stringMatching(/^telegram:tg_[A-Za-z0-9_-]{43}$/u),
       friendId: expect.stringMatching(/^telegram-user:tg_[A-Za-z0-9_-]{43}$/u),
@@ -1122,7 +1122,7 @@ describe("Telegram sense", () => {
     let sessionPath = ""
     const f = fixture({
       runTurn: vi.fn(async (options: any) => {
-        sessionPath = getSenseSessionPath("butler", options.friendId, "telegram", options.sessionKey, f.agentRoot)
+        sessionPath = getSenseSessionPath("slugger", options.friendId, "telegram", options.sessionKey, f.agentRoot)
         fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
         const firstTurn = !fs.existsSync(sessionPath)
         if (firstTurn) fs.writeFileSync(sessionPath, JSON.stringify({
@@ -1160,7 +1160,7 @@ describe("Telegram sense", () => {
     let sessionPath = ""
     const f = fixture({
       runTurn: vi.fn(async (options: any) => {
-        sessionPath = getSenseSessionPath("butler", options.friendId, "telegram", options.sessionKey, f.agentRoot)
+        sessionPath = getSenseSessionPath("slugger", options.friendId, "telegram", options.sessionKey, f.agentRoot)
         fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
         fs.writeFileSync(sessionPath, JSON.stringify({
           version: 2,
@@ -1196,7 +1196,7 @@ describe("Telegram sense", () => {
     delete artifact.parts[0].sessionEventId
     fs.writeFileSync(artifactPath, JSON.stringify(artifact))
     const firstTurn = f.runTurn.mock.calls[0]![0]
-    const replySessionPath = getSenseSessionPath("butler", firstTurn.friendId, "telegram", firstTurn.sessionKey, f.agentRoot)
+    const replySessionPath = getSenseSessionPath("slugger", firstTurn.friendId, "telegram", firstTurn.sessionKey, f.agentRoot)
     fs.mkdirSync(path.dirname(replySessionPath), { recursive: true })
     fs.writeFileSync(replySessionPath, JSON.stringify({
       version: 2,
@@ -1898,7 +1898,7 @@ describe("Telegram sense", () => {
       coordinator: vi.fn(), recover: vi.fn(), close: vi.fn(),
     }
     const failed = createTelegramSenseApp({
-      agentName: "butler",
+      agentName: "slugger",
       credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
       identityKey: "k".repeat(43),
       migrateIdentity: async () => { throw new Error("synthetic startup failure") },
@@ -2080,7 +2080,7 @@ describe("Telegram sense", () => {
     try {
       const f = fixture()
       const subject = opaqueTelegramSubject("k".repeat(43), "test-token", "42", "42")
-      const sessionPath = getSenseSessionPath("butler", `telegram-user:${subject}`, "telegram", `telegram:${subject}`, f.agentRoot)
+      const sessionPath = getSenseSessionPath("slugger", `telegram-user:${subject}`, "telegram", `telegram:${subject}`, f.agentRoot)
       fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
       fs.writeFileSync(sessionPath, JSON.stringify({
         version: 2,
@@ -2449,7 +2449,7 @@ describe("Telegram sense", () => {
     const effects = path.join(f.agentRoot, "state", "telegram", "effects")
     const artifact = JSON.parse(fs.readFileSync(path.join(effects, fs.readdirSync(effects)[0]!), "utf8"))
     expect(artifact.idempotencyKey).toMatch(/^await-expiry-follow-up:request-1:/u)
-    const sessionPath = getSenseSessionPath("butler", "sibling", "telegram", "telegram:777:888", f.agentRoot)
+    const sessionPath = getSenseSessionPath("slugger", "sibling", "telegram", "telegram:777:888", f.agentRoot)
     expect(JSON.parse(fs.readFileSync(sessionPath, "utf8")).events).toContainEqual(expect.objectContaining({ content: "Movie request timed out." }))
     expect(readObligation(f.agentRoot, obligation.id)?.status).toBe("fulfilled")
   })
@@ -2604,7 +2604,7 @@ describe("Telegram sense", () => {
   it("records proactive text as a new event when an older assistant event has identical text", async () => {
     const f = fixture()
     const subject = opaqueTelegramSubject("k".repeat(43), "test-token", "42", "42")
-    const sessionPath = getSenseSessionPath("butler", `telegram-user:${subject}`, "telegram", `telegram:${subject}`, f.agentRoot)
+    const sessionPath = getSenseSessionPath("slugger", `telegram-user:${subject}`, "telegram", `telegram:${subject}`, f.agentRoot)
     fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
     fs.writeFileSync(sessionPath, JSON.stringify({
       version: 2,

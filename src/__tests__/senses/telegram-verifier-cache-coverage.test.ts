@@ -40,4 +40,15 @@ describe("Telegram SAB verifier cache coverage", () => {
     expect(sab.loadApiKey).toHaveBeenCalledWith("sanctuary")
     expect(sab.readQueue).toHaveBeenCalledTimes(2)
   })
+
+  it("loads the key from the machine config of the Butler it is given", async () => {
+    sab.create.mockReset().mockReturnValue({ readQueue: sab.readQueue })
+    await createSabQueueProtectiveStateVerifier({ agentName: "butler" })({
+      action: "sabnzbd.pause", actionReceipt: "receipt", transitionId: "transition", critical: true,
+      createdAt: "2026-08-29T00:00:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z",
+      verification: { verified: false, digest: "not-the-live-digest", observedAt: "2026-08-29T00:00:00.000Z" },
+    })
+    await sab.create.mock.calls[0]![0].loadApiKey()
+    expect(sab.loadApiKey).toHaveBeenLastCalledWith("butler")
+  })
 })
