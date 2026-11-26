@@ -1,0 +1,3 @@
+A private-runtime turn can't rest straight past work a tool flagged. When a tool result prints lines starting with `ACT:` (a habit's scan does this for a lane it revived) and no send reaches anyone after them, the first `rest` is refused with the code `act-unanswered` and lists those lines. The prompt no longer tells the agent that resting on a heartbeat is always fine: a habit's body is now its standing order, and `HEARTBEAT_OK` means nothing needed doing.
+
+A habit's `send_message` without a `key` is no longer blocked as "no permitted return route target". The tool treats `key` as optional and sends to `session`, and the habit route check now does the same, so a heartbeat can text its family friend with just a friend and a channel.
