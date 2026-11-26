@@ -77,6 +77,7 @@ import { abortInFlightSync, syncNow } from "../sync"
 import { PresenceTicker } from "./presence-daemon"
 import { leavePresence, readLocalPresenceSettings } from "./presence"
 import { clearOwnStaleSyncLock } from "../sync-lock"
+import { getExternalEventRoot, prepareButlerExternalEvents } from "../external-events/router"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -110,6 +111,8 @@ const daemonMachineId = daemonMachine.machineId
 const managedAgents = listHomeBundleAgents({ machineId: daemonMachineId })
 // The Butler under whichever name its bundle has; its container paths follow that name.
 const butlerName = managedButlerAgent(managedAgents) ?? "sanctuary"
+// Its saved external events follow that name too: a folder left under the other name (by the rename or a rollback) moves over.
+prepareButlerExternalEvents(getExternalEventRoot(), managedAgents)
 const readinessAgents = providerReadinessAgents(
   managedAgents,
   process.env.OURO_DAEMON_REQUIRED_AGENT,
