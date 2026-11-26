@@ -587,7 +587,7 @@ describe("deskUsage()", () => {
     const usage = deskUsage()
     expect(usage).toContain("ouro desk task list")
     expect(usage).toContain("ouro desk friction add")
-    expect(usage).toContain("ouro task list|new|done|archive|show ...")
+    expect(usage).toContain("ouro task list|new|done|archive|show [<ouro desk task arguments>]")
     expect(usage).toContain("--desk <name>")
     expect(usage).not.toContain("thread")
   })

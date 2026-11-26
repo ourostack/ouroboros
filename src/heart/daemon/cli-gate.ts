@@ -150,11 +150,19 @@ function membersOf(name: string): CliCommandDeclaration[] {
   return CLI_COMMANDS.filter((command) => command.name.startsWith(`${name} `));
 }
 
-/** A command's own usage lines, trimmed: the CLI's usage for it, less the lines of the longer commands declared under it. */
+/**
+ * A command's own usage lines, trimmed: the CLI's usage for it, less the lines of the longer commands declared under it.
+ * A line shared by several commands (`ouro stop|down|status`) is narrowed to this one, and a trailing `(note)` dropped.
+ */
 export function ownUsageLines(name: string): string[] {
   const members = membersOf(name);
+  const words = name.split(" ");
   return usageLinesFor(name)
-    .map((line) => line.trim())
+    .map((line) => {
+      const tokens = line.trim().replace(/\s{2,}\(.*\)$/, "").split(" ");
+      if (tokens[words.length]?.includes("|")) tokens[words.length] = words[words.length - 1]!;
+      return tokens.join(" ");
+    })
     .filter((line) => !members.some((member) => line === `ouro ${member.name}` || line.startsWith(`ouro ${member.name} `)));
 }
 
@@ -211,10 +219,12 @@ export function errorText(args: readonly string[], message: string, code?: strin
   if (message.startsWith("Usage\n")) {
     const match = matchCommand([...args]);
     const name = match?.shape.declaration.name ?? commandWords(args).slice(0, 1).join(" ");
-    const lines = name ? usageLinesFor(name).map((line) => line.trim()) : [];
+    const lines = name ? ownUsageLines(name) : [];
     text = lines.length > 0
       ? `ouro ${name}: these arguments don't fit its usage: ${lines.join(" | ")}. Fix: run ouro ${name} --help for what each takes.`
-      : "ouro: these arguments don't fit any command's usage. Fix: run ouro --help for the commands.";
+      : match
+        ? `ouro ${name}: these arguments don't fit any of its commands. Fix: run ouro ${name} --help for its commands and what each takes.`
+        : "ouro: these arguments don't fit any command's usage. Fix: run ouro --help for the commands.";
   }
   text = text.replace(/\s*[\r\n]+\s*/g, " ").trim();
   return code ? `${text} (code: ${code})` : text;
@@ -230,7 +240,7 @@ export function gateCommandArgs(args: string[]): GateResult {
   const others = declaration.effect === "others";
   const known = [...new Set([...PARSER_FLAGS, ...GLOBAL_FLAGS, ...flags.keys()])];
 
-  if (rest.includes("--help")) return { kind: "help", text: commandHelp(declaration) };
+  if (rest.includes("--help") || rest.includes("-h")) return { kind: "help", text: commandHelp(declaration) };
   if (rest.length === 1 && rest[0] === "--json" && membersOf(name).length > 0 && ownUsageLines(name).length === 0) return { kind: "help", text: groupJson(declaration) };
 
   for (let index = 0; index < rest.length; index++) {

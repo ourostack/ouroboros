@@ -61,7 +61,7 @@ export function deskUsage(): string {
     "  (each takes --gateway <url> --trust-gateway to manage a Hosted Desk other than desk.ouro.bot)",
     "",
     "Alias:",
-    "  ouro task list|new|done|archive|show ...    (routes through ouro desk task ...)",
+    "  ouro task list|new|done|archive|show [<ouro desk task arguments>]    (routes through ouro desk task)",
   ].join("\n")
 }
 

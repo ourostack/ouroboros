@@ -151,3 +151,20 @@ describe("a command's own usage, and a group's answer to --json", () => {
     expect(gateCommandArgs(["check", "--json"])).toMatchObject({ kind: "pass" })
   })
 })
+
+describe("usage lines narrowed to one command", () => {
+  it("narrows a line several commands share to the one named, and drops a trailing note", () => {
+    expect(ownUsageLines("status")).toEqual(["ouro status", "ouro status --agent <name>"])
+    expect(ownUsageLines("task list")).toEqual(["ouro task list [<ouro desk task arguments>]"])
+  })
+
+  it("answers a group's mistake by pointing at the group's help, not every member's usage", () => {
+    const text = errorText(["habit", "bogus"], "Usage\nwhatever")
+    expect(text).toBe("ouro habit: these arguments don't fit any of its commands. Fix: run ouro habit --help for its commands and what each takes.")
+  })
+
+  it("answers -h like --help, with the command's own help", () => {
+    const result = gateCommandArgs(["check", "-h"])
+    expect(result.kind === "help" && result.text).toContain("When: Make one live call")
+  })
+})
