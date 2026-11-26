@@ -33,6 +33,11 @@ describe("the in-turn tools door", () => {
     expect(outcome).toMatchObject({ state: "refused", code: "invalid-arguments" })
     expect(outcome.text).toMatch(/path/)
   })
+  it("names the missing arguments of the root host tool too, before its authority is asked", async () => {
+    const outcome = await callInTurnTool("sanctuary_host_execute", {})
+    expect(outcome).toMatchObject({ state: "refused", code: "invalid-arguments" })
+    expect(outcome.text).toMatch(/targetHost/)
+  })
 
   it("answers a call that passes every check without running the tool", async () => {
     await expect(callInTurnTool("settle", { answer: "hi" })).resolves.toEqual({

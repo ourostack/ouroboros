@@ -110,7 +110,7 @@ export const credentialToolDefinitions: ToolDefinition[] = [
       function: {
         name: "credential_get",
         description:
-          "Get credential metadata for a vault item name/path. Returns username, notes, and creation date. Never returns passwords — the credential gateway handles secret injection internally.",
+          "Get credential metadata for a vault item name/path. Returns username, notes, and creation date. Passwords stay inside the credential gateway, which injects them itself.",
         parameters: {
           type: "object",
           properties: {
@@ -225,7 +225,7 @@ export const credentialToolDefinitions: ToolDefinition[] = [
       function: {
         name: "credential_store",
         description:
-          "Store credentials in a vault item name/path after the agent acquired or just used them successfully. Prefer credential_generate_password for new passwords, then call this tool once the site accepts the exact password. Stored passwords are never returned later — only metadata is visible.",
+          "Store credentials in a vault item name/path after the agent acquired or just used them successfully. Prefer credential_generate_password for new passwords, then call this tool once the site accepts the exact password. Later reads return only metadata, not the stored password.",
         parameters: {
           type: "object",
           properties: {
@@ -301,7 +301,7 @@ export const credentialToolDefinitions: ToolDefinition[] = [
       function: {
         name: "credential_list",
         description:
-          "List stored vault items. Returns metadata only (item/domain name, username, notes, creation date). Never returns passwords.",
+          "List stored vault items. Returns metadata only (item/domain name, username, notes, creation date), without passwords.",
         parameters: {
           type: "object",
           properties: {
