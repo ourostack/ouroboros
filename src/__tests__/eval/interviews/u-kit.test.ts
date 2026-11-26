@@ -26,6 +26,8 @@ describe("product U's kit", () => {
       turn: { product: "U", arm: "shadcn", labelLine: "The component kit for this job is component kit F.", prefix: [], userText: U_JOB_MESSAGE, followUps: ["How did it go?"] },
       // U runs in the U image (the kits and the checking tools), which the run's images name "u".
       image: "u",
+      // Every arm's container has 4g: grading a shadcn component peaks near 2g, where other guests' limit is.
+      memory: "4g",
     })
     const obs = run(undefined)
     expect(U_KIT.canonical("ouro", obs)).toBe(obs)
