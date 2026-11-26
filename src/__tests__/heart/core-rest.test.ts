@@ -502,6 +502,48 @@ describe("rest tool in runAgent", () => {
     expect(gateEvents).toHaveLength(1)
   })
 
+  it("rest is refused once while a tool printed ACT: lines and no one has been told since, then accepted", async () => {
+    // Regression for 2026-11-25: heartbeats ran a scan that listed dead lanes, then rested
+    // without acting or telling anyone, for about a day.
+    const shellTool = { type: "function" as const, function: { name: "shell", description: "run", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } }
+    mockCreate.mockReturnValueOnce(makeStream(toolCallChunks("call_shell", "shell", { command: "bash habits/heartbeat-scan.sh" })))
+    mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks())) // refused: ACT line unanswered
+    mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks())) // accepted: told once
+    const execTool = vi.fn(async () => "== LANES\nACT: lane-a dead: REVIVED -> text Ari\nQUIET lane-b")
+
+    const callbacks = makeCallbacks()
+    await runAgent([{ role: "user", content: "30 minutes have passed." }], callbacks, "inner", undefined, {
+      tools: [shellTool],
+      execTool,
+      toolContext: { currentSession: { friendId: "self", channel: "inner", key: "dialog" }, delegatedOrigins: [] },
+    })
+
+    expect(mockCreate).toHaveBeenCalledTimes(3)
+    const restEnds = (callbacks.onToolEnd as any).mock.calls.filter((c: any[]) => c[0] === "rest")
+    expect(restEnds.map((c: any[]) => c[2])).toEqual([false, true])
+    const refusal = (mockCreate.mock.calls[2]?.[0]?.messages as any[]).find((m) => m.role === "tool" && m.tool_call_id === "call_rest")
+    expect(refusal?.content).toContain("ACT: lane-a dead: REVIVED -> text Ari")
+    expect(refusal?.content).not.toContain("QUIET lane-b")
+    expect(refusal?.content).toMatch(/\(code: act-unanswered\)$/u)
+    expect(vi.mocked(emitNervesEvent).mock.calls.filter(([e]) => (e as any).event === "engine.act_gate_fired")).toHaveLength(1)
+  })
+
+  it("finds this turn's ACT: lines until a later send reaches someone", async () => {
+    const { unansweredActLines } = await import("../../heart/core")
+    const scan = { name: "shell", args: {}, result: "x\nACT: revive lane-a\n  ACT: indented counts\nnot ACT: mid-line" }
+    const sent = { name: "send_message", args: { friendId: "ari" }, result: "delivered now\nsent to the active bluebubbles chat now" }
+    expect(unansweredActLines([])).toBeNull()
+    expect(unansweredActLines([{ name: "shell", args: {}, result: "all quiet" }])).toBeNull()
+    expect(unansweredActLines([scan])).toBe("ACT: revive lane-a\nACT: indented counts")
+    expect(unansweredActLines([scan, sent])).toBeNull()
+    expect(unansweredActLines([scan, { ...sent, result: "queued for later\nari isn't reachable now" }])).toBeNull()
+    // Quoted ACT: lines in a file read are not work this turn.
+    expect(unansweredActLines([{ ...scan, name: "read_file" }])).toBeNull()
+    expect(unansweredActLines([scan, { ...sent, result: "failed\nbluebubbles send failed (code: delivery-failed)" }])).not.toBeNull()
+    // A new ACT line after the send needs its own.
+    expect(unansweredActLines([scan, sent, { name: "shell", args: {}, result: "ACT: revive lane-c" }])).toBe("ACT: revive lane-c")
+  })
+
   it("finds this turn's unsent surface until a later send to the same friend succeeds", async () => {
     const { unsentSurfaceResult } = await import("../../heart/core")
     const surface = (result: string, friendId = "friend-1") => ({ name: "surface", args: { friendId }, result })

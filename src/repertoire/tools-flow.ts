@@ -112,7 +112,7 @@ export const restTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
     name: "rest",
-    description: "end a private-runtime turn when private work is complete. rest remains the explicit terminal move for the private-runtime turn and must be the only tool call in the turn. on idle heartbeat turns, use status=HEARTBEAT_OK.",
+    description: "end a private-runtime turn when private work is complete. rest remains the explicit terminal move for the private-runtime turn and must be the only tool call in the turn. on idle heartbeat turns, use status=HEARTBEAT_OK; a tool line starting ACT: needs a send_message first.",
     parameters: {
       type: "object",
       properties: {
@@ -142,6 +142,7 @@ export const FLOW_TOOL_REFUSALS = {
   settleHeldWork: withCode("current held-work frame still has unsurfaced items — return each listed item with surface(delegationId=...) before you settle. Older transcript claims are historical; only the current held-work frame is the gate.", "held-work-unsurfaced"),
   restHeldWork: withCode("current held-work frame still has unsurfaced items — return each listed item with surface(delegationId=...) before you rest. Older transcript claims are historical; only the current held-work frame is the gate.", "held-work-unsurfaced"),
   restFreshWork: withCode("fresh work arrived for me this turn — inspect the pending messages above and take the next concrete action before you rest.", "fresh-work-pending"),
+  restActUnanswered: (lines: string): string => withCode(`a tool this turn printed work for me to act on and tell someone about, and nobody has been told:\n${lines}\ndo it and send_message the person now, then rest.`, "act-unanswered"),
   restSurfaceNotSent: (surfaceResult: string): string => withCode(`your surface this turn did not reach them: ${surfaceResult.replace(/ \(code: [a-z0-9-]+\)$/u, "").replace(/\.$/u, "")}. reach them another way now if the result names one, or rest again and it waits for their next message.`, "surface-not-sent"),
   speakEmpty: withCode("speak requires a non-empty `message` string.", "empty-message"),
   speakNotDelivered: (detail: string): string => withCode(`speak delivery failed: ${detail}. the message did not reach your friend; do not assume they saw it.`, "speak-not-delivered"),
@@ -168,6 +169,7 @@ export const toolCards: ToolDoorCard[] = [
     { code: "rest-alone", means: "rest came in one batch with other tool calls, so nothing in the batch ran.", fix: "Make the other calls first, read their results, then call rest on its own." },
     { code: "held-work-unsurfaced", means: "This private turn still holds work someone is waiting on.", fix: "Return each listed item with surface(delegationId=...), then rest." },
     { code: "fresh-work-pending", means: "New messages arrived during this turn, so rest waits once.", fix: "Read the pending messages and act on them, then rest." },
+    { code: "act-unanswered", means: "A tool result this turn printed ACT: lines and no send reached anyone after them, so rest waits once.", fix: "Do what the ACT: lines say, send_message the person, then rest." },
     { code: "surface-not-sent", means: "A surface this turn came back not sent (saved for the person's next message), so rest waits once.", fix: "Reach them another way if the surface result names one, or rest again and it waits for their next message." },
   ] },
   { id: "tool:ponder", group: "turn-flow", when: "Pick this when a question needs more thought than this turn allows, or harness friction should be worked on privately later.", effect: "write", errors: [

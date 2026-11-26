@@ -787,6 +787,19 @@ export function unsentSurfaceResult(records: TurnToolRecord[]): string | null {
   return [...unsent.values()].at(-1) ?? null
 }
 
+/**
+ * The ACT: lines of this turn's shell results that no later send reached (or queued for) anyone after. A habit's scan prints them
+ * for work it did or found that a person must hear about, so rest says once that nobody was told.
+ */
+export function unansweredActLines(records: TurnToolRecord[]): string | null {
+  let lines: string[] = []
+  for (const record of records) {
+    if (reachedSurfaceFriend(record) || (record.name === "send_message" && /^queued for later$/mu.test(record.result))) lines = []
+    else if (record.name === "shell") lines.push(...record.result.split("\n").map((line) => line.trim()).filter((line) => line.startsWith("ACT:")))
+  }
+  return lines.length > 0 ? lines.join("\n") : null
+}
+
 const sameWords = (left: string | undefined, right: string | undefined): boolean => {
   const words = (text: string | undefined): string => (text ?? "").trim().replace(/\s+/gu, " ").toLowerCase()
   return words(left) !== "" && words(left) === words(right)
@@ -1806,6 +1819,7 @@ async function runCountedTurn(
   // Once-per-turn flag for the unsent-surface rest gate: the agent is told once
   // that a person it meant to tell was not reached; a second rest is its answer.
   let surfaceNotSentGateFired = false;
+  let actGateFired = false;
   // Counter for no-tool-call violations. MiniMax reasoning models occasionally
   // emit only a <think>...</think> block and stop, without any tool call — even
   // when tool_choice is set to "required". Private-return requests also need
@@ -2991,6 +3005,21 @@ async function runCountedTurn(
               event: "engine.surface_not_sent_gate_fired",
               message: "rest deferred once because a surface this turn was not sent; agent has been notified",
               meta: {},
+            });
+            continue;
+          }
+
+          const actLines = !wrappingUp && !actGateFired ? unansweredActLines(turnToolRecords) : null;
+          if (actLines) {
+            actGateFired = true;
+            callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs, toolSelection), false);
+            rejectToolBatch(msg, [FLOW_TOOL_REFUSALS.restActUnanswered(actLines)]);
+            emitNervesEvent({
+              level: "info",
+              component: "engine",
+              event: "engine.act_gate_fired",
+              message: "rest deferred once because a tool printed ACT: lines and nobody was told; agent has been notified",
+              meta: { lines: actLines.split("\n").length },
             });
             continue;
           }
