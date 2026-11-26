@@ -31,10 +31,10 @@ function argumentsValue(): Record<string, unknown> {
   }
 }
 
-async function fixture() {
+async function fixture(name = "sanctuary") {
   const directory = path.join(rootBase, String(++serial))
   roots.push(directory)
-  const agentRoot = path.join(directory, "sanctuary.ouro")
+  const agentRoot = path.join(directory, `${name}.ouro`)
   fs.mkdirSync(agentRoot, { recursive: true })
   fs.copyFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", path.join(agentRoot, "tool-profiles.json"))
   const friend: FriendRecord = {
@@ -75,7 +75,7 @@ async function fixture() {
   })
   const authorizeTool = vi.fn(async (tool: string) => decision().authorizeTool(tool))
   const ctx: ToolContext = {
-    signin: async () => undefined, agentName: "sanctuary", agentRoot,
+    signin: async () => undefined, agentName: name, agentRoot,
     context: { friend, channel: getChannelCapabilities("telegram") },
     friendStore: { get: vi.fn(async () => friend) } as any,
     currentSession: { friendId: friend.id, channel: "telegram", key: sessionKey, sessionPath },
@@ -117,6 +117,12 @@ describe("S5 host command contract", () => {
     f.stop()
     expect((await preflightToolCall(name, argumentsValue() as any, f.ctx)).kind).toBe("rejected_before_handler")
   })
+  it("offers the host tool to the Butler whose bundle is named butler.ouro", async () => {
+    const f = await fixture("butler")
+    await f.activate()
+    expect(selectRootHostTool(f.ctx, f.capabilities)).toBeDefined()
+  })
+
   it("advertises one strict proposal tool, with sole-call approval and no resident executor", async () => {
     const f = await fixture()
     await f.activate()
@@ -248,6 +254,7 @@ describe("S5 exact current owner advertisement", () => {
 
   it.each([
     ["agentName", (f: any) => { f.ctx.agentName = "other" }],
+    ["agent name that is not its bundle's", (f: any) => { f.ctx.agentName = "butler" }],
     ["agentRoot", (f: any) => { f.ctx.agentRoot = path.join(rootBase, "other.ouro") }],
     ["relative root", (f: any) => { f.ctx.agentRoot = "sanctuary.ouro" }],
     ["friend", (f: any) => { f.ctx.context.friend.id = "other" }],
