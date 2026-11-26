@@ -20,12 +20,17 @@ function replyLine(letter: Letter): string {
   return `Reply ${spoken}.`
 }
 
+/** The letter's first line, which names its code, its sender and its subject: `L7 · Slugger asks: Which name?`. */
+export function letterHeading(letter: Letter): string {
+  return `${letter.code} · ${agentName(letter.from.agent)} ${VERB[letter.kind]}: ${letter.subject}`
+}
+
 /**
  * The letter as the person reads it. A link shows its label and address; a line anchor is dropped from the
  * address, so the chat never shows a code-shaped `#L12` beside the letter's own code.
  */
 export function renderLetter(letter: Letter): string {
-  const lines = [`${letter.code} · ${agentName(letter.from.agent)} ${VERB[letter.kind]}: ${letter.subject}`]
+  const lines = [letterHeading(letter)]
   if (letter.whyOnlyYou) lines.push(letter.whyOnlyYou)
   if (letter.body) lines.push(letter.body)
   for (const link of letter.links) lines.push(`${link.label}: ${link.url.replace(LINE_ANCHOR, "")}`)

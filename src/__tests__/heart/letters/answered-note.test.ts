@@ -14,7 +14,7 @@ const letter = {
   v: 1, id: "ltr_A1", code: "L7", to: "friend-ari", from: { agent: "slugger" }, kind: "decide", subject: "Which name?", answeringHandle: "+15551234567",
   whyOnlyYou: "w", body: "", options: [{ id: "1", label: "Orca" }, { id: "2", label: "Ouro" }], links: [], urgency: "today", createdAt: "2026-11-26T12:00:00.000Z",
 } as unknown as Letter
-const answer = { option: "2", label: "Ouro", note: "ship it", messageGuid: "m-1" }
+const answer = { option: "2", label: "Ouro", note: "ship it", messageGuid: "m-1", at: "2026-11-26T12:05:00.000Z" }
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); vi.mocked(emitNervesEvent).mockClear() })
@@ -32,7 +32,7 @@ const events = (name: string) => vi.mocked(emitNervesEvent).mock.calls.filter(([
 
 describe("what a recorded answer says", () => {
   it("shows the person the code, subject and option, and quotes other people's words to the agent", () => {
-    expect(answerReceipt(letter, answer)).toBe("Recorded L7 Which name? → 2 Ouro")
+    expect(answerReceipt(letter, answer)).toBe("Recorded L7 · Slugger asks: Which name? → 2 Ouro")
     expect(letterAnsweredNote(letter, answer)).toBe("my person answered letter L7 (its sender's subject: \"Which name?\") with option 2, \"Ouro\", with the note \"ship it\". mailbox_read shows it.")
     expect(letterAnsweredNote(letter, { ...answer, note: undefined })).toBe("my person answered letter L7 (its sender's subject: \"Which name?\") with option 2, \"Ouro\". mailbox_read shows it.")
   })
@@ -46,8 +46,8 @@ describe("letterAnsweredTeller", () => {
     const tell = letterAnsweredTeller(root, async (request) => { sent.push(request) }, async (wake) => { wakes.push(wake); return { ok: true, data: { decision: { executable: true } } } })
     await tell("slugger", letter, answer)
     await tell("slugger", letter, answer)
-    expect(sent[0]).toEqual({ agent: "slugger", handle: "+15551234567", text: "Recorded L7 Which name? → 2 Ouro" })
-    expect(notes(root).map((note) => note.packetId)).toContain("letter-answered:ltr_A1")
+    expect(sent[0]).toEqual({ agent: "slugger", handle: "+15551234567", text: "Recorded L7 · Slugger asks: Which name? → 2 Ouro" })
+    expect(notes(root).map((note) => note.packetId)).toEqual(["letter-answered:ltr_A1"])
     expect(wakes[0]).toEqual(letterAnsweredWake("slugger", letter))
     expect(events("letters.answered_told")).toHaveLength(2)
   })

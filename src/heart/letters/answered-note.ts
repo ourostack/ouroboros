@@ -5,17 +5,23 @@ import * as path from "path"
 import { getPrivateRuntimePendingDir, queuePendingMessageOnce } from "../../mind/pending"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { Letter } from "./letter"
+import { letterHeading } from "./render"
 
 export interface RecordedAnswer {
   option: string
   label: string
   note?: string
   messageGuid: string
+  /** When the answer was recorded, ISO; it dates the agent's note, so a second telling is the same note. */
+  at: string
 }
 
-/** The receipt the person sees: "Recorded L7 Which name? → 2 Ouro". Only Ouro writes it, so it may name the code. */
+/**
+ * The receipt the person sees, naming the letter as its heading does: "Recorded L7 · Slugger asks: Which name? → 2
+ * Ouro", so a paraphrase of another letter can't pass for it. Only Ouro writes it, so it may name the code.
+ */
 export function answerReceipt(letter: Letter, answer: RecordedAnswer): string {
-  return `Recorded ${letter.code} ${letter.subject} → ${answer.option} ${answer.label}`
+  return `Recorded ${letterHeading(letter)} → ${answer.option} ${answer.label}`
 }
 
 /** The agent's note; the subject, label and note are other people's words, so they are quoted as theirs. */
@@ -54,7 +60,7 @@ export async function tellLetterAnswered(agent: string, agentRoot: string, lette
     channel: "inner",
     key: "dialog",
     content: letterAnsweredNote(letter, answer),
-    timestamp: Date.now(),
+    timestamp: Date.parse(answer.at),
     packetId: `letter-answered:${letter.id}`,
   })
   try {

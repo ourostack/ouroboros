@@ -125,7 +125,7 @@ describe("recordAnswer", () => {
     const { writer } = await delivered({ onAnswered: async (agent, letter, answer) => { answered.push([agent, letter.code, answer]) } })
     await writer.recordAnswer("slugger", message({ text: "L1 3" }), "separate")
     await writer.recordAnswer("slugger", message({ text: "L1 1 - ok" }), "separate")
-    expect(answered).toEqual([["slugger", "L1", { option: "1", label: "Orca", note: "ok", messageGuid: "m-1" }]])
+    expect(answered).toEqual([["slugger", "L1", { option: "1", label: "Orca", note: "ok", messageGuid: "m-1", at: new Date(NOW + 60_000).toISOString() }]])
   })
 
   it("keeps the answer when onAnswered throws", async () => {
