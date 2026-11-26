@@ -1,0 +1,1 @@
+- ACP clients such as Orca's chat now see each tool call separately. Before, two calls to the same tool in one turn shared an id, so the client merged them into one row and showed only the last result.
