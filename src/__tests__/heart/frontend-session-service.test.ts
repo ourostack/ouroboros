@@ -109,6 +109,8 @@ describe("frontend session service", () => {
       expect(input.signal).toBeInstanceOf(AbortSignal)
       expect(input.signal.aborted).toBe(false)
       expect(input.latencyMode).toBe("live")
+      // Its caller names the friend and channel, so the turn is marked a socket turn and friend_link_code refuses it.
+      expect(input.toolContext).toEqual({ turnOrigin: "socket" })
       return { ...settledResult("hello"), sessionPath: "/tmp/session.json" }
     })
     const { FrontendSessionService } = await import("../../heart/frontend-session-service")
