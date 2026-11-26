@@ -1329,7 +1329,7 @@ describe("surface tool", () => {
         .toBe("delivered — sent to Telegram now")
     })
 
-    it("surfaceToolDefinition hands a held verification chore back to the calling lane instead of sending it", async () => {
+    it("surfaceToolDefinition hands a held untested claim back to the calling lane instead of sending it", async () => {
       const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
       const chore = "The proof images were re-attached; whether they show in the app hasn't been tested yet."
       mockSendTeamsOffTurn.mockResolvedValue({ delivered: false, reason: "internal_content_blocked" })

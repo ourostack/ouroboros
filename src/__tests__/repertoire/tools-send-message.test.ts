@@ -787,7 +787,7 @@ describe("send_message tool", () => {
     expect(fs.writeFileSync).not.toHaveBeenCalled()
   })
 
-  it("tells the sender a held verification chore was not sent, on teams and bluebubbles", async () => {
+  it("tells the sender a held untested claim was not sent, on teams and bluebubbles", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
     const chore = "The proof images were re-attached; whether they show in the app hasn't been tested yet."
