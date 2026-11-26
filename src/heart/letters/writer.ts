@@ -135,7 +135,8 @@ export class LettersWriter {
   async run(agent: string, action: string, input: Record<string, unknown>, options: { dryRun?: boolean; session?: unknown } = {}): Promise<LetterResult> {
     if (typeof input !== "object" || input === null || Array.isArray(input)) throw new LetterRefusal("bad-input", "The action's input must be an object.")
     const letters = this.open(agent, options.dryRun === true)
-    const result = await this.dispatch(letters, action, input, options.dryRun === true, returnSession(options.session))
+    const session = action === "mailbox_send" ? returnSession(options.session, path.join(this.deps.bundlesRoot, `${agent}.ouro`)) : null
+    const result = await this.dispatch(letters, action, input, options.dryRun === true, session)
     emitNervesEvent({ component: "daemon", event: "letters.action_done", message: "letters action done", meta: { action, outcome: result.outcome } })
     return result
   }
@@ -230,7 +231,8 @@ export class LettersWriter {
         return { outcome: "done", id: letter.id, code: letter.code, state: "answered", message: `${letter.code} was answered ${optionText(letter, answer.option)} in the last day, so the answer stands.` }
       }
       this.addEvent(letters, letter.id, { t: "refiled", at: now.toISOString(), by: letters.agent })
-      return { outcome: "done", id: letter.id, code: letter.code, state: "waiting", message: `${letter.code} is already waiting with this dedupeKey, so it was refiled, not filed again.` }
+      const elsewhere = letter.from.session && JSON.stringify(letter.from.session) !== JSON.stringify(session) ? " Its answer returns to the session that first filed it." : ""
+      return { outcome: "done", id: letter.id, code: letter.code, state: "waiting", message: `${letter.code} is already waiting with this dedupeKey, so it was refiled, not filed again.${elsewhere}` }
     }
     const to = await this.person(letters.agent)
     if (dryRun) return { outcome: "preview", id: "", code: "", state: "waiting", message: `Would file a new letter to ${to}.` }
@@ -315,7 +317,10 @@ export class LettersWriter {
       const label = letter.options.find((option) => option.id === answer.option)!.label
       emitNervesEvent({ component: "daemon", event: "letters.answer_recorded", message: "a person's answer was recorded", meta: { code: letter.code, hostTrust } })
       this.deps.onAnswered?.(letters.agent, letter, { option: answer.option, label, ...(answer.note ? { note: answer.note } : {}), messageGuid: message.guid, at }).catch(() => undefined)
-      await this.returnAnswer(letters, letter.id)
+      // Its own step on the queue, so the person's answer is recorded and answered on whatever the return does.
+      void this.serial(letters, () => this.returnAnswer(letters, letter.id)).catch((error: Error) => {
+        emitNervesEvent({ level: "warn", component: "daemon", event: "letters.return_step_failed", message: "an answer's return step failed; the retry pass tries it again", meta: { code: letter.code, reason: error.message } })
+      })
       return { recorded: true, id: letter.id, code: letter.code, subject: letter.subject, option: answer.option, label, ...(answer.note ? { note: answer.note } : {}) }
     })
   }
@@ -351,18 +356,29 @@ export class LettersWriter {
    */
   async returnAnswers(): Promise<number> {
     let tried = 0
-    for (const name of fs.readdirSync(this.deps.bundlesRoot)) {
+    let names: string[] = []
+    try {
+      names = fs.readdirSync(this.deps.bundlesRoot)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    }
+    for (const name of names) {
       const agent = name.endsWith(".ouro") ? name.slice(0, -".ouro".length) : ""
       if (!AGENT_NAME.test(agent) || !fs.existsSync(path.join(this.deps.bundlesRoot, name, "state", "letters"))) continue
-      const letters = this.open(agent, false)
-      tried += await this.serial(letters, async () => {
-        const now = this.now().getTime()
-        let count = 0
-        for (const entry of letters.index.list({ all: true }).filter((entry) => entry.state === "answered")) {
-          if (returnDue(entry.letter, entry.events, now) && await this.returnAnswer(letters, entry.letter.id)) count += 1
-        }
-        return count
-      })
+      try {
+        const letters = this.open(agent, false)
+        tried += await this.serial(letters, async () => {
+          const now = this.now().getTime()
+          let count = 0
+          for (const entry of letters.index.list({ all: true }).filter((entry) => entry.state === "answered")) {
+            if (returnDue(entry.letter, entry.events, now) && await this.returnAnswer(letters, entry.letter.id)) count += 1
+          }
+          return count
+        })
+      } catch (error) {
+        // One agent's letters that don't read leave the others' returns alone.
+        emitNervesEvent({ level: "warn", component: "daemon", event: "letters.returns_failed", message: "an agent's answers could not be checked for return", meta: { agent, reason: (error as Error).message } })
+      }
     }
     return tried
   }
