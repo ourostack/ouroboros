@@ -365,12 +365,9 @@ describe("rotation.new-scheme", () => {
         message: "first write of a new process",
         meta: {},
       })
+      await sink.barrier()
 
       const rotated = path.join(dir, "events.1.ndjson.gz")
-      for (let i = 0; i < 100; i++) {
-        if (fs.existsSync(rotated)) break
-        await new Promise((resolve) => setTimeout(resolve, 20))
-      }
       expect(fs.existsSync(rotated)).toBe(true)
       expect(zlib.gunzipSync(fs.readFileSync(rotated)).toString("utf-8")).toContain("xxxx")
       expect(fs.readFileSync(filePath, "utf-8")).toContain("test.first_write")
