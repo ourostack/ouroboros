@@ -22,6 +22,7 @@ import {
   blueBubblesClientForAgent,
   blueBubblesSettings,
   chatWithHandle,
+  letterAnswerSource,
   letterChatSender,
   sendLetterByBlueBubbles,
 } from "../../../senses/bluebubbles/agent-client"
@@ -119,5 +120,30 @@ describe("sending a letter by BlueBubbles", () => {
     expect(typeof client.sendText).toBe("function")
     credentials.read.mockReturnValue(ok({}))
     await expect(sendLetterByBlueBubbles({ agent: "slugger", handle: "a@x.io", text: "t" }, "/root")).rejects.toThrow(/serverUrl is required/)
+  })
+})
+
+describe("letterAnswerSource", () => {
+  it("reads answers from the agent's own server, judging its address and whether the daemon runs under the agent's declared host account", async () => {
+    credentials.read.mockReturnValue(configured)
+    const getServerMessage = vi.fn(async () => null)
+    const clientFor = vi.fn(async () => ({ getServerMessage }) as unknown as BlueBubblesClient)
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-answer-source-"))
+    const source = await letterAnswerSource(root, { clientFor, daemonUser: () => "ari", hostUsername: () => "slugger-host" })("slugger")
+    expect(source.trust).toBe("loopback")
+    expect(source.hostTrust).toBe("shared-apple-id")
+    expect(await source.getServerMessage("m-1")).toBeNull()
+    expect(getServerMessage).toHaveBeenCalledWith("m-1")
+    expect(clientFor).toHaveBeenCalledWith("slugger", path.join(root, "slugger.ouro"))
+    expect((await letterAnswerSource(root, { clientFor, daemonUser: () => "slugger-host", hostUsername: () => "slugger-host" })("slugger")).hostTrust).toBe("separate")
+    expect((await letterAnswerSource(root, { clientFor, daemonUser: () => "ari", hostUsername: () => undefined })("slugger")).hostTrust).toBe("shared-apple-id")
+    expect(typeof (await letterAnswerSource(root, { clientFor })("slugger")).hostTrust).toBe("string")
+  })
+
+  it("says when the client can't fetch a message's own record, and builds the agent's own client by default", async () => {
+    credentials.read.mockReturnValue(configured)
+    const source = await letterAnswerSource("/bundles", { clientFor: async () => ({}) as BlueBubblesClient })("slugger")
+    await expect(source.getServerMessage("m-1")).rejects.toThrow("this BlueBubbles client can't fetch a message's own record")
+    expect((await letterAnswerSource("/bundles")("slugger")).trust).toBe("loopback")
   })
 })
