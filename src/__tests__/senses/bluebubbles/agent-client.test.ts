@@ -26,6 +26,7 @@ import {
   sendLetterByBlueBubbles,
 } from "../../../senses/bluebubbles/agent-client"
 import { BlueBubblesSendError, type BlueBubblesClient } from "../../../senses/bluebubbles/client"
+import { OURO_LETTER_SEND } from "../../../senses/bluebubbles/letter-guard"
 
 const ok = (config: Record<string, unknown>) => ({ ok: true as const, itemPath: "vault:runtime/machines/machine-1/config", config, revision: "r1", updatedAt: "2026-11-26T00:00:00.000Z" })
 const configured = ok({ bluebubbles: { serverUrl: " http://127.0.0.1:1234 ", password: " pw ", ownHandles: [" me@x.io ", 7, ""] }, bluebubblesChannel: { port: 9999 } })
@@ -94,7 +95,7 @@ describe("sending a letter by BlueBubbles", () => {
     const send = letterChatSender("/bundles", clientFor)
     expect(await send({ agent: "slugger", handle: "+15551234567", text: "L1 · hi" })).toEqual({ channel: "bluebubbles", key: "iMessage;-;+15551234567", messageId: "m-1" })
     expect(clientFor).toHaveBeenCalledWith("slugger", path.join("/bundles", "slugger.ouro"))
-    expect(sendText).toHaveBeenCalledWith({ chat: chatWithHandle("+15551234567"), text: "L1 · hi" })
+    expect(sendText).toHaveBeenCalledWith({ chat: chatWithHandle("+15551234567"), text: "L1 · hi", mark: OURO_LETTER_SEND })
   })
 
   it("leaves the chat and message blank when the server names neither, rather than failing a sent message", async () => {
