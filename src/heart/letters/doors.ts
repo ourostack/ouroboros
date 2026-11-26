@@ -311,7 +311,7 @@ export function parseMailboxCli(word: string, tokens: readonly string[]): { acti
       const type = properties[key]!.type
       // The generator gives a whole number flag type "number" and a list one JSON string (ouro-actions.mts).
       if (type === "integer") {
-        input[key] = Number(value)
+        input[key] = /^\d+$/.test(value) ? Number(value) : Number.NaN
         if (!Number.isFinite(input[key])) throw new Error(`${token} takes a number, not ${value}.\n${usageText}`)
       } else if (type === "array") {
         try {

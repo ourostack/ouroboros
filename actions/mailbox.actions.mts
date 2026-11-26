@@ -76,9 +76,10 @@ export const mailboxSend = defineAction({
     }),
     links: field.list({
       label: "Links",
-      description: "Pages the person may want while answering, each { label, url }.",
+      description: "Pages the person may want while answering, at most 10, each { label, url }.",
       optional: true,
       protocolOnly: true,
+      maxItems: 10,
       of: field.group({ label: "Link", description: "One page.", fields: {
         label: field.string({ label: "Label", description: "The link's words.", maxLength: 80 }),
         url: field.string({ label: "Address", description: "An https:// or http:// address.", maxLength: 500 }),

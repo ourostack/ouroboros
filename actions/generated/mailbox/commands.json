@@ -38,7 +38,7 @@
         },
         "links": {
           "type": "string",
-          "description": "Pages the person may want while answering, each { label, url }, as JSON."
+          "description": "Pages the person may want while answering, at most 10, each { label, url }, as JSON."
         },
         "dedupe-key": {
           "type": "string",
