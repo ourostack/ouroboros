@@ -25,6 +25,13 @@ describe("Sanctuary scheduler origin", () => {
     expect(createSanctuarySchedulerFireCommand({ agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron" })).toBeNull()
   })
 
+  it("mints nothing off Linux, whatever the host", () => {
+    expect(createSanctuarySchedulerFireCommand({ agent: "butler", habitName: "sanctuary-health", trigger: "cron" }, {
+      platform: "darwin", pid: 101, ppid: 42, now: () => new Date(), readFile: () => { throw new Error("not read") }, readLink: () => { throw new Error("not read") },
+      identityKey: () => identityKey, marker: () => null, randomId: () => "11111111-1111-4111-8111-111111111111",
+    })).toBeNull()
+  })
+
   it("wires every production dependency without ambient configuration", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "scheduler-origin-defaults-"))
     const file = path.join(root, "file")
