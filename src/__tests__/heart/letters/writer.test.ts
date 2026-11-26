@@ -70,7 +70,30 @@ describe("LettersWriter send", () => {
     expect(await writer.run("slugger", "mailbox_send", know, { dryRun: true })).toEqual({ outcome: "preview", id: "", code: "", state: "waiting", message: "Would file a new letter to friend-ari." })
     expect(fs.existsSync(lettersDir)).toBe(false)
     await writer.run("slugger", "mailbox_send", { ...know, dedupeKey: "k" })
-    expect((await writer.run("slugger", "mailbox_send", { ...know, dedupeKey: "k" }, { dryRun: true })).message).toBe("Would return L1, which is already waiting with this dedupeKey.")
+    expect(await writer.run("slugger", "mailbox_send", { ...know, dedupeKey: "k" }, { dryRun: true })).toEqual({ outcome: "preview", id: "ltr_T1", code: "L1", state: "waiting", message: "Would return L1, which is already waiting with this dedupeKey." })
+  })
+
+  it("previews a duplicate of an answered letter with its real id, code and state", async () => {
+    const { writer, lettersDir } = setup()
+    await writer.run("slugger", "mailbox_send", { ...know, dedupeKey: "k" })
+    const answered: LetterEvent = { t: "answered", at: new Date(NOW).toISOString(), option: "1", via: "chat", evidence: { friendId: "friend-ari", channel: "bluebubbles", chatGuid: "c", messageGuid: "g", dateCreated: new Date(NOW).toISOString() }, hostTrust: "separate" }
+    new LetterStore(lettersDir).append("ltr_T1", answered)
+    const fresh = new LettersWriter({ bundlesRoot: path.dirname(path.dirname(path.dirname(lettersDir))), now: () => new Date(NOW), listFriends: async () => [friend("friend-ari", "family", "ari")], ownerUsername: () => "ari" })
+    expect(await fresh.run("slugger", "mailbox_send", { ...know, dedupeKey: "k" }, { dryRun: true })).toEqual({ outcome: "preview", id: "ltr_T1", code: "L1", state: "answered", message: "Would return L1, which is already answered with this dedupeKey." })
+  })
+
+  it("doesn't roll when an agent's first call is a dry run", async () => {
+    const { writer, lettersDir } = setup()
+    await writer.run("slugger", "mailbox_send", know)
+    await writer.run("slugger", "mailbox_withdraw", { letter: "L1", reason: "moot" })
+    const later = () => new Date(NOW + 91 * 24 * HOUR)
+    const bundlesRoot = path.dirname(path.dirname(path.dirname(lettersDir)))
+    const fresh = new LettersWriter({ bundlesRoot, now: later, listFriends: async () => [friend("friend-ari", "family", "ari")], ownerUsername: () => "ari" })
+    await fresh.run("slugger", "mailbox_send", { ...know, subject: "Preview" }, { dryRun: true })
+    expect(fs.existsSync(path.join(lettersDir, "ltr_T1.jsonl"))).toBe(true)
+    const other = new LettersWriter({ bundlesRoot, now: later, listFriends: async () => [friend("friend-ari", "family", "ari")], ownerUsername: () => "ari" })
+    await other.run("slugger", "mailbox_list", {})
+    expect(fs.existsSync(path.join(lettersDir, "closed", "2026-11", "ltr_T1.jsonl"))).toBe(true)
   })
 
   it("refuses a letter that breaks a rule, with the rule's own text", async () => {
@@ -116,6 +139,58 @@ describe("LettersWriter send", () => {
     }
     expect((await writer.run("slugger", "mailbox_send", know)).code).toBe("L3")
     expect(new LetterStore(lettersDir).readNextCode()).toBe(4)
+  })
+
+  it("removes the file a failed create left, so a retry after a restart keeps one waiting letter per dedupe scope", async () => {
+    const { writer, lettersDir } = setup()
+    const create = LetterStore.prototype.create
+    LetterStore.prototype.create = function (this: LetterStore, letter) {
+      create.call(this, letter)
+      throw new Error("fsync failed")
+    }
+    try {
+      await expect(writer.run("slugger", "mailbox_send", { ...know, dedupeKey: "k" })).rejects.toThrow("fsync failed")
+    } finally {
+      LetterStore.prototype.create = create
+    }
+    expect(fs.existsSync(path.join(lettersDir, "ltr_T1.jsonl"))).toBe(false)
+    expect((await writer.run("slugger", "mailbox_send", { ...know, dedupeKey: "k" })).code).toBe("L2")
+    const waiting = new LetterStore(lettersDir).loadAll().filter((stored) => stored.letter.dedupeKey === "k")
+    expect(waiting.map((stored) => stored.letter.code)).toEqual(["L2"])
+  })
+
+  it("indexes the file a failed create couldn't remove, so a retry dedupes to it", async () => {
+    const { writer } = setup()
+    const create = LetterStore.prototype.create
+    const discard = LetterStore.prototype.discard
+    LetterStore.prototype.create = function (this: LetterStore, letter) {
+      create.call(this, letter)
+      throw new Error("fsync failed")
+    }
+    LetterStore.prototype.discard = () => false
+    try {
+      await expect(writer.run("slugger", "mailbox_send", { ...know, dedupeKey: "k" })).rejects.toThrow("fsync failed")
+    } finally {
+      LetterStore.prototype.create = create
+      LetterStore.prototype.discard = discard
+    }
+    const retry = await writer.run("slugger", "mailbox_send", { ...know, dedupeKey: "k" })
+    expect(retry).toMatchObject({ outcome: "done", id: "ltr_T1", code: "L1", state: "waiting" })
+  })
+
+  it("rethrows a failed create whose leftover can't be read or removed", async () => {
+    const { writer } = setup()
+    const create = LetterStore.prototype.create
+    const discard = LetterStore.prototype.discard
+    LetterStore.prototype.create = () => { throw new Error("ENOSPC") }
+    LetterStore.prototype.discard = () => false
+    try {
+      await expect(writer.run("slugger", "mailbox_send", { ...know, dedupeKey: "k" })).rejects.toThrow("ENOSPC")
+    } finally {
+      LetterStore.prototype.create = create
+      LetterStore.prototype.discard = discard
+    }
+    expect((await writer.run("slugger", "mailbox_send", { ...know, dedupeKey: "k" })).code).toBe("L2")
   })
 
   it("rolls letters closed long enough on a later send, so a long-running daemon rolls them too", async () => {

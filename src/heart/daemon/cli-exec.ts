@@ -161,7 +161,7 @@ import { MailboxDoorError, renderMailboxResult, runMailboxAction } from "../lett
 
 /** The codes the mailbox commands fail with: the doors' own checks and the daemon's letters writer. */
 export const MAILBOX_CLI_REFUSAL_CODES: ReadonlySet<string> = new Set([
-  "daemon-down", "bad-input", "not-found",
+  "daemon-down", "bad-input", "no-agent", "not-found",
   "invalid-letter", "no-person", "not-sender", "not-waiting", "no-answering-handle",
 ])
 import {

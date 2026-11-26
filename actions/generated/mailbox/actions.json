@@ -105,9 +105,10 @@
         },
         "links": {
           "label": "Links",
-          "description": "Pages the person may want while answering, each { label, url }.",
+          "description": "Pages the person may want while answering, at most 10, each { label, url }.",
           "optional": true,
           "protocolOnly": true,
+          "maxItems": 10,
           "of": {
             "label": "Link",
             "description": "One page.",
