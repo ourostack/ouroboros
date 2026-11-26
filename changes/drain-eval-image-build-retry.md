@@ -1,0 +1,1 @@
+- The eval sandbox image build now retries up to three times when the registry answers a server error or drops the connection while fetching the base image, instead of failing the `integration` check on one Docker Hub hiccup (#1936). Any other build failure still fails at once.

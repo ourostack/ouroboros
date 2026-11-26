@@ -575,6 +575,23 @@ describe("dockerCli", () => {
     expect(calls).toEqual([build("agent", SANDBOX_IMAGE), build("household", HOUSEHOLD_IMAGE), build("agent", "ouro-eval-a:1"), build("household", "ouro-eval-h:1")])
   })
 
+  it("retries a build the registry failed with a server error, and only that", async () => {
+    let failures = 1
+    const calls: string[][] = []
+    const hiccup = new Error("docker build exited 1: failed to resolve source metadata for docker.io/library/node:22-bookworm-slim: unexpected status from HEAD request: 500 Internal Server Error")
+    const flaky: Docker = { run: async (args) => { calls.push(args); if (failures-- > 0) throw hiccup; return "" }, start: () => { throw new Error("unused") } }
+    await buildSandboxImage({ repoRoot: "/repo", docker: flaky, retryDelayMs: 0 })
+    expect(calls.map((c) => c[4])).toEqual(["agent", "agent", "household"])
+
+    const broken: Docker = { run: async () => { throw new Error("docker build exited 1: npm ERR! missing script") }, start: () => { throw new Error("unused") } }
+    await expect(buildSandboxImage({ repoRoot: "/repo", docker: broken, retryDelayMs: 0 })).rejects.toThrow("missing script")
+
+    let attempts = 0
+    const down: Docker = { run: async () => { attempts++; throw hiccup }, start: () => { throw new Error("unused") } }
+    await expect(buildSandboxImage({ repoRoot: "/repo", docker: down, retryDelayMs: 0 })).rejects.toThrow("500 Internal Server Error")
+    expect(attempts).toBe(3)
+  })
+
   it("labels both images ouro.eval=1, so eval:stop can find and remove them", () => {
     const dockerfile = fs.readFileSync(path.resolve(__dirname, "../../../../deploy/eval/Dockerfile"), "utf8")
     const stages = dockerfile.split(/^FROM /m).slice(1)
