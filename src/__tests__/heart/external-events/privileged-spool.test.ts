@@ -222,14 +222,15 @@ describe("privileged external-event spool", () => {
     expect(fs.existsSync(path.join(eventRoot, "sanctuary"))).toBe(false)
   })
 
-  it.each([["butler", "sanctuary"], ["sanctuary", "butler"]] as const)("a daemon running the Butler as %s refuses an envelope that names it %s", (agent, named) => {
+  it.each([["butler", "sanctuary"], ["sanctuary", "butler"]] as const)("a daemon running the Butler as %s files an envelope that names it %s under its own name", (agent, named) => {
     const spoolRoot = root(`ouro-privileged-${agent}-other`)
     const eventRoot = root(`ouro-privileged-${agent}-other-events`)
     fs.chmodSync(spoolRoot, 0o755)
     writeSpoolFile(spoolRoot, envelope({ agent: named }))
     spoofRootOwnership(spoolRoot)
-    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, agent, now: () => NOW })).toEqual({ accepted: 0, rejected: 1, replayed: 0 })
-    expect(listExternalEventStatus(eventRoot)).toEqual([])
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, agent, now: () => NOW })).toEqual({ accepted: 1, rejected: 0, replayed: 0 })
+    expect(listExternalEventStatus(eventRoot)).toEqual([expect.objectContaining({ agent, source: "sanctuary-usenet", eventId: "spend-guard" })])
+    expect(fs.existsSync(path.join(eventRoot, named))).toBe(false)
   })
 
   it("retains replay authority after more than 128 transitions and a scanner restart", () => {

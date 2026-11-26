@@ -1259,7 +1259,6 @@ export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot
         } finally { fs.closeSync(handle) }
         const now = options.now?.() ?? new Date().toISOString()
         const envelope = parsePrivilegedEnvelope(raw, entry.name, now)
-        if (envelope.agent !== agent) throw new Error("Privileged external event names another Butler")
         if (replayContains(replayState, envelope.nonce)) throw new Error("Privileged external event replayed nonce")
         const protectiveAction = envelope.action === "usenet.observe" ? undefined : {
           action: envelope.action,
@@ -1271,9 +1270,10 @@ export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot
           verification: { verified: envelope.protectiveStateVerified, digest: envelope.protectiveStateDigest, observedAt: envelope.protectiveStateObservedAt },
         }
         const transition: ExternalEventTransition = envelope.eventType === "usenet.health_observation" && envelope.transitionId.startsWith("recovered:") ? "recovered" : "opened"
-        const quietInitialReceipt = transition === "recovered" && !fs.existsSync(externalEventRecordPath(eventRoot, { agent: envelope.agent, source: envelope.source, eventId: envelope.incidentKey }))
+        const quietInitialReceipt = transition === "recovered" && !fs.existsSync(externalEventRecordPath(eventRoot, { agent, source: envelope.source, eventId: envelope.incidentKey }))
+        // The host's emitter may still name the Butler by its other name; the event is filed under the Butler this daemon runs.
         recordExternalEventInternal({
-          agent: envelope.agent,
+          agent,
           source: envelope.source,
           eventType: envelope.eventType,
           eventId: envelope.incidentKey,
