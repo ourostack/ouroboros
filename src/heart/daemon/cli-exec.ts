@@ -166,7 +166,7 @@ export const HANDLE_SET_REFUSAL_CODES: ReadonlySet<string> = new Set(["bad-handl
 
 export const MAILBOX_CLI_REFUSAL_CODES: ReadonlySet<string> = new Set([
   "daemon-down", "bad-input", "no-agent", "not-found",
-  "invalid-letter", "no-person", "not-sender", "not-waiting", "no-answering-handle",
+  "invalid-letter", "no-person", "not-sender", "not-waiting", "no-answering-handle", "already-delivered", "chat-unavailable", "send-failed", "send-uncertain", "sent-unrecorded",
 ])
 import {
   executePluginInstall,
