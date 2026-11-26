@@ -266,6 +266,38 @@ function shellPsycheRefusal(command: string, context: GuardContext): string | nu
   return fileClass === "tacit" && isFriendTurn(context) ? TACIT_REFUSAL : PSYCHE_REFUSAL
 }
 
+/** Whether the command names the agent's friends/ or product/ folder, in any form that lands there. */
+function shellNamesFolder(command: string, agentRoot: string, folder: "friends" | "product"): boolean {
+  const pathlike = new RegExp(`[\\w.~/-]*(?:/${folder}(?:/[\\w.*-]*)?|${folder}/[\\w.*-]*)`, "g")
+  for (const word of shellWordsLoosely(command)) {
+    const candidates = new Set<string>(word === folder || word === `./${folder}` ? [word] : [])
+    for (const match of word.matchAll(pathlike)) candidates.add(match[0])
+    for (const candidate of candidates) {
+      try {
+        if (insideAgentFolder(candidate, agentRoot, folder)) return true
+      } catch {
+        // A path whose landing place can't be read counts as named, as the file tools refuse it.
+        return true
+      }
+    }
+  }
+  return false
+}
+
+/** The refusal for a shell command that could write the friends store or the product folder, which no turn may write, or null. */
+function shellProtectedFolderRefusal(command: string, context: GuardContext): string | null {
+  const agentRoot = context.agentRoot
+  if (!agentRoot) return null
+  const folder = (["friends", "product"] as const).find((name) => shellNamesFolder(command, agentRoot, name))
+  if (!folder) return null
+  const streams = command.replace(/\d>(?:&\d|\s*\/dev\/null)/g, "")
+  const writesOut = /(?:^|[^0-9&>])>|&>|>>|\btee\b/.test(streams)
+  const onlyReads = !writesOut && !SUBSHELL_PATTERN.test(command) && streams.split(PSYCHE_SHELL_SEPARATORS).filter(Boolean).every(shellSegmentOnlyReads)
+  if (onlyReads) return null
+  emitNervesEvent({ component: "repertoire", event: "repertoire.protected_folder_shell_refused", message: "refused a shell command that could write the friends or product folder", meta: { folder, channel: context.channel ?? null } })
+  return REASONS.protectedPath
+}
+
 /** A turn that carries a person who is not family: TACIT is read-only to it. */
 function isFriendTurn(context: GuardContext): boolean {
   return context.friendId !== undefined && context.trustLevel !== "family"
@@ -336,6 +368,8 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>, con
     if (shellWritesToProtectedPath(command)) return deny(REASONS.protectedPath)
     const psycheRefusal = shellPsycheRefusal(command, context)
     if (psycheRefusal) return deny(psycheRefusal)
+    const folderRefusal = shellProtectedFolderRefusal(command, context)
+    if (folderRefusal) return deny(folderRefusal)
   }
 
   return allow

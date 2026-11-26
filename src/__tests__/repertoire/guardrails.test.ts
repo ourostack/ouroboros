@@ -1487,6 +1487,40 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
     })
   })
 
+  describe("the friends and product folders in shell commands (#1949)", () => {
+    const ctx = (over: Record<string, unknown> = {}) => ({ readPaths: new Set<string>(), agentRoot: "/bundle", trustLevel: "friend" as const, ...over })
+    const writes = [
+      "cp /tmp/f.json /bundle/friends/p.json", "sed -i s/friend/family/ /bundle/friends/p.json", "cd /bundle && sed -i s/a/b/ friends/p.json",
+      "python3 -c \"open('/bundle/friends/p.json','w').write('x')\"", "echo x > /bundle/friends/p.json", "cd /bundle/friends && rm p.json", "rm -rf /bundle/friends",
+      "mv /tmp/x /bundle/friends/p.json", "node -e \"require('fs').writeFileSync('friends/p.json','x')\"", "cd friends && echo x > p.json", "echo x > /bundle/product/a", "rm -rf ./product",
+    ]
+    it.each(writes)("refuses %s for every trust level", async (command) => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      for (const trustLevel of ["friend", "family"] as const) {
+        expect(guardInvocation("shell", { command }, ctx({ trustLevel })), command).toMatchObject({ allowed: false })
+      }
+    })
+    it.each(["cat /bundle/friends/p.json", "ls -la /bundle/friends", "grep -rn family /bundle/product", "cd /bundle/friends && ls && cat p.json | head -3"])("allows the read %s", async (command) => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      expect(guardInvocation("shell", { command }, ctx())).toEqual({ allowed: true })
+    })
+    it("leaves commands that never name those folders, and agents with no root, alone", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      expect(guardInvocation("shell", { command: "cp a b && echo x > /tmp/friends-list.txt" }, ctx())).toEqual({ allowed: true })
+      expect(guardInvocation("shell", { command: "rm -rf /bundle/friends" }, ctx({ agentRoot: undefined }))).toEqual({ allowed: true })
+    })
+    it("refuses a command naming a path whose landing place cannot be read", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      const errno = Object.assign(new Error("denied"), { code: "EACCES" })
+      const spy = vi.spyOn(fs.realpathSync, "native").mockImplementation((() => { throw errno }) as typeof fs.realpathSync.native)
+      try {
+        expect(guardInvocation("shell", { command: "rm /bundle/friends/p.json" }, ctx())).toMatchObject({ allowed: false })
+      } finally {
+        spy.mockRestore()
+      }
+    })
+  })
+
   describe("the psyche folder in shell commands", () => {
     const ctx = (over: Record<string, unknown> = {}) => ({ readPaths: new Set(["/bundle/psyche/SOUL.md"]), agentRoot: "/bundle", trustLevel: "family" as const, ...over })
     describe("shell commands that mention the psyche folder run only when every part is read-only", () => {

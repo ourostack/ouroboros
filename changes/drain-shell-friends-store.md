@@ -1,0 +1,1 @@
+- A shell command that names the agent's `friends/` or `product/` folder now runs only when every part of it plainly reads, for every turn and every trust level, as the file tools already require. Before, an A2A peer's shell could write, move or delete friend records and so raise its own trust level.
