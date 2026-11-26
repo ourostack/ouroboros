@@ -4,6 +4,7 @@ import * as path from "node:path"
 import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
 import { afterEach, describe, expect, it } from "vitest"
 import type { LetterEvent } from "../../../heart/letters/letter"
+import { writeAnsweringHandle } from "../../../heart/letters/answering"
 import { LetterStore } from "../../../heart/letters/store"
 import { LetterRefusal, LettersWriter, answerLettersCommand, ownerFriendIds, type WriterDeps } from "../../../heart/letters/writer"
 
@@ -63,6 +64,19 @@ describe("LettersWriter send", () => {
     expect(stored.letter.options.map((option) => option.id)).toEqual(["1", "2"])
     expect(new LetterStore(lettersDir).readNextCode()).toBe(2)
     expect((await writer.run("slugger", "mailbox_send", know)).code).toBe("L2")
+  })
+
+  it("freezes the person's answering handle into the letter at filing, so a later change leaves it alone", async () => {
+    const { writer, lettersDir } = setup()
+    await writer.run("slugger", "mailbox_send", know)
+    expect(new LetterStore(lettersDir).read("ltr_T1")!.letter.answeringHandle).toBeUndefined()
+    writeAnsweringHandle(lettersDir, "friend-ari", "+15551234567")
+    await writer.run("slugger", "mailbox_send", know)
+    writeAnsweringHandle(lettersDir, "friend-ari", "ari@example.com")
+    const store = new LetterStore(lettersDir)
+    expect(store.read("ltr_T2")!.letter.answeringHandle).toBe("+15551234567")
+    await writer.run("slugger", "mailbox_send", know)
+    expect(store.read("ltr_T3")!.letter.answeringHandle).toBe("ari@example.com")
   })
 
   it("previews a dry run without filing anything", async () => {
