@@ -1124,11 +1124,28 @@ describe("the Butler's name follows the image", () => {
     const script = upgrade.forceBwSyncScript("butler")
     expect(script).toContain('const NAME="butler";')
     expect(script).toContain('fs.readFileSync("/home/ouro/AgentBundles/butler.ouro/agent.json","utf8")')
-    expect(script).toContain('const APP=bitwardenAppDataDir(NAME,{serverUrl:url,email},"/home/ouro");')
+    expect(script).toContain('const APP=bitwardenAppDataDir(NAME,resolveVaultConfig(NAME,cfg),"/home/ouro");')
     expect(script).toContain("readVaultUnlockSecret({agentName:NAME,email,serverUrl:url})")
     expect(script).not.toContain("readdirSync")
     expect(upgrade.forceBwSyncScript("sanctuary")).toContain('"/home/ouro/AgentBundles/sanctuary.ouro/agent.json"')
     expect(() => new Function("require", "process", upgrade.forceBwSyncScript("butler"))).not.toThrow()
+  })
+
+  it("hashes the bw folder from the vault config the daemon resolves, so a legacy or slashed URL finds the same folder", async () => {
+    const identity = await import("../../heart/identity")
+    const vaultUnlock = await import("../../repertoire/vault-unlock")
+    const vault = { email: "butler@ouro.bot", serverUrl: "https://vault.ouroboros.bot/" }
+    let appDir: string | undefined
+    const fakeRequire = (id: string) => {
+      if (id === "node:fs") return { readFileSync: () => JSON.stringify({ vault }) }
+      if (id === "node:child_process") return { execFileSync: (_bin: string, _args: string[], options: { env: Record<string, string> }) => { appDir = options.env.BITWARDENCLI_APPDATA_DIR; return "session" } }
+      if (id.endsWith("/heart/identity.js")) return identity
+      if (id.endsWith("/repertoire/vault-unlock.js")) return { bitwardenAppDataDir: vaultUnlock.bitwardenAppDataDir, readVaultUnlockSecret: () => ({ secret: "unlock" }) }
+      throw new Error(`unexpected require ${id}`)
+    }
+    new Function("require", "process", upgrade.forceBwSyncScript("butler"))(fakeRequire, { env: {}, stdout: { write: () => true } })
+    expect(appDir).toBe(vaultUnlock.bitwardenAppDataDir("butler", identity.resolveVaultConfig("butler", vault), "/home/ouro"))
+    expect(appDir).not.toBe(vaultUnlock.bitwardenAppDataDir("butler", vault, "/home/ouro"))
   })
 
   describe("a leftover container-credentials handoff", () => {

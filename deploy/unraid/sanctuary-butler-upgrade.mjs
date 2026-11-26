@@ -607,10 +607,11 @@ function recreateResident(version) {
   disableResidentAutostart()
   ensureTrustHostDir()
   const icon = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
-  docker(["rm", "-f", CONTAINER], { stdio: "ignore" })
   // The image names where the bundle and trust are mounted; the host folders stay. --mount refuses a missing source,
-  // where -v would have Docker create an empty folder in its place.
+  // where -v would have Docker create an empty folder in its place. Read the name before the resident goes, so a failed
+  // inspect leaves it standing.
   const name = imageButlerName(image(version))
+  docker(["rm", "-f", CONTAINER], { stdio: "ignore" })
   docker(["create", "--name", CONTAINER, "--network", "host", "--restart", "unless-stopped", "--user", "10001:10001",
     "-l", "net.unraid.docker.managed=dockerman",
     "-l", `net.unraid.docker.icon=${icon}`,
@@ -1131,7 +1132,9 @@ export function forceBwSyncScript(butler) {
     `const cfg=JSON.parse(fs.readFileSync(${JSON.stringify(`${containerBundle(butler)}/agent.json`)},"utf8")).vault||{};`,
     'const email=cfg.email, url=cfg.serverUrl;',
     // The bw folder is keyed by the agent's name, so the other name's folder may be there too: take this Butler's.
-    'const APP=bitwardenAppDataDir(NAME,{serverUrl:url,email},"/home/ouro");',
+    // Hash the folder from the vault config the daemon resolves (normalised URL, legacy hosts mapped), or it misses.
+    'const {resolveVaultConfig}=require("/opt/ouro/dist/heart/identity.js");',
+    'const APP=bitwardenAppDataDir(NAME,resolveVaultConfig(NAME,cfg),"/home/ouro");',
     'const u=readVaultUnlockSecret({agentName:NAME,email,serverUrl:url});',
     'const env={...process.env,BITWARDENCLI_APPDATA_DIR:APP,OURO_BW_MASTER_PASSWORD:u.secret};',
     'const sess=cp.execFileSync("bw",["unlock","--passwordenv","OURO_BW_MASTER_PASSWORD","--raw"],{env,encoding:"utf8"}).trim();',
@@ -1316,7 +1319,14 @@ function templatePin(version) {
   const original = readFileSync(TEMPLATE, "utf8")
   let parse = null
   let parserError = null
-  try { parse = createRequire(import.meta.url)(`${ROOT}/package/deploy/unraid/docker-man-template-xml.cjs`).parseDockerManTemplateXml } catch (error) { parserError = error.message }
+  try {
+    // Load the parser fresh each time: preflight reads the predecessor package's copy, and the pin after the switch must
+    // read the new one at the same path, which require's cache would otherwise hand back.
+    const load = createRequire(import.meta.url)
+    const parserPath = `${ROOT}/package/deploy/unraid/docker-man-template-xml.cjs`
+    delete load.cache[load.resolve(parserPath)]
+    parse = load(parserPath).parseDockerManTemplateXml
+  } catch (error) { parserError = error.message }
   return { original, ...pinTemplateText(original, image(version), imageButlerName(image(version)), parse, parserError) }
 }
 

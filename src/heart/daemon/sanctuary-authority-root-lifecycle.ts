@@ -907,11 +907,12 @@ export class SanctuaryAuthorityRootLifecycle {
    * release's audit refuses it.
    */
   #recreateResident(reference: string, imageId: string, { psycheMount, syncMount }: { psycheMount: boolean; syncMount: boolean }): void {
-    if (this.#containers().some((container) => container.Name === "/ouro-butler")) this.#docker(["rm", "-f", "ouro-butler"])
     // The image names where its bundle and trust are mounted; the host folders stay where they are. `--mount` refuses a
-    // missing source, where `-v` would have Docker create an empty folder in its place.
+    // missing source, where `-v` would have Docker create an empty folder in its place. Both are read before the resident
+    // goes, so a failed inspect leaves it standing.
     const bundle = this.#hostBundle()
     const { agentRoot, trustRoot } = butlerContainerPaths(this.#imageButler(imageId))
+    if (this.#containers().some((container) => container.Name === "/ouro-butler")) this.#docker(["rm", "-f", "ouro-butler"])
     this.#docker(["create", "--name", "ouro-butler", "--network", "host", "--restart", "unless-stopped", "--user", "10001:10001",
       "-l", "net.unraid.docker.managed=dockerman", "-l", `net.unraid.docker.icon=${ICON}`, "-l", "org.opencontainers.image.source=https://github.com/ourostack/ouroboros",
       "-v", `${RUNTIME}:/home/ouro/.ouro-cli:rw`, "--mount", `type=bind,src=${bundle},dst=${agentRoot}`,
