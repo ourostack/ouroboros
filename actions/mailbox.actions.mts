@@ -197,7 +197,13 @@ export const mailboxDeliver = defineAction({
   agent: "Ask Ouro to send a waiting letter to the person's own chat now, rendered by Ouro, and record that it was delivered.",
   when: "Pick this when you judge the person should see a waiting letter now; Ouro writes the text and picks the chat.",
   errors: [
-    { code: "no-answering-handle", means: "The person has no answering handle yet, so Ouro has no chat to send the letter to.", fix: "Leave the letter waiting; the person sets the handle with `ouro mailbox handle set` when chat delivery is ready." },
+    { code: "no-answering-handle", means: "The letter was filed before the person had an answering handle, so Ouro has no chat to send it to.", fix: "Leave the letter waiting; once the person sets a handle with `ouro mailbox handle set`, letters filed after that can be delivered." },
+    { code: "not-waiting", means: "The letter is already answered, withdrawn or expired.", fix: "Nothing to deliver; read the letter to see how it closed." },
+    { code: "already-delivered", means: "The letter is already in the person's chat; each letter goes there once.", fix: "Wait for the answer with mailbox_wait." },
+    { code: "chat-unavailable", means: "This daemon has no chat to send through.", fix: "Leave the letter waiting; the person reads it in their mailbox." },
+    { code: "send-failed", means: "The message never reached the chat; the letter stays waiting.", fix: "Deliver it again once the cause the refusal names is fixed." },
+    { code: "send-uncertain", means: "The send failed after it may have reached the chat, so Ouro counts the letter as delivered and won't send it twice.", fix: "Wait for the answer with mailbox_wait; the letter is in the person's mailbox either way." },
+    { code: "sent-unrecorded", means: "The letter went to the chat, but writing its delivered event to the letter's file failed, so the mailbox doesn't show it as delivered.", fix: "Leave it; delivering again would send it twice." },
     notFound,
     daemonDown,
     unknownInput("mailbox_deliver"),
@@ -206,8 +212,10 @@ export const mailboxDeliver = defineAction({
   ],
   input: { letter: letterId },
   output: {
-    outcome: outcome("done, when the letter was sent."),
+    outcome: outcome("done, when the letter was sent; preview on a dry run, which shows the text and sends nothing."),
     state,
+    channel: field.string({ label: "Channel", description: "The chat the letter went to, such as bluebubbles, when it was sent." }),
+    text: field.string({ label: "Text", description: "On a dry run, the letter as the person will read it." }),
   },
   cli: "mailbox deliver",
 });
