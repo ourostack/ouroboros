@@ -1,0 +1,1 @@
+- The Butler's behaviour (its Telegram sense, owner escalation, house-care and media tools, health habit, acceptance markers and download-credit text) now turns on for an agent named `butler` as well as `sanctuary`. This is the first step of the rename: an install runs the same whichever name its bundle has.

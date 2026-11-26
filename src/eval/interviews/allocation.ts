@@ -14,6 +14,8 @@ export const REGISTERED_ALLOCATIONS: Readonly<Record<string, number>> = {
   ca0b441641c6c62e70238ee2b31b2283d358103d683061a97e0174f6c29851f2: 1,
   // preregistration-v2.md, registered 2026-11-23, seed 20261123: the study on Copilot, with no MiniMax.
   "71fc28b44d71b1b3d09dffebafa377059a514b42c4a1524cbd3cf7182531c379": 2,
+  // preregistration-v3.md, registered 2026-11-26, seed 20261126: version 2's method with a 429 backoff and a neutral bundle.
+  "0a0656f41369bab7b1c0ba34a425a908ba0077acd70fc62477ef2a9a2483a96e": 3,
 }
 
 export type LabelledArm = { label: string; arm: string }
@@ -63,8 +65,8 @@ export function readAllocation(preregistration: string, registered: Readonly<Rec
   return { version, sessions }
 }
 
-/** The versions that run only the reduced design: version 2 adopts it before any call (its section 5). */
-export const REDUCED_ONLY: ReadonlySet<number> = new Set([2])
+/** The versions that run only the reduced design: versions 2 and 3 adopt it before any call (each one's section 5). */
+export const REDUCED_ONLY: ReadonlySet<number> = new Set([2, 3])
 
 /** The sessions a run or a grade covers: the reduced design, or every session where the version allows the full one. */
 export function designOf(allocation: Allocation, reduced: boolean): Session[] {

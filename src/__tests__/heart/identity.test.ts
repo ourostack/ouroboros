@@ -89,6 +89,16 @@ describe("getAgentName", () => {
   })
 })
 
+describe("isButlerAgent", () => {
+  it("knows the Butler by its name and by its name from before the rename", async () => {
+    const { isButlerAgent, BUTLER_AGENT_NAMES } = await import("../../heart/butler-agent")
+    expect(BUTLER_AGENT_NAMES).toEqual(["butler", "sanctuary"])
+    expect(isButlerAgent("butler")).toBe(true)
+    expect(isButlerAgent("sanctuary")).toBe(true)
+    for (const name of ["slugger", "Butler", "butler.ouro", "", undefined, null]) expect(isButlerAgent(name)).toBe(false)
+  })
+})
+
 describe("setAgentName", () => {
   beforeEach(() => {
     vi.resetModules()
