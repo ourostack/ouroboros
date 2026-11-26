@@ -3,9 +3,12 @@
 // under state/letters, and every write to them goes through that agent's one queue, so two sends never race.
 import * as fs from "fs"
 import * as path from "path"
-import { FileFriendStore, isLocalMachineOwnerIdentity, machineOwnerUsername, type FriendRecord } from "@ouro.bot/friends"
+import { machineOwnerUsername, type FriendRecord } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { checkLetterInput, checkWithdrawReason, newLetterId, type Letter, type LetterEvent, type LetterKind } from "./letter"
+import { ownerFriendIds, readAnsweringHandles } from "./answering"
+
+export { ownerFriendIds }
 import { LetterIndex, type IndexedLetter } from "./letter-index"
 import { LetterStore } from "./store"
 
@@ -52,14 +55,6 @@ interface AgentLetters {
   index: LetterIndex
   queue: Promise<unknown>
   waiters: Map<string, Set<() => void>>
-}
-
-/** The family records in a bundle's friends folder that name this machine's owner, the rule `ouro friend link-code` uses. */
-export async function ownerFriendIds(bundleRoot: string, owner: string | null, list?: (bundleRoot: string) => Promise<FriendRecord[]>): Promise<string[]> {
-  const friends = await (list ?? ((root: string) => new FileFriendStore(path.join(root, "friends")).listAll()))(bundleRoot)
-  return friends
-    .filter((record) => record.trustLevel === "family" && record.externalIds.some((id) => isLocalMachineOwnerIdentity(id.provider, id.externalId, owner)))
-    .map((record) => record.id)
 }
 
 function ageOf(createdAt: string, now: number): string {
@@ -208,7 +203,11 @@ export class LettersWriter {
     // The counter moves first, so a crash after it can skip a code but never reuse one.
     letters.store.writeNextCode(number + 1)
     letters.index.reserve(number + 1)
-    const letter: Letter = { v: 1, id: (this.deps.newId ?? newLetterId)(now.getTime()), code: `L${number}`, to, from, ...draft, createdAt: now.toISOString() }
+    // The person's answering handle is frozen into the letter now, so a later change leaves this letter alone.
+    const answeringHandle = readAnsweringHandles(letters.store.dir)[to]
+    const letter: Letter = {
+      v: 1, id: (this.deps.newId ?? newLetterId)(now.getTime()), code: `L${number}`, ...(answeringHandle ? { answeringHandle } : {}), to, from, ...draft, createdAt: now.toISOString(),
+    }
     try {
       letters.store.create(letter)
     } catch (error) {

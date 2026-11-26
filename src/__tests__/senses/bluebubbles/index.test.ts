@@ -13298,11 +13298,11 @@ describe("drainAndSendPendingBlueBubbles", () => {
     }))
   })
 
-  it("holds a pending verification chore and returns it to the agent's private runtime", async () => {
+  it("holds a pending untested claim and returns it to the agent's private runtime", async () => {
     const queue = vi.fn()
     vi.doMock("../../../mind/pending", async (original) => ({ ...await original<typeof import("../../../mind/pending")>(), queuePendingMessage: queue }))
     const friendStore = { get: vi.fn().mockResolvedValue(makeFriend()), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn(), hasAnyFriends: vi.fn(), listAll: vi.fn() }
-    const text = "Could you open #5312 on your phone and tell me if the pictures show?"
+    const text = "The proof images were re-attached; whether they show in the app hasn't been tested yet."
     const file = writePendingFile("friend-uuid-1", "session", { from: "testagent", friendId: "friend-uuid-1", channel: "bluebubbles", key: "session", content: text, timestamp: Date.now() })
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
