@@ -68,10 +68,15 @@ function readFile(lettersDir: string): AnsweringFile {
 
 /** Each person's answering handle, by friend id. Filing reads it; a file that doesn't read gives nobody a handle. */
 export function readAnsweringHandles(lettersDir: string): Record<string, string> {
+  return checkAnsweringHandles(lettersDir) ?? {}
+}
+
+/** Each person's answering handle, or null when the file doesn't read, for a caller that must fail closed. */
+export function checkAnsweringHandles(lettersDir: string): Record<string, string> | null {
   const file = readFile(lettersDir)
   if (!file.ok) {
     emitNervesEvent({ level: "warn", component: "daemon", event: "letters.answering_unreadable", message: "the answering handles file doesn't read, so no letter gets a handle", meta: { problem: file.problem } })
-    return {}
+    return null
   }
   const result: Record<string, string> = {}
   for (const [friendId, handle] of Object.entries(file.handles)) {

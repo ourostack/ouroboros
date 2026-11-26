@@ -12,6 +12,7 @@ import {
 } from "../../heart/runtime-credentials"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesClientHostOptions } from "./client"
+import { OURO_LETTER_SEND } from "./letter-guard"
 import type { BlueBubblesChatRef } from "./model"
 
 function text(value: unknown): string {
@@ -97,7 +98,7 @@ export async function sendLetterByBlueBubbles(
   const client = await clientFor(request.agent, agentRoot)
   let sent: Awaited<ReturnType<BlueBubblesClient["sendText"]>>
   try {
-    sent = await client.sendText({ chat: chatWithHandle(request.handle), text: request.text })
+    sent = await client.sendText({ chat: chatWithHandle(request.handle), text: request.text, mark: OURO_LETTER_SEND })
   } catch (error) {
     // A chat that doesn't exist yet can't be found by its handle; say what the person does about it.
     if (error instanceof BlueBubblesSendError && error.errorCode === "chat_unresolved") {
