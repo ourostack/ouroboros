@@ -1293,10 +1293,10 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
     const peer = (root: string, over: Record<string, unknown> = {}) => ({ readPaths: new Set<string>(), agentRoot: root, trustLevel: "friend" as const, friendKind: "agent" as const, friendId: "peer", channel: "a2a", ...over })
     afterEach(() => { for (const root of made.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
     const writes = [
-      "cp /tmp/f.json R/friends/p.json", "sed -i s/friend/family/ R/friends/p.json", "cd R && sed -i s/a/b/ friends/p.json",
+      "cp /tmp/f.json R/friends/p.json", "sed -i s/friend/family/ R/friends/p.json", "cd R/ && sed -i s/a/b/ friends/p.json",
       "python3 -c \"open('R/friends/p.json','w').write('x')\"", "echo x > R/friends/p.json", "cd R/friends && rm p.json", "rm -rf R/friends",
       "mv /tmp/x R/friends/p.json", "node -e \"require('fs').writeFileSync('friends/p.json','x')\"", "cat R/friends/p.json | tee R/friends/q.json",
-      "cp /tmp/rules.md R/product/RULES.md", "ls R/friends $(rm R/friends/p.json)", "cd R && rm -rf friends", "cd R; echo ok && mv friends /tmp/f",
+      "cp /tmp/rules.md R/product/RULES.md", "ls R/friends $(rm R/friends/p.json)", "cd R/ && rm -rf friends", "cd R/; echo ok && mv friends /tmp/f",
     ]
     it.each(writes)("refuses %s from an A2A peer, as the file tools do", async (command) => {
       const { guardInvocation } = await import("../../repertoire/guardrails")
@@ -1304,11 +1304,62 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
       vi.mocked(fs.existsSync).mockReturnValue(true)
       expect(guardInvocation("shell", { command: command.replaceAll("R/", `${root}/`) }, peer(root))).toMatchObject({ allowed: false, reason: expect.stringContaining("protected") })
     })
+    it.each([
+      ["a cwd inside the store", { cwd: "friends", command: "sed -i s/friend/family/ p.json" }],
+      ["a cwd of the store's absolute path", { cwd: "R/friends", command: "rm p.json" }],
+      ["a glob from home", { command: "sed -i s/friend/family/ */*.json" }],
+      ["a glob after the folder name", { command: "rm -rf ./friends*" }],
+      ["find from home", { command: "find . -name '*.json' -exec sed -i s/a/b/ {} +" }],
+      ["xargs fed from home", { command: "grep -rl trustLevel . | xargs sed -i s/a/b/" }],
+      ["the home folder from $HOME", { command: "sed -i s/a/b/ $HOME/H/friends/p.json" }],
+      ["the home folder from ~", { command: "sed -i s/a/b/ ~/H/friends/p.json" }],
+      ["a cd into the store", { command: "cd friends && sed -i s/a/b/ p.json" }],
+      ["a glob from the filesystem's root", { command: "cp a /*/p.json" }],
+    ])("refuses %s (review of #1949)", async (_label, args) => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      const root = bundle()
+      vi.mocked(fs.existsSync).mockReturnValue(true)
+      // The bundle sits in a temp folder, reached from the real home folder.
+      const fill = (text: string) => text.replaceAll("R/", `${root}/`).replaceAll("H/", `${path.relative(os.homedir(), root)}/`)
+      const call = Object.fromEntries(Object.entries(args).map(([key, value]) => [key, fill(value)]))
+      expect(guardInvocation("shell", call, peer(root))).toMatchObject({ allowed: false })
+    })
+    it("reads a cwd of psyche as a cd for the psyche guard too", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      const root = bundle()
+      fs.mkdirSync(path.join(root, "psyche"))
+      vi.mocked(fs.existsSync).mockReturnValue(true)
+      expect(guardInvocation("shell", { cwd: "psyche", command: "sed -i s/a/b/ *.md" }, peer(root))).toMatchObject({ allowed: false })
+      expect(guardInvocation("shell", { cwd: "psyche", command: "cat SOUL.md" }, peer(root))).toEqual({ allowed: true })
+    })
+    it("resolves a glob or a recursive program from where a cd moved the command", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      const root = bundle()
+      const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "store-shell-elsewhere-"))
+      made.push(elsewhere)
+      vi.mocked(fs.existsSync).mockReturnValue(true)
+      for (const command of [`cd ${elsewhere} && rm *.tmp`, `cd ${elsewhere} && find . -delete`, `cd ${elsewhere} && sed -i s/a/b/ friends/x.json`]) {
+        expect(guardInvocation("shell", { command }, peer(root)), command).toEqual({ allowed: true })
+      }
+    })
+    it("lets reads through other readers, and git messages and plain git work alone", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      const root = bundle()
+      vi.mocked(fs.existsSync).mockReturnValue(true)
+      for (const command of ["cat friends/p.json | jq .trustLevel", "jq . friends/p.json", "find friends -name '*.json'", "sort friends/p.json", "git commit -m 'tidy friends/ notes'", "git add -A", "rm notes.tmp"]) {
+        expect(guardInvocation("shell", { command }, peer(root)), command).toEqual({ allowed: true })
+      }
+      for (const command of ["sort -o friends/p.json friends/p.json", "find friends -delete"]) {
+        expect(guardInvocation("shell", { command }, peer(root)), command).toMatchObject({ allowed: false })
+      }
+    })
     it("refuses the owner's own turn too, since the harness writes the store", async () => {
       const { guardInvocation } = await import("../../repertoire/guardrails")
       const root = bundle()
       vi.mocked(fs.existsSync).mockReturnValue(true)
       expect(guardInvocation("shell", { command: `sed -i s/a/b/ ${root}/friends/p.json` }, peer(root, { trustLevel: "family", friendKind: "human", channel: "telegram" }))).toMatchObject({ allowed: false })
+      expect(guardInvocation("shell", { command: `sed -i s/a/b/ ${root}/friends/p.json` }, peer(root, { channel: undefined }))).toMatchObject({ allowed: false })
+      expect(guardInvocation("shell", { command: "X=1" }, peer(root))).toEqual({ allowed: true })
     })
     it("refuses a path whose landing place can't be read", async () => {
       const { guardInvocation } = await import("../../repertoire/guardrails")
@@ -1555,7 +1606,7 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
         "python3 - <<< 'open(\"/bundle/psyche/SOUL.md\",\"w\")'", "echo x > '/bundle/psyche/SOUL.md'", "cat /bundle/psyche/SOUL.md > /tmp/x; rm /bundle/psyche/SOUL.md",
         "echo x > /bundle/x/../psyche/SOUL.md", "ls /bundle/psyche $(cp a /bundle/psyche/SOUL.md)", "cat psyche/SOUL.md | tee psyche/SOUL.md", "python3 -c \"open('psyche/SOUL.md','w')\"",
         "cat /bundle/psyche/SOUL.md & cp a /bundle/psyche/b", "FOO=1 cp a /bundle/psyche/b", "echo `cp a /bundle/psyche/b`", "cat /bundle/psyche/SOUL.md >/dev/null",
-        "X=/bundle/psyche/SOUL.md; cat psyche/LORE.md $X", "cat psyche/SOUL.md $TARGET", "cat psyche/SOUL.md ${TARGET}", "cat psyche/SOUL.md $_",
+        "rm -rf ./psyche*", "mv /bundle/psyche* /tmp", "X=/bundle/psyche/SOUL.md; cat psyche/LORE.md $X", "cat psyche/SOUL.md $TARGET", "cat psyche/SOUL.md ${TARGET}", "cat psyche/SOUL.md $_",
       ]
       // cat only reads, whatever an unknown variable names.
       const variableReads = ["cat psyche/SOUL.md $TARGET", "cat psyche/SOUL.md ${TARGET}", "cat psyche/SOUL.md $_"]
