@@ -9,7 +9,7 @@ import { hasManagedAgentProcess, hasManagedSupercronicProcess, hasManagedTelegra
 import { inspectSanctuaryPackageManagedBundle } from "./sanctuary-bundle-migration"
 import { resolveSanctuaryPackageManagementActivation } from "./sanctuary-package-management"
 import { failureCodeLine } from "./cli-commands/failure-code"
-import { BUTLER_AGENT_NAMES, isButlerAgent } from "../butler-agent"
+import { butlerOnDisk, isButlerAgent } from "../butler-agent"
 
 function fail(reason: string): never {
   emitNervesEvent({ level: "error", component: "daemon", event: "daemon.container_healthcheck_error", message: "container healthcheck failed", meta: { reason } })
@@ -17,18 +17,12 @@ function fail(reason: string): never {
   throw Object.assign(new Error(reason), { code: reason === "missing agent" ? "missing-agent" : "unhealthy" })
 }
 
-/** The Butler's name is the one its bundle on disk has; with both bundles, or neither, there is no Butler to check. */
-function butlerOnDisk(bundlesRoot: string): string | undefined {
-  const present = BUTLER_AGENT_NAMES.filter((name) => fs.existsSync(path.join(bundlesRoot, `${name}.ouro`)))
-  return present.length === 1 ? present[0] : undefined
-}
-
 export function runContainerHealthcheck(options: { argv?: string[]; now?: () => number } = {}): void {
   const argv = options.argv ?? process.argv
   const now = options.now ?? Date.now
   const index = argv.indexOf("--agent")
   const given = index >= 0 ? argv[index + 1] : undefined
-  const agent = isButlerAgent(given) ? butlerOnDisk(getAgentBundlesRoot()) : given
+  const agent = isButlerAgent(given) ? butlerOnDisk(getAgentBundlesRoot(), fs.existsSync) ?? undefined : given
   if (!agent) fail("missing agent")
   const packageManagement = resolveSanctuaryPackageManagementActivation({ mode: "production", argv, managedAgents: [agent], repoRoot: getRepoRoot(), bundlesRoot: getAgentBundlesRoot(), runtimePackageVersion: getPackageVersion() })
   if (packageManagement.kind !== "active") fail("invalid package-managed Sanctuary activation")

@@ -2,7 +2,10 @@ import {
   refreshMachineRuntimeCredentialConfig, refreshRuntimeCredentialConfig,
   upsertMachineRuntimeCredentialConfig, upsertRuntimeCredentialConfig,
 } from "../runtime-credentials"
+import * as fs from "node:fs"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { getAgentBundlesRoot } from "../identity"
+import { butlerOnDisk, type ButlerAgentName } from "../butler-agent"
 
 interface TokenIdentity { token: string; botId: string; ownerUserId: string; ownerChatId: string }
 
@@ -14,10 +17,11 @@ function identity(value: unknown): TokenIdentity {
   return candidate
 }
 
-async function readOwners(): Promise<Record<string, unknown>[]> {
+async function readOwners(agent: ButlerAgentName): Promise<Record<string, unknown>[]> {
+  // The second argument is the machine id, which stays "sanctuary" through the rename.
   const results = [
-    await refreshRuntimeCredentialConfig("sanctuary"),
-    await refreshMachineRuntimeCredentialConfig("sanctuary", "sanctuary"),
+    await refreshRuntimeCredentialConfig(agent),
+    await refreshMachineRuntimeCredentialConfig(agent, "sanctuary"),
   ]
   return results.map((result) => {
     if (result.ok) return result.config
@@ -33,12 +37,13 @@ function absent(owners: Record<string, unknown>[]): { tokenAbsent: true } {
 
 // Invoked only by the fixed root migration process, never by the resident daemon.
 // Snapshot output travels through a private pipe to the root transaction, not logs.
-export async function migrateSanctuaryAuthorityVault(operation: string, input?: unknown): Promise<unknown> {
+/** `agent` defaults to the Butler whose bundle the vault container mounts, and to its name from before the rename. */
+export async function migrateSanctuaryAuthorityVault(operation: string, input?: unknown, agent: ButlerAgentName = butlerOnDisk(getAgentBundlesRoot(), fs.existsSync) ?? "sanctuary"): Promise<unknown> {
   if (process.getuid!() !== 0 || process.getgid!() !== 0) throw new Error("Sanctuary vault migration requires root")
   if (!["snapshot", "presence", "absent", "remove", "restore"].includes(operation)) throw new Error("Sanctuary vault migration operation is invalid")
   emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_vault_handoff_requested", message: "Sanctuary vault handoff requested", meta: { operation } })
   const supplied = operation === "restore" ? identity(input) : null
-  const owners = await readOwners()
+  const owners = await readOwners(agent)
   if (operation === "presence") return { tokenPresent: owners.some((owner) => Object.hasOwn(owner, "telegramBotToken")) }
   if (operation === "absent") return absent(owners)
   if (operation === "snapshot") {
@@ -63,9 +68,9 @@ export async function migrateSanctuaryAuthorityVault(operation: string, input?: 
   }
   // Full replacement is intentional here: merge cannot remove a credential.
   // Each replacement starts from a fresh read of its own canonical owner.
-  await upsertRuntimeCredentialConfig("sanctuary", next[0]!)
-  await upsertMachineRuntimeCredentialConfig("sanctuary", "sanctuary", next[1]!)
-  const readback = await readOwners()
+  await upsertRuntimeCredentialConfig(agent, next[0]!)
+  await upsertMachineRuntimeCredentialConfig(agent, "sanctuary", next[1]!)
+  const readback = await readOwners(agent)
   if (!supplied) return absent(readback)
   absent([readback[1]!])
   if (readback[0]!.telegramBotToken !== supplied.token || readback[0]!.telegramAuthorizedUserId !== supplied.ownerUserId
