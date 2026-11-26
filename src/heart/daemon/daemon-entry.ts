@@ -62,6 +62,7 @@ import type { ConfigCheckResult } from "./agent-config-check"
 import { loadContainerCredentialBootstrap } from "./container-credential-bootstrap"
 import {
   createProviderReadinessPreparationFailure,
+  failFastButlerExternalEventsStartup,
   failFastSanctuaryBundlePreparationStartup,
   providerReadinessAgents,
   startDaemonAfterContainerCredentialBootstrap,
@@ -112,7 +113,13 @@ const managedAgents = listHomeBundleAgents({ machineId: daemonMachineId })
 // The Butler under whichever name its bundle has; its container paths follow that name.
 const butlerName = managedButlerAgent(managedAgents) ?? "sanctuary"
 // Its saved external events follow that name too: a folder left under the other name (by the rename or a rollback) moves over.
-prepareButlerExternalEvents(getExternalEventRoot(), managedAgents)
+// It must: records left under the other name can't be settled, so a failed move or merge stops the start.
+try {
+  prepareButlerExternalEvents(getExternalEventRoot(), managedAgents)
+} catch (failure) {
+  failFastButlerExternalEventsStartup({ failure, exit: (code) => process.exit(code) })
+  throw failure
+}
 const readinessAgents = providerReadinessAgents(
   managedAgents,
   process.env.OURO_DAEMON_REQUIRED_AGENT,

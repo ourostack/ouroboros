@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
+import * as identity from "../../heart/identity"
 import type { StewardPolicyRecord } from "../../heart/steward-policy"
 
 // ── Mock continuity store modules ────────────────────────────────
@@ -67,7 +68,8 @@ vi.mock("../../heart/identity", () => ({
   HARNESS_CANONICAL_REPO_URL: "https://github.com/ourostack/ouroboros.git",
 }))
 
-vi.mock("../../heart/external-events/router", () => ({
+vi.mock("../../heart/external-events/router", async (importOriginal) => ({
+  externalEventAwaitRecordPath: (await importOriginal<typeof import("../../heart/external-events/router")>()).externalEventAwaitRecordPath,
   getExternalEventRoot: (...args: any[]) => mockGetExternalEventRoot(...args),
   readExternalEventRecord: (...args: any[]) => mockReadExternalEventRecord(...args),
   claimExternalEvent: (...args: any[]) => mockClaimExternalEvent(...args),
@@ -697,6 +699,25 @@ describe("continuity tools", () => {
       expect(() => findTool("external_event_disposition").handler({ ...base, careId: "care-books" }, context)).toThrow(/Care does not belong/u)
       mockReadCares.mockReturnValue([])
       expect(() => findTool("external_event_disposition").handler({ ...base, wakeAt: "2026-08-30T18:00:00.000Z" }, context)).toThrow(/exact wake time/u)
+    })
+
+    it.each([["butler", "sanctuary"], ["sanctuary", "butler"]] as const)("as %s, accepts a timed Await filed under %s before the folder was adopted, and refuses one with no key", async (running, other) => {
+      vi.mocked(identity.getAgentName).mockReturnValue(running)
+      try {
+        mockReadStewardPolicy.mockReturnValue({ schemaVersion: 1, version: 0, desiredStates: {}, routineActionGrants: {}, updatedAt: null })
+        const recordPath = `/events/${running}/sanctuary-health/books.json`
+        mockReadExternalEventRecord.mockReturnValue({ agent: running, source: "sanctuary-health", eventId: "books", recordPath, transition: "opened", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
+        mockReadCares.mockReturnValue([])
+        const awaitFile = (key: string) => `---\nstatus: pending\nwake_at: 2026-08-30T17:00:00.000Z\nfiled_from: external-event\n${key}---\n\nWaiting.\n`
+        vi.mocked(fs.existsSync).mockReturnValue(false)
+        vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("await-renamed.md") ? awaitFile(`filed_from_key: /events/${other}/sanctuary-health/books.json\n`) : String(filePath).endsWith("await-keyless.md") ? awaitFile("") : "")
+        const context = { signin: async () => undefined, currentExternalEvent: { schemaVersion: 1 as const, recordPath, agent: running, source: "sanctuary-health", eventId: "books", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" }, externalEventAuthority: { authorizeDisposition: () => ({ allowed: true, reason: "test" }) }, externalEventEffects: { deliverOwnerDecision: vi.fn(async () => undefined) } }
+        const base = { recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "snoozed", stewardPolicyKind: "none", decision: "silent", reason: "Waiting.", nextWake: "at", wakeAt: "2026-08-30T17:00:00.000Z" }
+        await expect(findTool("external_event_disposition").handler({ ...base, awaitId: "await-renamed" }, context)).resolves.toContain("handled")
+        expect(() => findTool("external_event_disposition").handler({ ...base, awaitId: "await-keyless" }, context)).toThrow(/not owned by this exact external event/u)
+      } finally {
+        vi.mocked(identity.getAgentName).mockReturnValue("ouroboros")
+      }
     })
 
     it("prevents a second event from binding an Await owned by the first event", async () => {
