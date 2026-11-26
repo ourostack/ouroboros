@@ -14,6 +14,7 @@ import { emitNervesEvent } from "../nerves/runtime";
 import type { ProviderCapability } from "../heart/core";
 import { guardInvocation } from "./guardrails";
 import { getAgentRoot } from "../heart/identity";
+import { isButlerAgent } from "../heart/butler-agent"
 import { releaseReservedCommerceAuthority, reserveCommerceAuthority } from "../commerce/store";
 import { surfaceToolDefinition } from "./tools-surface";
 import type { McpTurnView } from "./mcp-manager";
@@ -171,7 +172,7 @@ export function selectToolsForChannel(
   // loop and the host-local CLI/MCP) keep the unscoped tool set.
   const channel = capabilities?.channel
   const remote = channel !== undefined && !SANCTUARY_LOCAL_CHANNELS.has(channel)
-  const sanctuary = (context?.agentName === "sanctuary" && (relationship !== undefined || remote))
+  const sanctuary = (isButlerAgent(context?.agentName) && (relationship !== undefined || remote))
     || profileId?.startsWith("sanctuary-") === true
   const owner = profileId === "sanctuary-owner"
   // A trusted peer agent acting for the owner gets the owner's chat tool menu. Host
@@ -230,7 +231,7 @@ export function selectToolsForChannel(
   if (hostTool) ordinary.push(hostTool)
   const inner = capabilities?.channel === "inner"
   // The Butler's own scheduled turns (the daily house-care await) carry no relationship, so they cannot take the owner profile's menu.
-  if (inner && !sanctuary && context?.agentName === "sanctuary") ordinary.push(...houseCareToolDefinitions)
+  if (inner && !sanctuary && isButlerAgent(context?.agentName)) ordinary.push(...houseCareToolDefinitions)
   const habit = context?.habitSession
   if (inner) {
     const canSend = habit?.permissionEnvelope.canMessageOutward === true
@@ -516,7 +517,7 @@ export async function preflightToolCall(name: string, args: Record<string, strin
 
     const currentSelection = ctx?.selectCurrentTools?.()
       ?? (name === rootHostToolDefinition.tool.function.name ? selection
-        : relationship?.profileId?.startsWith("sanctuary-") || (relationship && ctx?.agentName === "sanctuary")
+        : relationship?.profileId?.startsWith("sanctuary-") || (relationship && isButlerAgent(ctx?.agentName))
         ? selectToolsForChannel(undefined, undefined, undefined, undefined, undefined, undefined, ctx)
         : undefined)
     const current = currentSelection ? findDefinition(name, currentSelection) : def?.mcpBinding ? def : findDefinition(name)

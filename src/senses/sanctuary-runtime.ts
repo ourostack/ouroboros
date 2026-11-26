@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { AsyncLocalStorage } from "node:async_hooks"
 
 import { getAgentBundlesRoot, getAgentRoot, getRepoRoot } from "../heart/identity"
+import { isButlerAgent } from "../heart/butler-agent"
 import { inspectSanctuaryPackageManagedBundle } from "../heart/daemon/sanctuary-bundle-migration"
 import { resolveSanctuaryPackageManagedRoots } from "../heart/daemon/sanctuary-package-management"
 import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
@@ -30,7 +31,7 @@ const acceptanceLedgerTails = new Map<string, Promise<void>>()
 
 /** The Butler agent whose private and A2A turns carry the Sanctuary tool context. */
 export function isSanctuaryAgent(agentName: string): boolean {
-  return agentName === "sanctuary"
+  return isButlerAgent(agentName)
 }
 
 export type SanctuaryExternalEventSource = "sanctuary-health" | "sanctuary-usenet"
