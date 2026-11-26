@@ -35,6 +35,8 @@ export const friendLinkToolDefinition: ToolDefinition = {
       message: "friend_link_code invoked",
       meta: { channel: args.channel ?? "any" },
     })
+    // A socket turn's caller names the friend and channel itself, so it can't prove the person is here (design §3.4).
+    if (ctx?.turnOrigin === "socket") return withCode("link codes are issued only in a chat the person started, not in a turn asked for over the daemon socket.", "socket-turn")
     const context = ctx?.context
     if (!context?.friend) return withCode("no friend context: I can only issue a link code to the person I'm talking to.", "no-friend-context")
     const friend = context.friend
@@ -54,6 +56,7 @@ export const friendLinkToolDefinition: ToolDefinition = {
   summaryKeys: ["channel"],
   riskProfile: { mutates: "durable_state_write", risk: "high", reason: "issues a code that links a new account to a family friend" },
   ax: { id: "tool:friend_link_code", group: "turn-friends", when: "Pick this when a family member wants another of their own accounts, such as Teams, recognised as them.", effect: "write", errors: [
+    { code: "socket-turn", means: "This turn was asked for over the daemon socket (an MCP or CLI caller), which can't prove the person is present.", fix: "Issue the code from a chat the family member started with you." },
     { code: "no-friend-context", means: "This turn has no known person to issue a code for.", fix: "Issue the code from a chat with that family member." },
     { code: "family-only", means: "Link codes are only for family, and this person isn't family.", fix: "Tell them plainly; their owner can raise their trust level if that is wanted." },
     { code: "group-chat", means: "Codes aren't issued in group chats.", fix: "Ask them to message you one to one, then issue it there." },
