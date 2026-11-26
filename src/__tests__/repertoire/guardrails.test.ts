@@ -1306,13 +1306,13 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
     })
     it.each([
       ["a cwd inside the store", { cwd: "friends", command: "sed -i s/friend/family/ p.json" }],
-      ["a cwd of the store's absolute path", { cwd: "R/friends", command: "rm p.json" }],
+      ["a cwd of the store's absolute path", { cwd: "<root>/friends", command: "rm p.json" }],
       ["a glob from home", { command: "sed -i s/friend/family/ */*.json" }],
       ["a glob after the folder name", { command: "rm -rf ./friends*" }],
       ["find from home", { command: "find . -name '*.json' -exec sed -i s/a/b/ {} +" }],
       ["xargs fed from home", { command: "grep -rl trustLevel . | xargs sed -i s/a/b/" }],
-      ["the home folder from $HOME", { command: "sed -i s/a/b/ $HOME/H/friends/p.json" }],
-      ["the home folder from ~", { command: "sed -i s/a/b/ ~/H/friends/p.json" }],
+      ["the home folder from $HOME", { command: "sed -i s/a/b/ $HOME/<home-relative>/friends/p.json" }],
+      ["the home folder from ~", { command: "sed -i s/a/b/ ~/<home-relative>/friends/p.json" }],
       ["a cd into the store", { command: "cd friends && sed -i s/a/b/ p.json" }],
       ["a glob from the filesystem's root", { command: "cp a /*/p.json" }],
     ])("refuses %s (review of #1949)", async (_label, args) => {
@@ -1320,7 +1320,8 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
       const root = bundle()
       vi.mocked(fs.existsSync).mockReturnValue(true)
       // The bundle sits in a temp folder, reached from the real home folder.
-      const fill = (text: string) => text.replaceAll("R/", `${root}/`).replaceAll("H/", `${path.relative(os.homedir(), root)}/`)
+      // Placeholders no temp path can contain: a bundle named like ".../store-shell-abcH" once turned "R/" into an "H/" too.
+      const fill = (text: string) => text.replaceAll("<root>/", `${root}/`).replaceAll("<home-relative>/", `${path.relative(os.homedir(), root)}/`)
       const call = Object.fromEntries(Object.entries(args).map(([key, value]) => [key, fill(value)]))
       expect(guardInvocation("shell", call, peer(root))).toMatchObject({ allowed: false })
     })

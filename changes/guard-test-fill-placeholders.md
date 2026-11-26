@@ -1,0 +1,1 @@
+- Fixed a test of the shell store guard that failed about once in 62 runs, when its temporary folder's random name ended in "H". No change to how Ouro behaves.
