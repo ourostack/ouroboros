@@ -5,6 +5,7 @@ import { getAgentRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { readOrCreateTelegramIdentityKey } from "../../senses/telegram-identity-key"
 import { readSanctuaryAcceptanceMarker, type SanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
+import { isButlerAgent, type ButlerAgentName } from "../butler-agent"
 
 const CRONTAB_PATH = "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"
 const SUPERCRONIC = "/usr/local/bin/supercronic"
@@ -27,7 +28,7 @@ export interface SanctuarySchedulerOrigin {
 
 export interface SanctuarySchedulerFireCommand extends SanctuarySchedulerOrigin {
   kind: "habit.scheduler-fire"
-  agent: "sanctuary"
+  agent: ButlerAgentName
   habitName: "sanctuary-health"
   trigger: "cron"
 }
@@ -99,7 +100,7 @@ export function createSanctuarySchedulerFireCommand(
   command: { agent: string; habitName: string; trigger: string },
   deps: CreateDeps = defaultSanctuarySchedulerOriginDeps(),
 ): SanctuarySchedulerFireCommand | null {
-  if (command.agent !== "sanctuary" || command.habitName !== "sanctuary-health" || command.trigger !== "cron" || deps.platform !== "linux") return null
+  if (!isButlerAgent(command.agent) || command.habitName !== "sanctuary-health" || command.trigger !== "cron" || deps.platform !== "linux") return null
   try {
     const invocation = processIdentity(deps.readFile(`/proc/${deps.pid}/stat`))
     const parent = processIdentity(deps.readFile(`/proc/${deps.ppid}/stat`))
@@ -108,7 +109,7 @@ export function createSanctuarySchedulerFireCommand(
     if (invocation.parentPid !== deps.ppid) return null
     const slot = slotFor(deps.now())
     const value: Omit<SanctuarySchedulerFireCommand, "proofMac"> = {
-      kind: "habit.scheduler-fire", agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron",
+      kind: "habit.scheduler-fire", agent: command.agent, habitName: "sanctuary-health", trigger: "cron",
       slot, occurrenceId: `cron:${slot}`, schedulerRunId: deps.randomId(), invocationPid: deps.pid, parentPid: deps.ppid,
       parentStartTime: parent.startTime, invocationStartTime: invocation.startTime,
       scenarioHandleDigest: marker?.label === "unit-16f-cron-fingerprint" ? marker.scenarioHandleDigest : null,
@@ -120,7 +121,7 @@ export function createSanctuarySchedulerFireCommand(
 }
 
 export function verifySanctuarySchedulerFireCommand(command: SanctuarySchedulerFireCommand, deps: VerifyDeps): SanctuarySchedulerOrigin {
-  if (!command || command.kind !== "habit.scheduler-fire" || command.agent !== "sanctuary" || command.habitName !== "sanctuary-health" || command.trigger !== "cron"
+  if (!command || command.kind !== "habit.scheduler-fire" || !isButlerAgent(command.agent) || command.habitName !== "sanctuary-health" || command.trigger !== "cron"
     || !UUID.test(command.schedulerRunId) || (command.scenarioHandleDigest !== null && !SHA256.test(command.scenarioHandleDigest)) || command.scenarioHandleDigest !== deps.scenarioHandleDigest
     || command.slot !== slotFor(deps.now()) || command.occurrenceId !== `cron:${command.slot}`) throw new Error("scheduler fire slot or binding is invalid")
   if (!safeEqual(command.proofMac, mac(deps.identityKey, command))) throw new Error("scheduler fire authentication failed")

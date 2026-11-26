@@ -3,6 +3,7 @@ import * as path from "path";
 import { createHash } from "crypto";
 import { canonicalizeTelegramSessionKey, InvalidSessionPathError, isValidSessionCoordinate, resolveSessionPath } from "../heart/config";
 import { getAgentRoot, getAgentName, loadAgentConfig } from "../heart/identity";
+import { isButlerAgent } from "../heart/butler-agent"
 import { capStructuredRecordString } from "../heart/session-events";
 import { emitNervesEvent } from "../nerves/runtime";
 import { requestPrivateWake } from "../heart/daemon/socket-client";
@@ -672,7 +673,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       const frame = await buildToolActiveWorkFrame(ctx)
       const activeWork = `this is my current top-level live world-state.\nanswer whole-self status questions from this before drilling into individual sessions.\n\n${formatActiveWorkFrame(frame)}`
       const numeric = (value: string | undefined, fallback: number, min: number, max: number) => value === undefined ? fallback : /^\d+$/u.test(value) ? Math.min(max, Math.max(min, Number(value))) : fallback
-      return getAgentName() === "sanctuary"
+      return isButlerAgent(getAgentName())
         ? `${activeWork}\n\n${formatButlerOperationalVisibility(readButlerOperationalVisibility(), { section: args.section as ButlerVisibilitySection | undefined, offset: numeric(args.offset, 0, 0, 10_000), limit: numeric(args.limit, 10, 1, 20) })}`
         : activeWork
     },

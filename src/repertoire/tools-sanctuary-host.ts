@@ -10,6 +10,7 @@ import type { RootHostApprovalPort } from "../senses/root-host-approval-port"
 import { loadRelationshipCapabilityRegistry } from "./relationship-authorization"
 import { freezeToolValue } from "./tool-arguments"
 import { withCode, type ToolContext, type ToolDefinition } from "./tools-base"
+import { isButlerAgent } from "../heart/butler-agent"
 
 export interface RootHostBinding {
   readonly agentRoot: string
@@ -52,7 +53,7 @@ function currentCoordinates(ctx: RootHostSelectionContext): RootHostBinding {
   const actor = relationship?.actor
   const session = ctx.currentSession
   const friend = ctx.context?.friend
-  requireOwner(ctx.agentName === "sanctuary" && typeof ctx.agentRoot === "string" && path.isAbsolute(ctx.agentRoot)
+  requireOwner(isButlerAgent(ctx.agentName) && typeof ctx.agentRoot === "string" && path.isAbsolute(ctx.agentRoot)
     && path.resolve(ctx.agentRoot) === ctx.agentRoot && path.basename(ctx.agentRoot) === "sanctuary.ouro")
   requireOwner(root && root.port.isHealthy() && !ctx.currentExternalEvent)
   requireOwner(relationship?.profileId === "sanctuary-owner" && relationship.advertisedToolNames?.includes(NAME))

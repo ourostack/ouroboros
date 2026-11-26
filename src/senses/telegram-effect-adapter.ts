@@ -7,6 +7,7 @@ import { loadSessionEnvelopeFile, projectedSessionEventIds, selectEffectiveSessi
 import { currentSessionTurnLease, readSessionTransaction, withSessionTurnLease, writeSessionTransaction, type SessionTurnLease } from "../mind/session-transaction"
 import { escapeTelegramHtml, sendTelegramText, splitTelegramText, TelegramApiError, type TelegramBotApi } from "./telegram-client"
 import { renderTelegramMarkdown, renderTelegramMarkdownSafe, splitTelegramMarkdown } from "./telegram-markdown"
+import { isButlerAgent } from "../heart/butler-agent"
 
 export const FIXED_ADMISSION_ACKNOWLEDGEMENT = "Thanks — I’ve asked the person I work for. Your message is still unread and unprocessed; I’ll only read it if they welcome you in."
 export const FIXED_USENET_SYSTEM_FAILSAFE = "Quick heads-up: I paused downloads because the server was discarding most of what it fetched. Nothing needs doing this second — I’ll investigate and follow up when I’m back online."
@@ -569,7 +570,7 @@ export async function reconcileTelegramSystemFailsafe(input: {
   const { record } = input
   const action = record.privilegedProtectiveAction
   if (record.privilegedFailsafe) return { sent: false, reason: "already_recorded", artifactId: record.privilegedFailsafe.artifactId }
-  if (record.agent !== "sanctuary" || record.source !== "sanctuary-usenet" || record.eventType !== "usenet.protective_action"
+  if (!isButlerAgent(record.agent) || record.source !== "sanctuary-usenet" || record.eventType !== "usenet.protective_action"
     || record.priority !== "critical" || !action?.critical) return { sent: false, reason: "noncritical" }
   if (!action.verification.verified) return { sent: false, reason: "unverified" }
   if (action.action !== "sabnzbd.pause") return { sent: false, reason: "policy_blocked" }
@@ -607,7 +608,7 @@ export async function sweepTelegramSystemFailsafes(input: {
 }): Promise<{ inspected: number; sent: number }> {
   const scanned = (input.scanCache ?? new ExternalEventScanCache()).scan(input.eventRoot)
   const records = scanned
-    .flatMap((entry) => entry.record && entry.record.agent === "sanctuary" && entry.record.source === "sanctuary-usenet" && !entry.record.privilegedFailsafe ? [entry.record] : [])
+    .flatMap((entry) => entry.record && isButlerAgent(entry.record.agent) && entry.record.source === "sanctuary-usenet" && !entry.record.privilegedFailsafe ? [entry.record] : [])
     .sort((left, right) => left.eventId.localeCompare(right.eventId))
     .slice(0, 32)
   let sent = 0
