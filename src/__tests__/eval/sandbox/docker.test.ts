@@ -4,7 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import { DECLARED_GAPS } from "../../../eval/sandbox/declared-gaps"
 import { PassThrough } from "node:stream"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ProviderRuntime } from "../../../heart/core"
 import type { Case } from "../../../eval/domain/case"
 import { buildSandboxImage, dockerCli, EVAL_LABEL, HOUSEHOLD_IMAGE, INTERVIEW_GUEST_ENTRIES, runSandboxed, SANDBOX_IMAGE, splitTurns, type Docker, type DockerProcess } from "../../../eval/sandbox/docker"
@@ -573,6 +573,34 @@ describe("dockerCli", () => {
     await buildSandboxImage({ repoRoot: "/repo", images: { agent: "ouro-eval-a:1", household: "ouro-eval-h:1" }, docker })
     const build = (target: string, tag: string) => ["build", "--file", "/repo/deploy/eval/Dockerfile", "--target", target, "--tag", tag, "/repo"]
     expect(calls).toEqual([build("agent", SANDBOX_IMAGE), build("household", HOUSEHOLD_IMAGE), build("agent", "ouro-eval-a:1"), build("household", "ouro-eval-h:1")])
+  })
+
+  it("retries a build the registry failed with a server error, and only that", async () => {
+    let failures = 1
+    const calls: string[][] = []
+    const hiccup = new Error("docker build exited 1: failed to resolve source metadata for docker.io/library/node:22-bookworm-slim: unexpected status from HEAD request: 500 Internal Server Error")
+    const flaky: Docker = { run: async (args) => { calls.push(args); if (failures-- > 0) throw hiccup; return "" }, start: () => { throw new Error("unused") } }
+    await buildSandboxImage({ repoRoot: "/repo", docker: flaky, retryDelayMs: 0 })
+    expect(calls.map((c) => c[4])).toEqual(["agent", "agent", "household"])
+
+    const broken: Docker = { run: async () => { throw new Error("docker build exited 1: npm ERR! missing script") }, start: () => { throw new Error("unused") } }
+    await expect(buildSandboxImage({ repoRoot: "/repo", docker: broken, retryDelayMs: 0 })).rejects.toThrow("missing script")
+
+    let attempts = 0
+    const down: Docker = { run: async () => { attempts++; throw hiccup }, start: () => { throw new Error("unused") } }
+    await expect(buildSandboxImage({ repoRoot: "/repo", docker: down, retryDelayMs: 0 })).rejects.toThrow("500 Internal Server Error")
+    expect(attempts).toBe(3)
+
+    vi.useFakeTimers()
+    try {
+      let once = 1
+      const slow: Docker = { run: async () => { if (once-- > 0) throw hiccup; return "" }, start: () => { throw new Error("unused") } }
+      const built = buildSandboxImage({ repoRoot: "/repo", docker: slow })
+      await vi.advanceTimersByTimeAsync(5000)
+      await built
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("labels both images ouro.eval=1, so eval:stop can find and remove them", () => {
