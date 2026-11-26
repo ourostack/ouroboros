@@ -1,33 +1,4 @@
 {
   "census": "census/1",
-  "gaps": [
-    "cli:desk invite",
-    "cli:habit probe",
-    "cli:node dist/senses/shepherd/judge-evaluation-entry.js",
-    "cli:shepherd resume",
-    "cli:vault item status",
-    "cli:vault unlock",
-    "tool:coding_spawn",
-    "tool:complete_adoption",
-    "tool:create_session",
-    "tool:credential_get",
-    "tool:credential_list",
-    "tool:credential_store",
-    "tool:friend_link_code",
-    "tool:send_session_message",
-    "tool:shepherd_correct",
-    "tool:shepherd_history",
-    "tool:shepherd_overview",
-    "tool:shepherd_pause",
-    "tool:shepherd_read",
-    "tool:shepherd_send",
-    "tool:shepherd_signal",
-    "tool:shepherd_update_principle",
-    "tool:stripe_create_card",
-    "tool:trip_ensure_ledger",
-    "tool:user_profile_get",
-    "tool:vault_setup",
-    "tool:voice_join_local_audio",
-    "tool:voice_play_audio"
-  ]
+  "gaps": []
 }

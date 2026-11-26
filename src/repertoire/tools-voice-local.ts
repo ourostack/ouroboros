@@ -82,7 +82,7 @@ export function createVoiceLocalAudioToolDefinition(deps: LocalAudioToolDeps): T
         name: TOOL_NAME,
         description: [
           "join, leave, or check a call on this Mac through the BlackHole virtual audio devices (any call app: FaceTime, Zoom, Meet, a recorder).",
-          "The call app must use BlackHole 2ch as its microphone and BlackHole 16ch as its speaker. This tool never listens to a physical microphone and takes no device names.",
+          "The call app must use BlackHole 2ch as its microphone and BlackHole 16ch as its speaker. This tool listens only to BlackHole, not a physical microphone, and takes no device names.",
           "Joining announces you aloud as an AI assistant that is transcribing. Skip the announcement only when the owner's current message has a sentence saying everyone consented to a silent join; pass that whole sentence in silent_consent exactly as they wrote it. A paraphrase or a fragment is refused.",
           "Several people may share this audio, and you cannot tell voices apart. Use action=leave to hang up.",
         ].join(" "),

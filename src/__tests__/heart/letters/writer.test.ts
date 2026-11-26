@@ -67,6 +67,17 @@ describe("LettersWriter send", () => {
     expect((await writer.run("slugger", "mailbox_send", know)).code).toBe("L2")
   })
 
+  it("tells the agent about each new letter once, after the filing answers, and never fails the filing", async () => {
+    const told: string[] = []
+    const { writer } = setup({ onFiled: async (agent, letter) => { told.push(`${agent}:${letter.code}`) } })
+    await writer.run("slugger", "mailbox_send", { ...know, dedupeKey: "k" })
+    await writer.run("slugger", "mailbox_send", { ...know, dedupeKey: "k" })
+    await writer.run("slugger", "mailbox_send", know, { dryRun: true })
+    expect(told).toEqual(["slugger:L1"])
+    depsOf(writer).onFiled = async () => { throw new Error("wake down") }
+    expect((await writer.run("slugger", "mailbox_send", know)).outcome).toBe("needs-human")
+  })
+
   it("freezes the person's answering handle into the letter at filing, so a later change leaves it alone", async () => {
     const { writer, lettersDir } = setup()
     await writer.run("slugger", "mailbox_send", know)

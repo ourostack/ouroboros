@@ -65,7 +65,7 @@ export const voiceToolDefinitions: ToolDefinition[] = [{
         "play a short non-speech audio clip into the current live voice call.",
         "Use this when the caller asks to hear a tone, sample, clip, or other audio over the phone.",
         "For a simple test use source=tone. For clips, use source=url or source=file with a short audio asset; the transport may cap duration.",
-        "Do not use it for your normal spoken response.",
+        "Your normal spoken response goes out as speech, not through this tool.",
       ].join(" "),
       parameters: {
         type: "object",

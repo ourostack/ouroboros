@@ -493,11 +493,12 @@ export async function preflightToolCall(name: string, args: Record<string, strin
       emitNervesEvent({ level: "error", event: "tool.error", component: "tools", message: "unknown or unselected tool requested", meta: { name } })
       return { kind: "rejected_before_handler", text: withCode(unknownToolText(name, selection), "unknown-tool") }
     }
-    if (name === rootHostToolDefinition.tool.function.name) await authorizeRootHostToolInvocation(ctx, def, args)
     if (selection || ctx?.relationshipAuthorization) {
       const validation = validateAdvertisedToolArguments(JSON.stringify(args), schema.function.parameters ?? {})
       if (!validation.ok) return { kind: "rejected_before_handler", text: withCode(`invalid tool arguments: ${validation.reason}`, "invalid-arguments") }
     }
+    // The schema is public, so a malformed call learns its fix before the root authority is asked.
+    if (name === rootHostToolDefinition.tool.function.name) await authorizeRootHostToolInvocation(ctx, def, args)
 
     assertRelationshipToolOwner(ctx)
     if (name === "unraid_restart_container" && ctx?.routineActionSelection?.kind === "denied") {

@@ -210,6 +210,16 @@ async function evaluatePolicy(
       reason: "verified daemon await check",
     }
   }
+  if (
+    request.triggerSource === "letter-filed"
+    && hasNonEmptyOriginRef(originRefs, "letter")
+    && hasOriginRef(originRefs, "daemon-command", "letters.file")
+  ) {
+    return {
+      result: "allow",
+      reason: "a letter was filed for the agent's person",
+    }
+  }
   if (isVerifiedHabitWake(request.triggerSource, originRefs)) {
     return {
       result: "allow",

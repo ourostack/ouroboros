@@ -233,7 +233,7 @@ const codingSpawnTool: OpenAI.ChatCompletionTool = {
   type: "function",
   function: {
     name: "coding_spawn",
-    description: "Start a claude or codex coding agent with its own context. This is the one way to start a coding agent: by default it opens in Orca (its own worktree and terminal tab that a person can watch; a workdir that is already an Orca worktree gets a new tab there), and coding_status, coding_tail, coding_send_input and coding_kill drive it wherever it runs. Set backend only to override the agent's preferred one (agent.json coding.backend, default orca): local runs it headless as a child process, workbench hands it to Ouro Workbench. Give it a COMPLETE, SELF-CONTAINED task description -- it cannot see this conversation or what you've tried. Include what to do, why, which files are involved, what 'done' looks like, and any required verification steps or tests so it can prove the work is done. Never delegate understanding -- don't write 'based on the conversation, fix the bug'; write the specific file paths, line numbers, and what to change.",
+    description: "Start a claude or codex coding agent with its own context. This is the one way to start a coding agent: by default it opens in Orca (its own worktree and terminal tab that a person can watch; a workdir that is already an Orca worktree gets a new tab there), and coding_status, coding_tail, coding_send_input and coding_kill drive it wherever it runs. Set backend only to override the agent's preferred one (agent.json coding.backend, default orca): local runs it headless as a child process, workbench hands it to Ouro Workbench. Give it a COMPLETE, SELF-CONTAINED task description -- it cannot see this conversation or what you've tried. Include what to do, why, which files are involved, what 'done' looks like, and any required verification steps or tests so it can prove the work is done. The worker knows only what the prompt says: name the specific file paths, line numbers and what to change, rather than 'based on the conversation, fix the bug'.",
     parameters: {
       type: "object",
       properties: {
@@ -442,7 +442,7 @@ export const codingToolDefinitions: ToolDefinition[] = [
       risk: "high",
       reason: "starts a separate coding agent (an Orca worktree and terminal by default) and may create obligations",
     },
-    ax: { id: "tool:coding_spawn", group: "turn-coding", when: "Pick this to hand a whole coding job to a separate claude or codex worker (in Orca by default); never start one with the orca CLI through shell. For one quick command, shell is enough.", effect: "write", errors: [
+    ax: { id: "tool:coding_spawn", group: "turn-coding", when: "Pick this to hand a whole coding job to a claude or codex worker with its own tracked worktree and tab (in Orca), which the orca CLI through shell lacks. For one quick command, shell is enough.", effect: "write", errors: [
       { code: "missing-argument", means: "runner, workdir, prompt or taskRef is missing or blank; the message names which.", fix: "Call coding_spawn again with all four filled in, the prompt complete enough to work from alone." },
       { code: "invalid-runner", means: "runner is something other than claude or codex.", fix: "Set runner to claude or codex and spawn again." },
       { code: "invalid-backend", means: "backend is something other than orca, local or workbench.", fix: "Omit backend to use the preferred one, or set it to orca, local or workbench." },
