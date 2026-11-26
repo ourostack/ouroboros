@@ -1,1 +1,1 @@
-- Reopening a saved Ouro chat in an ACP client such as Orca now works, and long chats come back whole. Before, the client was never told it could reopen them, and a reopen showed only the first 1,000 journal events.
+- Reopening a saved Ouro chat in an ACP client such as Orca now works, and long chats come back whole. Before, the client was never told it could reopen them, and longer chats lost their latest turns when reopened.
