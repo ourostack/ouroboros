@@ -35,3 +35,23 @@ describe("the daemon's letters.action command", () => {
       .resolves.toEqual(expect.objectContaining({ ok: false, data: expect.objectContaining({ code: "no-agent" }) }))
   })
 })
+
+describe("the daemon's filing note", () => {
+  it("tells the agent through its private runtime when a letter is filed through the daemon", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "c21-daemon-filed-"))
+    made.push(bundlesRoot)
+    const friends = path.join(bundlesRoot, "slugger.ouro", "friends")
+    fs.mkdirSync(friends, { recursive: true })
+    const stamp = "2026-01-01T00:00:00.000Z"
+    fs.writeFileSync(path.join(friends, "friend-ari.json"), JSON.stringify({
+      id: "friend-ari", name: "Ari", trustLevel: "family", externalIds: [{ provider: "local", externalId: os.userInfo().username, linkedAt: stamp }],
+      tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: stamp, updatedAt: stamp, schemaVersion: 1,
+    }))
+    const { OuroDaemon } = await import("../../../heart/daemon/daemon")
+    const daemon = new OuroDaemon(daemonOptions(bundlesRoot) as ConstructorParameters<typeof OuroDaemon>[0])
+    const wake = vi.spyOn(daemon as unknown as { handlePrivateRuntimeWake: (command: unknown) => Promise<unknown> }, "handlePrivateRuntimeWake").mockResolvedValue({ ok: true })
+    await expect(daemon.handleCommand({ kind: "letters.action", agent: "slugger", action: "mailbox_send", input: { kind: "know", subject: "Built" } }))
+      .resolves.toMatchObject({ ok: true, data: { outcome: "needs-human", code: "L1" } })
+    await vi.waitFor(() => expect(wake).toHaveBeenCalledWith(expect.objectContaining({ triggerSource: "letter-filed" })))
+  })
+})
