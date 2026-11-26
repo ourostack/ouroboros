@@ -59,8 +59,7 @@ Agent-runnable:
 
 Human-required:
 
-- HEY login, MFA, CAPTCHA, export download, forwarding confirmation, and browser-account ambiguity.
-- Registrar/DNS cutover and outbound provider-domain changes.
+- Approving a HEY sign-in on their phone, and confirming forwarding and the registrar/DNS cutover (the agent does the browser and DNS work itself).
 - Vault unlock or vault replacement when the agent cannot access the owning vault.
 - Final approval for autonomous native-agent sending.
 
