@@ -8,8 +8,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { registerGlobalLogSink } from "../../nerves/index"
 import { FileMessageRouter } from "./message-router"
 import { HealthMonitor, readDiskFreeBytes, readDiskUsagePercent } from "./health-monitor"
-import { OwnerChannelOutageWatcher } from "./owner-channel-outage"
-import { ownerAlertRoutes } from "./owner-alert-routes"
+import { OwnerChannelOutageWatcher, lazyOwnerAlertRoutes } from "./owner-channel-outage"
 import {
   DaemonHealthWriter,
   createHealthNervesSink,
@@ -430,7 +429,7 @@ const ownerChannelOutageWatcher = new OwnerChannelOutageWatcher({
   agents: () => [...managedAgents],
   listSenseRows: () => senseManager.listSenseRows(),
   statePath: (agent) => path.join(getAgentBundlesRoot(), `${agent}.ouro`, "state", "owner-channel-outage.json"),
-  routes: (agent) => ownerAlertRoutes(agent, path.join(getAgentBundlesRoot(), `${agent}.ouro`)),
+  routes: (agent) => lazyOwnerAlertRoutes(agent, path.join(getAgentBundlesRoot(), `${agent}.ouro`)),
   /* v8 ignore next -- wiring: reads the agent's own config @preserve */
   displayName: (agent) => { try { return loadAgentConfig({ agentName: agent, agentRoot: path.join(getAgentBundlesRoot(), `${agent}.ouro`) }).displayName ?? agent } catch { return agent } },
 })

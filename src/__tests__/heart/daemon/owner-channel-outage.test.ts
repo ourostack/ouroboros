@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   formatOutageDuration,
+  lazyOwnerAlertRoutes,
   OWNER_OUTAGE_ALERT_MIN_INTERVAL_MS,
   OWNER_OUTAGE_RECOVERY_CONFIRM_MS,
   OWNER_OUTAGE_SEND_TIMEOUT_MS,
@@ -455,5 +456,35 @@ describe("OwnerChannelOutageWatcher", () => {
     await watcher.check([])
     expect(send).not.toHaveBeenCalled()
     expect(JSON.parse(fs.readFileSync(path.join(dir, "state.json"), "utf-8")).outages.bluebubbles).toBeDefined()
+  })
+})
+
+describe("lazyOwnerAlertRoutes", () => {
+  const message: OwnerAlertMessage = { noticeId: "n1", subject: "s", text: "t" }
+
+  it("loads the route module only when a route sends, and sends through it", async () => {
+    const mail = vi.fn(async () => {})
+    const telegram = vi.fn(async () => {})
+    const ownerAlertRoutes = vi.fn(() => ({ mail, telegram }))
+    const load = vi.fn(async () => ({ ownerAlertRoutes }) as never)
+    const routes = lazyOwnerAlertRoutes("slugger", "/bundles/slugger.ouro", load)
+    expect(Object.keys(routes).sort()).toEqual(["mail", "telegram"])
+    expect(load).not.toHaveBeenCalled()
+    await routes.mail!(message)
+    await routes.telegram!(message)
+    expect(load).toHaveBeenCalledTimes(2)
+    expect(ownerAlertRoutes).toHaveBeenCalledWith("slugger", "/bundles/slugger.ouro")
+    expect(mail).toHaveBeenCalledWith(message)
+    expect(telegram).toHaveBeenCalledWith(message)
+  })
+
+  it("fails the send when the loaded module offers no such route", async () => {
+    const routes = lazyOwnerAlertRoutes("slugger", "/r", async () => ({ ownerAlertRoutes: () => ({}) }) as never)
+    await expect(routes.mail!(message)).rejects.toThrow("no mail route for slugger")
+  })
+
+  it("fails the send when a route fails", async () => {
+    const routes = lazyOwnerAlertRoutes("slugger", "/r", async () => ({ ownerAlertRoutes: () => ({ telegram: async () => { throw new Error("held") } }) }) as never)
+    await expect(routes.telegram!(message)).rejects.toThrow("held")
   })
 })

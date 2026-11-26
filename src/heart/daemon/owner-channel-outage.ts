@@ -374,3 +374,27 @@ export class OwnerChannelOutageWatcher {
     return null
   }
 }
+
+type OwnerAlertRoutesModule = Pick<typeof import("./owner-alert-routes"), "ownerAlertRoutes">
+
+/* v8 ignore start -- the live loader; tests inject one so nothing real is sent @preserve */
+const loadOwnerAlertRoutes = (): Promise<OwnerAlertRoutesModule> => import("./owner-alert-routes")
+/* v8 ignore stop */
+
+/**
+ * The daemon's routes for an agent, loaded only when an alert is about to send. The mail route pulls in the mailroom
+ * (core, reader and outbound) and the Telegram route the Telegram sense; loading them eagerly would cost every daemon
+ * start for an alert that is rarely sent, so the per-pass check sees only these thin senders.
+ */
+export function lazyOwnerAlertRoutes(
+  agent: string,
+  agentRoot: string,
+  load: () => Promise<OwnerAlertRoutesModule> = loadOwnerAlertRoutes,
+): Partial<Record<OwnerAlertRoute, OwnerAlertSend>> {
+  const sender = (route: "telegram" | "mail"): OwnerAlertSend => async (message) => {
+    const send = (await load()).ownerAlertRoutes(agent, agentRoot)[route]
+    if (!send) throw new Error(`no ${route} route for ${agent}`)
+    await send(message)
+  }
+  return { telegram: sender("telegram"), mail: sender("mail") }
+}
