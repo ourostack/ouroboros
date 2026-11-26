@@ -294,6 +294,13 @@ function shellHomeExpanded(word: string): string {
   return word.replace(/^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/, os.homedir())
 }
 
+/**
+ * A word the shell would expand as a glob: shaped like a path (no spaces, quotes, parentheses, `:` or `=`), with `*`, `?`, a
+ * closed `[…]` or a `{a,b}`. Code handed to `node -e` (`{if`, `{length:2}`) isn't one.
+ */
+function isShellGlob(word: string): boolean {
+  return /^[\w.~/*?[\]{},!@+-]+$/u.test(word) && (/[*?]/u.test(word) || /\[[^\]]+\]/u.test(word) || /\{[^}]*,[^}]*\}/u.test(word))
+}
 const SHELL_GLOB = /[*?[{]/
 /** Programs that change files in every folder they're given, so naming the agent's home with one reaches the store too. */
 const SHELL_RECURSIVE_WRITERS = new Set(["find", "xargs", "rm", "mv", "cp", "rsync", "chmod", "chown", "sed", "perl", "tar", "install", "ln", "truncate", "touch"])
@@ -323,7 +330,7 @@ function shellNamesAgentFolder(command: string, agentRoot: string, folder: "frie
       if (program === "git" && /^(?:-m|--message|-F|--file)$/.test(words[index - 1] ?? "")) return false
       const word = shellHomeExpanded(raw)
       try {
-        if (!prose && SHELL_GLOB.test(word)) {
+        if (!prose && isShellGlob(word)) {
           // The folder the glob starts in, before its first wildcard segment.
           const parts = word.split("/")
           const literal = parts.slice(0, parts.findIndex((part) => SHELL_GLOB.test(part))).join("/")

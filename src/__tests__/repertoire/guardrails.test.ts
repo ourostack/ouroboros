@@ -1346,7 +1346,9 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
       const { guardInvocation } = await import("../../repertoire/guardrails")
       const root = bundle()
       vi.mocked(fs.existsSync).mockReturnValue(true)
-      for (const command of ["cat friends/p.json | jq .trustLevel", "jq . friends/p.json", "find friends -name '*.json'", "sort friends/p.json", "git commit -m 'tidy friends/ notes'", "git add -A", "rm notes.tmp"]) {
+      for (const command of ["cat friends/p.json | jq .trustLevel", "jq . friends/p.json", "find friends -name '*.json'", "sort friends/p.json", "git commit -m 'tidy friends/ notes'", "git add -A", "rm notes.tmp",
+        "exec node -e \"console.log(Array.from({length:2},(_,i)=>i).join('\\n'))\" > /tmp/out.txt", "curl -s -o /dev/null -w '%{http_code}' https://example.com > /tmp/code",
+        "node -e \"const t=setInterval(()=>{if(1)clearInterval(t)},10)\" > /tmp/out.txt"]) {
         expect(guardInvocation("shell", { command }, peer(root)), command).toEqual({ allowed: true })
       }
       for (const command of ["sort -o friends/p.json friends/p.json", "find friends -delete"]) {
