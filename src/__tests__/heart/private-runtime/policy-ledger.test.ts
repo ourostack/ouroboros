@@ -324,6 +324,8 @@ describe("private-runtime policy and ledger", () => {
       .resolves.toMatchObject({ result: "allow", executable: true, reason: "a letter expired with no answer" })
     await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "letter", id: "ltr_A2" }], "letter-expired:slugger:ltr_A2"), { ...deps, evaluatePolicy: undefined }))
       .resolves.toMatchObject({ result: "deny", deniedReason: "default policy deny" })
+    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "scheduler", id: "letters-expiry" }], "letter-expired:slugger:ltr_A3"), { ...deps, evaluatePolicy: undefined }))
+      .resolves.toMatchObject({ result: "deny", deniedReason: "default policy deny" })
   })
 
   it("allows a Copilot app session reply wake only with its reply id and sense refs", async () => {

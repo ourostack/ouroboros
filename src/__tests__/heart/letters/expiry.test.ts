@@ -9,7 +9,7 @@ vi.mock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 import { letterExpiredNote, letterExpiredTeller, letterExpiredWake } from "../../../heart/letters/expired-note"
 import type { Letter } from "../../../heart/letters/letter"
 import { queueNoteAndWake } from "../../../heart/letters/tell-agent"
-import { LettersWriter, NOW_LETTER_EXPIRY_MS, type WriterDeps } from "../../../heart/letters/writer"
+import { EXPIRY_GRACE_MS, LetterRefusal, LettersWriter, NOW_LETTER_EXPIRY_MS, type WriterDeps } from "../../../heart/letters/writer"
 import { getPrivateRuntimePendingDir } from "../../../mind/pending"
 import { emitNervesEvent } from "../../../nerves/runtime"
 
@@ -62,8 +62,11 @@ describe("when a letter expires", () => {
     fs.mkdirSync(path.join(bundles, "notes"))
     fs.mkdirSync(path.join(bundles, "empty.ouro"))
     expect(await writer.expireDue()).toBe(0)
+    // Within the grace after its expiry a letter stays open, so an answer sent in time and read late still counts.
+    clock.now = NOW + 1000 + EXPIRY_GRACE_MS - 1
+    expect(await writer.expireDue()).toBe(0)
     const waiting = writer.run("slugger", "mailbox_wait", { letter: "L1", timeout: 50 })
-    clock.now = NOW + 5000
+    clock.now = NOW + 1000 + EXPIRY_GRACE_MS
     expect(await writer.expireDue()).toBe(1)
     expect(await waiting).toMatchObject({ state: "expired" })
     expect(await writer.expireDue()).toBe(0)
@@ -74,16 +77,45 @@ describe("when a letter expires", () => {
   it("keeps the expiry when telling the agent fails, and passes over an agent whose letters don't read", async () => {
     const { writer, bundles, clock } = setup({ onExpired: async () => { throw new Error("down") } })
     await writer.run("slugger", "mailbox_send", { kind: "know", subject: "Soon", expiresAt: new Date(NOW + 1000).toISOString() })
-    clock.now = NOW + 5000
+    clock.now = NOW + 1000 + EXPIRY_GRACE_MS
     expect(await writer.expireDue()).toBe(1)
+    await vi.waitFor(() => expect(events("letters.expired_tell_failed")).toEqual([[expect.objectContaining({ meta: { code: "L1", reason: "down" } })]]))
     fs.mkdirSync(path.join(bundles, "broken.ouro", "state", "letters", "ltr_X.jsonl"), { recursive: true })
     expect(await writer.expireDue()).toBe(0)
     expect(events("letters.expiry_failed")).toHaveLength(1)
     const quiet = setup()
     await quiet.writer.run("slugger", "mailbox_send", { kind: "know", subject: "Soon", expiresAt: new Date(NOW + 1000).toISOString() })
-    quiet.clock.now = NOW + 5000
+    quiet.clock.now = NOW + 1000 + EXPIRY_GRACE_MS
     expect(await quiet.writer.expireDue()).toBe(1)
-    expect(notes(bundles)).toEqual([])
+    expect(notes(quiet.bundles)).toEqual([])
+  })
+
+  it("leaves a letter withdrawn before its expiry alone", async () => {
+    const told: string[] = []
+    const { writer, clock } = setup({ onExpired: async (_agent, letter) => { told.push(letter.code) } })
+    await writer.run("slugger", "mailbox_send", { kind: "know", subject: "Soon", expiresAt: new Date(NOW + 1000).toISOString() })
+    await writer.run("slugger", "mailbox_withdraw", { letter: "L1", reason: "Fixed it myself." })
+    clock.now = NOW + 1000 + EXPIRY_GRACE_MS
+    expect(await writer.expireDue()).toBe(0)
+    expect(told).toEqual([])
+  })
+
+  it("refuses an expiresAt that has already passed, in a preview too", async () => {
+    const { writer } = setup()
+    for (const dryRun of [false, true]) {
+      const refused = await writer.run("slugger", "mailbox_send", { kind: "know", subject: "Late", expiresAt: new Date(NOW).toISOString() }, { dryRun }).catch((error: unknown) => error)
+      expect(refused).toBeInstanceOf(LetterRefusal)
+      expect(refused).toMatchObject({ code: "invalid-letter", message: expect.stringContaining("has already passed") })
+    }
+  })
+
+  it("files a new letter for a dedupeKey whose waiting letter is past its expiry", async () => {
+    const { writer, clock } = setup()
+    const letter = { kind: "know", subject: "Again", dedupeKey: "k", expiresAt: new Date(NOW + 1000).toISOString() }
+    expect(await writer.run("slugger", "mailbox_send", letter)).toMatchObject({ code: "L1" })
+    expect(await writer.run("slugger", "mailbox_send", letter)).toMatchObject({ code: "L1", message: expect.stringContaining("refiled") })
+    clock.now = NOW + 2000
+    expect(await writer.run("slugger", "mailbox_send", { ...letter, expiresAt: new Date(NOW + 60_000).toISOString() })).toMatchObject({ code: "L2" })
   })
 })
 

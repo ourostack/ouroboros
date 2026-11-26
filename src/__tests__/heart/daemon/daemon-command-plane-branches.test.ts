@@ -570,7 +570,7 @@ describe("daemon command plane branches", () => {
     }
   })
 
-  it("runs a letter expiry pass each minute while it is up, and none after it stops", async () => {
+  it("runs a letter expiry pass each minute from ten minutes after start, and none after it stops", async () => {
     vi.useFakeTimers()
     const socketPath = tmpSocketPath("daemon-letter-expiry-tick")
     const { daemon } = make(socketPath)
@@ -578,6 +578,8 @@ describe("daemon command plane branches", () => {
     ;(daemon as unknown as { expireLetters: typeof expireLetters }).expireLetters = expireLetters
     try {
       await daemon.start()
+      await vi.advanceTimersByTimeAsync(9 * 60_000)
+      expect(expireLetters).not.toHaveBeenCalled()
       await vi.advanceTimersByTimeAsync(60_000)
       expect(expireLetters).toHaveBeenCalledTimes(1)
       await daemon.stop()

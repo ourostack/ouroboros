@@ -72,10 +72,19 @@ describe("the daemon's letter expiry pass", () => {
     await vi.waitFor(() => expect(wake).toHaveBeenCalledWith(expect.objectContaining({ triggerSource: "letter-filed" })))
   })
 
-  it("logs a pass that fails, such as a bundles folder that is gone", async () => {
-    const bundlesRoot = path.join(os.tmpdir(), "c21-daemon-expiry-gone-does-not-exist")
+  it("passes quietly over a bundles folder that doesn't exist yet, and logs a pass that fails", async () => {
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
     const { OuroDaemon } = await import("../../../heart/daemon/daemon")
-    const daemon = new OuroDaemon(daemonOptions(bundlesRoot) as ConstructorParameters<typeof OuroDaemon>[0])
-    expect(await daemon.expireLetters()).toBe(0)
+    const failures = () => vi.mocked(emitNervesEvent).mock.calls.filter(([event]) => event.event === "daemon.letter_expiry_error")
+    vi.mocked(emitNervesEvent).mockClear()
+    const gone = new OuroDaemon(daemonOptions(path.join(os.tmpdir(), "c21-daemon-expiry-gone-does-not-exist")) as ConstructorParameters<typeof OuroDaemon>[0])
+    expect(await gone.expireLetters()).toBe(0)
+    expect(failures()).toEqual([])
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "c21-daemon-expiry-file-"))
+    made.push(root)
+    fs.writeFileSync(path.join(root, "bundles"), "")
+    const file = new OuroDaemon(daemonOptions(path.join(root, "bundles")) as ConstructorParameters<typeof OuroDaemon>[0])
+    expect(await file.expireLetters()).toBe(0)
+    expect(failures()).toHaveLength(1)
   })
 })

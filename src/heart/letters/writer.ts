@@ -43,6 +43,12 @@ export interface WriterDeps {
 
 /** How long a `now` letter waits when its sender sets no expiresAt (design §3.4, "Expiry"); other letters never expire. */
 export const NOW_LETTER_EXPIRY_MS = 24 * 60 * 60_000
+/**
+ * How long past its expiresAt a letter stays open before the sweep closes it. An answer the person sent before the
+ * expiry still counts when it is read late (by a webhook that lags, or a catch-up pass after a restart), and that
+ * needs the letter still waiting when it is read.
+ */
+export const EXPIRY_GRACE_MS = 10 * 60_000
 
 /** Under the door's own timeout for a deliver (doors.ts), so the daemon always answers before the door gives up. */
 export const DELIVER_DEADLINE_MS = 25_000
@@ -152,7 +158,8 @@ export class LettersWriter {
   }
 
   /**
-   * Closes every waiting letter past its expiresAt, in each agent's bundle that has letters, and tells its agent.
+   * Closes every waiting letter more than EXPIRY_GRACE_MS past its expiresAt, in each agent's bundle that has letters,
+   * and tells its agent.
    * The daemon runs it on a timer; it answers how many letters it closed.
    */
   async expireDue(): Promise<number> {
@@ -164,11 +171,13 @@ export class LettersWriter {
         const letters = this.open(agent, false)
         closed += await this.serial(letters, async () => {
           const now = this.now()
-          const due = letters.index.list({}).filter((entry) => entry.letter.expiresAt && Date.parse(entry.letter.expiresAt) <= now.getTime())
+          const due = letters.index.list({}).filter((entry) => entry.letter.expiresAt && Date.parse(entry.letter.expiresAt) + EXPIRY_GRACE_MS <= now.getTime())
           for (const entry of due) {
             this.addEvent(letters, entry.letter.id, { t: "expired", at: now.toISOString() })
             emitNervesEvent({ component: "daemon", event: "letters.letter_expired", message: "a letter expired with no answer", meta: { code: entry.letter.code } })
-            this.deps.onExpired?.(agent, entry.letter).catch(() => undefined)
+            this.deps.onExpired?.(agent, entry.letter).catch((error: Error) => {
+              emitNervesEvent({ level: "warn", component: "daemon", event: "letters.expired_tell_failed", message: "the agent could not be told a letter expired", meta: { code: entry.letter.code, reason: error.message } })
+            })
           }
           return due.length
         })
@@ -244,6 +253,9 @@ export class LettersWriter {
     const { lane, ...draft } = checked.letter
     const from: Letter["from"] = { agent: letters.agent, ...(lane ? { lane } : {}) }
     const now = this.now()
+    if (draft.expiresAt && Date.parse(draft.expiresAt) <= now.getTime()) {
+      throw new LetterRefusal("invalid-letter", `expiresAt ${draft.expiresAt} has already passed. Fix: give a time in the future, or leave it out.`)
+    }
     const duplicate = letters.index.findDuplicate({ from, dedupeKey: draft.dedupeKey }, now.getTime())
     if (duplicate) {
       const { letter } = duplicate.entry

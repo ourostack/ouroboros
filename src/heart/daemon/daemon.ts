@@ -893,6 +893,8 @@ function defaultUpdaterAgentWatch(): (() => Promise<unknown>) | null {
 const STATE_RETENTION_FIRST_DELAY_MS = 10 * 60_000
 /** How often the daemon closes letters past their expiresAt. */
 const LETTER_EXPIRY_TICK_MS = 60_000
+/** Matches EXPIRY_GRACE_MS in the letters writer, which daemon.ts doesn't load at start. */
+const LETTER_EXPIRY_GRACE_MS = 10 * 60_000
 const STATE_RETENTION_INTERVAL_MS = 24 * 60 * 60_000
 const UPDATER_AGENT_WATCH_FIRST_DELAY_MS = 5 * 60_000
 const UPDATER_AGENT_WATCH_INTERVAL_MS = 60 * 60_000
@@ -1170,8 +1172,11 @@ export class OuroDaemon {
       void this.reconcileExternalEvents()
     }, 1_000)
     this.externalEventReconcileTimer.unref?.()
+    // The first pass waits out the grace after start, so the senses' catch-up over messages missed while the daemon
+    // was down records any answer sent before a letter expired, before the sweep can close that letter.
+    const expiryFrom = Date.now() + LETTER_EXPIRY_GRACE_MS
     this.letterExpiryTimer = setInterval(() => {
-      void this.expireLetters()
+      if (Date.now() >= expiryFrom) void this.expireLetters()
     }, LETTER_EXPIRY_TICK_MS)
     this.letterExpiryTimer.unref?.()
     this.scheduleStateRetention(STATE_RETENTION_FIRST_DELAY_MS)
@@ -1539,6 +1544,8 @@ export class OuroDaemon {
       const any = !!this.lettersWriter || fs.readdirSync(this.bundlesRoot).some((name) => fs.existsSync(path.join(this.bundlesRoot, name, "state", "letters")))
       return any ? await (await this.letters()).expireDue() : 0
     } catch (error) {
+      // No bundles folder yet means no letters, not a failure worth a warning every minute.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0
       emitNervesEvent({ level: "warn", component: "daemon", event: "daemon.letter_expiry_error", message: "the letter expiry pass failed", meta: { error: (error as Error).message } })
       return 0
     }
