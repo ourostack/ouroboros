@@ -1,0 +1,1 @@
+- Reopening a saved Ouro chat in an ACP client such as Orca now works. `ouro acp-serve` advertises that it can load sessions, except in observe-only mode, and names itself as Ouro with its version.

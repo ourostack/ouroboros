@@ -5,6 +5,7 @@ import type { Readable, Writable } from "node:stream"
 import { SocketFrontendClient, type FrontendProtocolClient } from "../heart/frontend-socket-client"
 import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
+import { getPackageVersion } from "../mind/bundle-manifest"
 
 interface JsonRpcRequest {
   jsonrpc?: unknown
@@ -282,7 +283,12 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
     if (method === "initialize") {
       if (id === undefined) return
       if (requestParams.protocolVersion !== 1) throw new AcpProtocolError(-32602, "protocolVersion must be 1")
-      result(id, { protocolVersion: 1 })
+      result(id, {
+        protocolVersion: 1,
+        // Clients only reopen a saved chat when loading is advertised; observe-only mode refuses it.
+        agentCapabilities: { loadSession: !options.disableTools },
+        agentInfo: { name: "ouro", title: "Ouro", version: getPackageVersion() },
+      })
       return
     }
 

@@ -90,7 +90,11 @@ describe("Ouro ACP server", () => {
     expect(await waitFor(messages, (message) => message.id === 1)).toEqual({
       jsonrpc: "2.0",
       id: 1,
-      result: { protocolVersion: 1 },
+      result: {
+        protocolVersion: 1,
+        agentCapabilities: { loadSession: true },
+        agentInfo: { name: "ouro", title: "Ouro", version: expect.stringMatching(/^\d+\.\d+\.\d+/) },
+      },
     })
 
     input.write('{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}\n')
@@ -239,7 +243,7 @@ describe("Ouro ACP server", () => {
   it("marks observe-only prompts as tool-free frontend turns", async () => {
     const { input, client, server, messages } = await setup({ disableTools: true })
     input.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n')
-    await waitFor(messages, (message) => message.id === 1)
+    expect((await waitFor(messages, (message) => message.id === 1)).result.agentCapabilities).toEqual({ loadSession: false })
     input.write('{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}\n')
     const created = await waitFor(messages, (message) => message.id === 2)
     input.write(`${JSON.stringify({
