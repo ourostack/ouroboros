@@ -23,6 +23,19 @@ function fixture() {
 }
 afterEach(() => { vi.restoreAllMocks(); vi.resetAllMocks() })
 describe("fixed Sanctuary vault handoff", () => {
+  it("reads and writes the vault of the Butler under the name it is given, on the same machine id", async () => {
+    fixture()
+    await migrateSanctuaryAuthorityVault("restore", { token: newToken, botId: "123", ownerUserId: "42", ownerChatId: "42" }, "butler")
+    expect(runtime.refreshRuntimeCredentialConfig).toHaveBeenCalledWith("butler")
+    expect(runtime.refreshMachineRuntimeCredentialConfig).toHaveBeenCalledWith("butler", "sanctuary")
+    expect(runtime.upsertRuntimeCredentialConfig).toHaveBeenCalledWith("butler", expect.anything())
+    expect(runtime.upsertMachineRuntimeCredentialConfig).toHaveBeenCalledWith("butler", "sanctuary", expect.anything())
+  })
+  it("defaults to the pre-rename name when no single Butler bundle is mounted", async () => {
+    fixture()
+    await migrateSanctuaryAuthorityVault("presence")
+    expect(runtime.refreshRuntimeCredentialConfig).toHaveBeenCalledWith("sanctuary")
+  })
   it("emits a non-secret audit event without recording snapshot credentials", async () => {
     fixture()
     const events: LogEvent[] = []

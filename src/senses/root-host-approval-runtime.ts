@@ -193,7 +193,8 @@ export function createRootHostApprovalRuntime(options: {
     const context = await options.resolveContext(record.binding)
     requireValid(context.rootHost?.port === port)
     await authorizeRootHostContext(context, record.binding)
-    const owner = { agentName: "sanctuary", agentRoot: options.agentRoot }
+    // The Butler is named after its bundle folder, the rule its host tool enforces.
+    const owner = { agentName: path.basename(options.agentRoot, ".ouro"), agentRoot: options.agentRoot }
     const runtime = await (options.dependencies?.getProviderRuntime ?? getProviderRuntime)("human", owner)
     const mcp = await (options.dependencies?.getMcp ?? getSharedMcpManager)(owner) ?? undefined
     if (!port.isHealthy() && !await port.refresh()) throw new Error("Root host authority is unavailable")

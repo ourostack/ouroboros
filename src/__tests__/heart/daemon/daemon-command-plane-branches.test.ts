@@ -1844,6 +1844,23 @@ describe("daemon command plane branches", () => {
     }
   })
 
+  it("scans the spool for the Butler it runs, under that Butler's name", async () => {
+    const socketPath = tmpSocketPath("daemon-privileged-spool-butler")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-privileged-butler-root-"))
+    const spoolRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-privileged-butler-spool-"))
+    const scanner = vi.fn(() => ({ accepted: 0, rejected: 0, replayed: 0 }))
+    const { daemon, processManager } = make(socketPath, undefined, { externalEventRoot, privilegedEventSpoolRoot: spoolRoot, privilegedEventScanner: scanner })
+    processManager.listAgentSnapshots.mockImplementation(() => [{ name: "butler" }, { name: "slugger" }] as never)
+    try {
+      await daemon.start()
+      expect(scanner).toHaveBeenLastCalledWith({ spoolRoot, eventRoot: externalEventRoot, agent: "butler" })
+    } finally {
+      await daemon.stop()
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(spoolRoot, { recursive: true, force: true })
+    }
+  })
+
   it("keeps the daemon up and logs a warning when startup external-event reconciliation throws", async () => {
     const socketPath = tmpSocketPath("daemon-startup-reconcile-error")
     const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-startup-reconcile-error-root-"))

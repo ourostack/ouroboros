@@ -15,6 +15,8 @@ export function isButlerAgent(agentName: unknown): agentName is ButlerAgentName 
 /** The Butler's own paths and names inside its container, all derived from the name its bundle has. */
 export interface ButlerContainerPaths {
   agentRoot: string
+  /** Where the host's operator trust folder is mounted read-only; operator-trust.ts reads `/etc/ouro/trust/<bundle name>`. */
+  trustRoot: string
   crontabPath: string
   habitNamespace: string
   healthJobId: string
@@ -29,6 +31,7 @@ export function butlerContainerPaths(name: ButlerAgentName): ButlerContainerPath
   const healthJobId = `${name}:sanctuary-health`
   return {
     agentRoot,
+    trustRoot: `/etc/ouro/trust/${name}`,
     crontabPath: `/home/ouro/.ouro-cli/scheduler/${name}.crontab`,
     habitNamespace,
     healthJobId,
@@ -38,8 +41,26 @@ export function butlerContainerPaths(name: ButlerAgentName): ButlerContainerPath
   }
 }
 
+/**
+ * The Butler an image runs, from its ENTRYPOINT (`docker image inspect --format '{{json .Config.Entrypoint}}'`): the argument
+ * after `--package-managed-agent` when it is a Butler name. Anything else, including an image with no package activation,
+ * means `sanctuary`, the name every image had before the rename. The host mounts the bundle and trust where this name says.
+ */
+export function butlerNameFromEntrypoint(entrypoint: unknown): ButlerAgentName {
+  if (!Array.isArray(entrypoint)) return "sanctuary"
+  const flag = entrypoint.indexOf("--package-managed-agent")
+  const name: unknown = flag >= 0 ? entrypoint[flag + 1] : undefined
+  return isButlerAgent(name) ? name : "sanctuary"
+}
+
 /** The one Butler among the agents this daemon manages, or null when there is none or more than one. */
 export function managedButlerAgent(managedAgents: readonly string[]): ButlerAgentName | null {
   const butlers = managedAgents.filter(isButlerAgent)
   return butlers.length === 1 ? butlers[0]! : null
+}
+
+/** The Butler named by the one bundle under `bundlesRoot`; null with both bundles there, or neither. */
+export function butlerOnDisk(bundlesRoot: string, exists: (bundlePath: string) => boolean): ButlerAgentName | null {
+  const present = BUTLER_AGENT_NAMES.filter((name) => exists(`${bundlesRoot}/${name}.ouro`))
+  return present.length === 1 ? present[0]! : null
 }
