@@ -391,6 +391,53 @@ describe("Ouro ACP server", () => {
     server.stop()
   })
 
+  it("reads every page of a long session's journal when loading it", async () => {
+    const { input, client, server, messages } = await setup()
+    const pages: Record<number, any> = {
+      0: {
+        events: [
+          { sequence: 1, type: "user_message", data: { text: "first" }, turnId: "turn-1" },
+          { sequence: 2, type: "assistant_delivery", data: { text: "early" }, turnId: "turn-1" },
+        ],
+        hasMore: true,
+        pendingPermissions: [],
+      },
+      2: {
+        events: [{ sequence: 3, type: "assistant_delivery", data: { text: "latest" }, turnId: "turn-2" }],
+        hasMore: false,
+        pendingPermissions: [{ requestId: "approval-9", toolCallId: "call-9", title: "Approve shell", options: [] }],
+      },
+    }
+    const original = client.request.bind(client)
+    client.request = async (method: string, params: any) => {
+      if (method !== "session.load") return original(method, params)
+      client.requests.push({ method, params })
+      return pages[params.afterSequence]
+    }
+    input.write('{"jsonrpc":"2.0","id":1,"method":"session/load","params":{"sessionId":"long-session","cwd":"/tmp","mcpServers":[]}}\n')
+    expect(await waitFor(messages, (message) => message.id === 1)).toEqual({ jsonrpc: "2.0", id: 1, result: {} })
+
+    expect(client.requests.filter((request) => request.method === "session.load").map((request) => request.params.afterSequence)).toEqual([0, 2])
+    expect(messages.filter((message) => message.method === "session/update").map((message) => message.params.update.content.text)).toEqual(["first", "early", "latest"])
+    expect(messages.find((message) => message.method === "session/request_permission")?.params.toolCall.toolCallId).toBe("call-9")
+    server.stop()
+  })
+
+  it("stops paging a load when a page cannot say where the next one starts", async () => {
+    const { input, client, server, messages } = await setup()
+    client.loadResult = { events: [{ type: "user_message", data: { text: "unsequenced" }, turnId: "turn-1" }], hasMore: true }
+    input.write('{"jsonrpc":"2.0","id":1,"method":"session/load","params":{"sessionId":"odd-session","cwd":"/tmp","mcpServers":[]}}\n')
+    expect(await waitFor(messages, (message) => message.id === 1)).toEqual({ jsonrpc: "2.0", id: 1, result: {} })
+    client.loadResult = { events: [{ sequence: 0, type: "user_message", data: { text: "stuck" }, turnId: "turn-1" }], hasMore: true }
+    input.write('{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"odd-session","cwd":"/tmp","mcpServers":[]}}\n')
+    expect(await waitFor(messages, (message) => message.id === 2)).toEqual({ jsonrpc: "2.0", id: 2, result: {} })
+    client.loadResult = null
+    input.write('{"jsonrpc":"2.0","id":3,"method":"session/load","params":{"sessionId":"odd-session","cwd":"/tmp","mcpServers":[]}}\n')
+    expect((await waitFor(messages, (message) => message.id === 3)).error).toEqual({ code: -32002, message: "session not found" })
+    expect(client.requests.filter((request) => request.method === "session.load")).toHaveLength(3)
+    server.stop()
+  })
+
   it("rejects a missing session instead of silently starting another", async () => {
     const { input, client, server, messages } = await setup()
     input.write('{"jsonrpc":"2.0","id":1,"method":"session/load","params":{"sessionId":"missing","cwd":"/tmp","mcpServers":[]}}\n')
@@ -398,7 +445,7 @@ describe("Ouro ACP server", () => {
     expect(await waitFor(messages, (message) => message.id === 1)).toEqual({
       jsonrpc: "2.0",
       id: 1,
-      error: { code: -32001, message: "session not found" },
+      error: { code: -32002, message: "session not found" },
     })
     expect(client.requests.some((request) => request.method === "turn.start")).toBe(false)
     server.stop()
