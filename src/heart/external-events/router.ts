@@ -536,8 +536,18 @@ function mergeButlerEventFolders(from: string, to: string, butler: ButlerAgentNa
     fs.unlinkSync(plan.replay.from)
   }
   for (const move of plan.moves) fs.renameSync(move.from, move.to)
-  fs.rmSync(from, { recursive: true, force: true })
+  removeMergedEventFolder(from)
   return plan.moves.length
+}
+
+/** What is left of a merged folder: copies the running folder already holds, and stale locks. Each file is named as it goes. */
+function removeMergedEventFolder(dir: string): void {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const child = path.join(dir, entry.name)
+    if (entry.isDirectory()) removeMergedEventFolder(child)
+    else fs.unlinkSync(child)
+  }
+  fs.rmdirSync(dir)
 }
 
 /**
