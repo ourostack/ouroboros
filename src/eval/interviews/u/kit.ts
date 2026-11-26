@@ -89,9 +89,10 @@ export function gradeU(run: SandboxRun): Verdict {
   return { passed: failed.length === 0, reason: failed.length === 0 ? null : `failed ${failed.join(", ")}`, checks }
 }
 
-/** What is recorded about each U arm before any session (section 3): where it differs from the kit it stands for. */
 /** U's container memory, the same in every arm: grading a component bundled from the shadcn kit needs more than 2g. */
 export const U_MEMORY = "4g"
+
+/** What is recorded about each U arm before any session (section 3): where it differs from the kit it stands for. */
 export const U_FIDELITY: Readonly<Record<string, string[]>> = {
   "U:all": [
     "every arm is the same project template with the kit installed under @kit/ui, and the same five tools; a tool's path is relative to the project, reads may follow node_modules into the kit's packages, and writes never reach node_modules; read_file gives at most 60,000 characters a call, with an offset to read on",
