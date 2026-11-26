@@ -1,0 +1,1 @@
+- The Butler's root-host tool (owner-approved commands on the Unraid host) is offered to the Butler whose bundle is `butler.ouro` as well as `sanctuary.ouro`. An agent whose name doesn't match its bundle folder still gets no host tool.

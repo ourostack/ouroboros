@@ -2924,7 +2924,11 @@ export class OuroDaemon {
       {
         // Loaded on the first mailbox call so a daemon with no letters pays nothing at start.
         const letters = await import("../letters/writer")
-        this.lettersWriter ??= new letters.LettersWriter({ bundlesRoot: this.bundlesRoot })
+        this.lettersWriter ??= new letters.LettersWriter({
+          bundlesRoot: this.bundlesRoot,
+          // A letter goes to its person's iMessage chat as the agent, through the agent's own BlueBubbles settings.
+          deliverChat: (await import("../../senses/bluebubbles/agent-client")).letterChatSender(this.bundlesRoot),
+        })
         return letters.answerLettersCommand(this.lettersWriter, command)
       }
       case "mcp.list": {
