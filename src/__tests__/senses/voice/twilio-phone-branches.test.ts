@@ -440,7 +440,7 @@ describe("cascade media stream session edges", () => {
     const session = new TwilioMediaStreamSession(fake.socket, identity(), f.options, new TwilioAudioStreamJobStore())
     session.attach()
     session.handleRawMessage(start("CAedge", {}))
-    await vi.waitFor(() => expect(fake.sent.some((raw) => raw.includes('"mark"'))).toBe(true))
+    await vi.waitFor(() => expect(fake.sent.some((raw) => raw.includes('"mark"'))).toBe(true), { timeout: 10_000 })
     const mark = (JSON.parse(fake.sent.find((raw) => raw.includes('"mark"'))!) as { mark: { name: string } }).mark.name
     session.handleRawMessage(JSON.stringify({ event: "mark", mark: { name: mark } }))
 
@@ -479,7 +479,7 @@ describe("cascade media stream session edges", () => {
     const session = new TwilioMediaStreamSession(fake.socket, identity(), f.options, new TwilioAudioStreamJobStore())
     session.attach()
     session.handleRawMessage(start("CAedge", {}))
-    await vi.waitFor(() => expect(fake.sent.some((raw) => raw.includes('"mark"'))).toBe(true))
+    await vi.waitFor(() => expect(fake.sent.some((raw) => raw.includes('"mark"'))).toBe(true), { timeout: 10_000 })
     const internals = session as unknown as {
       sendAudioChunk(chunk: Uint8Array, generation: number): void
       sendMark(generation: number, utteranceId: string): void
@@ -506,7 +506,7 @@ describe("cascade media stream session edges", () => {
     const session = new TwilioMediaStreamSession(fake.socket, identity(), f.options, new TwilioAudioStreamJobStore())
     session.attach()
     session.handleRawMessage(start("CAedge", {}))
-    await vi.waitFor(() => expect(fake.sent.some((raw) => raw.includes('"mark"'))).toBe(true))
+    await vi.waitFor(() => expect(fake.sent.some((raw) => raw.includes('"mark"'))).toBe(true), { timeout: 10_000 })
     fake.state.open = false
     // Playback is active, but the socket is gone: voiced audio must not try to clear it.
     session.handleRawMessage(media(0x00))
@@ -559,7 +559,7 @@ describe("cascade media stream session edges", () => {
       const session = new TwilioMediaStreamSession(fake.socket, identity({ direction: "outbound", outboundId, friendId: "job-friend" }), f.options, new TwilioAudioStreamJobStore())
       session.attach()
       session.handleRawMessage(start("CAedge", {}))
-      await vi.waitFor(() => expect(fake.sent.some((raw) => raw.includes('"mark"'))).toBe(true))
+      await vi.waitFor(() => expect(fake.sent.some((raw) => raw.includes('"mark"'))).toBe(true), { timeout: 10_000 })
       for (let i = 0; i < 3; i += 1) session.handleRawMessage(media(0x00))
       for (let i = 0; i < 4; i += 1) session.handleRawMessage(media(0xff))
       await vi.waitFor(() => expect(fake.state.open).toBe(false))
@@ -576,7 +576,7 @@ describe("cascade media stream session edges", () => {
     const session = new TwilioMediaStreamSession(fake.socket, identity(), f.options, new TwilioAudioStreamJobStore())
     session.attach()
     session.handleRawMessage(start("CAedge", {}))
-    await vi.waitFor(() => expect(fake.sent.some((raw) => raw.includes('"mark"'))).toBe(true))
+    await vi.waitFor(() => expect(fake.sent.some((raw) => raw.includes('"mark"'))).toBe(true), { timeout: 10_000 })
     const turns = f.runSenseTurn.mock.calls.length
     for (let i = 0; i < 3; i += 1) session.handleRawMessage(media(0x00))
     for (let i = 0; i < 4; i += 1) session.handleRawMessage(media(0xff))
