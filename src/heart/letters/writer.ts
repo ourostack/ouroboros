@@ -104,7 +104,7 @@ export class LettersWriter {
   /** Runs one action for an agent; a refusal throws LetterRefusal with its card's code. */
   async run(agent: string, action: string, input: Record<string, unknown>, options: { dryRun?: boolean } = {}): Promise<LetterResult> {
     if (typeof input !== "object" || input === null || Array.isArray(input)) throw new LetterRefusal("bad-input", "The action's input must be an object.")
-    const letters = this.open(agent)
+    const letters = this.open(agent, options.dryRun === true)
     const result = await this.dispatch(letters, action, input, options.dryRun === true)
     emitNervesEvent({ component: "daemon", event: "letters.action_done", message: "letters action done", meta: { action, outcome: result.outcome } })
     return result
@@ -127,8 +127,8 @@ export class LettersWriter {
     }
   }
 
-  /** The agent's letters, read from its bundle the first time; letters closed long enough are rolled then. */
-  private open(agent: string): AgentLetters {
+  /** The agent's letters, read from its bundle the first time; letters closed long enough are rolled then, unless that first call is a dry run, which writes nothing. */
+  private open(agent: string, dryRun: boolean): AgentLetters {
     const bundle = path.join(this.deps.bundlesRoot, `${agent}.ouro`)
     if (!AGENT_NAME.test(agent) || !fs.existsSync(bundle)) throw new LetterRefusal("no-agent", `No agent bundle ${agent}.ouro is on this machine.`)
     const known = this.agents.get(agent)
@@ -137,7 +137,7 @@ export class LettersWriter {
     const index = new LetterIndex(store.loadAll(), store.readNextCode())
     const letters: AgentLetters = { agent, store, index, queue: Promise.resolve(), waiters: new Map() }
     this.agents.set(agent, letters)
-    this.rollClosed(letters)
+    if (!dryRun) this.rollClosed(letters)
     return letters
   }
 
@@ -194,7 +194,7 @@ export class LettersWriter {
     const duplicate = letters.index.findDuplicate({ from, dedupeKey: draft.dedupeKey }, now.getTime())
     if (duplicate) {
       const { letter } = duplicate.entry
-      if (dryRun) return { outcome: "preview", id: "", code: "", state: "waiting", message: `Would return ${letter.code}, which is already ${duplicate.entry.state} with this dedupeKey.` }
+      if (dryRun) return { outcome: "preview", id: letter.id, code: letter.code, state: duplicate.entry.state, message: `Would return ${letter.code}, which is already ${duplicate.entry.state} with this dedupeKey.` }
       if (duplicate.why === "answered") {
         const answer = duplicate.entry.events.find((event) => event.t === "answered")!
         return { outcome: "done", id: letter.id, code: letter.code, state: "answered", message: `${letter.code} was answered ${optionText(letter, answer.option)} in the last day, so the answer stands.` }
@@ -209,7 +209,18 @@ export class LettersWriter {
     letters.store.writeNextCode(number + 1)
     letters.index.reserve(number + 1)
     const letter: Letter = { v: 1, id: (this.deps.newId ?? newLetterId)(now.getTime()), code: `L${number}`, to, from, ...draft, createdAt: now.toISOString() }
-    letters.store.create(letter)
+    try {
+      letters.store.create(letter)
+    } catch (error) {
+      // A create that fails after its write would leave a letter the index doesn't know, and a retry would file a
+      // second one in the same dedupe scope. Remove it; if it can't be removed, index it so the retry finds it.
+      // EEXIST means the file is another letter's, which this create never wrote, so it stays.
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST" && !letters.store.discard(letter.id)) {
+        const left = letters.store.read(letter.id)
+        if (left) letters.index.add(left)
+      }
+      throw error
+    }
     letters.index.add({ letter, events: [], closed: false })
     return { outcome: "needs-human", id: letter.id, code: letter.code, state: "waiting", message: `Filed ${letter.code}, ${letter.subject}. It waits for the person's answer.` }
   }

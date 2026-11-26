@@ -1120,6 +1120,20 @@ describe("fixed root installation effects", () => {
     expect(failure ?? "").not.toMatch(/inspect ouro-eval/u)
     expect(host.exec.mock.calls.some((call) => call[1][0] === "inspect" && call[1][1] === "ouro-eval-1daaed8f-household")).toBe(true)
   })
+  it.each(["rollback:freeze-resident", "rollback:restore-token-cursor"])("skips a vanished container on the rollback's %s too, as the 1435 rollback met (#1761)", async (step) => {
+    const f = fixture()
+    host.exec.mockImplementation((_file, args) => {
+      if (args[0] === "ps") return args.includes("-a") ? "" : '{"Names":"objective_volhard"}\n'
+      if (args[0] === "inspect") throw new Error("Error: No such object: objective_volhard")
+      return ""
+    })
+    let listings = 0
+    const base = host.exec.getMockImplementation()!
+    host.exec.mockImplementation((file, args, ...rest) => (args[0] === "ps" && !args.includes("-a") && listings++ > 0 ? "" : base(file, args, ...rest)))
+    const failure = await f.lifecycle.effect(step).apply().then(() => null, (error: unknown) => String(error))
+    expect(failure ?? "").not.toMatch(/objective_volhard/u)
+    expect(host.exec.mock.calls.some((call) => call[1][0] === "inspect" && call[1][1] === "objective_volhard")).toBe(true)
+  })
   it("still fails when a container that is still running can't be inspected", async () => {
     const f = fixture()
     host.exec.mockImplementation((_file, args) => {
