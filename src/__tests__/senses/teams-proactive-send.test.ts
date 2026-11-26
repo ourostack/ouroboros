@@ -198,11 +198,11 @@ describe("drainAndSendPendingTeams", () => {
     )
   })
 
-  it("holds a pending verification chore and returns it to the agent's private runtime", async () => {
+  it("holds a pending untested claim and returns it to the agent's private runtime", async () => {
     const friendStore = { get: vi.fn().mockResolvedValue(makeFriend()), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn(), hasAnyFriends: vi.fn(), listAll: vi.fn() }
     const botApi = makeBotApi()
     const teams = await loadTeams()
-    const text = "Could you open #5312 on your phone and tell me if the pictures show?"
+    const text = "The proof images were re-attached; whether they show in the app hasn't been tested yet."
     const file = writePendingFile(pendingRoot, "friend-uuid-1", "session", { from: "testagent", friendId: "friend-uuid-1", channel: "teams", key: "session", content: text, timestamp: Date.now() })
     const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
     expect(result).toEqual({ sent: 0, skipped: 1, failed: 0 })
