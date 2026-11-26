@@ -66,7 +66,7 @@ export const stripeToolDefinitions: ToolDefinition[] = [
       function: {
         name: "stripe_create_card",
         description:
-          "Create a virtual card for an approved transaction. Returns card ID and last 4 digits (never the full card number). Requires family trust level and a matching confirmed commerce checkout.",
+          "Create a virtual card for an approved transaction. Returns card ID and last 4 digits (not the full card number). Requires family trust level and a matching confirmed commerce checkout.",
         parameters: {
           type: "object",
           properties: {

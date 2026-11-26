@@ -1,0 +1,1 @@
+The 28 tool and command cards that gave the reading agent a rule ("never", "always", "do not") now say what the door does instead, such as "Returns metadata only, not passwords". The Ouro AX census now finds no weak or undeclared door in the harness, and its baseline is empty.

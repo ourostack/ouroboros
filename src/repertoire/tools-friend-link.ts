@@ -15,7 +15,7 @@ export const friendLinkToolDefinition: ToolDefinition = {
       description:
         "Issue a one-time code that links another account of the person you are talking to (for example their Teams account) to them. " +
         "Give them the code; when they send exactly that code to you from the other account in a 1:1 chat, that account is treated as them. " +
-        "Only for family, only for themselves, and never in a group chat. The code expires in 10 minutes and works once.",
+        "It is for a family member asking for their own link, in a direct chat; a group chat gets no code. The code expires in 10 minutes and works once.",
       parameters: {
         type: "object",
         properties: {

@@ -113,7 +113,7 @@ function definition(name: string, description: string, ax: ToolDoorCard, propert
 }
 
 export const shepherdGuidanceToolDefinitions: ToolDefinition[] = [
-  definition("shepherd_history", "Read private Shepherd return history with stable return IDs, actual judgment/reply/outcome and your own ownerNotice receipts when tracked. Historical, not current status; a vanished terminal remains readable. The session filter is a stable ID, not a short ref. Use to understand 'that was wrong because...' before correcting it, or to check whether a notice was sent. Use displayId as the human-facing return label; never invent a shortened ID suffix. Mutations require the exact full id, not displayId. ownerNotice.state sent means transport acceptance, not proof the human read it; pending awaits a safe retry; unknown may already have arrived and must not be blindly replayed. messageId is the activity ID returned by transport. ownerNotice null means no receipt recorded for this recipient, not proof of non-delivery. ownerNoticeError explicitly identifies unavailable receipt evidence. Never types into a terminal.",
+  definition("shepherd_history", "Read private Shepherd return history with stable return IDs, actual judgment/reply/outcome and your own ownerNotice receipts when tracked. Historical, not current status; a vanished terminal remains readable. The session filter is a stable ID, not a short ref. Use to understand 'that was wrong because...' before correcting it, or to check whether a notice was sent. displayId is the human-facing return label, used as given; a shortened ID suffix matches no return. Mutations require the exact full id, not displayId. ownerNotice.state sent means transport acceptance, not proof the human read it; pending awaits a safe retry; unknown may already have arrived and must not be blindly replayed. messageId is the activity ID returned by transport. ownerNotice null means no receipt recorded for this recipient, not proof of non-delivery. ownerNoticeError explicitly identifies unavailable receipt evidence. Reads only; it types nothing into a terminal.",
   card("shepherd_history", "Pick this to look back at what Shepherd judged and replied in a session, even one that closed, before anyone corrects it.", { means: "The history couldn't be read; the error says why, such as a session not bound to this chat.", fix: "Drop the session filter, or use the stable id from an earlier shepherd_history, and call again." }),
   targetProperties, [], async (args, ctx, request) => {
     const session = text(args.session) || ctx.currentShepherdSurface?.id
@@ -138,7 +138,7 @@ export const shepherdGuidanceToolDefinitions: ToolDefinition[] = [
       return { returns, ownerNoticeError: message }
     }
   }),
-  definition("shepherd_correct", "Record the human's post-action correction ('that was wrong because…') or prospective instruction. Optionally learn a principle for 'in future…'. A return_id must name a real history entry; omit it for a prospective instruction, never fabricate one. Session scope is the default; project is the exact recorded folder and optional task; global only when the human deliberately generalizes. Feedback <=2000 characters; principle <=1000; at most 20 active rules. This is not an approval gate and never sends anything. For requested immediate steering use existing shepherd_send.",
+  definition("shepherd_correct", "Record the human's post-action correction ('that was wrong because…') or prospective instruction. Optionally learn a principle for 'in future…'. A return_id must name a real history entry; omit it for a prospective instruction; a made-up id is refused. Session scope is the default; project is the exact recorded folder and optional task; global only when the human deliberately generalizes. Feedback <=2000 characters; principle <=1000; at most 20 active rules. This is not an approval gate and sends nothing. For requested immediate steering use existing shepherd_send.",
   card("shepherd_correct", "Pick this when the human says Shepherd got something wrong or tells it how to behave next time; shepherd_send steers now.", { means: "Nothing was recorded; the error says why: an unknown return_id or session, a reused request_id, or text over its limit.", fix: "Fix what the error names (take ids from shepherd_history) and call again with a new request_id." }, true),
   {
     ...targetProperties, ...requestProperty,
@@ -165,7 +165,7 @@ export const shepherdGuidanceToolDefinitions: ToolDefinition[] = [
     const { target } = await targetFor(ctx, args)
     return applicableGuidance(readGuidance(ctx.agentRoot!), target)
   }),
-  definition("shepherd_update_principle", "Change a learned preference ('change that') by its principle ID. Keeps its existing scope, never silently generalizes it. No send.",
+  definition("shepherd_update_principle", "Change a learned preference ('change that') by its principle ID. Keeps its existing scope as it is. No send.",
   card("shepherd_update_principle", "Pick this when the human wants a preference Shepherd already holds reworded; for a new one use shepherd_correct.", { means: "The preference wasn't changed; the error says why: an unknown or inactive principle_id, empty or long text, or a reused request_id.", fix: "Take the id from shepherd_guidance, keep text under 1000 characters, and call with a new request_id." }, true),
   {
     ...requestProperty, principle_id: stringProperty("Active principle ID from shepherd_guidance."), text: stringProperty("Replacement preference, nonempty and at most 1000 characters."),
@@ -180,7 +180,7 @@ export const shepherdGuidanceToolDefinitions: ToolDefinition[] = [
     ...request, principleId: text(args.principle_id),
   }), true),
   ...(["pause", "resume"] as const).map(action => definition(`shepherd_${action}`,
-    action === "pause" ? "Leave this one alone: pause automatic Shepherd replies for this session only, durably. Independent judgment/owner notices remain. Never interrupts or types into the terminal."
+    action === "pause" ? "Leave this one alone: pause automatic Shepherd replies for this session only, durably. Independent judgment/owner notices remain. It leaves the terminal as it is: no interrupt, no typing."
       : "Resume automatic Shepherd replies for this paused session. All focus, screen, syntax and loop guards still apply; resume is not an immediate send.",
     action === "pause"
       ? card("shepherd_pause", "Pick this when the human says to leave one session alone, so Shepherd stops answering it until resumed.", { means: "The session wasn't paused; the error says why, such as an unknown session or a reused request_id.", fix: "Name the session from shepherd_overview or shepherd_history and call with a new request_id." }, true)
