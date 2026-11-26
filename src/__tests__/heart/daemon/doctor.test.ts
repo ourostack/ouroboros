@@ -1,4 +1,7 @@
 import { afterEach, describe, it, expect, vi } from "vitest"
+import * as fs from "fs"
+import * as os from "os"
+import * as path from "path"
 
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
@@ -33,6 +36,8 @@ import {
   checkGit,
   checkAgents,
   checkSenses,
+  daemonAccount,
+  accountUid,
   checkHabits,
   checkSecurity,
   checkTrips,
@@ -554,6 +559,12 @@ describe("checkAgents", () => {
 // ── Senses checks ──
 
 describe("checkSenses", () => {
+  const hostDeps = () => createMockDeps({
+    existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),
+    readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+    readFileSync: readFileFor({ "/tmp/bundles/test.ouro/agent.json": JSON.stringify({ senses: { bluebubbles: { enabled: true, hostUsername: "slugger" } } }) }),
+  })
+
   it("skips a discovered agent whose config disappears before inspection", async () => {
     let configChecks = 0
     const deps = createMockDeps({
@@ -594,9 +605,9 @@ describe("checkSenses", () => {
         "/tmp/bundles/test.ouro/agent.json": config,
       }),
     })
-    const cat = await checkSenses(deps)
+    const cat = await checkSenses({ ...deps, checkSocketAlive: async () => true, daemonAccount: () => ({ running: true, user: "ari", uid: 501 }), accountUid: () => 502 })
     expect(cat.name).toBe("Senses")
-    expect(cat.checks).toHaveLength(5)
+    expect(cat.checks).toHaveLength(7)
     expect(cat.checks.slice(0, 4).every((c) => c.status === "pass")).toBe(true)
     expect(cat.checks[0].detail).toBe("enabled")
     expect(cat.checks[1].detail).toBe("disabled")
@@ -606,11 +617,80 @@ describe("checkSenses", () => {
     }))
     // Configuration being well-formed says nothing about delivery: this bundle
     // has never recorded an inbound message, and that must not read as healthy.
-    expect(cat.checks[4]).toEqual(expect.objectContaining({
+    expect(cat.checks[4]).toEqual(expect.objectContaining({ label: "test.ouro bluebubbles server address", status: "warn", detail: expect.stringMatching(/^plain http to an address outside this Mac and the tailnet.*`ouro connect bluebubbles --agent test`$/) }))
+    expect(cat.checks[5]).toEqual({
+      label: "test.ouro bluebubbles iMessage host",
+      status: "warn",
+      detail: "the daemon runs as ari, not clawdbot, the account declared for the agent's own Apple ID, so a shell on ari could send iMessages from whatever Apple ID that account's Messages uses, perhaps the person's. Each letter answer is marked shared-apple-id until a human runs the daemon under clawdbot.",
+    })
+    expect(cat.checks[6]).toEqual(expect.objectContaining({
       id: "senses.bluebubbles.inbound_liveness",
       label: "test.ouro bluebubbles inbound delivery",
       status: "warn",
     }))
+  })
+
+  it.each([
+    ["http://127.0.0.1:1234", "on this Mac: the server password stays on this machine, and the mailbox reads letter answers from it"],
+    ["https://bb.example.com", "over https: the server password is encrypted in transit, and the mailbox reads letter answers from it"],
+    ["http://100.100.1.2:1234", "at a tailnet address: Tailscale's tunnel encrypts the server password in transit while it is up, and the mailbox reads letter answers from it"],
+  ])("passes the BlueBubbles address %s, and says why (2026-11-26)", async (serverUrl, detail) => {
+    seedRuntimeConfig("test", { bluebubbles: { serverUrl, password: "pw" } })
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/agent.json": JSON.stringify({ senses: { bluebubbles: { enabled: true, hostUsername: "slugger" } } }) }),
+    })
+    const checks = (await checkSenses({ ...deps, checkSocketAlive: async () => true, daemonAccount: () => ({ running: true, user: "slugger", uid: 502 }), accountUid: () => 502 })).checks
+    expect(checks.find((c) => c.label === "test.ouro bluebubbles server address")).toEqual({ label: "test.ouro bluebubbles server address", status: "pass", detail })
+    expect(checks.find((c) => c.label === "test.ouro bluebubbles iMessage host")).toEqual({
+      label: "test.ouro bluebubbles iMessage host", status: "pass",
+      detail: "the daemon runs as slugger, the account declared as signed in to the agent's own Apple ID, so a shell beside it can send as the agent, not from the person's Messages.",
+    })
+  })
+
+  it("warns about an address that isn't an http or https URL, and names the fix", async () => {
+    for (const serverUrl of ["bluebubbles.local:1234", "ws://127.0.0.1:1234"]) {
+      seedRuntimeConfig("test", { bluebubbles: { serverUrl, password: "pw" } })
+      const checks = (await checkSenses({ ...hostDeps(), daemonAccount: () => ({ running: true, user: "slugger", uid: 502 }) })).checks
+      expect(checks.find((c) => c.label === "test.ouro bluebubbles server address")).toEqual({
+        label: "test.ouro bluebubbles server address", status: "warn",
+        detail: `${serverUrl} isn't an http or https URL, so the mailbox won't read letter answers from it. Correct it, then re-attach with \`ouro connect bluebubbles --agent test\``,
+      })
+    }
+  })
+
+  it("compares the daemon's account with the host account by uid, so it holds when ouro doctor runs as the person", async () => {
+    seedRuntimeConfig("test", { bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "pw" } })
+    const host = async (extra: Partial<DoctorDeps>) => (await checkSenses({ ...hostDeps(), socketPath: "/nonexistent/ouro-doctor-test.sock", checkSocketAlive: async () => true, ...extra })).checks.find((c) => c.label === "test.ouro bluebubbles iMessage host")!
+    // ouro doctor runs as ari; the daemon's socket belongs to uid 502, which is slugger's.
+    expect(await host({ daemonAccount: () => ({ running: true, user: null, uid: 502 }), accountUid: (name) => (name === "slugger" ? 502 : null) })).toEqual({
+      label: "test.ouro bluebubbles iMessage host", status: "pass",
+      detail: "the daemon runs as slugger, the account declared as signed in to the agent's own Apple ID, so a shell beside it can send as the agent, not from the person's Messages.",
+    })
+    expect(await host({ daemonAccount: () => ({ running: true, user: null, uid: 503 }), accountUid: () => 502 })).toEqual({
+      label: "test.ouro bluebubbles iMessage host", status: "warn",
+      detail: "the daemon runs as uid 503, not slugger, the account declared for the agent's own Apple ID, so a shell on uid 503 could send iMessages from whatever Apple ID that account's Messages uses, perhaps the person's. Each letter answer is marked shared-apple-id until a human runs the daemon under slugger.",
+    })
+    expect((await host({ daemonAccount: () => ({ running: true, user: "ari", uid: 501 }), accountUid: () => null })).detail)
+      .toMatch(/^the daemon runs as ari, not slugger \(no macOS account slugger exists on this Mac\), the account declared/)
+    // A socket no daemon answers on was left by one that died.
+    expect((await host({ daemonAccount: () => ({ running: true, user: null, uid: 502 }), accountUid: () => 502, checkSocketAlive: async () => false })).detail)
+      .toMatch(/The daemon isn't running, so this judges the account ouro doctor runs as\.$/)
+    // By default the socket's owner names the daemon's account; this socket path holds no daemon.
+    expect((await host({ accountUid: () => 502 })).detail).toMatch(/The daemon isn't running, so this judges the account ouro doctor runs as\.$/)
+    const socketPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "doctor-socket-")), "daemon.sock")
+    fs.writeFileSync(socketPath, "")
+    const own = await host({ socketPath, accountUid: () => null })
+    expect(own.detail).toContain(`the daemon runs as ${os.userInfo().username}, not slugger`)
+    expect(own.detail).not.toContain("isn't running")
+    expect(daemonAccount(socketPath, { uid: fs.statSync(socketPath).uid + 1, username: "someone" })).toEqual({ running: true, user: null, uid: fs.statSync(socketPath).uid })
+  })
+
+  it("reads an account's uid with id, and has none for an account that doesn't exist", () => {
+    expect(accountUid(os.userInfo().username)).toBe(os.userInfo().uid)
+    expect(accountUid("no-such-account-ouro-doctor")).toBeNull()
+    expect(accountUid("x", (() => "not a number\n") as never)).toBeNull()
   })
 
   it("fails the BlueBubbles host account check when no host account is declared", async () => {
