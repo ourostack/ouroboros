@@ -5,6 +5,7 @@ import type { Readable, Writable } from "node:stream"
 import { SocketFrontendClient, type FrontendProtocolClient } from "../heart/frontend-socket-client"
 import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
+import { getPackageVersion } from "../mind/bundle-manifest"
 
 interface JsonRpcRequest {
   jsonrpc?: unknown
@@ -282,7 +283,12 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
     if (method === "initialize") {
       if (id === undefined) return
       if (requestParams.protocolVersion !== 1) throw new AcpProtocolError(-32602, "protocolVersion must be 1")
-      result(id, { protocolVersion: 1 })
+      result(id, {
+        protocolVersion: 1,
+        // Clients only reopen a saved chat when loading is advertised; observe-only mode refuses it.
+        agentCapabilities: { loadSession: !options.disableTools },
+        agentInfo: { name: "ouro", title: "Ouro", version: getPackageVersion() },
+      })
       return
     }
 
@@ -305,21 +311,32 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
       }
       const sessionId = requiredString(requestParams.sessionId, "sessionId")
       const frontend = await client()
-      const replay = await frontend.request("session.load", {
-        agent: options.agent,
-        friendId: options.friendId,
-        sessionKey: sessionId,
-        afterSequence: 0,
-      })
-      if (!Array.isArray(replay?.events) || replay.events.length === 0) {
-        throw new AcpProtocolError(-32001, "session not found")
+      // The journal answers in pages of up to 1,000 events; read every page so the newest turns show.
+      const events: Record<string, any>[] = []
+      let pendingPermissions: Record<string, any>[] = []
+      let afterSequence = 0
+      for (;;) {
+        const page = await frontend.request("session.load", {
+          agent: options.agent,
+          friendId: options.friendId,
+          sessionKey: sessionId,
+          afterSequence,
+        })
+        const pageEvents: Record<string, any>[] = Array.isArray(page?.events) ? page.events : []
+        events.push(...pageEvents)
+        pendingPermissions = page?.pendingPermissions ?? []
+        const last = pageEvents.at(-1)?.sequence
+        if (page?.hasMore !== true || typeof last !== "number" || last <= afterSequence) break
+        afterSequence = last
       }
+      // -32002 is ACP's resource-not-found code; clients start a new session for an unsaved chat on it.
+      if (events.length === 0) throw new AcpProtocolError(-32002, "session not found")
       // The replay rebuilds which calls are open; counters from an earlier load, or live events that
       // arrived while this load was pending (the journal holds them too), would misnumber them.
       toolCalls.delete(sessionId)
-      for (const event of replay.events) replayEvent(sessionId, event)
+      for (const event of events) replayEvent(sessionId, event)
       await subscribe(sessionId)
-      for (const pending of replay.pendingPermissions ?? []) permissionRequest(sessionId, pending)
+      for (const pending of pendingPermissions) permissionRequest(sessionId, pending)
       result(id, {})
       return
     }
@@ -376,7 +393,8 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
       }
     } catch (caught) {
       const id = request.id ?? null
-      const code = caught instanceof AcpProtocolError ? caught.code : -32000
+      // ACP reserves -32000 for "authentication required", so an internal failure is JSON-RPC's -32603.
+      const code = caught instanceof AcpProtocolError ? caught.code : -32603
       error(id, code, caught instanceof Error ? caught.message : String(caught))
     }
   }
