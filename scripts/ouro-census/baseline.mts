@@ -86,21 +86,26 @@ export interface WalkerSource {
  */
 export function checkSources(sources: readonly WalkerSource[], baseSources: readonly WalkerSource[] | null): string[] {
   if (!baseSources) return [];
-  // A changed parser or kinds type, an added claim or passthrough, a dropped approvals resolver or a renamed server can
-  // hide doors as surely as a removed source.
-  const key = (s: WalkerSource) =>
+  // A changed parser or kinds type, an added claim or passthrough, a dropped approvals resolver or a renamed server
+  // can hide doors as surely as a removed source. Cards only describe doors already found, and a handlers file only
+  // raises codes a card declares, so a base source with no cards matches a branch source that is the same apart from
+  // gaining cards, a handlers file, or both.
+  const key = (s: WalkerSource, withCards: boolean) =>
     [
       s.walker, s.module, s.source, ...(s.parser ? [s.parser] : []), ...(s.kinds ? [s.kinds] : []), ...(s.claims ?? []).map((c) => `claims ${c.entry}=${c.parser}`),
-      ...(s.cards ? [`cards ${s.cards}`] : []), ...(s.passthrough ?? []).map((p) => `passthrough ${p}`), ...(s.approvals ?? []).map((a) => `approvals ${a}`),
+      ...(withCards && s.cards ? [`cards ${s.cards}`] : []), ...(s.passthrough ?? []).map((p) => `passthrough ${p}`), ...(s.approvals ?? []).map((a) => `approvals ${a}`),
       ...(s.reshape ?? []).map((r) => `reshape ${r}`), ...(s.server ? [`server ${s.server}`] : []),
     ].join(" ");
-  const here = new Map(sources.map((s) => [key(s), s]));
+  const hereWithCards = new Map(sources.map((s) => [key(s, true), s]));
+  const hereWithoutCards = new Map(sources.map((s) => [key(s, false), s]));
   return baseSources.flatMap((s) => {
-    const mine = here.get(key(s));
-    if (!mine) return [`${key(s)}: a walker source on the base branch is missing here. Fix: restore it in ax/census.config.json; removing a source makes its doors vanish from the count.`];
+    const mine = s.cards ? hereWithCards.get(key(s, true)) : hereWithoutCards.get(key(s, false));
+    if (!mine) return [`${key(s, true)}: a walker source on the base branch is missing here. Fix: restore it in ax/census.config.json; removing a source makes its doors vanish from the count.`];
+    // No card on the base means no code it declares could count as raised, so a gained handlers file is harmless.
+    if (!s.cards) return [];
     // Dropping a handlers file only makes codes harder to count as raised; adding one can make them all count.
     return (mine.handlers ?? []).filter((h) => !(s.handlers ?? []).includes(h))
-      .map((h) => `${key(s)}: handlers ${h} is new here. Fix: raise each code where the door handles it; a new handlers file can make any card's codes count as raised.`);
+      .map((h) => `${key(s, true)}: handlers ${h} is new here. Fix: raise each code where the door handles it; a new handlers file can make any card's codes count as raised.`);
   });
 }
 

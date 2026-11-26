@@ -64,7 +64,10 @@ export async function runChild(configPath: string, builtIn: Readonly<Record<stri
         continue;
       }
       const { walker: name, ...where } = source;
+      process.stderr.write(`ax-census: start ${name}\n`);
+      const startedAt = Date.now();
       const result = await walker({ ...where, product: config.product, root: process.cwd() });
+      process.stderr.write(`ax-census: finish ${name} in ${Date.now() - startedAt}ms\n`);
       doors.push(...result.doors.map((d) => ({ ...d, walker: name })));
       errors.push(...result.errors);
       unwalked.push(...(result.unwalked ?? []));
