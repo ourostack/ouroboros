@@ -6,6 +6,8 @@ import {
   redactBlueBubblesHealthDetailForNerves,
 } from "../../heart/daemon/bluebubbles-health-diagnostics"
 import { emitNervesEvent } from "../../nerves/runtime"
+import type { ServerMessage } from "../../heart/letters/answer-reader"
+import { serverMessageFromPayload } from "./server-message"
 import { describeImage } from "../../heart/attachments/understand"
 import { normalizeBlueBubblesEvent, type BlueBubblesChatRef, type BlueBubblesNormalizedEvent } from "./model"
 import { hydrateBlueBubblesAttachments, type VlmDescribeFn } from "./media"
@@ -91,6 +93,8 @@ export interface BlueBubblesClient {
   getMessageText(messageGuid: string): Promise<string | null>
   /** Fetch a replied-to message: its text, and whether this account sent it. Null if not found or on error. */
   getRepliedMessage?(messageGuid: string): Promise<BlueBubblesRepliedMessage | null>
+  /** Fetch the server's own record of a message, every field the letter answer reader checks. Null if not found. */
+  getServerMessage?(messageGuid: string): Promise<ServerMessage | null>
 }
 
 export interface BlueBubblesRepliedMessage {
@@ -1031,6 +1035,17 @@ export function createBlueBubblesClient(
 
     async getMessageText(messageGuid: string): Promise<string | null> {
       return (await this.getRepliedMessage!(messageGuid))?.text ?? null
+    },
+
+    async getServerMessage(messageGuid: string): Promise<ServerMessage | null> {
+      await assertHostAccount()
+      const response = await fetch(buildRepairUrl(config.serverUrl, messageGuid, config.password), {
+        method: "GET",
+        signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
+      })
+      if (response.status === 404) return null
+      if (!response.ok) throw new Error(`the BlueBubbles server answered ${response.status} for that message`)
+      return serverMessageFromPayload(await parseJsonBody(response))
     },
 
     async getRepliedMessage(messageGuid: string): Promise<BlueBubblesRepliedMessage | null> {

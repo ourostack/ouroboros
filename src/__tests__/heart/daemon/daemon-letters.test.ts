@@ -4,6 +4,11 @@ import * as os from "os"
 import * as path from "path"
 
 vi.mock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+// The agent's BlueBubbles server is the test's: one whose address can't be trusted, so it is never asked.
+vi.mock("../../../senses/bluebubbles/agent-client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../senses/bluebubbles/agent-client")>()),
+  letterAnswerSource: () => async () => ({ trust: "untrusted", hostTrust: "shared-apple-id", getServerMessage: async () => null }),
+}))
 
 const made: string[] = []
 afterEach(() => {
@@ -86,5 +91,17 @@ describe("the daemon's letter expiry pass", () => {
     const file = new OuroDaemon(daemonOptions(path.join(root, "bundles")) as ConstructorParameters<typeof OuroDaemon>[0])
     expect(await file.expireLetters()).toBe(0)
     expect(failures()).toHaveLength(1)
+  })
+})
+
+describe("the daemon's letters.answer command", () => {
+  it("checks a message named by GUID with the same letters writer, through the agent's own server", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "c21-daemon-answer-"))
+    made.push(bundlesRoot)
+    fs.mkdirSync(path.join(bundlesRoot, "slugger.ouro"))
+    const { OuroDaemon } = await import("../../../heart/daemon/daemon")
+    const daemon = new OuroDaemon(daemonOptions(bundlesRoot) as ConstructorParameters<typeof OuroDaemon>[0])
+    await expect(daemon.handleCommand({ kind: "letters.answer", agent: "slugger", messageGuid: "m-1" }))
+      .resolves.toEqual({ ok: true, data: { recorded: false, reason: "untrusted-server-url" } })
   })
 })
