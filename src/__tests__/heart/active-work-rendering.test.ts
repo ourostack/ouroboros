@@ -99,7 +99,7 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
       }))
 
       expect(result).toContain("## contact timing")
-      expect(result).toContain("freshest friend-facing contact: Ari/bluebubbles/chat:any;-;owner@example.test; last inbound 11m ago; i last replied 11m ago")
+      expect(result).toContain("freshest friend-facing contact: Ari/bluebubbles/chat:any;-;owner@example.test; last inbound 11m ago; i last replied 11m ago; reach there: their phone (iMessage): they can tap an approval, pay or decide; no terminal, desktop browser or other machine")
     } finally {
       vi.useRealTimers()
     }
