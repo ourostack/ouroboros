@@ -11,7 +11,7 @@
  * session is cut off partway by another's spend. A session never takes a call that could pass its own credit
  * reservation either, so a cap can be passed only by what one call costs beyond its per-call estimate; the consumer
  * raises the estimate for later sessions from `maxCall`. Once the money really spent passes a cap, or `stop` is called (the
- * first 402 or 429), every later call and reservation is refused. The same happens once `killSwitch` answers a reason
+ * first 402, or the first 429 a `RateLimitRetry` does not wait out), every later call and reservation is refused. The same happens once `killSwitch` answers a reason
  * (the `~/.ouro-eval/STOP` file, `kill-switch.ts`), which is asked before every reservation and every call.
  */
 import type { ProviderRuntime } from "../heart/core"
@@ -158,16 +158,54 @@ export function createBudgetLedger(caps: Caps, options: LedgerOptions = {}): Bud
 
 const STOPPING_STATUS = new Set([402, 429])
 
-/** The runtime with each call's usage settled on `hold`; a failed call is billed, and a 402, 429 or usage or rate limit stops the ledger. */
-export function meteredRuntime(inner: ProviderRuntime, hold: Hold, ledger: BudgetLedger): ProviderRuntime {
+/**
+ * How a metered call waits out a rate limit: after a 429 or a "rate-limit" classification it waits `delays[i]` ms and
+ * sends the same request again, at most `delays.length` times. A 402 or "usage-limit" is a spent quota and never retried.
+ */
+export type RateLimitRetry = {
+  delays: readonly number[]
+  sleep(ms: number): Promise<void>
+  /** Told before each retry is sent, with its attempt number (1 for the first retry) and the wait before it. */
+  onRetry?(attempt: number, delayMs: number): void
+}
+
+function errorOf(caught: unknown): Error {
+  return caught instanceof Error ? caught : new Error(String(caught))
+}
+
+/**
+ * The runtime with each call's usage settled on `hold`; a failed call is billed, and a 402, 429 or usage or rate limit
+ * stops the ledger. With `retry`, a rate limit is first waited out and the request sent again beneath the metering, so
+ * the call is still one call, billed once; only a rate limit that outlasts every retry stops the ledger.
+ */
+export function meteredRuntime(inner: ProviderRuntime, hold: Hold, ledger: BudgetLedger, retry?: RateLimitRetry): ProviderRuntime {
+  const send: ProviderRuntime["streamTurn"] = async (request) => {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await inner.streamTurn(request)
+      } catch (caught) {
+        const error = errorOf(caught)
+        const status = (error as Error & { status?: unknown }).status
+        const classification = inner.classifyError(error)
+        const rateLimited = (status === 429 || classification === "rate-limit") && status !== 402 && classification !== "usage-limit"
+        const delay = retry?.delays[attempt - 1]
+        if (!rateLimited || delay === undefined) throw error
+        emitNervesEvent({ component: "eval", level: "warn", event: "eval.rate_limit_retry", message: "waiting out a rate limit before sending the call again", meta: { attempt, delayMs: delay } })
+        retry!.onRetry?.(attempt, delay)
+        await retry!.sleep(delay)
+        // The provider builds its body from these messages again, as it did before the first attempt.
+        inner.resetTurnState(request.messages)
+      }
+    }
+  }
   const streamTurn: ProviderRuntime["streamTurn"] = async (request) => {
     try {
-      const result = await inner.streamTurn(request)
+      const result = await send(request)
       hold.settle(result.usage)
       return result
     } catch (caught) {
       hold.settle(undefined)
-      const error = caught instanceof Error ? caught : new Error(String(caught))
+      const error = errorOf(caught)
       const status = (error as Error & { status?: unknown }).status
       const classification = inner.classifyError(error)
       if ((typeof status === "number" && STOPPING_STATUS.has(status)) || classification === "usage-limit" || classification === "rate-limit") {

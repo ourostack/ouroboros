@@ -66,6 +66,8 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // otherwise read as code to isTypeOnlyFile.
   "daemon/cli-commands/",
   // Shared utility modules: pure helpers consumed by modules that own observability.
+  // The Butler's names and the one check that picks Butler behaviour; each caller owns its observability.
+  "heart/butler-agent",
   "arc/json-store",
   "heart/mail-import-discovery",
   "repertoire/api-client",

@@ -52,24 +52,28 @@ describe("the allocation", () => {
     expect(version).toBe(2)
     expect(sessions.map((s) => s.id)).toEqual(["X-pilot", "X-1", "X-2", "X-3", "H-1"])
     expect(sessions[2]).toMatchObject({ job: "unreadable-edition", pilot: false })
-    expect(() => readAllocation(preregistration(ROWS))).toThrow(/not the table of any registered version \(version 1: ca0b4416.*version 2: 71fc28b4/)
+    expect(() => readAllocation(preregistration(ROWS))).toThrow(/not the table of any registered version \(version 1: ca0b4416.*version 2: 71fc28b4.*version 3: 0a0656f4/)
     expect(() => readAllocation("no appendix")).toThrow(/no Appendix B/)
   })
 
-  it("registers version 1's table and version 2's, each by the SHA-256 its Appendix A states", () => {
+  it("registers versions 1, 2 and 3, each by the SHA-256 its Appendix A states", () => {
     expect(REGISTERED_ALLOCATIONS).toEqual({
       ca0b441641c6c62e70238ee2b31b2283d358103d683061a97e0174f6c29851f2: 1,
       "71fc28b44d71b1b3d09dffebafa377059a514b42c4a1524cbd3cf7182531c379": 2,
+      "0a0656f41369bab7b1c0ba34a425a908ba0077acd70fc62477ef2a9a2483a96e": 3,
     })
   })
 
-  it("runs version 1 in either design and version 2 only in the reduced one", () => {
+  it("runs version 1 in either design and versions 2 and 3 only in the reduced one", () => {
     const one = readAllocation(preregistration(ROWS), { [sha(ROWS)]: 1 })
     const two = readAllocation(preregistration(ROWS), { [sha(ROWS)]: 2 })
     expect(designOf(one, false)).toHaveLength(5)
     expect(designOf(one, true).map((s) => s.id)).toEqual(["X-pilot", "X-1", "X-2", "X-3"])
     expect(designOf(two, true)).toHaveLength(4)
     expect(() => designOf(two, false)).toThrow("pre-registration version 2 runs only the reduced design; pass --reduced")
+    const three = readAllocation(preregistration(ROWS), { [sha(ROWS)]: 3 })
+    expect(designOf(three, true)).toHaveLength(4)
+    expect(() => designOf(three, false)).toThrow("pre-registration version 3 runs only the reduced design; pass --reduced")
   })
 
   it("keeps version 1's started ids as they are and gives later versions their own, so the same id can start once in each", () => {

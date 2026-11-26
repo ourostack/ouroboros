@@ -207,6 +207,18 @@ describe("privileged external-event spool", () => {
     expect(fs.statSync(sourceManifestPath).size).toBeLessThan(64 * 1024)
   })
 
+  it("accepts an envelope from the Butler under its new name, keeping replay authority in one place", () => {
+    const spoolRoot = root("ouro-privileged-butler")
+    const eventRoot = root("ouro-privileged-butler-events")
+    fs.chmodSync(spoolRoot, 0o755)
+    writeSpoolFile(spoolRoot, envelope({ agent: "butler" }))
+    spoofRootOwnership(spoolRoot)
+
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 1, rejected: 0, replayed: 0 })
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 0, rejected: 0, replayed: 1 })
+    expect(listExternalEventStatus(eventRoot)).toEqual([expect.objectContaining({ agent: "butler", source: "sanctuary-usenet", eventId: "spend-guard" })])
+  })
+
   it("retains replay authority after more than 128 transitions and a scanner restart", () => {
     const spoolRoot = root("ouro-privileged-long-history")
     const eventRoot = root("ouro-privileged-long-history-events")
@@ -446,6 +458,7 @@ describe("privileged external-event spool", () => {
   }, 15_000)
 
   it.each([
+    ["wrong agent", { agent: "slugger" }],
     ["wrong source", { source: "attacker" }],
     ["wrong schema", { schemaVersion: 2 }],
     ["wrong action", { action: "shell.exec" }],
