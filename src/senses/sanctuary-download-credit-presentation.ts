@@ -1,4 +1,5 @@
 import { emitNervesEvent } from "../nerves/runtime"
+import { isButlerAgent } from "../heart/butler-agent"
 
 const TOP_UP_LINK = "https://www.astraweb.com/login"
 const SAFE_FALLBACK = `Downloads are paused to protect your prepaid credit. Top it up here: ${TOP_UP_LINK}. Tell me when you’re done, and I’ll resume downloads and verify one finishes. Or tell me a reminder time, like “tomorrow at 9.”`
@@ -19,7 +20,7 @@ const REQUIRED_HOUSEHOLD_CONTRACT = [
 ]
 
 export function presentSanctuaryDownloadCreditReply(agentName: string, exactQuestion: boolean, text: string): string {
-  if (agentName !== "sanctuary" || !exactQuestion || !text.includes(TOP_UP_LINK) || !/\bcredit\b/iu.test(text)) return text
+  if (!isButlerAgent(agentName) || !exactQuestion || !text.includes(TOP_UP_LINK) || !/\bcredit\b/iu.test(text)) return text
   if (!FORBIDDEN_INTERNALS.test(text) && REQUIRED_HOUSEHOLD_CONTRACT.every((pattern) => pattern.test(text))) return text
   if (!EXHAUSTED_CREDIT.test(text)) return text
   emitNervesEvent({ component: "senses", event: "senses.telegram_download_credit_reply_repaired", message: "repaired Sanctuary download-credit reply at the Telegram boundary", meta: { agentName } })

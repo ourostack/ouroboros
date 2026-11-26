@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto"
 import { spawnSync } from "node:child_process"
 
 import { getAgentRoot } from "../identity"
+import { isButlerAgent } from "../butler-agent"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 const SHA256 = /^[0-9a-f]{64}$/u
@@ -74,7 +75,7 @@ function parseMarker(value: unknown): SanctuaryAcceptanceMarker {
 }
 
 export function readSanctuaryAcceptanceMarker(agentName: string, configuredAgentRoot?: string): SanctuaryAcceptanceMarker | null {
-  if (agentName !== "sanctuary") return null
+  if (!isButlerAgent(agentName)) return null
   const filePath = markerPath(agentName, configuredAgentRoot)
   let raw: string
   try {
@@ -87,7 +88,7 @@ export function readSanctuaryAcceptanceMarker(agentName: string, configuredAgent
 }
 
 export function writeSanctuaryAcceptanceMarker(agentName: string, marker: SanctuaryAcceptanceMarker, configuredAgentRoot?: string): void {
-  if (agentName !== "sanctuary") throw new Error("acceptance markers are restricted to Sanctuary")
+  if (!isButlerAgent(agentName)) throw new Error("acceptance markers are restricted to Sanctuary")
   const parsed = parseMarker(marker)
   const filePath = markerPath(agentName, configuredAgentRoot)
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
@@ -108,7 +109,7 @@ export function clearSanctuaryAcceptanceMarker(agentName: string, scenarioHandle
 }
 
 export function quarantineSanctuaryAcceptanceMarker(agentName: string, configuredAgentRoot?: string): string | null {
-  if (agentName !== "sanctuary") throw new Error("acceptance markers are restricted to Sanctuary")
+  if (!isButlerAgent(agentName)) throw new Error("acceptance markers are restricted to Sanctuary")
   const filePath = markerPath(agentName, configuredAgentRoot)
   const sourceParent = path.dirname(filePath)
   const quarantineRoot = path.join(sourceParent, "quarantine")
