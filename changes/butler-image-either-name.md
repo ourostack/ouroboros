@@ -1,0 +1,2 @@
+- The Butler container's healthcheck checks the Butler under the name its bundle has on disk (`butler.ouro` or `sanctuary.ouro`), whichever Butler name the image passes it. With both bundles present, or neither, it fails as `missing agent` instead of guessing.
+- The container-spec auditor accepts an image that starts the Butler as `--package-managed-agent butler` as well as `sanctuary`. The entrypoint and arguments must name the same Butler, and any other agent name is still refused.
