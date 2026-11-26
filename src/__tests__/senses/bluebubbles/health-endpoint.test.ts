@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
   }),
   emitNervesEvent: vi.fn(),
   createServer: vi.fn(),
-  listen: vi.fn((_: number, cb?: () => void) => cb?.()),
+  listen: vi.fn((...args: unknown[]) => (args.find((arg) => typeof arg === "function") as (() => void) | undefined)?.()),
 }))
 
 vi.mock("../../../heart/core", () => ({
@@ -190,7 +190,7 @@ describe("BlueBubbles /health endpoint", () => {
       requestTimeoutMs: 30000,
     })
     mocks.emitNervesEvent.mockReset()
-    mocks.listen.mockReset().mockImplementation((_: number, cb?: () => void) => cb?.())
+    mocks.listen.mockReset().mockImplementation((...args: unknown[]) => (args.find((arg) => typeof arg === "function") as (() => void) | undefined)?.())
     mocks.createServer.mockReset().mockImplementation((handler: unknown) => ({
       listen: mocks.listen,
       close: vi.fn(),

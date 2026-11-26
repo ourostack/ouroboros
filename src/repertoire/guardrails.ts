@@ -63,6 +63,9 @@ const PROTECTED_PATH_SEGMENTS = [
   "state/senses/",
   "state/outbox/",
   "state/reports/",
+  // The mailbox's letters, its answering handle and its answered-message ledger: only the daemon's writer and the
+  // owner's mailbox handle command write them (design §3.4).
+  "state/letters/",
 ]
 const PROTECTED_FILENAMES = ["agent.json", "tool-profiles.json"]
 
@@ -373,7 +376,11 @@ export function psycheEditNote(file: string): string {
   return `psyche edit: I changed psyche/${file}. I tell my owner in one line which file changed and why.`
 }
 
-function isProtectedPath(filePath: string): boolean {
+function isProtectedPath(rawPath: string): boolean {
+  // Read the path as the filesystem would: quotes a shell strips, then doubled slashes and dot segments collapsed, so
+  // `state//letters/` or `state/./letters/` is the same folder as `state/letters/`.
+  const unquoted = rawPath.replace(/^(['"])(.*)\1$/, "$2").replace(/^['"]/, "")
+  const filePath = path.posix.normalize(unquoted)
   for (const segment of PROTECTED_PATH_SEGMENTS) {
     if (filePath.includes(`/${segment}`) || filePath.startsWith(segment)) return true
   }
@@ -394,13 +401,18 @@ function splitShellCommands(command: string): string[] {
 
 // --- shell commands that write to protected paths ---
 
+// Every output redirect's target: `>`, `>>`, `>|`, `&>` and `2>`, each with or without a space before the path.
+const REDIRECT_TARGET = /&?\d*>>?\|?\s*([^\s>|&;]+)/g
+// Every file a `tee` writes, after its flags.
+const TEE_TARGETS = /\btee\s+((?:-\w+\s+)*)([^|;&]*)/g
+
 function shellWritesToProtectedPath(command: string): boolean {
-  const redirectMatch = command.match(/>\s*(\S+)/)
-  if (redirectMatch && isProtectedPath(redirectMatch[1])) return true
-
-  const teeMatch = command.match(/tee\s+(?:-\w+\s+)*(\S+)/)
-  if (teeMatch && isProtectedPath(teeMatch[1])) return true
-
+  for (const match of command.matchAll(REDIRECT_TARGET)) {
+    if (isProtectedPath(match[1])) return true
+  }
+  for (const match of command.matchAll(TEE_TARGETS)) {
+    if (match[2].split(/\s+/).filter(Boolean).some(isProtectedPath)) return true
+  }
   return false
 }
 

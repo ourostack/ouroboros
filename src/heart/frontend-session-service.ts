@@ -296,6 +296,8 @@ export class FrontendSessionService {
         ...(normalized.shepherdSession ? { shepherdSession: normalized.shepherdSession } : {}),
         signal: controller.signal,
         latencyMode: "live",
+        // The frontend socket's caller names the friend and channel, as agent.senseTurn's does, so it is a socket turn.
+        toolContext: { turnOrigin: "socket" },
         frontendEventSink,
         ...(normalized.disableTools ? { disableTools: true } : {}),
         ...(normalized.ephemeral ? { disablePersistence: true } : {}),
