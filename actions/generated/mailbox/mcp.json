@@ -408,16 +408,26 @@
         "properties": {
           "outcome": {
             "type": "string",
-            "description": "done, when the letter was sent."
+            "description": "done, when the letter was sent; preview on a dry run, which shows the text and sends nothing."
           },
           "state": {
             "type": "string",
             "description": "waiting, answered, withdrawn or expired; Ouro derives it from the letter's events."
+          },
+          "channel": {
+            "type": "string",
+            "description": "The chat the letter went to, such as bluebubbles, when it was sent."
+          },
+          "text": {
+            "type": "string",
+            "description": "On a dry run, the letter as the person will read it."
           }
         },
         "required": [
           "outcome",
-          "state"
+          "state",
+          "channel",
+          "text"
         ],
         "additionalProperties": false
       }

@@ -128,9 +128,12 @@ describe("running an action", () => {
     await runMailboxAction("mailbox_list", {}, slugger)
     await runMailboxAction("mailbox_wait", { letter: "L1", timeout: 100 }, slugger)
     await runMailboxAction("mailbox_wait", { letter: "L1" }, slugger)
+    // A deliver waits out the daemon's chat send, which answers within its own deadline.
+    await runMailboxAction("mailbox_deliver", { letter: "L1" }, slugger)
     expect(socket.calls.map((call) => [call[0], call[2]])).toEqual([
       ["/tmp/test-daemon.sock", { timeoutMs: 30_000 }],
       ["/tmp/test-daemon.sock", { timeoutMs: 130_000 }],
+      ["/tmp/test-daemon.sock", { timeoutMs: 90_000 }],
       ["/tmp/test-daemon.sock", { timeoutMs: 90_000 }],
     ])
   })
