@@ -1800,6 +1800,7 @@ async function runCountedTurn(
   let sawSendMessageSelf = false;
   let sawPonder = false;
   let sawSettleContentMismatch = false;
+  let sawBlockedReportNudge = false;
   let sawQuerySession = false;
   let sawBridgeManage = false;
   let sawExternalStateQuery = false;
@@ -2826,7 +2827,20 @@ async function runCountedTurn(
             emitNervesEvent({ level: "warn", component: "engine", event: "engine.settle_content_mismatch", message: "settle answer differs from the reply text written beside it; asking once for the reply as the answer", meta: { answerLength: deliveredAnswer.length, contentLength: (msg.content as string).length } })
           }
           const { error: answerGateError, replacement } = answerGateVerdict(deliveredAnswer, intent)
+          // A gap with no report ends at a polite no and fails the same way next time (#1660), so a blocked settle with
+          // report_failure on offer and unused is asked once. Never on the last iteration: a reply beats none.
+          const reportOffered = scopedOrdinaryActiveTools.some((tool) => tool.function.name === "report_failure")
+          const blockedWithoutReport = !contentMismatch && intent === "blocked" && reportOffered && !sawBlockedReportNudge
+            && providerIterations < stepBudget - 1
+            && !turnToolRecords.some((record) => record.name === "report_failure")
+            ? FLOW_TOOL_REFUSALS.settleBlockedWithoutReport(!candidateToolNames.has("report_failure"))
+            : null
+          if (blockedWithoutReport) {
+            sawBlockedReportNudge = true
+            emitNervesEvent({ level: "warn", component: "engine", event: "engine.settle_blocked_without_report", message: "blocked settle with report_failure unused; asking once", meta: { deferred: !candidateToolNames.has("report_failure") } })
+          }
           const retryError = contentMismatch
+            ?? blockedWithoutReport
             ?? answerGateError
             ?? privateReturnAckLeakError(deliveredAnswer, privateReturnHeldTokens)
             ?? privateReturnMissingPonderError({

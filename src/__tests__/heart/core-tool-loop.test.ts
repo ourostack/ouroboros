@@ -875,6 +875,61 @@ describe("runAgent tool loop guard", () => {
     }))
   })
 
+  describe("a blocked settle with report_failure unused (#1660)", { timeout: 30_000 }, () => {
+    const settleCall = (args: Record<string, unknown>, id = "call_blocked") => makeStream([makeChunk(undefined, [{
+      index: 0, id, function: { name: "settle", arguments: JSON.stringify(args) },
+    }])])
+    const toolCall = (name: string, args: Record<string, unknown>, id: string) => makeStream([makeChunk(undefined, [{
+      index: 0, id, function: { name, arguments: JSON.stringify(args) },
+    }])])
+    const toolContents = (messages: any[]) => messages.filter((message) => message.role === "tool").map((message) => String(message.content))
+    const requestTools = (call: number) => toolContents((mockCreate.mock.calls[call]![0] as { messages: any[] }).messages)
+    const blocked = { answer: "i can't do that one; i have no thermostat tools", intent: "blocked" }
+    const run = async (options: Record<string, unknown> = {}) => {
+      const messages: any[] = [{ role: "user", content: "please set the living room thermostat to 68 degrees" }]
+      const { runAgent } = await import("../../heart/core")
+      const result = await runAgent(messages, makeCallbacks(), "telegram", undefined, { toolContext: { signin: async () => undefined }, ...options })
+      return { messages, result }
+    }
+
+    it("asks once, then sends the same blocked answer", async () => {
+      mockCreate.mockReturnValueOnce(settleCall(blocked, "call_first")).mockReturnValueOnce(settleCall(blocked, "call_second"))
+      const { messages, result } = await run()
+      expect(result.outcome).toBe("blocked")
+      expect(mockCreate).toHaveBeenCalledTimes(2)
+      expect(requestTools(1).at(-1)).toContain("(code: blocked-without-report)")
+      expect(toolContents(messages)).toEqual(["(delivered)"])
+    })
+
+    it("names find_tools only when report_failure waits behind it", async () => {
+      const { FLOW_TOOL_REFUSALS } = await import("../../repertoire/tools-flow")
+      expect(FLOW_TOOL_REFUSALS.settleBlockedWithoutReport(true)).toContain("(load it with find_tools first)")
+      expect(FLOW_TOOL_REFUSALS.settleBlockedWithoutReport(false)).not.toContain("find_tools")
+    })
+
+    it("sends at once when report_failure was filed this turn", async () => {
+      const execTool = vi.fn(async () => JSON.stringify({ ok: true, filed: "r1" }))
+      mockCreate
+        .mockReturnValueOnce(toolCall("report_failure", { ari_words: "set the thermostat to 68", tried: "no thermostat tool", error: "missing tool" }, "call_report"))
+        .mockReturnValueOnce(settleCall(blocked, "call_after"))
+      const { result } = await run({ execTool })
+      expect(result.outcome).toBe("blocked")
+      expect(mockCreate).toHaveBeenCalledTimes(2)
+      expect(requestTools(1).join("\n")).not.toContain("blocked-without-report")
+    })
+
+    it("leaves a completed settle and a turn without report_failure alone", async () => {
+      mockCreate.mockReturnValueOnce(settleCall({ answer: "done", intent: "complete" }))
+      expect((await run()).result.outcome).toBe("settled")
+      expect(mockCreate).toHaveBeenCalledTimes(1)
+      mockCreate.mockReset()
+      mockCreate.mockReturnValueOnce(settleCall(blocked))
+      const { settleTool } = await import("../../repertoire/tools-flow")
+      expect((await run({ tools: [settleTool] })).result.outcome).toBe("blocked")
+      expect(mockCreate).toHaveBeenCalledTimes(1)
+    })
+  })
+
   describe("settle's check-back", { timeout: 30_000 }, () => {
     const settleCall = (args: Record<string, unknown>, id = "call_check_back") => makeStream([makeChunk(undefined, [{
       index: 0, id, function: { name: "settle", arguments: JSON.stringify(args) },
@@ -3231,6 +3286,8 @@ describe("runAgent tool loop guard", () => {
       const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "Think privately and come back to me later." }]
       const { runtime, callerViews, views } = runtimeFor([
         response("", [call("settle", "private-rejected", { answer: "The private pass is queued; I will come back to you.", intent: "complete" })]),
+        response("", [call("settle", "blocked-asked", { answer: "I could not start that work.", intent: "blocked" })]),
+        // The blocked settle is asked once about report_failure (#1660); the same answer then goes out.
         response("", [call("settle", "blocked-accepted", { answer: "I could not start that work.", intent: "blocked" })]),
       ], messages)
       const { runAgent } = await import("../../heart/core")
