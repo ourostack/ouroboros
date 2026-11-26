@@ -55,6 +55,9 @@ describe("external event repair manifest", () => {
       expect(repairExternalEventsFromManifest(manifest, { root: eventRoot })).toMatchObject({ applied: ["sanctuary/source-a/evt-1"], failed: [], pending: [] })
       expect(readExternalEventRecord(moved)).toMatchObject({ agent: "butler", failureProvenance: { class: "execution_lease_expired" } })
       expect(repairExternalEventsFromManifest(manifest, { root: eventRoot })).toMatchObject({ applied: [], alreadyApplied: ["sanctuary/source-a/evt-1"], failed: [] })
+      // With the record under neither name, the repair fails closed.
+      fs.rmSync(moved)
+      expect(repairExternalEventsFromManifest(manifest, { root: eventRoot })).toMatchObject({ applied: [], failed: [{ identity: "sanctuary/source-a/evt-1" }] })
     } finally { prepareButlerExternalEvents(eventRoot, []) }
   })
 
