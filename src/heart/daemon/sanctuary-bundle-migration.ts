@@ -307,9 +307,12 @@ function isBundlePathFile(relative: string): boolean {
 
 const containerBundlePath = (name: ButlerAgentName): string => `/home/ouro/AgentBundles/${name}.ouro`
 
-/** The Butler a migrate runs for: the one it is told, or the one its agent root is named after; null for any other bundle. */
-function migrationButlerName(agentRoot: string, given: ButlerAgentName | undefined): ButlerAgentName | null {
-  if (given) return given
+/**
+ * The Butler a migrate runs for: the one it is told, or the one its agent root is named after; null for any other bundle,
+ * and for `null`, which the host passes when it names no Butler: its folder keeps the name `sanctuary` whatever the image runs.
+ */
+function migrationButlerName(agentRoot: string, given: ButlerAgentName | null | undefined): ButlerAgentName | null {
+  if (given !== undefined) return given
   const name = path.basename(agentRoot).replace(/\.ouro$/u, "")
   return isButlerAgent(name) ? name : null
 }
@@ -326,21 +329,21 @@ function planBundlePathRewrites(agentRoot: string, name: ButlerAgentName | null)
   const skills = path.join(agentRoot, "skills")
   let skillFiles: string[] = []
   try {
-    const stat = fs.lstatSync(skills)
-    if (stat.isSymbolicLink()) throw new Error("bundle skills/ must not be a symlink")
-    if (stat.isDirectory()) skillFiles = fs.readdirSync(skills).filter((entry) => entry.endsWith(".md")).sort().map((entry) => `skills/${entry}`)
+    if (fs.statSync(skills).isDirectory()) skillFiles = fs.readdirSync(skills).filter((entry) => entry.endsWith(".md")).sort().map((entry) => `skills/${entry}`)
   } catch (error) {
     if (!isMissing(error)) throw error
   }
   const relatives = [...SANCTUARY_BUNDLE_PATH_FILES.filter((relative) => !relative.includes("*")), ...skillFiles]
   const rewrites: BundlePathRewrite[] = []
   for (const relative of relatives) {
-    validateDestination(agentRoot, relative)
     const filePath = path.join(agentRoot, relative)
-    if (!fs.existsSync(filePath)) continue
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) continue
     const text = fs.readFileSync(filePath, "utf8")
     const next = text.replace(pattern, containerBundlePath(name))
-    if (next !== text) rewrites.push({ relative, content: Buffer.from(next, "utf8"), mode: fs.lstatSync(filePath).mode & 0o777 })
+    if (next === text) continue
+    // Only a file that needs the rewrite must be a real one inside the bundle; anything else is left as it is.
+    validateDestination(agentRoot, relative)
+    rewrites.push({ relative, content: Buffer.from(next, "utf8"), mode: fs.lstatSync(filePath).mode & 0o777 })
   }
   return rewrites
 }
@@ -854,7 +857,7 @@ function restoreMigrationSnapshot(snapshot: MigrationSnapshot, agentRoot: string
   }
 }
 
-export function migrateSanctuaryPackageManagedBundle(input: { packageRoot: string; agentRoot: string; retainRollback?: boolean; rollbackImageId?: string; targetImageId?: string; butlerName?: ButlerAgentName }): SanctuaryBundleMigrationResult {
+export function migrateSanctuaryPackageManagedBundle(input: { packageRoot: string; agentRoot: string; retainRollback?: boolean; rollbackImageId?: string; targetImageId?: string; butlerName?: ButlerAgentName | null }): SanctuaryBundleMigrationResult {
   emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_bundle_migration_start", message: "starting Sanctuary package-managed bundle migration", meta: { agentRoot: input.agentRoot } })
   let snapshot: MigrationSnapshot | null = null
   try {

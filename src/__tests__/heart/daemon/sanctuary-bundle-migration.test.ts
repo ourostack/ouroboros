@@ -1715,6 +1715,23 @@ describe("the bundle's own container paths follow the Butler's name", () => {
     expect(migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, butlerName: "butler" })).toMatchObject({ bundlePathsRewritten: 1 })
   })
 
+  it("leaves a symlinked allowlisted file alone when it names no other Butler path", () => {
+    const { packageRoot, agentRoot } = liveBundle()
+    const outside = makeRoot("butler-rename-linked-clean")
+    write(outside, "agent.json", { args: ["/home/ouro/AgentBundles/butler.ouro/mcp/media-mcp.mjs"] })
+    fs.rmSync(path.join(agentRoot, "agent.json"))
+    fs.symlinkSync(path.join(outside, "agent.json"), path.join(agentRoot, "agent.json"))
+    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, butlerName: "butler" })).not.toThrow()
+    expect(fs.lstatSync(path.join(agentRoot, "agent.json")).isSymbolicLink()).toBe(true)
+  })
+
+  it("rewrites nothing when the host names no Butler, whatever its folder is called", () => {
+    const { packageRoot, agentRoot } = liveBundle()
+    const before = read(agentRoot, "agent.json")
+    expect(migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, butlerName: null })).not.toHaveProperty("bundlePathsRewritten")
+    expect(read(agentRoot, "agent.json")).toBe(before)
+  })
+
   it("refuses a symlinked skills folder or allowlisted file before writing anything", () => {
     const { packageRoot, agentRoot } = liveBundle()
     const outside = makeRoot("butler-rename-outside")
@@ -1722,7 +1739,7 @@ describe("the bundle's own container paths follow the Butler's name", () => {
     fs.renameSync(path.join(agentRoot, "skills"), path.join(outside, "skills"))
     fs.symlinkSync(path.join(outside, "skills"), path.join(agentRoot, "skills"))
     const before = read(agentRoot, "agent.json")
-    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, butlerName: "butler" })).toThrow(/skills\/ must not be a symlink/u)
+    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, butlerName: "butler" })).toThrow(/must not be a symlink: skills\//u)
     expect(read(agentRoot, "agent.json")).toBe(before)
     expect(fs.existsSync(path.join(agentRoot, "bundle-meta.json"))).toBe(false)
 

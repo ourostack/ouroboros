@@ -33,7 +33,7 @@ export function runSanctuaryBundleOperation(args, dependencies) {
   const agentRoot = values.get("--agent-root")
   const operation = values.get("--operation")
   const result = operation === "migrate"
-    ? dependencies.migrate({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: values.get("--rollback-image-id"), targetImageId: values.get("--target-image-id"), ...(values.has(BUTLER_NAME_KEY) ? { butlerName: values.get(BUTLER_NAME_KEY) } : {}) })
+    ? dependencies.migrate({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: values.get("--rollback-image-id"), targetImageId: values.get("--target-image-id"), butlerName: values.has(BUTLER_NAME_KEY) ? values.get(BUTLER_NAME_KEY) : null })
     // A fresh install has no earlier image to roll back to, so it writes the packaged files without a rollback record.
     : operation === "seed"
       ? dependencies.migrate({ packageRoot, agentRoot, retainRollback: false })

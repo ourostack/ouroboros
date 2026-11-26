@@ -6,7 +6,7 @@ type AdapterDependencies = {
   commit: (agentRoot: string) => boolean
   getPackageVersion: () => string
   inspect: (input: { packageRoot: string; agentRoot: string; runtimePackageVersion: string }) => unknown
-  migrate: (input: { packageRoot: string; agentRoot: string; retainRollback: boolean; rollbackImageId?: string; targetImageId?: string; butlerName?: string }) => unknown
+  migrate: (input: { packageRoot: string; agentRoot: string; retainRollback: boolean; rollbackImageId?: string; targetImageId?: string; butlerName?: string | null }) => unknown
   rollback: (agentRoot: string, options?: { retainRecord: boolean }) => boolean
   status: (agentRoot: string) => unknown
 }
@@ -74,7 +74,7 @@ describe("Sanctuary bundle migration adapter", () => {
     const targetImageId = `sha256:${"2".repeat(64)}`
 
     expect(runSanctuaryBundleOperation([...base, "--operation", "migrate", "--rollback-image-id", rollbackImageId, "--target-image-id", targetImageId], deps)).toEqual({ managedFilesUpdated: 8 })
-    expect(deps.migrate).toHaveBeenCalledWith({ packageRoot: base[1], agentRoot: base[3], retainRollback: true, rollbackImageId, targetImageId })
+    expect(deps.migrate).toHaveBeenCalledWith({ packageRoot: base[1], agentRoot: base[3], retainRollback: true, rollbackImageId, targetImageId, butlerName: null })
     expect(runSanctuaryBundleOperation([...base, "--operation", "migrate", "--rollback-image-id", rollbackImageId, "--target-image-id", targetImageId, "--butler-name", "butler"], deps)).toEqual({ managedFilesUpdated: 8 })
     expect(deps.migrate).toHaveBeenLastCalledWith({ packageRoot: base[1], agentRoot: base[3], retainRollback: true, rollbackImageId, targetImageId, butlerName: "butler" })
     expect(() => runSanctuaryBundleOperation([...base, "--operation", "migrate", "--rollback-image-id", rollbackImageId, "--target-image-id", targetImageId, "--butler-name", "slugger"], deps)).toThrow(/Usage:/u)
