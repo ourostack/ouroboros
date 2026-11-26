@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig } from "../../heart/config"
-import { getAgentName, loadAgentConfig } from "../../heart/identity"
+import { getAgentName, getAgentRoot, loadAgentConfig } from "../../heart/identity"
 import {
   probeBlueBubblesHealth,
   redactBlueBubblesHealthDetailForNerves,
@@ -11,6 +11,7 @@ import { normalizeBlueBubblesEvent, type BlueBubblesChatRef, type BlueBubblesNor
 import { hydrateBlueBubblesAttachments, type VlmDescribeFn } from "./media"
 import { verifyBlueBubblesServerAccount, type BlueBubblesServerFacts } from "./host-account-verifier"
 import { recordBlueBubblesSendBlocked, recordBlueBubblesSendDelivered, type BlueBubblesSendPath } from "./send-health"
+import { letterChatRefusal, type OuroLetterSend } from "./letter-guard"
 
 export interface BlueBubblesSendTextParams {
   chat: BlueBubblesChatRef
@@ -20,6 +21,8 @@ export interface BlueBubblesSendTextParams {
   signal?: AbortSignal
   beforeTransportInvocation?: () => boolean
   onTransportInvocation?: () => void
+  /** Set only by Ouro's own letter sends, whose text it rendered; agent text to a letters chat is checked (letter-guard.ts). */
+  mark?: OuroLetterSend
 }
 
 export interface BlueBubblesSendTextResult {
@@ -55,6 +58,7 @@ export interface BlueBubblesEditMessageParams {
   text: string
   backwardsCompatibilityMessage?: string
   partIndex?: number
+  mark?: OuroLetterSend
 }
 
 /** The six iMessage tapbacks the BlueBubbles server can send. */
@@ -455,6 +459,12 @@ export function createBlueBubblesClient(
   const declaredHostUsername = (): string | undefined => "hostUsername" in hostOptions
     ? hostOptions.hostUsername
     : loadAgentConfig().senses?.bluebubbles.hostUsername
+  const agentRoot = (): string => hostOptions.agentRoot ?? getAgentRoot(agentName())
+  // Agent text that could pass for a letter never reaches the person's letters chat (letter-guard.ts).
+  const guardLetterChat = (input: Parameters<typeof letterChatRefusal>[0]): void => {
+    const refused = letterChatRefusal(input, agentRoot())
+    if (refused) throw new BlueBubblesSendError({ message: refused, httpStatus: null, errorCode: "letter_guard", transportInvoked: false })
+  }
   const recordBlocked = (code: string, detail: string): void => recordBlueBubblesSendBlocked(agentName(), { code, detail }, hostOptions.agentRoot)
   const recordDelivered = (via: BlueBubblesSendPath): void => recordBlueBubblesSendDelivered(agentName(), via, hostOptions.agentRoot)
   const assertHostAccount = (options: { fresh?: boolean } = {}): Promise<BlueBubblesServerFacts | undefined> => verifyBlueBubblesServerAccount({
@@ -471,6 +481,7 @@ export function createBlueBubblesClient(
       if (!trimmedText) {
         throw new Error("BlueBubbles send requires non-empty text.")
       }
+      guardLetterChat({ what: "message", chat: params.chat, text: trimmedText, mark: params.mark })
       const server = await assertHostAccount({ fresh: true })
       const resolvedChatGuid = await resolveChatGuid(params.chat, config, channelConfig)
       if (!resolvedChatGuid) {
@@ -613,6 +624,8 @@ export function createBlueBubblesClient(
     },
 
     async sendAttachment(params: BlueBubblesSendAttachmentParams): Promise<void> {
+      // The caption goes through sendText; the file's name is the attachment's one line of agent text.
+      guardLetterChat({ what: "attachment's name", chat: params.chat, text: params.file.name })
       await assertHostAccount()
       const chatGuid = await resolveChatGuid(params.chat, config, channelConfig)
       if (!chatGuid) throw new Error("BlueBubbles could not find this chat.")
@@ -638,6 +651,8 @@ export function createBlueBubblesClient(
     },
 
     async editMessage(params: BlueBubblesEditMessageParams): Promise<void> {
+      // An edit names no chat, so an edit that would turn a message into a letter is refused wherever it is.
+      guardLetterChat({ what: "edit", chat: null, text: params.text, mark: params.mark })
       await assertHostAccount()
       const messageGuid = params.messageGuid.trim()
       const text = params.text.trim()
