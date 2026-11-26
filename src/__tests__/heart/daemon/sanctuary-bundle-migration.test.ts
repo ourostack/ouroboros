@@ -1725,6 +1725,13 @@ describe("the bundle's own container paths follow the Butler's name", () => {
     expect(fs.lstatSync(path.join(agentRoot, "agent.json")).isSymbolicLink()).toBe(true)
   })
 
+  it("refuses a skills folder it cannot read, rather than skip its rewrites", () => {
+    const { packageRoot, agentRoot } = liveBundle()
+    fs.rmSync(path.join(agentRoot, "skills"), { recursive: true })
+    fs.symlinkSync(path.join(agentRoot, "skills"), path.join(agentRoot, "skills"))
+    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, butlerName: "butler" })).toThrow(/ELOOP/u)
+  })
+
   it("rewrites nothing when the host names no Butler, whatever its folder is called", () => {
     const { packageRoot, agentRoot } = liveBundle()
     const before = read(agentRoot, "agent.json")
