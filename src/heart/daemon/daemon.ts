@@ -2928,6 +2928,8 @@ export class OuroDaemon {
           bundlesRoot: this.bundlesRoot,
           // A letter goes to its person's iMessage chat as the agent, through the agent's own BlueBubbles settings.
           deliverChat: (await import("../../senses/bluebubbles/agent-client")).letterChatSender(this.bundlesRoot),
+          // Filing tells the agent, in its own private runtime, so it decides when its person sees the letter.
+          onFiled: (await import("../letters/filed-note")).letterFiledTeller(this.bundlesRoot, (wake) => this.handlePrivateRuntimeWake(wake)),
         })
         return letters.answerLettersCommand(this.lettersWriter, command)
       }

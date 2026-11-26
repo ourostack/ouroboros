@@ -35,6 +35,8 @@ export interface WriterDeps {
   deliverChat?: (request: ChatDelivery) => Promise<ChatReceipt>
   /** How long a chat send may take before deliver answers; tests shorten it. */
   deliverDeadlineMs?: number
+  /** Tells the owning agent a new letter was filed; it runs after the filing answers and never fails it. */
+  onFiled?: (agent: string, letter: Letter) => Promise<void>
 }
 
 /** Under the door's own timeout for a deliver (doors.ts), so the daemon always answers before the door gives up. */
@@ -243,6 +245,8 @@ export class LettersWriter {
       throw error
     }
     letters.index.add({ letter, events: [], closed: false })
+    // The agent hears about each new letter once; a dedupe that refiles one says nothing new.
+    this.deps.onFiled?.(letters.agent, letter).catch(() => undefined)
     return { outcome: "needs-human", id: letter.id, code: letter.code, state: "waiting", message: `Filed ${letter.code}, ${letter.subject}. It waits for the person's answer.` }
   }
 
