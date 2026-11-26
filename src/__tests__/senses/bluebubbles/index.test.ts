@@ -1282,6 +1282,12 @@ describe("BlueBubbles sense runtime", () => {
       expect(mocks.runAgent).toHaveBeenCalledTimes(2)
     })
 
+    it("asks the daemon over its socket by default, which tests never reach, so it stays a chat turn", async () => {
+      const bluebubbles = await import("../../../senses/bluebubbles")
+      await bluebubbles.handleBlueBubblesEvent(answerPayload("L7 2"))
+      expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    })
+
     it("isn't sent for ordinary text or a group chat", async () => {
       const bluebubbles = await import("../../../senses/bluebubbles")
       const answerLetter = vi.fn(async () => true)

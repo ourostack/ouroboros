@@ -23,7 +23,7 @@ function friend(id: string): FriendRecord {
 }
 
 /** Slugger, whose person answers from ARI, with L1 (two options) filed and delivered at NOW. */
-async function delivered(): Promise<{ writer: LettersWriter; clock: { now: number }; lettersDir: string }> {
+async function delivered(extra: Partial<ConstructorParameters<typeof LettersWriter>[0]> = {}): Promise<{ writer: LettersWriter; clock: { now: number }; lettersDir: string }> {
   const bundles = fs.mkdtempSync(path.join(os.tmpdir(), "letters-answer-"))
   roots.push(bundles)
   const lettersDir = path.join(bundles, "slugger.ouro", "state", "letters")
@@ -33,6 +33,7 @@ async function delivered(): Promise<{ writer: LettersWriter; clock: { now: numbe
   const writer = new LettersWriter({
     bundlesRoot: bundles, now: () => new Date(clock.now), newId: () => `ltr_T${++n}`, listFriends: async () => [friend("friend-ari")], ownerUsername: () => "ari",
     deliverChat: async () => ({ channel: "bluebubbles", key: `iMessage;-;${ARI}`, messageId: "sent-1" }),
+    ...extra,
   })
   await writer.run("slugger", "mailbox_send", { kind: "decide", subject: "Which name?", whyOnlyYou: "It is your product.", options: [{ label: "Orca", effect: "Ship as Orca." }, { label: "Ouro", effect: "Ship as Ouro." }] })
   await writer.run("slugger", "mailbox_deliver", { letter: "L1" })
@@ -117,6 +118,19 @@ describe("recordAnswer", () => {
     expect(await writer.recordAnswer("slugger", message(), "separate", undefined, clock.now - 1)).toEqual({ recorded: false, reason: "past-deadline" })
     expect(await writer.recordAnswer("slugger", message(), "separate", undefined, clock.now)).toMatchObject({ recorded: true })
     expect(await writer.recordAnswer("slugger", message(), "separate")).toEqual({ recorded: true, already: true, id: "ltr_T1", code: "L1", subject: "Which name?", option: "2", label: "Ouro" })
+  })
+
+  it("hands a recorded answer to onAnswered, and not a refused one", async () => {
+    const answered: unknown[] = []
+    const { writer } = await delivered({ onAnswered: async (agent, letter, answer) => { answered.push([agent, letter.code, answer]) } })
+    await writer.recordAnswer("slugger", message({ text: "L1 3" }), "separate")
+    await writer.recordAnswer("slugger", message({ text: "L1 1 - ok" }), "separate")
+    expect(answered).toEqual([["slugger", "L1", { option: "1", label: "Orca", note: "ok", messageGuid: "m-1" }]])
+  })
+
+  it("keeps the answer when onAnswered throws", async () => {
+    const { writer } = await delivered({ onAnswered: async () => { throw new Error("boom") } })
+    expect(await writer.recordAnswer("slugger", message(), "separate")).toMatchObject({ recorded: true })
   })
 
   it("records nothing for text that isn't an answer, or names no letter", async () => {
