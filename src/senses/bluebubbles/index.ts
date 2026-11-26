@@ -50,6 +50,8 @@ import {
 import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesRepliedMessage } from "./client"
 import { letterChatRefusal, tellAgentReplyRefused } from "./letter-guard"
 import { renderChatInteraction, resolveChatInteractionTarget } from "../../heart/chat-interaction"
+import { looksLikeAnswer } from "../../heart/letters/answer-command"
+import { askDaemonToAnswerLetter } from "./letter-answer-ingress"
 import { reactInBlueBubbles } from "./reactions"
 import { MAX_IMESSAGE_FILE_BYTES, sendFileInBlueBubbles } from "./send-file"
 import { readChatFile, type ChatFile } from "../chat-file"
@@ -470,7 +472,7 @@ export interface BlueBubblesHandleResult {
   /** Legacy field name: true only when this inbound reached an accepted terminal transport. */
   notifiedAgent: boolean
   kind?: BlueBubblesNormalizedEvent["kind"]
-  reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored" | "autonomy_budget_blocked" | "semantic_claim_timeout" | "superseded" | "turn_timeout" | "delivery_admission_timeout" | "delivery_failed" | "letter_guard" | "no_visible_reply" | "shutdown"
+  reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored" | "autonomy_budget_blocked" | "semantic_claim_timeout" | "superseded" | "turn_timeout" | "delivery_admission_timeout" | "delivery_failed" | "letter_guard" | "no_visible_reply" | "letter_answered" | "shutdown"
   /** True when the friend saw part of this turn before it ended, so a replay could repeat it. */
   spokeBeforeEnd?: boolean
 }
@@ -551,6 +553,11 @@ interface RuntimeDeps {
   verifyHostAccount: (options?: { recentConfirmationGraceMs?: number }) => Promise<void>
   /** Waits between checks for a send that timed out; a seam so tests don't wait. */
   waitMs: (ms: number) => Promise<void>
+  /**
+   * Asks the daemon whether a message answers one of the agent's letters. Only the GUID goes: the daemon reads the
+   * message from the server itself, so nothing this process saw in the webhook decides the answer.
+   */
+  answerLetter: (agent: string, messageGuid: string) => Promise<boolean>
 }
 
 export interface BlueBubblesReplyTargetController {
@@ -607,6 +614,7 @@ const defaultDeps: RuntimeDeps = {
   },
   recordProcessed: recordProcessedBlueBubblesMessage,
   withSessionTurnLease,
+  answerLetter: (agent, messageGuid) => askDaemonToAnswerLetter(agent, messageGuid),
   // Incoming events recheck every time, like sends, so a server that takes over
   // the same URL under another account is refused immediately.
   verifyHostAccount: (options) => verifyBlueBubblesServerAccount({
@@ -2219,6 +2227,20 @@ async function handleBlueBubblesNormalizedEvent(
         return { handled: true, notifiedAgent: false, kind: event.kind, reason: "from_me" }
       }
       options.lifecycleSignal?.throwIfAborted()
+
+      // A message in answer form ("L7 2") from a one-to-one chat may answer a letter. The daemon decides from the
+      // server's copy; a recorded answer is the harness's, so it doesn't become a chat turn, and the daemon tells
+      // the agent. Anything else, or a daemon that can't be asked, runs the turn as usual.
+      if (event.eventType === "new-message" && !event.chat.isGroup && event.fromMe !== true && looksLikeAnswer(event.text)) {
+        try {
+          if (await resolvedDeps.answerLetter(agentName, event.messageGuid)) {
+            emitNervesEvent({ component: "senses", event: "senses.bluebubbles_letter_answered", message: "a message answered a letter, so it is not a chat turn", meta: { messageGuid: event.messageGuid } })
+            return { handled: true, notifiedAgent: false, kind: event.kind, reason: "letter_answered" }
+          }
+        } catch (error) {
+          emitNervesEvent({ level: "warn", component: "senses", event: "senses.bluebubbles_letter_answer_unchecked", message: "couldn't ask the daemon whether a message answers a letter; it is a chat turn", meta: { messageGuid: event.messageGuid, reason: (error as Error).message } })
+        }
+      }
 
       // ── Adapter setup: friend, session, content, callbacks ────────
       const store = resolvedDeps.createFriendStore()

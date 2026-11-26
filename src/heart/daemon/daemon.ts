@@ -1721,6 +1721,12 @@ export class OuroDaemon {
       onFiled: (await import("../letters/filed-note")).letterFiledTeller(this.bundlesRoot, (wake) => this.handlePrivateRuntimeWake(wake)),
       // So does a letter that expires with no answer.
       onExpired: (await import("../letters/expired-note")).letterExpiredTeller(this.bundlesRoot, (wake) => this.handlePrivateRuntimeWake(wake)),
+      // A recorded answer sends the person a receipt in the same chat and tells the agent.
+      onAnswered: (await import("../letters/answered-note")).letterAnsweredTeller(
+        this.bundlesRoot,
+        (await import("../../senses/bluebubbles/agent-client")).letterChatSender(this.bundlesRoot),
+        (wake) => this.handlePrivateRuntimeWake(wake),
+      ),
     }))()
     return this.lettersWriter
   }

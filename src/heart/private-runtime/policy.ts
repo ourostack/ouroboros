@@ -230,6 +230,16 @@ async function evaluatePolicy(
       reason: "a letter expired with no answer",
     }
   }
+  if (
+    request.triggerSource === "letter-answered"
+    && hasNonEmptyOriginRef(originRefs, "letter")
+    && hasOriginRef(originRefs, "daemon-command", "letters.answer")
+  ) {
+    return {
+      result: "allow",
+      reason: "the agent's person answered a letter",
+    }
+  }
   if (isVerifiedHabitWake(request.triggerSource, originRefs)) {
     return {
       result: "allow",
