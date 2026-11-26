@@ -1331,15 +1331,15 @@ describe("surface tool", () => {
 
     it("surfaceToolDefinition hands a held verification chore back to the calling lane instead of sending it", async () => {
       const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
-      const chore = "Could you open #5312 on your phone and tell me if the pictures show?"
+      const chore = "The proof images were re-attached; whether they show in the app hasn't been tested yet."
       mockSendTeamsOffTurn.mockResolvedValue({ delivered: false, reason: "internal_content_blocked" })
       mockListSessionActivity.mockReturnValue([session("teams", "a:chat-1"), session("telegram", "telegram_777_42", 1_000)])
       const spontaneous = await surfaceToolDefinition.handler({ content: chore, friendId: "friend-1" }, { delegatedOrigins: [] } as any)
-      expect(spontaneous).toMatch(/^failed — held back, not sent \(not_theirs_to_do\): .*do it yourself; you have standing authority.*\(code: delivery-blocked\)$/u)
+      expect(spontaneous).toMatch(/^failed — held back, not sent \(untested_delivery_claim\): .*Verify it yourself.*\(code: delivery-blocked\)$/u)
       expect(mockSendTelegramAwaitFollowUp).not.toHaveBeenCalled()
 
       const explicitTeams = await surfaceToolDefinition.handler({ content: chore, friendId: "friend-1", channel: "teams" }, { delegatedOrigins: [] } as any)
-      expect(explicitTeams).toMatch(/^failed — held back, not sent \(not_theirs_to_do\)/u)
+      expect(explicitTeams).toMatch(/^failed — held back, not sent \(untested_delivery_claim\)/u)
     })
 
     it("surfaceToolDefinition refuses text a content guard refused instead of trying it on another chat", async () => {
