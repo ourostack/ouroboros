@@ -393,7 +393,8 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
       }
     } catch (caught) {
       const id = request.id ?? null
-      const code = caught instanceof AcpProtocolError ? caught.code : -32000
+      // ACP reserves -32000 for "authentication required", so an internal failure is JSON-RPC's -32603.
+      const code = caught instanceof AcpProtocolError ? caught.code : -32603
       error(id, code, caught instanceof Error ? caught.message : String(caught))
     }
   }

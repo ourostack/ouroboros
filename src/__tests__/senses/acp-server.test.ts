@@ -543,7 +543,7 @@ describe("Ouro ACP server", () => {
     client.disconnect(new Error("frontend provider exited"))
 
     expect((await waitFor(messages, (message) => message.id === 2)).error).toEqual({
-      code: -32000,
+      code: -32603,
       message: "frontend provider exited",
     })
     server.stop()
@@ -564,7 +564,7 @@ describe("Ouro ACP server", () => {
     client.disconnect()
 
     expect((await waitFor(messages, (message) => message.id === 2)).error).toEqual({
-      code: -32000,
+      code: -32603,
       message: "frontend provider disconnected",
     })
     server.stop()
@@ -693,7 +693,7 @@ describe("Ouro ACP server", () => {
     const turnId = client.requests.find((request) => request.method === "turn.start")!.params.turnId
     client.emit({ event: "turn.failed", sessionKey: sessionId, turnId })
     expect((await waitFor(messages, (message) => message.id === 2)).error).toEqual({
-      code: -32000,
+      code: -32603,
       message: "frontend turn failed",
     })
 
@@ -701,7 +701,7 @@ describe("Ouro ACP server", () => {
     client.failure = "hostile dependency"
     input.write('{"jsonrpc":"2.0","id":3,"method":"session/load","params":{"sessionId":"existing"}}\n')
     expect((await waitFor(messages, (message) => message.id === 3)).error).toEqual({
-      code: -32000,
+      code: -32603,
       message: "hostile dependency",
     })
     server.stop()
@@ -743,7 +743,7 @@ describe("Ouro ACP server", () => {
     server.stop()
 
     expect((await waitFor(messages, (message) => message.id === 2)).error).toEqual({
-      code: -32000,
+      code: -32603,
       message: "ACP server stopped",
     })
   })
