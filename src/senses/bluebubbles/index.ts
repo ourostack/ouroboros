@@ -48,6 +48,7 @@ import {
   type BlueBubblesNormalizedMessage,
 } from "./model"
 import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesRepliedMessage } from "./client"
+import { letterChatRefusal, tellAgentReplyRefused } from "./letter-guard"
 import { renderChatInteraction, resolveChatInteractionTarget } from "../../heart/chat-interaction"
 import { reactInBlueBubbles } from "./reactions"
 import { MAX_IMESSAGE_FILE_BYTES, sendFileInBlueBubbles } from "./send-file"
@@ -469,7 +470,7 @@ export interface BlueBubblesHandleResult {
   /** Legacy field name: true only when this inbound reached an accepted terminal transport. */
   notifiedAgent: boolean
   kind?: BlueBubblesNormalizedEvent["kind"]
-  reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored" | "autonomy_budget_blocked" | "semantic_claim_timeout" | "superseded" | "turn_timeout" | "delivery_admission_timeout" | "delivery_failed" | "no_visible_reply" | "shutdown"
+  reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored" | "autonomy_budget_blocked" | "semantic_claim_timeout" | "superseded" | "turn_timeout" | "delivery_admission_timeout" | "delivery_failed" | "letter_guard" | "no_visible_reply" | "shutdown"
   /** True when the friend saw part of this turn before it ended, so a replay could repeat it. */
   spokeBeforeEnd?: boolean
 }
@@ -578,8 +579,8 @@ export interface ProactiveBlueBubblesSessionSendParams {
 
 export interface ProactiveBlueBubblesSessionSendResult {
   delivered: boolean
-  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "group_blocked" | "internal_content_blocked" | "blocked_meta_content" | "host_account_refused" | "image_unsendable"
-  /** For image_unsendable: why the image could not go, so nothing was sent. */
+  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "group_blocked" | "internal_content_blocked" | "blocked_meta_content" | "host_account_refused" | "image_unsendable" | "letter_guard"
+  /** For image_unsendable and letter_guard: why nothing was sent, in words the agent can act on. */
   detail?: string
   /** On send_error, present when the server got the send and did not refuse it, so it may have gone out. */
   delivery?: { state: "unknown" }
@@ -2671,7 +2672,7 @@ async function handleBlueBubblesNormalizedEvent(
               chatActions: chatActionsForTurn({
                 setReplyTarget: (selection: ReplyTargetSelection) => replyTarget.setSelection(selection),
                 react: (emoji: string, messageId: string) => reactInBlueBubbles(client, event.chat, emoji, messageId),
-                sendFile: (filePath: string, caption: string) => sendFileInBlueBubbles(client, event.chat, filePath, caption),
+                sendFile: (filePath: string, caption: string) => sendFileInBlueBubbles(client, event.chat, filePath, caption, getAgentRoot),
               }, event.messageGuid),
             },
           })
@@ -2785,6 +2786,12 @@ async function handleBlueBubblesNormalizedEvent(
           // Aborted before the transport ran: the deadline, supersession or
           // shutdown handler already decided this turn's result.
           if (controller.signal.aborted && !finalTransportInvoked) throw error
+          if (error instanceof BlueBubblesSendError && error.errorCode === "letter_guard") {
+            // The reply named a letter code in the person's letters chat. Nothing left, and a retry would be refused
+            // the same way, so the turn ends here and the agent hears why, to say it again by the letter's subject.
+            tellAgentReplyRefused(resolvedDeps.getAgentName(), getAgentRoot(), event.messageGuid, error.message)
+            return { handled: true, notifiedAgent: false, kind: event.kind, reason: "letter_guard" }
+          }
           emitNervesEvent({
             level: "warn",
             component: "senses",
@@ -5051,6 +5058,10 @@ export async function sendProactiveBlueBubblesMessageToSession(
     }
     image = read
   }
+
+  // The text is checked before the image goes, so a refused caption never leaves half a message.
+  const letterRefusal = letterChatRefusal({ what: "message", chat, text: params.text }, getAgentRoot)
+  if (letterRefusal) return { delivered: false, reason: "letter_guard", detail: letterRefusal }
 
   const sentAt = Date.now()
   let imageSent = false

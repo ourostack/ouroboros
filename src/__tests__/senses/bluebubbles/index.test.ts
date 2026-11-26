@@ -336,11 +336,17 @@ vi.mock("../../../senses/pipeline", () => ({
   handleInboundTurn: (...args: any[]) => mocks.handleInboundTurn(...args),
 }))
 
-vi.mock("../../../mind/pending", () => ({
-  getPendingDir: (...args: any[]) => mocks.getPendingDir(...args),
-  drainPending: (...args: any[]) => mocks.drainPending(...args),
-  drainDeferredReturns: (...args: any[]) => mocks.drainDeferredReturns(...args),
-}))
+vi.mock("../../../mind/pending", async () => {
+  // The agent's own private-runtime notes are real files under each test's agent root.
+  const actual = await vi.importActual<typeof import("../../../mind/pending")>("../../../mind/pending")
+  return {
+    getPendingDir: (...args: any[]) => mocks.getPendingDir(...args),
+    drainPending: (...args: any[]) => mocks.drainPending(...args),
+    drainDeferredReturns: (...args: any[]) => mocks.drainDeferredReturns(...args),
+    getPrivateRuntimePendingDir: actual.getPrivateRuntimePendingDir,
+    queuePendingMessageOnce: actual.queuePendingMessageOnce,
+  }
+})
 
 vi.mock("../../../senses/trust-gate", () => ({
   enforceTrustGate: (...args: any[]) => mocks.enforceTrustGate(...args),
@@ -12930,6 +12936,22 @@ describe("BlueBubbles sense runtime", () => {
     }))
   })
 
+  it("ends the turn on a reply the letters chat refused, without a retry, and tells the agent why", async () => {
+    const agentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(agentRoot)
+    const { BlueBubblesSendError } = await import("../../../senses/bluebubbles/client")
+    mocks.sendText.mockRejectedValueOnce(new BlueBubblesSendError({ message: "This message names a letter code.", httpStatus: null, errorCode: "letter_guard", transportInvoked: false }))
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(result).toEqual(expect.objectContaining({ handled: true, notifiedAgent: false, reason: "letter_guard" }))
+    const { getPrivateRuntimePendingDir } = await import("../../../mind/pending")
+    const dir = getPrivateRuntimePendingDir("testagent", agentRoot)
+    const notes = fs.readdirSync(dir).map((file) => JSON.parse(fs.readFileSync(path.join(dir, file), "utf8")))
+    expect(notes).toEqual([expect.objectContaining({ content: "my iMessage reply wasn't sent, so they haven't heard back from me: This message names a letter code." })])
+  })
+
   it("reports a durable-state write failure without hiding the final transport failure", async () => {
     const agentRoot = makeTempDir()
     mocks.getAgentRoot.mockReturnValue(agentRoot)
@@ -14301,6 +14323,22 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       expect(await send(doc, sendAttachment)).toEqual({ delivered: false, reason: "image_unsendable", detail: "notes.txt is not an image" })
       const png = await tmpFile("a.png", Buffer.from([1]))
       expect(await send(png)).toMatchObject({ reason: "image_unsendable", detail: "this iMessage connection can't send files" })
+      expect(sendAttachment).not.toHaveBeenCalled()
+      expect(mocks.sendText).not.toHaveBeenCalled()
+    })
+
+    it("refuses text naming a letter code in the letters chat before the image goes", async () => {
+      const agentRoot = mocks.getAgentRoot()
+      const { writeAnsweringHandle } = await import("../../../heart/letters/answering")
+      writeAnsweringHandle(path.join(agentRoot, "state", "letters"), "friend-uuid-1", "alice@icloud.com")
+      const sendAttachment = vi.fn()
+      const png = await tmpFile("a.png", Buffer.from([1]))
+      const bluebubbles = await import("../../../senses/bluebubbles")
+      const sent = await bluebubbles.sendProactiveBlueBubblesMessageToSession(
+        { friendId: "friend-uuid-1", sessionKey: "chat:any;-;alice@icloud.com", text: "about L7", imagePath: png },
+        { createClient: () => clientWith(sendAttachment) as any, createFriendStore: () => friendStore() as any },
+      )
+      expect(sent).toEqual({ delivered: false, reason: "letter_guard", detail: expect.stringMatching(/^This message names a letter code/) })
       expect(sendAttachment).not.toHaveBeenCalled()
       expect(mocks.sendText).not.toHaveBeenCalled()
     })

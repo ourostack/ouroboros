@@ -652,7 +652,7 @@ export function createBlueBubblesClient(
 
     async editMessage(params: BlueBubblesEditMessageParams): Promise<void> {
       // An edit names no chat, so an edit that would turn a message into a letter is refused wherever it is.
-      guardLetterChat({ what: "edit", chat: null, text: params.text, mark: params.mark })
+      guardLetterChat({ what: "edit", chat: null, text: `${params.text}\n${params.backwardsCompatibilityMessage ?? ""}`, mark: params.mark })
       await assertHostAccount()
       const messageGuid = params.messageGuid.trim()
       const text = params.text.trim()
