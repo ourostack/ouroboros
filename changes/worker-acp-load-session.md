@@ -1,0 +1,2 @@
+- Reopening a saved Ouro chat in an ACP client such as Orca now works, and long chats come back whole. Before, the client was never told it could reopen them, and longer chats lost their latest turns when reopened.
+- When something inside Ouro fails during an ACP chat (for example the daemon restarting), Orca now shows that error instead of asking you to sign in.

@@ -1077,6 +1077,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
               const { getProactiveInternalContentBlockReason, proactiveContentBlockGuidance } = await import("../senses/proactive-content-guard")
               return { status: "blocked", detail: proactiveContentBlockGuidance(getProactiveInternalContentBlockReason(request.content)) } as const
             }
+            if (result.reason === "letter_guard") return { status: "blocked", detail: result.detail! } as const
             if (result.reason === "send_error") {
               return {
                 status: "failed",

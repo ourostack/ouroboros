@@ -60,6 +60,12 @@ describe("surface imagePath", () => {
     expect((out as any).sent.detail).toContain("a.png is empty")
   })
 
+  it("turns a letters-chat refusal into a refusal that says why", async () => {
+    mocks.sendBb.mockResolvedValue({ delivered: false, reason: "letter_guard", detail: "This message names a letter code." })
+    const senders = spontaneousOutreachSenders("agent", "/root", "L7", undefined)
+    expect(await senders.bluebubbles(target)).toEqual({ status: "refused", why: "This message names a letter code." })
+  })
+
   it("falls back to a generic reason when the image refusal names none", async () => {
     mocks.sendBb.mockResolvedValue({ delivered: false, reason: "image_unsendable" })
     const senders = spontaneousOutreachSenders("agent", "/root", "hi", undefined, "/tmp/a.png")

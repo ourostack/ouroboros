@@ -226,6 +226,7 @@ export function spontaneousOutreachSenders(agentName: string, agentRoot: string,
       const { sendProactiveBlueBubblesMessageToSession } = await import("../senses/bluebubbles")
       const sent = await sendProactiveBlueBubblesMessageToSession({ friendId: target.friendId, sessionKey: target.key, text: content, intent: "generic_outreach", origin: "proactive", ...(imagePath ? { imagePath } : {}) })
       if (sent.reason === "image_unsendable") return { status: "refused", why: sent.detail ?? "the image could not be sent", imageProblem: true }
+      if (sent.reason === "letter_guard") return { status: "refused", why: sent.detail! }
       if (sent.delivered) return { status: "delivered", detail: "texted them by iMessage now" }
       if (sent.delivery?.state === "unknown") return { status: "unconfirmed", detail: unconfirmedDetail("iMessage") }
       if (sent.reason && CONTENT_REFUSALS.has(sent.reason)) return { status: "refused", why: sent.reason }
