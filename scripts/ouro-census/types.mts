@@ -144,7 +144,12 @@ export interface WalkerOptions {
   claims?: { entry: string; parser: string }[];
   /** declared-tools: the server's name under agent.json's `mcpServers`, which prefixes the tool names an agent sees. */
   server?: string;
-  /** tool-schemas: functions that build tools from a connected server's list, as `<file>#<function>`. */
+  /**
+   * tool-schemas: functions that build tools from a connected server's list, as `<file>#<function>`, optionally with
+   * the declared third-party source its call arguments must trace back to, as `<file>#<function>#<source>` (an
+   * identifier, a dotted property path, or a call expression). A call, or the list a harness tool call is mapped
+   * through, that cannot be traced to that source is an undeclared door.
+   */
   passthrough?: string[];
   /** tool-schemas: functions that decide approval apart from a tool's policy, as `<file>#<function>`. */
   approvals?: string[];

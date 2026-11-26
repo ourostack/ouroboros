@@ -5676,6 +5676,16 @@ describe("daemon command plane branches", () => {
     expect("runtimeMcpServers" in passed).toBe(false)
   })
 
+  it("handleAgentSenseTurn marks the turn a socket turn, even when the caller names a chat channel", async () => {
+    const runSenseTurn = vi.fn().mockResolvedValue({ response: "ok", ponderDeferred: false })
+    vi.doMock("../../../senses/shared-turn", () => ({ runSenseTurn }))
+    const command = { kind: "agent.senseTurn" as const, agent: "boss", friendId: "friend-ari", channel: "bluebubbles", sessionKey: "chat", message: "L1 2" }
+    await handleAgentSenseTurn(command)
+    await handleAgentSenseTurn(command, { socketPath: "/tmp/ouro.sock" })
+    expect(runSenseTurn.mock.calls[0]![0].toolContext).toEqual({ turnOrigin: "socket" })
+    expect(runSenseTurn.mock.calls[1]![0].toolContext).toEqual({ turnOrigin: "socket", daemonSocketPath: "/tmp/ouro.sock" })
+  })
+
   it("handleAgentSenseTurn returns error on failure", async () => {
     vi.doMock("../../../senses/shared-turn", () => ({
       runSenseTurn: vi.fn().mockRejectedValue(new Error("provider down")),
