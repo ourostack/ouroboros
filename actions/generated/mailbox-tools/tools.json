@@ -64,7 +64,7 @@
             },
             "links": {
               "type": "array",
-              "description": "Pages the person may want while answering, each { label, url }.",
+              "description": "Pages the person may want while answering, at most 10, each { label, url }.",
               "items": {
                 "type": "object",
                 "description": "One page.",
@@ -85,7 +85,8 @@
                   "url"
                 ],
                 "additionalProperties": false
-              }
+              },
+              "maxItems": 10
             },
             "dedupeKey": {
               "type": "string",
