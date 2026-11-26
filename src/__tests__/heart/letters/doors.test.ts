@@ -168,6 +168,16 @@ describe("running an action", () => {
     expect(socket.calls).toEqual([])
   })
 
+  it("lets a list with no declared maximum hold any number of items", async () => {
+    readMailboxDoors(fakeRoot({
+      "mailbox/commands.json": { commands: [] },
+      "mailbox/mcp.json": { tools: [{ name: "mailbox_tag", inputSchema: { type: "object", required: [], properties: { tags: { type: "array", description: "d", items: { type: "string", description: "t" } } } } }] },
+      "mailbox-tools/tools.json": { tools: [] }, "mailbox/actions.json": { actions: [] },
+    }))
+    await runMailboxAction("mailbox_tag", { tags: Array.from({ length: 50 }, (_, i) => `t${i}`) }, slugger)
+    expect(socket.calls).toHaveLength(1)
+  })
+
   it("refuses an action the group doesn't have, and answers a person-only one with its refusal", async () => {
     expect((await refusalOf(runMailboxAction("mailbox_frobnicate", {}, slugger))).code).toBe("unknown-door")
     expect((await refusalOf(runMailboxAction("constructor", {}, slugger))).code).toBe("unknown-door")
@@ -225,6 +235,9 @@ describe("the CLI's words", () => {
   it("refuses words it can't read, with the command's usage", () => {
     expect(() => parseMailboxCli("send", ["--kind", "know", "--subject"])).toThrow(/--subject needs a value\.\nUsage: ouro mailbox send --kind/)
     expect(() => parseMailboxCli("wait", ["L7", "--timeout", "soon"])).toThrow(/--timeout takes a number, not soon/)
+    expect(() => parseMailboxCli("wait", ["L7", "--cursor", "0x10"])).toThrow(/--cursor takes a number, not 0x10/)
+    expect(() => parseMailboxCli("wait", ["L7", "--cursor", ""])).toThrow(/--cursor takes a number, not /)
+    expect(() => parseMailboxCli("wait", ["L7", "--timeout", "-5"])).toThrow(/--timeout takes a number, not -5/)
     expect(() => parseMailboxCli("send", ["--kind", "decide", "--subject", "s", "--options", "A, B"])).toThrow(/--options takes a JSON list/)
     expect(() => parseMailboxCli("read", ["L7", "--dry-run"])).toThrow(/ouro mailbox read doesn't take --dry-run/)
     expect(() => parseMailboxCli("read", ["L7", "L8"])).toThrow(/takes only <letter> after it: L7 L8/)

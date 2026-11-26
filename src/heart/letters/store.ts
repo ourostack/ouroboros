@@ -10,7 +10,7 @@ import type { Letter, LetterEvent } from "./letter"
 /** The file calls the store makes; tests pass a copy that records the fsyncs. */
 export type StoreIo = Pick<typeof fs,
   "openSync" | "closeSync" | "writeSync" | "fsyncSync" | "fstatSync" | "readSync" | "ftruncateSync" | "readFileSync"
-  | "renameSync" | "mkdirSync" | "readdirSync" | "existsSync">
+  | "renameSync" | "mkdirSync" | "readdirSync" | "existsSync" | "unlinkSync">
 
 export interface StoredLetter {
   letter: Letter
@@ -30,7 +30,7 @@ export class LetterStore {
   /** Writes a new letter's file, then syncs the file and the folder, so the letter survives a crash once this returns. */
   create(letter: Letter): void {
     const file = this.openFile(letter.id)
-    this.io.mkdirSync(this.dir, { recursive: true })
+    this.makeDir(this.dir)
     const fd = this.io.openSync(file, "wx", 0o600)
     try {
       this.io.writeSync(fd, `${JSON.stringify(letter)}\n`)
@@ -40,6 +40,23 @@ export class LetterStore {
     }
     this.syncDir(this.dir)
     emitNervesEvent({ component: "daemon", event: "letters.letter_created", message: "letter file created", meta: { kind: letter.kind } })
+  }
+
+  /**
+   * Removes a letter file a failed create left behind, then syncs the folder. Returns whether no file is left; a
+   * leftover the call couldn't remove is the writer's to index, so a retry finds it.
+   */
+  discard(id: string): boolean {
+    const file = this.openFile(id)
+    try {
+      if (this.io.existsSync(file)) {
+        this.io.unlinkSync(file)
+        this.syncDir(this.dir)
+      }
+    } catch (error) {
+      emitNervesEvent({ level: "warn", component: "daemon", event: "letters.discard_failed", message: "a failed create's letter file could not be removed", meta: { reason: (error as Error).message } })
+    }
+    return !this.io.existsSync(file)
   }
 
   /** Appends one event to an open letter, after cutting any torn last line back to the last newline. */
@@ -68,7 +85,7 @@ export class LetterStore {
   roll(id: string, at: Date): void {
     const month = at.toISOString().slice(0, 7)
     const target = path.join(this.dir, "closed", month)
-    this.io.mkdirSync(target, { recursive: true })
+    this.makeDir(target)
     this.io.renameSync(this.openFile(id), path.join(target, `${id}.jsonl`))
     this.syncDir(target)
     this.syncDir(this.dir)
@@ -100,7 +117,7 @@ export class LetterStore {
 
   /** Records the next code number: a temporary file, synced, renamed over the record, then the folder synced. */
   writeNextCode(next: number): void {
-    this.io.mkdirSync(this.dir, { recursive: true })
+    this.makeDir(this.dir)
     const temp = path.join(this.dir, `${NEXT_CODE}.tmp`)
     const fd = this.io.openSync(temp, "w", 0o600)
     try {
@@ -116,6 +133,15 @@ export class LetterStore {
   private openFile(id: string): string {
     if (!LETTER_ID.test(id)) throw new Error(`${id} is not a letter id.`)
     return path.join(this.dir, `${id}.jsonl`)
+  }
+
+  /** Makes a folder and any missing parents, syncing the parent of each one it made so the new entries survive a crash. */
+  private makeDir(dir: string): void {
+    const missing: string[] = []
+    for (let at = dir; !this.io.existsSync(at); at = path.dirname(at)) missing.push(at)
+    if (missing.length === 0) return
+    this.io.mkdirSync(dir, { recursive: true })
+    for (const made of missing) this.syncDir(path.dirname(made))
   }
 
   private syncDir(dir: string): void {
