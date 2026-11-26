@@ -442,7 +442,7 @@ export const codingToolDefinitions: ToolDefinition[] = [
       risk: "high",
       reason: "starts a separate coding agent (an Orca worktree and terminal by default) and may create obligations",
     },
-    ax: { id: "tool:coding_spawn", group: "turn-coding", when: "Pick this to hand a whole coding job to a separate claude or codex worker (in Orca by default); it is the one door that gives the worker a tracked worktree and tab, which the orca CLI through shell does not. For one quick command, shell is enough.", effect: "write", errors: [
+    ax: { id: "tool:coding_spawn", group: "turn-coding", when: "Pick this to hand a whole coding job to a claude or codex worker with its own tracked worktree and tab (in Orca), which the orca CLI through shell lacks. For one quick command, shell is enough.", effect: "write", errors: [
       { code: "missing-argument", means: "runner, workdir, prompt or taskRef is missing or blank; the message names which.", fix: "Call coding_spawn again with all four filled in, the prompt complete enough to work from alone." },
       { code: "invalid-runner", means: "runner is something other than claude or codex.", fix: "Set runner to claude or codex and spawn again." },
       { code: "invalid-backend", means: "backend is something other than orca, local or workbench.", fix: "Omit backend to use the preferred one, or set it to orca, local or workbench." },
