@@ -7,16 +7,14 @@ import { runDoctorChecks } from "../heart/daemon/doctor"
 import type { DoctorDeps } from "../heart/daemon/doctor-types"
 import type { BlueBubblesChannelConfig, BlueBubblesConfig } from "../heart/config"
 import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../heart/habits/habit-parser"
-import { getAgentBundlesRoot, loadAgentConfig } from "../heart/identity"
-import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
+import { getAgentBundlesRoot } from "../heart/identity"
 import {
-  readMachineRuntimeCredentialConfig,
   readRuntimeCredentialConfig,
-  refreshMachineRuntimeCredentialConfig,
   refreshRuntimeCredentialConfig,
   type RuntimeCredentialConfigReadResult,
 } from "../heart/runtime-credentials"
 import { emitNervesEvent } from "../nerves/runtime"
+import { agentHostOptions, agentMachineRuntimeConfig, blueBubblesSettings } from "../senses/bluebubbles/agent-client"
 import { createBlueBubblesClient, type BlueBubblesClientHostOptions } from "../senses/bluebubbles/client"
 import type { BlueBubblesChatRef } from "../senses/bluebubbles/model"
 import { fetchAislePlannerRsvps } from "./aisleplanner-client"
@@ -367,18 +365,13 @@ function resolveLatestSnapshot(agentRoot: string): { ok: true; snapshot: RsvpSna
   }
 }
 
-function machineIdForCli(): string {
-  return loadOrCreateMachineIdentity().machineId
-}
-
 async function resolveRsvpRuntimeCredentialConfig(agent: string): Promise<RuntimeCredentialConfigReadResult> {
   const cached = readRuntimeCredentialConfig(agent)
   return cached.ok ? cached : refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
 }
 
 async function resolveRsvpMachineRuntimeCredentialConfig(agent: string): Promise<RuntimeCredentialConfigReadResult> {
-  const cached = readMachineRuntimeCredentialConfig(agent)
-  return cached.ok ? cached : refreshMachineRuntimeCredentialConfig(agent, machineIdForCli(), { preserveCachedOnFailure: true })
+  return agentMachineRuntimeConfig(agent)
 }
 
 function blueBubblesChatFor(config: { bluebubblesRoute: { chatGuid: string; chatIdentifier?: string } }): BlueBubblesChatRef {
@@ -396,63 +389,16 @@ function blueBubblesChatFor(config: { bluebubblesRoute: { chatGuid: string; chat
   }
 }
 
-function numberField(record: Record<string, unknown> | null, key: string, fallback: number): number {
-  const value = record?.[key]
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback
-}
-
-function stringArrayField(record: Record<string, unknown> | null, key: string): string[] {
-  const value = record?.[key]
-  if (!Array.isArray(value)) return []
-  return value.map((entry) => typeof entry === "string" ? entry.trim() : "").filter(Boolean)
-}
-
-function recordField(record: Record<string, unknown>, key: string): Record<string, unknown> | null {
-  const value = record[key]
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null
-}
-
 /** The agent's declared iMessage host account; an unreadable config leaves it unset, so sending fails closed. */
 export function rsvpBlueBubblesHostOptions(agent: string, agentRoot: string): BlueBubblesClientHostOptions {
-  try {
-    return { agent, agentRoot, hostUsername: loadAgentConfig({ agentName: agent, agentRoot }).senses?.bluebubbles.hostUsername }
-  } catch {
-    return { agent, agentRoot, hostUsername: undefined }
-  }
+  return agentHostOptions(agent, agentRoot)
 }
 
 function rsvpBlueBubblesClientConfig(
   nativeConfig: RsvpNativeConfig,
   machineRuntimeConfig: RuntimeCredentialConfigReadResult,
 ): { config: BlueBubblesConfig; channelConfig: BlueBubblesChannelConfig } {
-  if (!machineRuntimeConfig.ok) {
-    throw new Error(`BlueBubbles runtime config unavailable at ${machineRuntimeConfig.itemPath}: ${machineRuntimeConfig.error}`)
-  }
-  const bluebubbles = recordField(machineRuntimeConfig.config, "bluebubbles")
-  const bluebubblesChannel = recordField(machineRuntimeConfig.config, "bluebubblesChannel")
-  const serverUrl = localText(bluebubbles?.serverUrl)
-  const password = localText(bluebubbles?.password)
-  if (!serverUrl) {
-    throw new Error("bluebubbles.serverUrl is required in this machine's agent-vault runtime config. Run `ouro connect bluebubbles --agent <agent>`.")
-  }
-  if (!password) {
-    throw new Error("bluebubbles.password is required in this machine's agent-vault runtime config. Run `ouro connect bluebubbles --agent <agent>`.")
-  }
-  return {
-    config: {
-      serverUrl,
-      password,
-      accountId: localText(bluebubbles?.accountId) || localText(nativeConfig.bluebubblesRoute.accountId) || "default",
-      ownHandles: stringArrayField(bluebubbles, "ownHandles"),
-    },
-    channelConfig: {
-      port: numberField(bluebubblesChannel, "port", 18790),
-      webhookPath: localText(bluebubblesChannel?.webhookPath) || "/bluebubbles-webhook",
-      requestTimeoutMs: numberField(bluebubblesChannel, "requestTimeoutMs", 30_000),
-    },
-  }
+  return blueBubblesSettings(machineRuntimeConfig, localText(nativeConfig.bluebubblesRoute.accountId) || "default")
 }
 
 function normalizeDelivery(value: unknown): JsonValue {

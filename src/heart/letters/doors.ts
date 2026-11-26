@@ -246,8 +246,9 @@ export async function runMailboxAction(action: string, input: Record<string, unk
   const send = caller.send ?? (await import("../daemon/socket-client")).sendDaemonCommand
   const socketPath = caller.socketPath ?? (await import("../daemon/socket-client")).DEFAULT_DAEMON_SOCKET_PATH
   const command: DaemonCommand = { kind: "letters.action", agent: caller.agent, action, input, ...(caller.dryRun ? { dryRun: true } : {}) }
-  // A wait holds the socket for its own timeout; anything else answers at once.
-  const waitSeconds = action === "mailbox_wait" ? Number(input.timeout ?? 60) : 0
+  // A wait holds the socket for its own timeout, and a deliver for its chat send (the daemon answers within
+  // DELIVER_DEADLINE_MS of starting it, perhaps after another deliver ahead of it); anything else answers at once.
+  const waitSeconds = action === "mailbox_wait" ? Number(input.timeout ?? 60) : action === "mailbox_deliver" ? 60 : 0
   let response: DaemonResponse
   try {
     response = await send(socketPath, command, { timeoutMs: (waitSeconds + 30) * 1000 })

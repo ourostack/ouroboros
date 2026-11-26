@@ -7,6 +7,7 @@ import { machineOwnerUsername, type FriendRecord } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { checkLetterInput, checkWithdrawReason, newLetterId, type Letter, type LetterEvent, type LetterKind } from "./letter"
 import { ownerFriendIds, readAnsweringHandles } from "./answering"
+import { renderLetter } from "./render"
 
 export { ownerFriendIds }
 import { LetterIndex, type IndexedLetter } from "./letter-index"
@@ -30,6 +31,27 @@ export interface WriterDeps {
   ownerUsername?: () => string | null
   /** How long one second of a wait's timeout lasts; tests shorten it. */
   waitUnitMs?: number
+  /** Sends a rendered letter to the person's chat as the agent; missing when this daemon has no chat to send through. */
+  deliverChat?: (request: ChatDelivery) => Promise<ChatReceipt>
+  /** How long a chat send may take before deliver answers; tests shorten it. */
+  deliverDeadlineMs?: number
+}
+
+/** Under the door's own timeout for a deliver (doors.ts), so the daemon always answers before the door gives up. */
+export const DELIVER_DEADLINE_MS = 25_000
+
+/** One letter to send: the agent it goes out as, the handle whose chat it goes to, and the text Ouro rendered. */
+export interface ChatDelivery {
+  agent: string
+  handle: string
+  text: string
+}
+
+/** Where a delivered letter landed: the channel, its chat's key and the sent message's id. */
+export interface ChatReceipt {
+  channel: string
+  key: string
+  messageId: string
 }
 
 /** The socket command every mailbox door sends the daemon. */
@@ -117,7 +139,7 @@ export class LettersWriter {
       case "mailbox_read": return Promise.resolve(this.read(letters, input))
       case "mailbox_wait": return this.wait(letters, input)
       case "mailbox_withdraw": return this.serial(letters, () => this.withdraw(letters, input, dryRun))
-      case "mailbox_deliver": return Promise.resolve(this.deliver(letters, input))
+      case "mailbox_deliver": return this.serial(letters, () => this.deliver(letters, input, dryRun))
       default: return Promise.reject(new LetterRefusal("unknown-door", `The mailbox has no action ${action}.`))
     }
   }
@@ -280,10 +302,58 @@ export class LettersWriter {
     return { outcome: "done", state: after.state }
   }
 
-  private deliver(letters: AgentLetters, input: Record<string, unknown>): LetterResult {
+  /**
+   * Sends a waiting letter, once, to the chat of the handle frozen into it when it was filed, in the text Ouro renders,
+   * and records where it landed. A send that may have reached the chat counts as delivered, so a retry never sends
+   * the person the same letter twice; the letter stays in their mailbox either way.
+   */
+  private async deliver(letters: AgentLetters, input: Record<string, unknown>, dryRun: boolean): Promise<LetterResult> {
     const entry = this.find(letters, input)
-    throw new LetterRefusal("no-answering-handle", `The person has no answering handle yet, so ${entry.letter.code} stays waiting until chat delivery is ready.`)
+    const { letter } = entry
+    if (entry.state !== "waiting") throw new LetterRefusal("not-waiting", `${letter.code} is already ${entry.state}, so there is nothing to deliver.`)
+    if (letter.expiresAt && Date.parse(letter.expiresAt) <= this.now().getTime()) throw new LetterRefusal("not-waiting", `${letter.code} expired at ${letter.expiresAt}, so there is nothing to deliver.`)
+    if (entry.events.some((event) => event.t === "delivered")) throw new LetterRefusal("already-delivered", `${letter.code} is already in the person's chat; it stays in their mailbox too.`)
+    if (!letter.answeringHandle) {
+      throw new LetterRefusal("no-answering-handle", `${letter.code} was filed before the person had an answering handle, so Ouro has no chat to send it to. It stays waiting.`)
+    }
+    const text = renderLetter(letter)
+    if (dryRun) return { outcome: "preview", state: entry.state, text }
+    const deliverChat = this.deps.deliverChat
+    if (!deliverChat) throw new LetterRefusal("chat-unavailable", `This daemon has no chat to send ${letter.code} through. It stays waiting.`)
+    let receipt: ChatReceipt
+    try {
+      receipt = await withinDeadline(deliverChat({ agent: letters.agent, handle: letter.answeringHandle, text }), this.deps.deliverDeadlineMs ?? DELIVER_DEADLINE_MS)
+    } catch (error) {
+      const reason = (error as Error).message
+      emitNervesEvent({ level: "warn", component: "daemon", event: "letters.deliver_failed", message: "a letter's chat send failed", meta: { code: letter.code, mayHaveSent: mayHaveSent(error) } })
+      if (!mayHaveSent(error)) throw new LetterRefusal("send-failed", `${letter.code} didn't send: ${reason}. It stays waiting.`)
+      this.addEvent(letters, letter.id, { t: "delivered", at: this.now().toISOString(), via: "chat", channel: "unconfirmed", key: "", messageId: "" })
+      throw new LetterRefusal("send-uncertain", `${letter.code} may have reached the chat (${reason}), so Ouro counts it as delivered and won't send it again.`)
+    }
+    try {
+      const after = this.addEvent(letters, letter.id, { t: "delivered", at: this.now().toISOString(), via: "chat", ...receipt })
+      return { outcome: "done", state: after.state, channel: receipt.channel }
+    } catch (error) {
+      emitNervesEvent({ level: "error", component: "daemon", event: "letters.deliver_unrecorded", message: "a letter was sent but its delivery wasn't recorded", meta: { code: letter.code, channel: receipt.channel, messageId: receipt.messageId } })
+      throw new LetterRefusal("sent-unrecorded", `${letter.code} went to the chat, but writing its delivered event failed (${(error as Error).message}), so the mailbox doesn't show it as delivered. Don't deliver it again.`)
+    }
   }
+}
+
+class DeadlinePassed extends Error {}
+
+/** The work's result, or DeadlinePassed once `ms` go by first; the work itself carries on. */
+function withinDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new DeadlinePassed(`no answer from the chat within ${Math.round(ms / 1000)} seconds`)), ms)
+  })
+  return Promise.race([work, deadline]).finally(() => clearTimeout(timer))
+}
+
+/** Whether a failed send may still have reached the chat: it ran out of time, or it failed after reaching the server. */
+function mayHaveSent(error: unknown): boolean {
+  return error instanceof DeadlinePassed || (error as { transportInvoked?: unknown }).transportInvoked === true
 }
 
 /** The daemon's answer to a `letters.action` command: the result, or the refusal's code and text. */
