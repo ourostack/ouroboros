@@ -1383,7 +1383,7 @@ describe("Telegram sense coverage contracts", () => {
     expect(gatewayApi.stop).toHaveBeenCalledOnce()
 
     await sendTelegramExternalEventDecision("butler", { source: "health", eventId: "books", generation: 1, text: "Books recovered." })
-    await sendTelegramOwnerNotice("butler", { noticeId: "delegated:t1", text: "Delegated command from you." })
+    await expect(sendTelegramOwnerNotice("butler", { noticeId: "delegated:t1", text: "Delegated command from you." })).resolves.toBe("sent")
     await sendTelegramDelegatedAuditNotice("butler", { noticeId: "delegated:t2", text: "Another delegated command from you." })
     await expect(sendTelegramAwaitFollowUp("butler", { friendId: "sibling", channel: "telegram", key: "telegram:777:888", content: "Ready", intent: "generic_outreach" })).resolves.toMatchObject({ status: "blocked" })
 
