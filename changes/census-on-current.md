@@ -1,0 +1,1 @@
+The Ouro AX census the harness runs in CI is now Ouro UI v1.3.585's, up from v1.3.465, and it is listed in `upstream-sources.lock.json`, so Ouro Current's update pull requests move it with every Ouro UI release instead of it waiting for a hand copy. The newer census also checks that a passthrough tool's call arguments come from its declared third-party source.
