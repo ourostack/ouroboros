@@ -1262,6 +1262,41 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.sendText).not.toHaveBeenCalled()
   })
 
+  describe("a message in answer form", () => {
+    const answerPayload = (text: string, extra: Record<string, unknown> = {}) => ({ ...dmTopLevelPayload, data: { ...dmTopLevelPayload.data, text, ...extra } })
+
+    it("goes to the daemon by GUID alone, and is no chat turn once it answers a letter (2026-11-26)", async () => {
+      const bluebubbles = await import("../../../senses/bluebubbles")
+      const answerLetter = vi.fn(async () => true)
+      const result = await bluebubbles.handleBlueBubblesEvent(answerPayload("L7 2"), { answerLetter })
+      expect(answerLetter).toHaveBeenCalledWith(expect.any(String), dmTopLevelPayload.data.guid)
+      expect(result).toMatchObject({ handled: true, notifiedAgent: false, reason: "letter_answered" })
+      expect(mocks.runAgent).not.toHaveBeenCalled()
+    })
+
+    it("is an ordinary chat turn when it answers nothing or the daemon can't be asked", async () => {
+      const bluebubbles = await import("../../../senses/bluebubbles")
+      await bluebubbles.handleBlueBubblesEvent(answerPayload("L7 2"), { answerLetter: vi.fn(async () => false) })
+      expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+      await bluebubbles.handleBlueBubblesEvent(answerPayload("L7 1", { guid: "other-guid" }), { answerLetter: vi.fn(async () => { throw new Error("daemon down") }) })
+      expect(mocks.runAgent).toHaveBeenCalledTimes(2)
+    })
+
+    it("asks the daemon over its socket by default, which tests never reach, so it stays a chat turn", async () => {
+      const bluebubbles = await import("../../../senses/bluebubbles")
+      await bluebubbles.handleBlueBubblesEvent(answerPayload("L7 2"))
+      expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    })
+
+    it("isn't sent for ordinary text or a group chat", async () => {
+      const bluebubbles = await import("../../../senses/bluebubbles")
+      const answerLetter = vi.fn(async () => true)
+      await bluebubbles.handleBlueBubblesEvent(answerPayload("about L7, I pick 2"), { answerLetter })
+      await bluebubbles.handleBlueBubblesEvent({ ...groupThreadPayload, data: { ...groupThreadPayload.data, text: "L7 2" } }, { answerLetter })
+      expect(answerLetter).not.toHaveBeenCalled()
+    })
+  })
+
   it("routes top-level and threaded DM turns into the same persisted chat trunk", async () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
 

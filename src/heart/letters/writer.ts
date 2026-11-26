@@ -38,6 +38,8 @@ export interface WriterDeps {
   deliverDeadlineMs?: number
   /** Tells the owning agent a new letter was filed; it runs after the filing answers and never fails it. */
   onFiled?: (agent: string, letter: Letter) => Promise<void>
+  /** Sends the person a receipt and tells the agent, once an answer is recorded; it never undoes the answer. */
+  onAnswered?: (agent: string, letter: Letter, answer: { option: string; label: string; note?: string; messageGuid: string; at: string }) => Promise<void>
 }
 
 /** Under the door's own timeout for a deliver (doors.ts), so the daemon always answers before the door gives up. */
@@ -309,6 +311,7 @@ export class LettersWriter {
       })
       const label = letter.options.find((option) => option.id === answer.option)!.label
       emitNervesEvent({ component: "daemon", event: "letters.answer_recorded", message: "a person's answer was recorded", meta: { code: letter.code, hostTrust } })
+      this.deps.onAnswered?.(letters.agent, letter, { option: answer.option, label, ...(answer.note ? { note: answer.note } : {}), messageGuid: message.guid, at }).catch(() => undefined)
       return { recorded: true, id: letter.id, code: letter.code, subject: letter.subject, option: answer.option, label, ...(answer.note ? { note: answer.note } : {}) }
     })
   }
