@@ -2,9 +2,13 @@
 import * as path from "node:path"
 import { pathToFileURL } from "node:url"
 
-const USAGE = "Usage: migrate-sanctuary-bundle.mjs --package-root <path> --agent-root <path> --operation <migrate|seed|rollback|finalize-rollback|commit|status|inspect> [--rollback-image-id <sha256:id> --target-image-id <sha256:id>]"
+const USAGE = "Usage: migrate-sanctuary-bundle.mjs --package-root <path> --agent-root <path> --operation <migrate|seed|rollback|finalize-rollback|commit|status|inspect> [--rollback-image-id <sha256:id> --target-image-id <sha256:id> [--butler-name <butler|sanctuary>]]"
 const BASE_KEYS = ["--package-root", "--agent-root", "--operation"]
 const MIGRATE_KEYS = [...BASE_KEYS, "--rollback-image-id", "--target-image-id"]
+// The Butler the image being installed runs. The host's bundle folder keeps its name, so the migrate is told which
+// container path the bundle's own files should name; without it, the agent root's folder name says.
+const BUTLER_NAME_KEY = "--butler-name"
+const BUTLER_NAMES = ["butler", "sanctuary"]
 
 function parseArguments(args) {
   if (args.length % 2 !== 0) throw new Error(USAGE)
@@ -17,7 +21,8 @@ function parseArguments(args) {
   }
   const operation = values.get("--operation")
   if (!["migrate", "seed", "rollback", "finalize-rollback", "commit", "status", "inspect"].includes(operation)) throw new Error(USAGE)
-  const expectedKeys = operation === "migrate" ? MIGRATE_KEYS : BASE_KEYS
+  const expectedKeys = operation === "migrate" ? (values.has(BUTLER_NAME_KEY) ? [...MIGRATE_KEYS, BUTLER_NAME_KEY] : MIGRATE_KEYS) : BASE_KEYS
+  if (values.has(BUTLER_NAME_KEY) && !BUTLER_NAMES.includes(values.get(BUTLER_NAME_KEY))) throw new Error(USAGE)
   if (values.size !== expectedKeys.length || expectedKeys.some((key) => !values.has(key)) || [...values.keys()].some((key) => !expectedKeys.includes(key))) throw new Error(USAGE)
   return values
 }
@@ -28,7 +33,7 @@ export function runSanctuaryBundleOperation(args, dependencies) {
   const agentRoot = values.get("--agent-root")
   const operation = values.get("--operation")
   const result = operation === "migrate"
-    ? dependencies.migrate({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: values.get("--rollback-image-id"), targetImageId: values.get("--target-image-id") })
+    ? dependencies.migrate({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: values.get("--rollback-image-id"), targetImageId: values.get("--target-image-id"), ...(values.has(BUTLER_NAME_KEY) ? { butlerName: values.get(BUTLER_NAME_KEY) } : {}) })
     // A fresh install has no earlier image to roll back to, so it writes the packaged files without a rollback record.
     : operation === "seed"
       ? dependencies.migrate({ packageRoot, agentRoot, retainRollback: false })

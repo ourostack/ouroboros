@@ -77,6 +77,7 @@ import { execFileSync } from "node:child_process"
 import { pendingSyncPath, postTurnPush } from "../../../heart/sync"
 import { prepareSanctuaryPackageManagedBundle } from "../../../heart/daemon/sanctuary-package-management"
 import {
+  SANCTUARY_BUNDLE_PATH_FILES,
   SANCTUARY_BUNDLE_ROLLBACK_FILE,
   SANCTUARY_GIT_EXCLUDES,
   SANCTUARY_PACKAGE_MANAGED_FILES,
@@ -1617,5 +1618,144 @@ describe("the bundle's git exclude", () => {
     expect(tracked).toContain("arc/notes/learned.md")
     for (const relative of [...SANCTUARY_PACKAGE_MANAGED_FILES, "bundle-meta.json", "state/sessions/owner.json", "mcp/media-credentials.json"]) expect(tracked).not.toContain(relative)
     expect(git(agentRoot, ["status", "--porcelain"])).toBe("")
+  })
+})
+
+describe("the bundle's own container paths follow the Butler's name", () => {
+  const OLD = "/home/ouro/AgentBundles/sanctuary.ouro"
+  const NEW = "/home/ouro/AgentBundles/butler.ouro"
+  const ids = { rollbackImageId: `sha256:${"1".repeat(64)}`, targetImageId: `sha256:${"9".repeat(64)}` }
+
+  // A live install mounted at the old name: its own files name the old container path, and so do the owner's.
+  function liveBundle(folder = "sanctuary.ouro"): { packageRoot: string; agentRoot: string } {
+    const packageRoot = makePackageRoot()
+    const agentRoot = path.join(makeRoot("butler-rename"), folder)
+    fs.mkdirSync(agentRoot)
+    write(agentRoot, "agent.json", { mcpServers: { media: { command: "node", args: [`${OLD}/mcp/media-mcp.mjs`] } } })
+    fs.chmodSync(path.join(agentRoot, "agent.json"), 0o644)
+    write(agentRoot, "state/replay-client/provision.json", { clients: [1, 2, 3].map((n) => ({ containerIdentityFile: `${OLD}/state/replay-client/id-${n}` })) })
+    write(agentRoot, "state/attachments/recent.json", { items: [{ localPath: `${OLD}/state/attachments/a.jpg` }] })
+    write(agentRoot, "skills/book-delivery.md", `Books land in ${OLD}/books, not ${OLD}-old/books.\n`)
+    write(agentRoot, "skills/notes.md", "No paths here.\n")
+    write(agentRoot, "skills/nested/deep.md", `${OLD}/deep\n`)
+    write(agentRoot, "house/HOUSE.md", `The house notes live in ${OLD}/house.\n`)
+    copyStarterPsyche(packageRoot, agentRoot)
+    write(agentRoot, "psyche/TACIT.md", `I keep this at ${OLD}/psyche/TACIT.md.\n`)
+    write(agentRoot, "friends/owner.json", { notes: `${OLD}/friends` })
+    write(agentRoot, "state/logs/daemon.ndjson", `${OLD}\n`)
+    write(agentRoot, "state/sessions/owner.json", { path: OLD })
+    return { packageRoot, agentRoot }
+  }
+
+  const read = (agentRoot: string, relative: string) => fs.readFileSync(path.join(agentRoot, relative), "utf8")
+  const untouched = ["psyche/TACIT.md", "friends/owner.json", "state/logs/daemon.ndjson", "state/sessions/owner.json", "skills/nested/deep.md", "skills/notes.md"]
+
+  it("names its allowlist", () => {
+    expect(SANCTUARY_BUNDLE_PATH_FILES).toEqual(["agent.json", "state/replay-client/provision.json", "state/attachments/recent.json", "skills/*.md", "house/HOUSE.md"])
+  })
+
+  it("migrating a sanctuary-path bundle for butler rewrites exactly the allowlist, and finalize-rollback restores it byte for byte", () => {
+    const { packageRoot, agentRoot } = liveBundle()
+    const before = treeSnapshot(agentRoot)
+    const kept = Object.fromEntries(untouched.map((relative) => [relative, read(agentRoot, relative)]))
+
+    const result = migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, ...ids, butlerName: "butler" })
+    expect(result).toMatchObject({ bundlePathsRewritten: 5 })
+    expect(read(agentRoot, "agent.json")).toContain(`${NEW}/mcp/media-mcp.mjs`)
+    expect(fs.statSync(path.join(agentRoot, "agent.json")).mode & 0o777).toBe(0o644)
+    expect(read(agentRoot, "state/replay-client/provision.json").split(NEW)).toHaveLength(4)
+    expect(read(agentRoot, "state/attachments/recent.json")).toContain(`${NEW}/state/attachments/a.jpg`)
+    expect(read(agentRoot, "house/HOUSE.md")).toBe(`The house notes live in ${NEW}/house.\n`)
+    // A longer folder name that starts with the old path is someone else's.
+    expect(read(agentRoot, "skills/book-delivery.md")).toBe(`Books land in ${NEW}/books, not ${OLD}-old/books.\n`)
+    for (const relative of untouched) expect(read(agentRoot, relative)).toBe(kept[relative])
+
+    expect(rollbackSanctuaryPackageManagedBundle(agentRoot, { retainRecord: false })).toBe(true)
+    expect(treeSnapshot(agentRoot)).toEqual(before)
+  })
+
+  it("commit keeps the rewritten paths", () => {
+    const { packageRoot, agentRoot } = liveBundle()
+    migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, ...ids, butlerName: "butler" })
+    expect(commitSanctuaryPackageManagedBundle(agentRoot)).toBe(true)
+    expect(read(agentRoot, "agent.json")).toContain(NEW)
+    expect(read(agentRoot, "agent.json")).not.toContain(OLD)
+  })
+
+  it("does nothing when the names already match", () => {
+    const { packageRoot, agentRoot } = liveBundle()
+    const before = Object.fromEntries(["agent.json", "house/HOUSE.md", "skills/book-delivery.md"].map((relative) => [relative, read(agentRoot, relative)]))
+    expect(migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, ...ids })).not.toHaveProperty("bundlePathsRewritten")
+    for (const [relative, content] of Object.entries(before)) expect(read(agentRoot, relative)).toBe(content)
+    const record = JSON.parse(fs.readFileSync(path.join(agentRoot, SANCTUARY_BUNDLE_ROLLBACK_FILE), "utf8")) as { files: Array<{ relative: string }> }
+    expect(record.files.map((file) => file.relative)).toEqual([...SANCTUARY_PACKAGE_MANAGED_FILES, "bundle-meta.json"])
+  })
+
+  it("takes the Butler's name from the agent root when it is not told, and leaves other bundles alone", () => {
+    const { packageRoot, agentRoot } = liveBundle("butler.ouro")
+    expect(migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toMatchObject({ bundlePathsRewritten: 5 })
+    expect(read(agentRoot, "agent.json")).toContain(NEW)
+
+    // A rollback that mounts it at the old name again, and migrates for sanctuary, points the paths back.
+    expect(migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, butlerName: "sanctuary" })).toMatchObject({ bundlePathsRewritten: 5 })
+    expect(read(agentRoot, "house/HOUSE.md")).toBe(`The house notes live in ${OLD}/house.\n`)
+
+    const other = liveBundle("slugger.ouro")
+    expect(migrateSanctuaryPackageManagedBundle(other)).not.toHaveProperty("bundlePathsRewritten")
+    expect(read(other.agentRoot, "agent.json")).toContain(OLD)
+  })
+
+  it("works with no skills folder, or a skills file, and skips allowlisted files that are absent", () => {
+    const { packageRoot, agentRoot } = liveBundle()
+    fs.rmSync(path.join(agentRoot, "skills"), { recursive: true })
+    fs.rmSync(path.join(agentRoot, "house"), { recursive: true })
+    expect(migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, butlerName: "butler" })).toMatchObject({ bundlePathsRewritten: 3 })
+    write(agentRoot, "skills", "not a folder\n")
+    write(agentRoot, "agent.json", { args: [OLD] })
+    expect(migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, butlerName: "butler" })).toMatchObject({ bundlePathsRewritten: 1 })
+  })
+
+  it("refuses a symlinked skills folder or allowlisted file before writing anything", () => {
+    const { packageRoot, agentRoot } = liveBundle()
+    const outside = makeRoot("butler-rename-outside")
+    write(outside, "agent.json", { args: [OLD] })
+    fs.renameSync(path.join(agentRoot, "skills"), path.join(outside, "skills"))
+    fs.symlinkSync(path.join(outside, "skills"), path.join(agentRoot, "skills"))
+    const before = read(agentRoot, "agent.json")
+    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, butlerName: "butler" })).toThrow(/skills\/ must not be a symlink/u)
+    expect(read(agentRoot, "agent.json")).toBe(before)
+    expect(fs.existsSync(path.join(agentRoot, "bundle-meta.json"))).toBe(false)
+
+    fs.unlinkSync(path.join(agentRoot, "skills"))
+    fs.rmSync(path.join(agentRoot, "agent.json"))
+    fs.symlinkSync(path.join(outside, "agent.json"), path.join(agentRoot, "agent.json"))
+    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, butlerName: "butler" })).toThrow(/must not be a symlink: agent.json/u)
+    expect(fs.readFileSync(path.join(outside, "agent.json"), "utf8")).toContain(OLD)
+  })
+
+  it("restores the rewritten files when the migrate fails after writing them", () => {
+    const { packageRoot, agentRoot } = liveBundle()
+    fs.rmSync(path.join(agentRoot, "psyche"), { recursive: true })
+    write(agentRoot, "psyche", "a file where the psyche should be\n")
+    const before = read(agentRoot, "agent.json")
+    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, ...ids, butlerName: "butler" })).toThrow(/psyche must be a real directory/u)
+    expect(read(agentRoot, "agent.json")).toBe(before)
+    expect(fs.existsSync(path.join(agentRoot, SANCTUARY_BUNDLE_ROLLBACK_FILE))).toBe(false)
+  })
+
+  it("refuses a rollback record that names a file outside the allowlist", () => {
+    const { packageRoot, agentRoot } = liveBundle()
+    migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, ...ids, butlerName: "butler" })
+    const recordPath = path.join(agentRoot, SANCTUARY_BUNDLE_ROLLBACK_FILE)
+    const record = JSON.parse(fs.readFileSync(recordPath, "utf8")) as { files: Array<{ relative: string; contentBase64: string; mode: number }> }
+    const pristine = JSON.stringify(record)
+    record.files.push({ relative: "psyche/TACIT.md", contentBase64: Buffer.from("x").toString("base64"), mode: 0o600 })
+    fs.writeFileSync(recordPath, `${JSON.stringify(record)}\n`)
+    expect(() => rollbackSanctuaryPackageManagedBundle(agentRoot)).toThrow(/paths are invalid/u)
+    const duplicated = JSON.parse(pristine) as typeof record
+    duplicated.files.push(duplicated.files[duplicated.files.length - 1]!)
+    fs.writeFileSync(recordPath, `${JSON.stringify(duplicated)}\n`)
+    expect(() => rollbackSanctuaryPackageManagedBundle(agentRoot)).toThrow(/paths are invalid/u)
+    expect(read(agentRoot, "psyche/TACIT.md")).toContain(OLD)
   })
 })
