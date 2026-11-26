@@ -34,7 +34,10 @@ describe("durable sink non-Error failure normalization", () => {
     const { createNdjsonFileSink } = await import("../../nerves")
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "nerves-final-fsync-")); roots.push(root)
     const sink = createNdjsonFileSink(path.join(root, "events.ndjson"))
-    fault.throwOnFsyncCall = 1
+    // The first write runs the rotation check, which syncs on its own; fail the barrier's sync on a later write.
+    sink(event)
+    await sink.barrier()
+    fault.throwOnFsyncCall = fault.fsyncCalls + 1
     sink(event)
 
     await expect(sink.barrier()).rejects.toThrow("synthetic non-error fsync failure")

@@ -373,6 +373,31 @@ describe("rotation.new-scheme", () => {
       expect(fs.readFileSync(filePath, "utf-8")).toContain("test.first_write")
     })
 
+    it("checks after an oversized append queued behind a write that just reset the check", async () => {
+      const filePath = path.join(dir, "events.ndjson")
+      const sink = createNdjsonFileSink(filePath, { maxSizeBytes: 1000, maxGenerations: 2, compress: true, rotationCheckIntervalBytes: 1000 })
+      const entry = (event: string, payload = "") => ({
+        ts: "2026-04-08T12:00:00.000Z",
+        level: "info" as const,
+        event,
+        trace_id: "t-queued",
+        component: "test",
+        message: event,
+        meta: { payload },
+      })
+
+      // The first write checks and goes out at once; the next two queue behind it. The small one resets the check
+      // before it is written, so the oversized one after it is due only by its own length.
+      sink(entry("test.first"))
+      sink(entry("test.small"))
+      sink(entry("test.oversized_queued", "x".repeat(1500)))
+      await sink.barrier()
+
+      const rotated = path.join(dir, "events.1.ndjson.gz")
+      expect(fs.existsSync(rotated)).toBe(true)
+      expect(zlib.gunzipSync(fs.readFileSync(rotated)).toString("utf-8")).toContain("test.oversized_queued")
+    })
+
     it("rotates after a single oversized append even when no later event arrives", async () => {
       const filePath = path.join(dir, "events.ndjson")
       const sink = createNdjsonFileSink(filePath, {
