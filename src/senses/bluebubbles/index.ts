@@ -51,7 +51,7 @@ import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient, 
 import { letterChatRefusal, tellAgentReplyRefused } from "./letter-guard"
 import { renderChatInteraction, resolveChatInteractionTarget } from "../../heart/chat-interaction"
 import { looksLikeAnswer } from "../../heart/letters/answer-command"
-import { askDaemonToAnswerLetter } from "./letter-answer-ingress"
+import { askDaemonToAnswerLetter, tellDaemonLetterSeen } from "./letter-answer-ingress"
 import { reactInBlueBubbles } from "./reactions"
 import { MAX_IMESSAGE_FILE_BYTES, sendFileInBlueBubbles } from "./send-file"
 import { readChatFile, type ChatFile } from "../chat-file"
@@ -558,6 +558,8 @@ interface RuntimeDeps {
    * message from the server itself, so nothing this process saw in the webhook decides the answer.
    */
   answerLetter: (agent: string, messageGuid: string) => Promise<boolean>
+  /** A read receipt for a message this side sent; the daemon records `seen` if it delivered a letter. */
+  letterSeen: (agent: string, messageGuid: string) => Promise<boolean>
 }
 
 export interface BlueBubblesReplyTargetController {
@@ -615,6 +617,7 @@ const defaultDeps: RuntimeDeps = {
   recordProcessed: recordProcessedBlueBubblesMessage,
   withSessionTurnLease,
   answerLetter: (agent, messageGuid) => askDaemonToAnswerLetter(agent, messageGuid),
+  letterSeen: (agent, messageGuid) => tellDaemonLetterSeen(agent, messageGuid),
   // Incoming events recheck every time, like sends, so a server that takes over
   // the same URL under another account is refused immediately.
   verifyHostAccount: (options) => verifyBlueBubblesServerAccount({
@@ -3521,6 +3524,14 @@ async function handleCapturedBlueBubblesSemanticEvent(
       })
       if (captured.normalized.chat.isGroup) {
         recordDiscoveredOwnHandle(captured.normalized.sender.externalId)
+      }
+      // The person read a message this side sent in a one-to-one chat; if it delivered a letter, the daemon records
+      // that they've seen it, from the server's copy. Nothing waits on it, and a failure only loses the "seen".
+      if (captured.capture.event.kind === "read" && !captured.normalized.chat.isGroup) {
+        const messageGuid = captured.normalized.messageGuid
+        resolvedDeps.letterSeen(agentName, messageGuid).catch((error: Error) => {
+          emitNervesEvent({ level: "warn", component: "senses", event: "senses.bluebubbles_letter_seen_unchecked", message: "couldn't tell the daemon a message was read", meta: { messageGuid, reason: error.message } })
+        })
       }
       const result: BlueBubblesHandleResult = {
         handled: true,

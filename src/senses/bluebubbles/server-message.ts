@@ -25,6 +25,7 @@ export function serverMessageFromPayload(payload: unknown): ServerMessage | null
   const dateCreated = time(data.dateCreated)
   const dateEdited = time(data.dateEdited)
   const dateRetracted = time(data.dateRetracted)
+  const dateRead = time(data.dateRead)
   const threadOriginatorGuid = text(data.threadOriginatorGuid)
   return {
     guid,
@@ -37,6 +38,7 @@ export function serverMessageFromPayload(payload: unknown): ServerMessage | null
     ...(dateCreated ? { dateCreated } : {}),
     ...(dateEdited ? { dateEdited } : {}),
     ...(dateRetracted ? { dateRetracted } : {}),
+    ...(dateRead ? { dateRead } : {}),
     ...(threadOriginatorGuid ? { threadOriginatorGuid } : {}),
   }
 }

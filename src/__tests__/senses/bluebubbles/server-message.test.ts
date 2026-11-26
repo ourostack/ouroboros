@@ -6,10 +6,10 @@ describe("serverMessageFromPayload", () => {
   it("reads every field the answer reader checks from the server's reply", () => {
     expect(serverMessageFromPayload({ status: 200, data: {
       guid: "m-1", text: "L7 2", isFromMe: false, handle: { address: "+15551234567", service: "iMessage" },
-      chats: [{ guid: "iMessage;-;+15551234567" }, { nope: 1 }, "x"], dateCreated: 1000, dateEdited: 2000, dateRetracted: 3000, threadOriginatorGuid: "t-1",
+      chats: [{ guid: "iMessage;-;+15551234567" }, { nope: 1 }, "x"], dateCreated: 1000, dateEdited: 2000, dateRetracted: 3000, dateRead: 4000, threadOriginatorGuid: "t-1",
     } })).toEqual({
       guid: "m-1", text: "L7 2", isFromMe: false, sender: "+15551234567", service: "iMessage", chatGuids: ["iMessage;-;+15551234567"],
-      dateCreated: 1000, dateEdited: 2000, dateRetracted: 3000, threadOriginatorGuid: "t-1",
+      dateCreated: 1000, dateEdited: 2000, dateRetracted: 3000, dateRead: 4000, threadOriginatorGuid: "t-1",
     })
   })
 
