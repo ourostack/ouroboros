@@ -83,7 +83,7 @@ const mocks = vi.hoisted(() => ({
   semanticHandled: new Map<string, any>(),
   semanticClaims: new Map<string, { lease: any; released: Promise<void>; resolve: () => void }>(),
   createServer: vi.fn(),
-  listen: vi.fn((_: number, cb?: () => void) => cb?.()),
+  listen: vi.fn((...args: unknown[]) => (args.find((arg) => typeof arg === "function") as (() => void) | undefined)?.()),
   handleInboundTurn: vi.fn(),
   getChannelCapabilities: vi.fn(),
   getPendingDir: vi.fn(),
@@ -146,7 +146,7 @@ async function waitFor(predicate: () => boolean, attempts = 400): Promise<void> 
 function createClosableServer(): { server: any; close: () => void } {
   let closeHandler: (() => void) | undefined
   const server = {
-    listen: vi.fn((_: number, cb?: () => void) => cb?.()),
+    listen: vi.fn((...args: unknown[]) => (args.find((arg) => typeof arg === "function") as (() => void) | undefined)?.()),
     on: vi.fn((event: string, cb: () => void) => {
       if (event === "close") closeHandler = cb
       return server
@@ -989,7 +989,7 @@ function resetMocks(): void {
   mocks.listPendingSemanticCaptures.mockReset().mockImplementation(() => (
     [...mocks.semanticCaptures.values()].filter((capture) => !mocks.semanticHandled.has(capture.keyHash))
   ))
-  mocks.listen.mockReset().mockImplementation((_: number, cb?: () => void) => cb?.())
+  mocks.listen.mockReset().mockImplementation((...args: unknown[]) => (args.find((arg) => typeof arg === "function") as (() => void) | undefined)?.())
   mocks.createServer.mockReset().mockImplementation((handler: unknown) => ({
     listen: mocks.listen,
     close: vi.fn(),
@@ -1340,6 +1340,8 @@ describe("BlueBubbles sense runtime", () => {
       ]),
     )
 
+    // A person's message the sense received: the one origin the mailbox's answer reader trusts.
+    expect(firstRunAgentOptions().toolContext.turnOrigin).toBe("sense-ingress")
     const ingressEvidence = firstRunAgentOptions().toolContext.currentIngressEvidence
     expect(ingressEvidence).toEqual({
       schemaVersion: 1,
@@ -3960,16 +3962,13 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const handler = bluebubbles.createBlueBubblesWebhookHandler()
 
-    const unauthorizedReq = createMockRequest(
-      "POST",
-      "/bluebubbles-webhook?password=wrong-token",
-      dmThreadPayload,
-    )
-    const unauthorizedRes = createMockResponse()
-    await handler(unauthorizedReq as any, unauthorizedRes.res as any)
-    await unauthorizedRes.done
-
-    expect(unauthorizedRes.res.statusCode).toBe(401)
+    // A wrong password, an empty one and none at all are each refused.
+    for (const url of ["/bluebubbles-webhook?password=wrong-token", "/bluebubbles-webhook?password=", "/bluebubbles-webhook"]) {
+      const unauthorizedRes = createMockResponse()
+      await handler(createMockRequest("POST", url, dmThreadPayload) as any, unauthorizedRes.res as any)
+      await unauthorizedRes.done
+      expect(unauthorizedRes.res.statusCode).toBe(401)
+    }
     expect(mocks.runAgent).not.toHaveBeenCalled()
 
     const authorizedReq = createMockRequest(
@@ -4337,7 +4336,7 @@ describe("BlueBubbles sense runtime", () => {
     ))
 
     mocks.repairEvent.mockRejectedValueOnce("repair string blew up")
-    const stringBoomReq = createMockRequest("POST", "/bluebubbles-webhook", dmThreadPayload)
+    const stringBoomReq = createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", dmThreadPayload)
     const stringBoomRes = createMockResponse()
     await handler(stringBoomReq as any, stringBoomRes.res as any)
     await stringBoomRes.done
@@ -4972,7 +4971,8 @@ describe("BlueBubbles sense runtime", () => {
     }
 
     expect(mocks.createServer).toHaveBeenCalledTimes(1)
-    expect(closableServer.server.listen).toHaveBeenCalledWith(18790, expect.any(Function))
+    // Only this Mac reaches the webhook: the reconciler registers it at http://127.0.0.1.
+    expect(closableServer.server.listen).toHaveBeenCalledWith(18790, "127.0.0.1", expect.any(Function))
     expect(mocks.createWebhookReconciler).toHaveBeenCalledWith({
       serverUrl: "http://bluebubbles.local",
       password: "secret-token",

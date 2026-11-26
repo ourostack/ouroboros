@@ -44,6 +44,14 @@ describe("friend_link_code tool", () => {
     expect(friendLinkToolDefinition.ax).toMatchObject({ id: "tool:friend_link_code", group: "turn-friends", effect: "write" })
   })
 
+  it("refuses a socket turn, whose caller chose the friend itself, even for family in a 1:1 chat", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "friend-link-tool-socket-"))
+    const socketTurn = { ...ctx(friend("family"), { agentRoot }), turnOrigin: "socket" as const }
+    expect(await run({}, socketTurn)).toBe("link codes are issued only in a chat the person started, not in a turn asked for over the daemon socket. (code: socket-turn)")
+    expect(fs.existsSync(path.join(agentRoot, "state", "friend-link-codes"))).toBe(false)
+    expect(await run({}, { ...ctx(friend("family"), { agentRoot }), turnOrigin: "sense-ingress" })).toMatch(/^link code for Ari:/)
+  })
+
   it("issues a code for the family friend, under the agent root", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "friend-link-tool-"))
     const text = await run({ channel: "teams" }, ctx(friend("family"), { agentRoot }))
