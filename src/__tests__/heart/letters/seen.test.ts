@@ -42,7 +42,10 @@ describe("a letter the person has read", () => {
     expect(await writer.recordSeen("slugger", read())).toEqual({ recorded: false, reason: "already-seen" })
     clock.now = NOW + 2 * 60 * 60_000 + 60_000
     expect((await writer.run("slugger", "mailbox_list", {})).listing).toBe("L1  waiting, seen 2h ago  2h  The build is green\nL2  waiting  2h  Not yet sent")
-    expect((await writer.run("slugger", "mailbox_read", { letter: "L1" })).events).toContain(`${new Date(NOW + 60_000).toISOString()} seen on chat`)
+    const letter = await writer.run("slugger", "mailbox_read", { letter: "L1" })
+    expect(letter.seen).toBe("seen 2h ago, not answered")
+    expect(letter.events).toContain(`${new Date(NOW + 60_000).toISOString()} seen on chat`)
+    expect((await writer.run("slugger", "mailbox_read", { letter: "L2" })).seen).toBeUndefined()
   })
 
   it("needs the server to say this side sent it, into the chat it went to, and that it was read", async () => {
@@ -55,10 +58,26 @@ describe("a letter the person has read", () => {
     expect(await writer.recordSeen("slugger", read({ dateRead: undefined }))).toEqual({ recorded: false, reason: "not-read" })
   })
 
-  it("isn't recorded for a letter that is no longer waiting, or whose send wasn't confirmed", async () => {
+  it("isn't recorded for a letter that is no longer waiting", async () => {
     const { writer } = await delivered()
     await writer.run("slugger", "mailbox_withdraw", { letter: "L1", reason: "Fixed it myself." })
     expect(await writer.recordSeen("slugger", read())).toEqual({ recorded: false, reason: "no-letter" })
+    expect(writer.hasWaitingDelivery("slugger", "sent-1")).toBe(false)
+  })
+
+  it("isn't recorded for a letter whose send wasn't confirmed, which has no message GUID", async () => {
+    const bundles = fs.mkdtempSync(path.join(os.tmpdir(), "letters-seen-"))
+    roots.push(bundles)
+    writeAnsweringHandle(path.join(bundles, "slugger.ouro", "state", "letters"), "friend-ari", ARI)
+    const writer = new LettersWriter({
+      bundlesRoot: bundles, now: () => new Date(NOW), newId: () => "ltr_U1", ownerUsername: () => "ari",
+      listFriends: async () => [{ id: "friend-ari", name: "Ari", trustLevel: "family", externalIds: [{ provider: "local", externalId: "ari" }] } as unknown as FriendRecord],
+      deliverChat: async () => { throw Object.assign(new Error("socket closed mid-send"), { transportInvoked: true }) },
+    })
+    await writer.run("slugger", "mailbox_send", { kind: "know", subject: "The build is green" })
+    await writer.run("slugger", "mailbox_deliver", { letter: "L1" }).catch(() => undefined)
+    expect((await writer.run("slugger", "mailbox_read", { letter: "L1" })).events).toContain("delivered")
+    expect(writer.hasWaitingDelivery("slugger", "")).toBe(false)
     expect(await writer.recordSeen("slugger", read({ guid: "" }))).toEqual({ recorded: false, reason: "no-letter" })
   })
 })
@@ -82,7 +101,11 @@ describe("the letters.seen command", () => {
     expect(await answerLettersSeenCommand(writer, { kind: "letters.seen", agent: "slugger", messageGuid: "sent-1" }, source({ trust: "untrusted", getServerMessage: async (guid) => { fetched.push(guid); return null } })))
       .toEqual({ ok: true, data: { recorded: false, reason: "untrusted-server-url" } })
     expect(fetched).toEqual([])
-    expect(await answerLettersSeenCommand(writer, { kind: "letters.seen", agent: "slugger", messageGuid: "sent-9" }, source())).toEqual({ ok: true, data: { recorded: false, reason: "unknown-message" } })
+    // A message no waiting letter was delivered as is turned away from the index, before the server is asked.
+    let asked = 0
+    expect(await answerLettersSeenCommand(writer, { kind: "letters.seen", agent: "slugger", messageGuid: "sent-9" }, async () => { asked++; return source()() })).toEqual({ ok: true, data: { recorded: false, reason: "no-letter" } })
+    expect(asked).toBe(0)
+    expect(await answerLettersSeenCommand(writer, { kind: "letters.seen", agent: "slugger", messageGuid: "sent-1" }, source({ getServerMessage: async () => null }))).toEqual({ ok: true, data: { recorded: false, reason: "unknown-message" } })
     expect(await answerLettersSeenCommand(writer, { kind: "letters.seen", agent: "slugger", messageGuid: "sent-1" }, source({ getServerMessage: async () => read({ guid: "else" }) }))).toEqual({ ok: true, data: { recorded: false, reason: "unknown-message" } })
     expect(await answerLettersSeenCommand(writer, { kind: "letters.seen", agent: "slugger", messageGuid: "sent-1" }, source({ getServerMessage: async () => { throw new Error("server down") } }))).toEqual({ ok: false, error: "server down" })
   })

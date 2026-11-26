@@ -81,10 +81,10 @@ export interface LettersCommand {
 
 export type LetterResult = Record<string, unknown> & { outcome: string }
 
-/** What recordAnswer did with one message. */
 /** What recordSeen did with one read receipt. */
 export type SeenOutcome = { recorded: true; code: string } | { recorded: false; reason: string }
 
+/** What recordAnswer did with one message. */
 export type AnswerOutcome =
   | { recorded: true; id: string; code: string; subject: string; option: string; label: string; note?: string; already?: true }
   | { recorded: false; reason: string }
@@ -101,6 +101,12 @@ interface AgentLetters {
   index: LetterIndex
   queue: Promise<unknown>
   waiters: Map<string, Set<() => void>>
+}
+
+/** How long ago the person read a waiting letter, such as "2h", which tells an agent not to ask again; null when unread. */
+function seenAgo(entry: IndexedLetter, now: number): string | null {
+  const seen = entry.state === "waiting" ? entry.events.find((event) => event.t === "seen") : undefined
+  return seen ? ageOf(seen.at, now) : null
 }
 
 function ageOf(createdAt: string, now: number): string {
@@ -374,12 +380,12 @@ export class LettersWriter {
   recordSeen(agent: string, message: ServerMessage): Promise<SeenOutcome> {
     const letters = this.open(agent, false)
     return this.serial(letters, async (): Promise<SeenOutcome> => {
-      const entry = letters.index.list({}).find((candidate) => candidate.events.some((event) => event.t === "delivered" && event.messageId !== "" && event.messageId === message.guid))
-      if (!entry) return { recorded: false, reason: "no-letter" }
-      const delivered = entry.events.find((event) => event.t === "delivered")!
+      const found = this.waitingDelivery(letters, message.guid)
+      if (!found) return { recorded: false, reason: "no-letter" }
+      const { entry, delivered } = found
       let problem: string | null = null
       if (message.isFromMe !== true) problem = "not-from-me"
-      else if (message.chatGuids.length !== 1 || message.chatGuids[0] !== (delivered as { key: string }).key) problem = "wrong-chat"
+      else if (message.chatGuids.length !== 1 || message.chatGuids[0] !== delivered.key) problem = "wrong-chat"
       else if (message.dateRead === undefined) problem = "not-read"
       else if (entry.events.some((event) => event.t === "seen")) problem = "already-seen"
       if (problem) return { recorded: false, reason: problem }
@@ -387,6 +393,24 @@ export class LettersWriter {
       emitNervesEvent({ component: "daemon", event: "letters.letter_seen", message: "the person read a letter", meta: { code: entry.letter.code } })
       return { recorded: true, code: entry.letter.code }
     })
+  }
+
+  /**
+   * Whether a waiting letter was delivered as this message, read from the index alone. The daemon asks it before it
+   * fetches anything from the server, since most read receipts are for ordinary chat messages.
+   */
+  hasWaitingDelivery(agent: string, messageGuid: string): boolean {
+    return this.waitingDelivery(this.open(agent, false), messageGuid) !== null
+  }
+
+  /** The waiting letter delivered as this message, with its delivered event; a send that wasn't confirmed has no GUID. */
+  private waitingDelivery(letters: AgentLetters, messageGuid: string): { entry: IndexedLetter; delivered: { key: string } } | null {
+    if (!messageGuid) return null
+    for (const entry of letters.index.list({})) {
+      const delivered = entry.events.find((event) => event.t === "delivered" && event.messageId === messageGuid)
+      if (delivered) return { entry, delivered: delivered as { key: string } }
+    }
+    return null
   }
 
   private list(letters: AgentLetters, input: Record<string, unknown>): LetterResult {
@@ -397,17 +421,16 @@ export class LettersWriter {
       ...(input.mine === true ? { from: letters.agent } : {}),
     })
     const listing = entries.map((entry) => {
-      // "seen 2h ago" tells an agent the person has read a waiting letter, so it doesn't ask again.
-      const seen = entry.state === "waiting" ? entry.events.find((event) => event.t === "seen") : undefined
-      const state = seen ? `waiting, seen ${ageOf(seen.at, now)} ago` : entry.state
-      return `${entry.letter.code}  ${state}  ${ageOf(entry.letter.createdAt, now)}  ${entry.letter.subject}`
+      const seen = seenAgo(entry, now)
+      return `${entry.letter.code}  ${seen ? `waiting, seen ${seen} ago` : entry.state}  ${ageOf(entry.letter.createdAt, now)}  ${entry.letter.subject}`
     }).join("\n")
     return { outcome: "done", count: entries.length, listing }
   }
 
   private read(letters: AgentLetters, input: Record<string, unknown>): LetterResult {
     const entry = this.find(letters, input)
-    return { outcome: "done", state: entry.state, letter: JSON.stringify(entry.letter), events: entry.events.map((event) => eventLine(entry.letter, event)).join("\n") }
+    const seen = seenAgo(entry, this.now().getTime())
+    return { outcome: "done", state: entry.state, ...(seen ? { seen: `seen ${seen} ago, not answered` } : {}), letter: JSON.stringify(entry.letter), events: entry.events.map((event) => eventLine(entry.letter, event)).join("\n") }
   }
 
   /** Blocks until the letter leaves waiting, or has an event past the cursor, or the timeout ends. */

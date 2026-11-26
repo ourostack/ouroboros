@@ -2677,7 +2677,8 @@ describe("BlueBubbles sense runtime", () => {
 
   it("tells the daemon of a read receipt on a message this side sent one-to-one, without waiting on it (2026-11-26)", async () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
-    const letterSeen = vi.fn(async () => true)
+    // The daemon never answers here, so the handler returning at all shows nothing waits on it.
+    const letterSeen = vi.fn(() => new Promise<boolean>(() => {}))
     const sent = (guid: string, extra: Record<string, unknown> = {}) => ({ ...readPayload, data: { ...readPayload.data, guid, isFromMe: true, ...extra } })
     const runtimeDeps = { getAgentName: () => "testagent", recordMutation: mocks.recordMutation, letterSeen } as any
     expect(await bluebubbles.handleBlueBubblesEvent(sent("SEEN-1"), runtimeDeps)).toEqual(expect.objectContaining({ reason: "from_me", notifiedAgent: false }))

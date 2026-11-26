@@ -331,11 +331,13 @@ public struct MailboxReadInput: Codable, Sendable, Hashable {
 public struct MailboxReadOutput: Codable, Sendable, Hashable {
     public var outcome: String
     public var state: String
+    public var seen: String?
     public var letter: String
     public var events: String
-    public init(outcome: String, state: String, letter: String, events: String) {
+    public init(outcome: String, state: String, seen: String? = nil, letter: String, events: String) {
         self.outcome = outcome
         self.state = state
+        self.seen = seen
         self.letter = letter
         self.events = events
     }

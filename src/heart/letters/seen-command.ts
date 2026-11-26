@@ -21,10 +21,12 @@ export async function answerLettersSeenCommand(
   }
   if (!writer.hasAgent(command.agent)) return { ok: false, error: `No agent bundle ${command.agent}.ouro is on this machine.` }
   try {
+    const guid = command.messageGuid.trim()
+    // Most read receipts are for ordinary chat messages, so the index is asked before the server is.
+    if (!writer.hasWaitingDelivery(command.agent, guid)) return { ok: true, data: { recorded: false, reason: "no-letter" } }
     const source = await sourceFor(command.agent)
     // The server password travels in the fetch's query string, so only a server nobody between can read is asked.
     if (source.trust === "untrusted") return { ok: true, data: { recorded: false, reason: "untrusted-server-url" } }
-    const guid = command.messageGuid.trim()
     const message = await source.getServerMessage(guid)
     if (!message || message.guid !== guid) return { ok: true, data: { recorded: false, reason: "unknown-message" } }
     return { ok: true, data: await writer.recordSeen(command.agent, message) }
