@@ -49,19 +49,19 @@ export function parseAnswer(text: string): ParsedAnswer | null {
   return { code: match[1], option: match[2], ...(note ? { note } : {}) }
 }
 
-/** The GUIDs that have already answered a letter. */
-export function readAnsweredGuids(lettersDir: string): Set<string> {
+/** The GUIDs that have already answered a letter, each with the id of the letter it answered. */
+export function readAnsweredGuids(lettersDir: string): Map<string, string> {
   let raw = ""
   try {
     raw = fs.readFileSync(path.join(lettersDir, ANSWERED_GUIDS_FILE), "utf8")
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
   }
-  const guids = new Set<string>()
+  const guids = new Map<string, string>()
   for (const line of raw.split("\n")) {
     try {
-      const guid = (JSON.parse(line) as { guid?: unknown }).guid
-      if (typeof guid === "string") guids.add(guid)
+      const { guid, letter } = JSON.parse(line) as { guid?: unknown; letter?: unknown }
+      if (typeof guid === "string") guids.set(guid, typeof letter === "string" ? letter : "")
     } catch {
       // A torn last line holds no GUID.
     }
@@ -113,7 +113,7 @@ export async function deliveryFloor(entry: IndexedLetter, sentAt?: (messageGuid:
  * fields and the letter as filed and delivered; the reasons are for the daemon's log, never shown to the sender.
  * `floor` is the letter's deliveryFloor.
  */
-export function answerProblem(entry: IndexedLetter, message: ServerMessage, answer: ParsedAnswer, answered: Set<string>, floor: number | null): string | null {
+export function answerProblem(entry: IndexedLetter, message: ServerMessage, answer: ParsedAnswer, answered: ReadonlyMap<string, string>, floor: number | null): string | null {
   const letter = entry.letter
   // Expiry is judged by when the person sent the message, so a pass that reads it late still counts it.
   const sentAfterExpiry = letter.expiresAt !== undefined && (message.dateCreated ?? Number.POSITIVE_INFINITY) >= Date.parse(letter.expiresAt)

@@ -124,19 +124,19 @@ describe("sending a letter by BlueBubbles", () => {
 })
 
 describe("letterAnswerSource", () => {
-  it("reads answers from the agent's own server, judging its address and whether a shell beside the daemon could send as the person", async () => {
+  it("reads answers from the agent's own server, judging its address and whether the daemon runs under the agent's declared host account", async () => {
     credentials.read.mockReturnValue(configured)
     const getServerMessage = vi.fn(async () => null)
     const clientFor = vi.fn(async () => ({ getServerMessage }) as unknown as BlueBubblesClient)
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-answer-source-"))
-    const source = await letterAnswerSource(root, { clientFor, daemonUser: () => "ari", ownerUsername: () => "ari" })("slugger")
+    const source = await letterAnswerSource(root, { clientFor, daemonUser: () => "ari", hostUsername: () => "slugger-host" })("slugger")
     expect(source.trust).toBe("loopback")
     expect(source.hostTrust).toBe("shared-apple-id")
     expect(await source.getServerMessage("m-1")).toBeNull()
     expect(getServerMessage).toHaveBeenCalledWith("m-1")
     expect(clientFor).toHaveBeenCalledWith("slugger", path.join(root, "slugger.ouro"))
-    expect((await letterAnswerSource(root, { clientFor, daemonUser: () => "slugger-host", ownerUsername: () => "ari" })("slugger")).hostTrust).toBe("separate")
-    expect((await letterAnswerSource(root, { clientFor, daemonUser: () => "ari", ownerUsername: () => null })("slugger")).hostTrust).toBe("shared-apple-id")
+    expect((await letterAnswerSource(root, { clientFor, daemonUser: () => "slugger-host", hostUsername: () => "slugger-host" })("slugger")).hostTrust).toBe("separate")
+    expect((await letterAnswerSource(root, { clientFor, daemonUser: () => "ari", hostUsername: () => undefined })("slugger")).hostTrust).toBe("shared-apple-id")
     expect(typeof (await letterAnswerSource(root, { clientFor })("slugger")).hostTrust).toBe("string")
   })
 

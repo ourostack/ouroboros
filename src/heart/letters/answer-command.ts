@@ -10,6 +10,8 @@ export interface LettersAnswerCommand {
   kind: "letters.answer"
   agent: string
   messageGuid: string
+  /** Epoch ms past which the daemon records nothing: the asker has stopped waiting and treats the message as chat. */
+  deadlineAt?: number
 }
 
 /** A cheap first look at the webhook's text: only text in answer form is worth a fetch from the server. */
@@ -35,7 +37,8 @@ export async function answerLettersAnswerCommand(
     const message = await source.getServerMessage(guid)
     if (!message || message.guid !== guid) return { ok: true, data: { recorded: false, reason: "unknown-message" } }
     const sentAt = async (sentGuid: string) => (await source.getServerMessage(sentGuid))?.dateCreated
-    return { ok: true, data: await writer.recordAnswer(command.agent, message, source.hostTrust, sentAt) }
+    const deadlineAt = typeof command.deadlineAt === "number" ? command.deadlineAt : undefined
+    return { ok: true, data: await writer.recordAnswer(command.agent, message, source.hostTrust, sentAt, deadlineAt) }
   } catch (error) {
     emitNervesEvent({ level: "error", component: "daemon", event: "letters.answer_failed", message: "a possible answer couldn't be checked", meta: { reason: (error as Error).message } })
     return { ok: false, error: (error as Error).message }

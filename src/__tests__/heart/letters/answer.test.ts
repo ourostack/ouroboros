@@ -68,10 +68,13 @@ describe("the answered GUID ledger", () => {
     expect(readAnsweredGuids(dir).size).toBe(0)
     addAnsweredGuid(dir, "m-1", "ltr_1", "t")
     fs.appendFileSync(path.join(dir, ANSWERED_GUIDS_FILE), "{\"guid\":")
-    expect([...readAnsweredGuids(dir)]).toEqual(["m-1"])
+    expect([...readAnsweredGuids(dir).keys()]).toEqual(["m-1"])
     // The next GUID after a torn line still reads.
     addAnsweredGuid(dir, "m-2", "ltr_2", "t")
-    expect([...readAnsweredGuids(dir)]).toEqual(["m-1", "m-2"])
+    expect([...readAnsweredGuids(dir)]).toEqual([["m-1", "ltr_1"], ["m-2", "ltr_2"]])
+    // A line with no letter still spends its GUID, for no letter.
+    fs.writeFileSync(path.join(dir, ANSWERED_GUIDS_FILE), "{\"guid\":\"m-3\"}\n")
+    expect([...readAnsweredGuids(dir)]).toEqual([["m-3", ""]])
     fs.writeFileSync(path.join(dir, ANSWERED_GUIDS_FILE), "{\"guid\":7}\n")
     expect(readAnsweredGuids(dir).size).toBe(0)
   })
@@ -100,8 +103,20 @@ describe("recordAnswer", () => {
       hostTrust: "shared-apple-id",
     })
     expect(read.events).toContain("answered 2 (Ouro)")
-    expect([...readAnsweredGuids(lettersDir)]).toEqual(["m-1"])
-    expect(await writer.recordAnswer("slugger", message(), "separate")).toEqual({ recorded: false, reason: "not-waiting" })
+    expect([...readAnsweredGuids(lettersDir).keys()]).toEqual(["m-1"])
+    // A replay of the same message (a retry, or recovery after a crash) is the same answer, not a chat turn.
+    expect(await writer.recordAnswer("slugger", message({ text: "L1 2 — ship it" }), "separate")).toEqual({
+      recorded: true, already: true, id: "ltr_T1", code: "L1", subject: "Which name?", option: "2", label: "Ouro", note: "ship it",
+    })
+    expect(await writer.recordAnswer("slugger", message({ guid: "m-2" }), "separate")).toEqual({ recorded: false, reason: "not-waiting" })
+    expect(readAnsweredGuids(lettersDir).size).toBe(1)
+  })
+
+  it("records nothing once the asker's deadline has passed, and answers a replay without a note", async () => {
+    const { writer, clock } = await delivered()
+    expect(await writer.recordAnswer("slugger", message(), "separate", undefined, clock.now - 1)).toEqual({ recorded: false, reason: "past-deadline" })
+    expect(await writer.recordAnswer("slugger", message(), "separate", undefined, clock.now)).toMatchObject({ recorded: true })
+    expect(await writer.recordAnswer("slugger", message(), "separate")).toEqual({ recorded: true, already: true, id: "ltr_T1", code: "L1", subject: "Which name?", option: "2", label: "Ouro" })
   })
 
   it("records nothing for text that isn't an answer, or names no letter", async () => {
@@ -178,10 +193,10 @@ describe("recordAnswer", () => {
 describe("answerProblem", () => {
   it("says a letter with no delivered event hasn't been delivered", () => {
     const entry = { letter: { answeringHandle: ARI, options: [{ id: "1" }] }, events: [], state: "waiting", closed: false } as never
-    expect(answerProblem(entry, message(), { code: "L1", option: "1" }, new Set(), null)).toBe("not-delivered")
-    expect(answerProblem({ ...entry, letter: { ...(entry as { letter: object }).letter, expiresAt: new Date(NOW).toISOString() } } as never, message({ dateCreated: NOW }), { code: "L1", option: "1" }, new Set(), 0)).toBe("not-waiting")
+    expect(answerProblem(entry, message(), { code: "L1", option: "1" }, new Map(), null)).toBe("not-delivered")
+    expect(answerProblem({ ...entry, letter: { ...(entry as { letter: object }).letter, expiresAt: new Date(NOW).toISOString() } } as never, message({ dateCreated: NOW }), { code: "L1", option: "1" }, new Map(), 0)).toBe("not-waiting")
     // A message the server didn't date can't show it came before expiry.
-    expect(answerProblem({ ...entry, letter: { ...(entry as { letter: object }).letter, expiresAt: new Date(NOW).toISOString() } } as never, message({ dateCreated: undefined }), { code: "L1", option: "1" }, new Set(), 0)).toBe("not-waiting")
+    expect(answerProblem({ ...entry, letter: { ...(entry as { letter: object }).letter, expiresAt: new Date(NOW).toISOString() } } as never, message({ dateCreated: undefined }), { code: "L1", option: "1" }, new Map(), 0)).toBe("not-waiting")
   })
 })
 
@@ -214,6 +229,12 @@ describe("the letters.answer command", () => {
     expect(asked).toEqual([])
     expect(await answerLettersAnswerCommand(writer, { kind: "letters.answer", agent: "slugger", messageGuid: "m-other" }, source()))
       .toEqual({ ok: true, data: { recorded: false, reason: "unknown-message" } })
+  })
+
+  it("passes the asker's deadline through", async () => {
+    const { writer } = await delivered()
+    expect(await answerLettersAnswerCommand(writer, { kind: "letters.answer", agent: "slugger", messageGuid: "m-1", deadlineAt: 0 }, source()))
+      .toEqual({ ok: true, data: { recorded: false, reason: "past-deadline" } })
   })
 
   it("asks the server when it sent the letter", async () => {

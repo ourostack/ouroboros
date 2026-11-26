@@ -70,7 +70,7 @@ export type LetterResult = Record<string, unknown> & { outcome: string }
 
 /** What recordAnswer did with one message. */
 export type AnswerOutcome =
-  | { recorded: true; id: string; code: string; subject: string; option: string; label: string; note?: string }
+  | { recorded: true; id: string; code: string; subject: string; option: string; label: string; note?: string; already?: true }
   | { recorded: false; reason: string }
 
 /** Closed letters move to closed/YYYY-MM/ this long after they close (design §3.2); they are never deleted. */
@@ -268,22 +268,32 @@ export class LettersWriter {
 
   /**
    * Records the person's answer from the server's own copy of their message, when it is one. `sentAt` reads the
-   * server's time for the letter's sent message, so the delivery floor is on the server's clock.
+   * server's time for the letter's sent message, so the delivery floor is on the server's clock. Past `deadlineAt`
+   * (epoch ms) nothing is recorded, so a caller that gave up waiting never has an answer recorded behind its back.
+   * A message that already answered this letter answers `already`, so a replay of it is no chat turn either.
    */
   recordAnswer(
     agent: string,
     message: ServerMessage,
     hostTrust: "shared-apple-id" | "separate",
     sentAt?: (messageGuid: string) => Promise<number | undefined>,
+    deadlineAt?: number,
   ): Promise<AnswerOutcome> {
     const answer = parseAnswer(message.text)
     if (!answer) return Promise.resolve({ recorded: false, reason: "not-answer-form" })
     const letters = this.open(agent, false)
     return this.serial(letters, async (): Promise<AnswerOutcome> => {
       const entry = letters.index.get(answer.code)
-      const problem = entry
-        ? answerProblem(entry, message, answer, readAnsweredGuids(letters.store.dir), await deliveryFloor(entry, sentAt))
-        : "no-such-letter"
+      const answered = readAnsweredGuids(letters.store.dir)
+      const recorded = entry?.events.findLast((event) => event.t === "answered")
+      if (entry && recorded?.t === "answered" && answered.get(message.guid) === entry.letter.id) {
+        const { letter } = entry
+        const label = letter.options.find((option) => option.id === recorded.option)!.label
+        return { recorded: true, already: true, id: letter.id, code: letter.code, subject: letter.subject, option: recorded.option, label, ...(recorded.note ? { note: recorded.note } : {}) }
+      }
+      const floor = entry ? await deliveryFloor(entry, sentAt) : null
+      const late = deadlineAt !== undefined && this.now().getTime() > deadlineAt
+      const problem = !entry ? "no-such-letter" : late ? "past-deadline" : answerProblem(entry, message, answer, answered, floor)
       if (problem) {
         noteAnswerRefused(problem)
         return { recorded: false, reason: problem }

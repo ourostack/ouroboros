@@ -3,7 +3,6 @@
 // process memory once read), and its host check uses the agent's declared iMessage host account.
 import * as os from "os"
 import * as path from "path"
-import { machineOwnerUsername } from "@ouro.bot/friends"
 import type { ServerMessage } from "../../heart/letters/answer-reader"
 import type { BlueBubblesChannelConfig, BlueBubblesConfig } from "../../heart/config"
 import { loadAgentConfig } from "../../heart/identity"
@@ -17,6 +16,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesClientHostOptions } from "./client"
 import { OURO_LETTER_SEND } from "./letter-guard"
 import type { BlueBubblesChatRef } from "./model"
+import { imessageHostTrust, type IMessageHostTrust } from "./host-trust"
 import { blueBubblesUrlTrust, type BlueBubblesUrlTrust } from "./url-trust"
 
 function text(value: unknown): string {
@@ -122,27 +122,24 @@ export function letterChatSender(bundlesRoot: string, clientFor?: (agent: string
 /** Where the daemon reads a person's answer from: the agent's own BlueBubbles server, and how far it is trusted. */
 export interface LetterAnswerSource {
   trust: BlueBubblesUrlTrust
-  /**
-   * `separate` only when the daemon runs under a macOS account other than the person's, so a shell beside the agent
-   * can't send iMessages from the person's Apple ID. Anything else, including an unknown owner, counts as shared.
-   */
-  hostTrust: "shared-apple-id" | "separate"
+  /** `separate` only when the daemon runs under the agent's declared host account (host-trust.ts). */
+  hostTrust: IMessageHostTrust
   getServerMessage(messageGuid: string): Promise<ServerMessage | null>
 }
 
 export function letterAnswerSource(
   bundlesRoot: string,
-  deps: { clientFor?: (agent: string, agentRoot: string) => Promise<BlueBubblesClient>; daemonUser?: () => string; ownerUsername?: () => string | null } = {},
+  deps: { clientFor?: (agent: string, agentRoot: string) => Promise<BlueBubblesClient>; daemonUser?: () => string; hostUsername?: (agent: string, agentRoot: string) => string | undefined } = {},
 ): (agent: string) => Promise<LetterAnswerSource> {
   return async (agent) => {
     const agentRoot = path.join(bundlesRoot, `${agent}.ouro`)
     const settings = blueBubblesSettings(await agentMachineRuntimeConfig(agent))
     const client = await (deps.clientFor ?? blueBubblesClientForAgent)(agent, agentRoot)
     const daemonUser = (deps.daemonUser ?? (() => os.userInfo().username))()
-    const owner = (deps.ownerUsername ?? machineOwnerUsername)()
+    const hostUsername = (deps.hostUsername ?? ((name, root) => agentHostOptions(name, root).hostUsername))(agent, agentRoot)
     return {
       trust: blueBubblesUrlTrust(settings.config.serverUrl),
-      hostTrust: owner && owner !== daemonUser ? "separate" : "shared-apple-id",
+      hostTrust: imessageHostTrust(hostUsername, daemonUser),
       getServerMessage: async (messageGuid) => {
         if (!client.getServerMessage) throw new Error("this BlueBubbles client can't fetch a message's own record")
         return client.getServerMessage(messageGuid)

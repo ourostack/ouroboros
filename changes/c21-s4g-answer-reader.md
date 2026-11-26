@@ -5,3 +5,5 @@
   - Its GUID hasn't answered before. A ledger in `state/letters/answered-guids.jsonl` keeps replays and recovery passes from answering twice.
 
   Anything else records nothing. The daemon asks only a server on the same Mac, behind TLS, or at a tailnet address, because the fetch carries the server password. It checks the agent's bundle before reading anything for it. Each answer records whether a shell running beside the daemon could send as the person: `separate` only when the daemon runs under a macOS account other than the person's, otherwise `shared-apple-id`. The chat ingress that sends these GUIDs comes in the next change.
+- A message that already answered its letter answers the same again when it is checked again, so a retry or a recovery replay is never also run as a chat turn. The asker can set a deadline, and nothing is recorded after it.
+- Each answer is recorded as `separate` only when the daemon runs under the agent's declared BlueBubbles host account (`senses.bluebubbles.hostUsername`), since a shell there can at most send as the agent. Under any other account it is `shared-apple-id`.
