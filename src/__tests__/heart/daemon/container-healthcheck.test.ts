@@ -50,7 +50,7 @@ describe("container healthcheck", () => {
     homedir.mockReset().mockReturnValue("/home/ouro")
     statSync.mockReset().mockReturnValue({ mtimeMs: NOW - 1_000 })
     readFileSync.mockReset().mockReturnValue(JSON.stringify(healthyState()))
-    existsSync.mockReset().mockReturnValue(true)
+    existsSync.mockReset().mockImplementation((value: string) => value !== "/home/ouro/AgentBundles/butler.ouro")
     execFileSync.mockReset().mockReturnValue(`${AGENT}\n${TELEGRAM}\n${SUPERCRONIC}\n`)
     packageManagement.resolve.mockReset().mockReturnValue({ kind: "active", packageRoot: "/opt/ouro/deploy/unraid/sanctuary.ouro", agentRoot: "/home/ouro/AgentBundles/sanctuary.ouro", runtimePackageVersion: "0.1.0-alpha.798" })
     packageManagement.inspect.mockReset().mockReturnValue({ ok: true, data: { runtimePackageVersion: "0.1.0-alpha.798", packagedBundleVersion: "0.1.0-alpha.798", liveBundleVersion: "0.1.0-alpha.798", parity: "exact", mismatchCodes: [], journalState: "absent", ready: true, repair: { actor: "none", action: "none" } } })
@@ -63,13 +63,25 @@ describe("container healthcheck", () => {
     expect(process.exitCode).toBeUndefined()
   })
 
+  it("checks the Butler under the name its bundle has, whichever Butler name it is given", () => {
+    existsSync.mockImplementation((value: string) => value !== "/home/ouro/AgentBundles/sanctuary.ouro")
+    readFileSync.mockReturnValue(JSON.stringify(healthyState({ agents: { butler: { status: "running", pid: 22 } } })))
+    execFileSync.mockReturnValue(`${AGENT.replace("sanctuary", "butler")}\n${TELEGRAM.replace("sanctuary", "butler")}\n${SUPERCRONIC.replace("sanctuary.crontab", "butler.crontab")}\n`)
+    for (const name of ["butler", "sanctuary"]) {
+      expect(() => run(["node", "healthcheck", "--package-managed-agent", name, "--agent", name])).not.toThrow()
+      expect(packageManagement.resolve).toHaveBeenLastCalledWith(expect.objectContaining({ managedAgents: ["butler"] }))
+    }
+  })
+
   it.each([
     ["missing agent", () => run(["node", "healthcheck"])],
+    ["missing agent", () => { existsSync.mockReturnValue(true); run() }],
+    ["missing agent", () => { existsSync.mockImplementation((value: string) => value === "/proc/1"); run() }],
     ["health state unavailable", () => { statSync.mockImplementation(() => { throw new Error("missing") }); run() }],
     ["health state stale", () => { statSync.mockReturnValue({ mtimeMs: NOW - 90_001 }); run() }],
     ["health state stale", () => { statSync.mockReturnValue({ mtimeMs: NOW + 1_001 }); run() }],
     ["daemon is not PID 1", () => { readFileSync.mockReturnValue(JSON.stringify(healthyState({ pid: 2 }))); run() }],
-    ["daemon is not PID 1", () => { existsSync.mockImplementation((value: string) => value !== "/proc/1"); run() }],
+    ["daemon is not PID 1", () => { existsSync.mockImplementation((value: string) => value !== "/proc/1" && value !== "/home/ouro/AgentBundles/butler.ouro"); run() }],
     ["daemon status is not ready", () => { readFileSync.mockReturnValue(JSON.stringify(healthyState({ status: "starting" }))); run() }],
     ["managed agent is not running", () => { readFileSync.mockReturnValue(JSON.stringify(healthyState({ agents: {} }))); run() }],
     ["managed agent is not running", () => { readFileSync.mockReturnValue(JSON.stringify(healthyState({ agents: { sanctuary: { status: "stopped", pid: 22 } } }))); run() }],

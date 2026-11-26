@@ -613,9 +613,13 @@ public struct MailboxDeliverInput: Codable, Sendable, Hashable {
 public struct MailboxDeliverOutput: Codable, Sendable, Hashable {
     public var outcome: String
     public var state: String
-    public init(outcome: String, state: String) {
+    public var channel: String
+    public var text: String
+    public init(outcome: String, state: String, channel: String, text: String) {
         self.outcome = outcome
         self.state = state
+        self.channel = channel
+        self.text = text
     }
 }
 
