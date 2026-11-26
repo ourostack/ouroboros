@@ -145,13 +145,17 @@ describe("ouro mailbox handle set", () => {
     }
   })
 
+  it("refuses any flag but --agent with the card's unknown-flag code", () => {
+    expect(() => parseOuroCommand(["mailbox", "handle", "set", "a", "+15551234567", "--json"])).toThrow(expect.objectContaining({ code: "unknown-flag", message: "ouro mailbox handle set takes no --json; it takes only --agent." }))
+  })
+
   it("writes the handle into the agent's answering file and says what it did", async () => {
     const bundles = fs.mkdtempSync(path.join(os.tmpdir(), "c21-handle-"))
     try {
       const friends = path.join(bundles, "slugger.ouro", "friends")
       fs.mkdirSync(friends, { recursive: true })
       fs.writeFileSync(path.join(friends, "friend-ari.json"), JSON.stringify({
-        id: "friend-ari", name: "Ari", trustLevel: "family", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0,
+        id: "friend-ari", name: "Ari", trustLevel: "family", externalIds: [{ provider: "local", externalId: os.userInfo().username, linkedAt: "2026-01-01T00:00:00.000Z" }], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0,
         createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", schemaVersion: 1,
       }))
       const out = deps({ bundlesRoot: bundles })
@@ -165,7 +169,7 @@ describe("ouro mailbox handle set", () => {
 
   it("has a CLI door only: no MCP tool and no in-turn tool", () => {
     const card = CLI_COMMANDS.find((command) => command.name === "mailbox handle set")
-    expect(card!.ax!.errors.map((error) => error.code)).toEqual(["usage", "bad-handle", "no-person", "which-person", "unknown-flag", "no-agent", "which-agent"])
+    expect(card!.ax!.errors.map((error) => error.code)).toEqual(["usage", "bad-handle", "no-person", "which-person", "not-recipient", "answering-unreadable", "unknown-flag", "no-agent", "which-agent"])
     expect(mailboxMcpSchemas().map((tool) => tool.name)).not.toContain("mailbox_handle_set")
     expect(mailboxToolDefinitions().map((tool) => tool.tool.function.name).filter((name) => name.includes("handle"))).toEqual([])
   })

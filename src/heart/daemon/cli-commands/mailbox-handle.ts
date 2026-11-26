@@ -15,6 +15,8 @@ export const MAILBOX_HANDLE_COMMANDS: readonly CliCommandDeclaration[] = [
         { code: "bad-handle", means: "The handle isn't an email address or a phone number with its country code.", fix: "Write the number with its country code, such as +15551234567, or give the email address the person uses for iMessage." },
         { code: "no-person", means: "No friend of this agent has that id or name.", fix: "Find the person's friend id with ouro friend list, then pass it." },
         { code: "which-person", means: "Several friends have that name.", fix: "Pass the person's friend id instead, from ouro friend list." },
+        { code: "not-recipient", means: "That friend isn't who letters go to: the family record naming this machine's owner.", fix: "Pass that record's id, which the refusal names, or link the person's record to this machine's owner first." },
+        { code: "answering-unreadable", means: "The answering handles file doesn't read, so it wasn't replaced and no handle was lost.", fix: "Move the file the refusal names aside, then set each person's handle again." },
         unknownFlag("mailbox handle set"),
         ...agentErrors("mailbox handle set"),
       ],

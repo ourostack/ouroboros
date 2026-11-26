@@ -604,6 +604,8 @@ function parseMailboxCommand(args: string[]): OuroCliCommand {
   const sub = rest[0]
   // `handle set` is declared by hand outside the generated group (cli-commands/mailbox-handle.ts).
   if (sub === "handle") {
+    const flag = rest.find((word) => word.startsWith("--"))
+    if (flag) throw Object.assign(new Error(`ouro mailbox handle set takes no ${flag}; it takes only --agent.`), { code: "unknown-flag" })
     if (rest[1] !== "set" || rest.length !== 4) throw new Error("Usage: ouro mailbox handle set <person> <handle> [--agent <agent>]")
     return { kind: "mailbox.handle.set", person: rest[2]!, handle: rest[3]!, ...(agent ? { agent } : {}) }
   }

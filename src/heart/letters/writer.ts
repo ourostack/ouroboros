@@ -3,10 +3,12 @@
 // under state/letters, and every write to them goes through that agent's one queue, so two sends never race.
 import * as fs from "fs"
 import * as path from "path"
-import { FileFriendStore, isLocalMachineOwnerIdentity, machineOwnerUsername, type FriendRecord } from "@ouro.bot/friends"
+import { machineOwnerUsername, type FriendRecord } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { checkLetterInput, checkWithdrawReason, newLetterId, type Letter, type LetterEvent, type LetterKind } from "./letter"
-import { readAnsweringHandles } from "./answering"
+import { ownerFriendIds, readAnsweringHandles } from "./answering"
+
+export { ownerFriendIds }
 import { LetterIndex, type IndexedLetter } from "./letter-index"
 import { LetterStore } from "./store"
 
@@ -53,14 +55,6 @@ interface AgentLetters {
   index: LetterIndex
   queue: Promise<unknown>
   waiters: Map<string, Set<() => void>>
-}
-
-/** The family records in a bundle's friends folder that name this machine's owner, the rule `ouro friend link-code` uses. */
-export async function ownerFriendIds(bundleRoot: string, owner: string | null, list?: (bundleRoot: string) => Promise<FriendRecord[]>): Promise<string[]> {
-  const friends = await (list ?? ((root: string) => new FileFriendStore(path.join(root, "friends")).listAll()))(bundleRoot)
-  return friends
-    .filter((record) => record.trustLevel === "family" && record.externalIds.some((id) => isLocalMachineOwnerIdentity(id.provider, id.externalId, owner)))
-    .map((record) => record.id)
 }
 
 function ageOf(createdAt: string, now: number): string {
