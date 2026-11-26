@@ -848,7 +848,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "send_message",
-        description: "send a message to a friend's session. Delivers at once when authorized from a trusted live chat; otherwise reports queued, blocked or failed. For user-requested private-return work use ponder, not friendId=self. Ask a person only for what needs their body: a number or prompt to approve on their own phone, their card, an irreversible call that is theirs. Sign-ins (password from your vault), codes in their mail, prompts, terminals and machines are yours under standing authority; check a 'you need to sign in' claim (gh auth status) before passing it on.",
+        description: "send a message to a friend's session. Delivers at once when authorized from a trusted live chat; otherwise reports queued, blocked or failed. For user-requested private-return work use ponder, not friendId=self. Ask a person only for what needs their body: a number or prompt to approve on their own phone, their card, an irreversible call that is theirs. Sign-ins (password from your vault), codes in their mail, prompts, terminals and machines are yours under standing authority; check a 'you need to sign in' claim (gh auth status) before passing it on. Ask for what they can reach where it lands: iMessage or Telegram is their phone (tap, pay, decide; no terminal or desktop browser); Teams may be either, so assume phone; CLI is a keyboard on this machine; MCP may be an agent acting for them.",
         parameters: {
           type: "object",
           properties: {

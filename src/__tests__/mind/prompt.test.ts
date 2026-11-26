@@ -2352,6 +2352,16 @@ describe("contextSection", () => {
     expect(result).toContain("friend: Jordan Smith (jordan@contoso.com)")
   })
 
+  it("names no reach on a channel no person reads live", async () => {
+    const { contextSection } = await import("../../mind/prompt")
+    const result = contextSection({
+      friend: { id: "uuid-1", name: "Jordan", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", schemaVersion: 1 },
+      channel: { channel: "mail" as const, availableIntegrations: [], supportsMarkdown: false, supportsStreaming: false, supportsRichCards: false, maxMessageLength: Infinity },
+    } as never)
+    expect(result).toContain("channel: mail (no streaming)")
+    expect(result).not.toContain("reach:")
+  })
+
   it("renders Teams channel capabilities correctly", async () => {
     const { contextSection } = await import("../../mind/prompt")
     const ctx = {
@@ -2376,7 +2386,7 @@ describe("contextSection", () => {
       },
     }
     const result = contextSection(ctx)
-    expect(result).toContain("channel: teams")
+    expect(result).toContain("channel: teams (markdown, streaming, rich cards); reach: Teams, desktop or phone, unknown, so assume phone:")
     expect(result).toContain("markdown")
     expect(result).toContain("streaming")
     expect(result).not.toContain("no streaming")

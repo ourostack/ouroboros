@@ -216,6 +216,20 @@ describe("listTargetSessionCandidates", () => {
     expect(formatted).toContain("teams/group-thread")
     expect(formatted.toLowerCase()).toContain("delivery")
     expect(formatted.toLowerCase()).toContain("trust")
+    expect(formatted).toContain("  reach: their phone (iMessage): they can tap an approval, pay or decide; no terminal, desktop browser or other machine")
+    expect(formatted).toContain("  reach: Teams, desktop or phone, unknown, so assume phone:")
+  })
+
+  it("says what a person can reach where each channel lands, and nothing for channels no person reads", async () => {
+    const { describeChannelReach } = await loadTargetResolutionModule()
+    expect(describeChannelReach("bluebubbles")).toBe("their phone (iMessage): they can tap an approval, pay or decide; no terminal, desktop browser or other machine")
+    expect(describeChannelReach("telegram")).toBe("their phone (Telegram): they can tap an approval, pay or decide; no terminal, desktop browser or other machine")
+    expect(describeChannelReach("teams")).toBe("Teams, desktop or phone, unknown, so assume phone: they can tap an approval, pay or decide; no terminal, desktop browser or other machine")
+    expect(describeChannelReach("cli")).toBe("a keyboard on this machine")
+    expect(describeChannelReach("mcp")).toBe("a dev tool; the sender may be an agent acting for the person, who isn't necessarily there")
+    expect(describeChannelReach("voice")).toBe("a call, hands busy: nothing that needs a screen")
+    expect(describeChannelReach("inner")).toBe("")
+    expect(describeChannelReach("mail")).toBe("")
   })
 
   it("falls back to synthesized stranger context for unknown sessions, blocks unsupported channels, and keeps same-priority candidates newest-first", async () => {
@@ -369,6 +383,7 @@ describe("listTargetSessionCandidates", () => {
     expect(candidates[0]?.snapshot).toBe("recent focus: no recent visible messages")
     expect(candidates[1]?.snapshot).toBe("recent focus: session transcript unavailable")
     expect(formatTargetSessionCandidates([])).toBe("")
+    expect(formatTargetSessionCandidates([{ ...candidates[0]!, channel: "mail" }])).not.toContain("reach:")
   })
 
   it("prefers friend-facing recency over mtime-fallback when delivery priority is otherwise tied", async () => {

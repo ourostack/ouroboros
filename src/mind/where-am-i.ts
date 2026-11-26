@@ -87,6 +87,7 @@ export function renderWhereAmI(presence: Presence | null, self: MachineInfo, now
   const lines = [
     "## where i am",
     `i am on ${self.name} (${self.role}), ${self.os}, at ${self.location}. i am one named agent present on ${presence.block.machines.length} machine${presence.block.machines.length === 1 ? "" : "s"}; each presence runs on its own machine and we share this bundle through git.`,
+    `the people i talk to are usually not at ${self.name}: anything that needs its screen (System Settings, a dialog, a desktop browser) is a visit, not a tap, so i batch it and say so.`,
   ]
   if (peers.length === 0) {
     lines.push("my peers: none; this is my only presence.")
