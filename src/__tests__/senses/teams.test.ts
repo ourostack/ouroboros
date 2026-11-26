@@ -345,6 +345,30 @@ describe("Teams adapter - proactive >4000 finalization", () => {
     expect(sendMessage).toHaveBeenCalled()
   })
 
+  it("after finalization: status updates do not open a new stream that is never closed", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, vi.fn().mockResolvedValue(undefined))
+    callbacks.onTextChunk("a".repeat(4010))
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    expect(mockStream.close).toHaveBeenCalled()
+    mockStream.update.mockClear()
+    callbacks.onError(new Error("transient"), "transient")
+    expect(mockStream.update).not.toHaveBeenCalled()
+  })
+
+  it("with suppressEmptyStreamMessage, status updates wait until the stream holds text", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, vi.fn(), { suppressEmptyStreamMessage: true })
+    callbacks.onError(new Error("transient"), "transient")
+    expect(mockStream.update).not.toHaveBeenCalled()
+    callbacks.onTextChunk("a".repeat(200))
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    callbacks.onError(new Error("transient"), "transient")
+    expect(mockStream.update).toHaveBeenCalledTimes(1)
+  })
+
   it("at 3999 chars: no finalization yet", async () => {
     vi.resetModules()
     const teams = await import("../../senses/teams")
