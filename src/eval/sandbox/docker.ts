@@ -25,7 +25,11 @@
  *
  * It refuses to run on a host that has any of the live Butler's containers unless the caller holds a host lock
  * that the Butler's lifecycle honours: on 2026-11-23 an eval container vanishing mid-upgrade broke the Butler's
- * upgrade and its rollback on the host they shared (#1760).
+ * upgrade and its rollback on the host they shared (#1760). It checks once the bundle is projected, before it starts
+ * any container.
+ *
+ * An interview run's bundle (one with a `guest`) names no vendor: its provider fields are made neutral, and a vendor
+ * or model word left in any of its text files refuses the run before anything reaches Docker (`neutral-bundle.ts`).
  */
 import { spawn } from "node:child_process"
 import crypto from "node:crypto"
@@ -39,6 +43,7 @@ import type { Case, Observation, TraceCall } from "../domain/case"
 import { createStreamChannel, serveProxyRuntime, type GuestOutcome } from "../transport/provider-proxy"
 import { recordModelTraffic } from "../transport/telegram-turn"
 import { DECLARED_GAPS } from "./declared-gaps"
+import { checkVendorWords, neutralProviders } from "./neutral-bundle"
 import { agentImageOf, type SandboxImages } from "./images"
 import { type AgentProfile, bundleMounts, checkProfile, sanctuaryProfile } from "./agent-profile"
 import { assembleObservation, createdSince, readHouseholdState, SNAPSHOT_LIMITS, snapshotFiles, type GuestTurn, type HouseholdState } from "./readback"
@@ -287,11 +292,6 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
   const runLabels = ["--label", EVAL_LABEL, "--label", `ouro.eval.run=${runId}`]
   const last = input.case.prefix.at(-1)
   if (last?.role !== "user") throw new Error(`case ${input.case.id}: the prefix must end with the owner's message`)
-  // Docker matches the filter against the name with its leading slash; any container it lists makes this the Butler's host.
-  const butler = (await docker.run(["ps", "--all", "--filter", `name=${BUTLER_CONTAINERS}`, "--format", "{{.Names}}"])).trim()
-  if (butler !== "" && !(await input.hostLock?.held())) {
-    throw new Error(`refusing to run the eval sandbox on this host: it runs the live Butler (${butler.split("\n").join(", ")}), and no host lock that the Butler's upgrade and rollback honour is held`)
-  }
   emitNervesEvent({ component: "eval", event: "eval.sandbox_run_start", message: "starting a sandboxed eval run", meta: { caseId: input.case.id, runId } })
   const work = fs.mkdtempSync(path.join(input.workRoot ?? os.tmpdir(), EVAL_RUN_PREFIX))
   fs.chmodSync(work, 0o700)
@@ -316,6 +316,16 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
   try {
     // Every case is a books case, so the bundle source must make `books/` and each writable path, as the projection does.
     const { gaps } = profile.bundleSource({ include: input.case.bundle.include, out: bundle })
+    // An interview's bundle names no vendor: its provider fields are neutral, and any vendor word left refuses the run.
+    if (input.guest) {
+      gaps.push(...neutralProviders(bundle))
+      checkVendorWords(bundle)
+    }
+    // Docker matches the filter against the name with its leading slash; any container it lists makes this the Butler's host.
+    const butler = (await docker.run(["ps", "--all", "--filter", `name=${BUTLER_CONTAINERS}`, "--format", "{{.Names}}"])).trim()
+    if (butler !== "" && !(await input.hostLock?.held())) {
+      throw new Error(`refusing to run the eval sandbox on this host: it runs the live Butler (${butler.split("\n").join(", ")}), and no host lock that the Butler's upgrade and rollback honour is held`)
+    }
     fs.writeFileSync(path.join(bundle, "books/credentials.json"), `${JSON.stringify(booksSettings(), null, 1)}\n`)
     for (const dir of [fixtures, tls, household]) fs.mkdirSync(dir)
     const helper = ["run", "--rm", ...runLabels, "--network", "none", "--user", self, ...HARDENING]
