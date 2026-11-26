@@ -97,12 +97,27 @@ export function dockerCli(command = "docker"): Docker {
   }
 }
 
+const BUILD_ATTEMPTS = 3
+/** A registry answering 5xx or dropping the connection while the base image is fetched; any other build failure is real. */
+const REGISTRY_HICCUP = /(?:Internal Server Error|Bad Gateway|Service Unavailable|Gateway Time-?out|unexpected status[^\n]*5\d\d|TLS handshake timeout|i\/o timeout|connection reset by peer)/i
+
 /** Builds both eval images from a built checkout (`npm run build` first): the agent's (the harness `dist/` and its runtime dependencies) and the household's (the fakes). */
-export async function buildSandboxImage(input: { repoRoot: string; images?: SandboxImages; docker: Docker }): Promise<void> {
+export async function buildSandboxImage(input: { repoRoot: string; images?: SandboxImages; docker: Docker; retryDelayMs?: number }): Promise<void> {
   const images = input.images ?? { agent: SANDBOX_IMAGE, household: HOUSEHOLD_IMAGE }
   emitNervesEvent({ component: "eval", event: "eval.sandbox_image_start", message: "building the eval sandbox images", meta: images })
   for (const target of ["agent", "household"] as const) {
-    await input.docker.run(["build", "--file", path.join(input.repoRoot, "deploy/eval/Dockerfile"), "--target", target, "--tag", images[target], input.repoRoot])
+    const args = ["build", "--file", path.join(input.repoRoot, "deploy/eval/Dockerfile"), "--target", target, "--tag", images[target], input.repoRoot]
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await input.docker.run(args)
+        break
+      } catch (error) {
+        const message = (error as Error).message
+        if (attempt >= BUILD_ATTEMPTS || !REGISTRY_HICCUP.test(message)) throw error
+        emitNervesEvent({ level: "warn", component: "eval", event: "eval.sandbox_image_retry", message: "a registry error stopped the image build; retrying", meta: { target, attempt, reason: message.slice(0, 300) } })
+        await new Promise((resolve) => setTimeout(resolve, (input.retryDelayMs ?? 5000) * attempt))
+      }
+    }
   }
   emitNervesEvent({ component: "eval", event: "eval.sandbox_image_end", message: "built the eval sandbox images", meta: images })
 }
