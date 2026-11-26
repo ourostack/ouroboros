@@ -168,6 +168,105 @@ describe("metered runtime", () => {
     expect(hold.spent()).toEqual({ premium: 2, credits: 18 })
   })
 
+  /** A runtime that fails with each status in turn, then answers; it counts its sends and the resets before them. */
+  const flaky = (statuses: number[], classify?: (error: Error) => string) => {
+    const seen = { sent: 0, resets: [] as unknown[] }
+    const rt = runtime(async () => {
+      const status = statuses[seen.sent]
+      seen.sent += 1
+      if (status !== undefined) throw Object.assign(new Error(`HTTP ${status}`), { status })
+      return { content: "ok", toolCalls: [], outputItems: [], usage: usage(1_000_000, 0) }
+    })
+    rt.resetTurnState = (messages) => { seen.resets.push(messages) }
+    if (classify) rt.classifyError = classify as ProviderRuntime["classifyError"]
+    return { rt, seen }
+  }
+  const backoff = () => {
+    const waits: number[] = []
+    const retries: Array<[number, number]> = []
+    return { waits, retries, retry: { delays: [15_000, 45_000, 120_000], sleep: async (ms: number) => { waits.push(ms) }, onRetry: (attempt: number, delay: number) => { retries.push([attempt, delay]) } } }
+  }
+  const asked = { messages: [{ role: "user", content: "q" }], activeTools: [], callbacks: {} } as never
+
+  it("with a backoff, sends a call again after a 429, beneath the metering: one call, billed once", async () => {
+    const ledger = createBudgetLedger({})
+    const hold = ledger.reserve("run", { calls: 1, perCall: { premium: 1, credits: 9 }, pricing })
+    if ("refused" in hold) throw new Error(hold.refused)
+    const { rt, seen } = flaky([429])
+    const b = backoff()
+    hold.take()
+    await expect(meteredRuntime(rt, hold, ledger, b.retry).streamTurn(asked)).resolves.toMatchObject({ content: "ok" })
+    expect(seen.sent).toBe(2)
+    expect(seen.resets).toEqual([[{ role: "user", content: "q" }]])
+    expect(b.waits).toEqual([15_000])
+    expect(b.retries).toEqual([[1, 15_000]])
+    expect(ledger.stopped()).toBeUndefined()
+    expect(ledger.totals().calls).toBe(1)
+    expect(hold.spent()).toEqual({ premium: 1, credits: 400 })
+  })
+
+  it("retries a rate-limit three times at most, after 15 s, 45 s and 120 s, then lets the fourth 429 stop the ledger", async () => {
+    const ledger = createBudgetLedger({})
+    const hold = ledger.reserve("run", { calls: 2, perCall: { premium: 1, credits: 0 }, pricing })
+    if ("refused" in hold) throw new Error(hold.refused)
+    const three = flaky([429, 429, 429])
+    const b = backoff()
+    hold.take()
+    await expect(meteredRuntime(three.rt, hold, ledger, b.retry).streamTurn(asked)).resolves.toMatchObject({ content: "ok" })
+    expect(three.seen.sent).toBe(4)
+    expect(b.waits).toEqual([15_000, 45_000, 120_000])
+    expect(b.retries).toEqual([[1, 15_000], [2, 45_000], [3, 120_000]])
+    expect(ledger.stopped()).toBeUndefined()
+
+    // A "rate-limit" classification without a status is retried the same way.
+    const four = flaky([429, 429, 429, 429], (error) => ((error as { status?: number }).status === 429 ? "rate-limit" : "unknown"))
+    const c = backoff()
+    hold.take()
+    await expect(meteredRuntime(four.rt, hold, ledger, c.retry).streamTurn(asked)).rejects.toThrow("HTTP 429")
+    expect(four.seen.sent).toBe(4)
+    expect(c.waits).toEqual([15_000, 45_000, 120_000])
+    expect(ledger.stopped()).toBe("the provider answered 429: HTTP 429")
+    expect(ledger.totals().calls).toBe(2)
+    expect(hold.spent()).toEqual({ premium: 2, credits: 400 })
+  })
+
+  it("retries a rate-limit classification without a status, and never retries a 402, a usage-limit or another error", async () => {
+    const ledger = createBudgetLedger({})
+    const hold = ledger.reserve("run", { calls: 4, perCall: { premium: 1, credits: 0 }, pricing })
+    if ("refused" in hold) throw new Error(hold.refused)
+    let n = 0
+    const classified = runtime(async () => { n += 1; if (n === 1) throw new Error("slow"); return { content: "ok", toolCalls: [], outputItems: [] } })
+    classified.classifyError = () => "rate-limit"
+    const b = backoff()
+    await expect(meteredRuntime(classified, hold, ledger, b.retry).streamTurn(asked)).resolves.toMatchObject({ content: "ok" })
+    expect(b.waits).toEqual([15_000])
+
+    const other = flaky([500])
+    const c = backoff()
+    await expect(meteredRuntime(other.rt, hold, ledger, c.retry).streamTurn(asked)).rejects.toThrow("HTTP 500")
+    expect(other.seen.sent).toBe(1)
+    // A 429 the provider calls a usage limit is a spent quota, not a pause: never retried.
+    const quota = flaky([429], () => "usage-limit")
+    await expect(meteredRuntime(quota.rt, hold, ledger, c.retry).streamTurn(asked)).rejects.toThrow("HTTP 429")
+    expect(quota.seen.sent).toBe(1)
+    expect(ledger.stopped()).toMatch(/^the provider answered 429/)
+    const paid = flaky([402])
+    await expect(meteredRuntime(paid.rt, hold, ledger, c.retry).streamTurn(asked)).rejects.toThrow("HTTP 402")
+    expect(paid.seen.sent).toBe(1)
+    expect(c.waits).toEqual([])
+  })
+
+  it("without a backoff, stops on the first 429 as before", async () => {
+    const ledger = createBudgetLedger({})
+    const hold = ledger.reserve("run", { calls: 1, perCall: { premium: 1, credits: 0 }, pricing })
+    if ("refused" in hold) throw new Error(hold.refused)
+    const { rt, seen } = flaky([429])
+    await expect(meteredRuntime(rt, hold, ledger).streamTurn(asked)).rejects.toThrow("HTTP 429")
+    expect(seen.sent).toBe(1)
+    expect(seen.resets).toEqual([])
+    expect(ledger.stopped()).toBe("the provider answered 429: HTTP 429")
+  })
+
   it("stops on a usage-limit classification without a status, and on a thrown non-error", async () => {
     const ledger = createBudgetLedger({})
     const hold = ledger.reserve("run", { calls: 2, perCall: { premium: 1, credits: 0 }, pricing })
