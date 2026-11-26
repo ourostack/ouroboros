@@ -63,7 +63,7 @@ const PROTECTED_PATH_SEGMENTS = [
   "state/outbox/",
   "state/reports/",
   // The mailbox's letters, its answering handle and its answered-message ledger: only the daemon's writer and the
-  // owner's `ouro mailbox handle set` write them (design §3.4).
+  // owner's mailbox handle command write them (design §3.4).
   "state/letters/",
 ]
 const PROTECTED_FILENAMES = ["agent.json", "tool-profiles.json"]
