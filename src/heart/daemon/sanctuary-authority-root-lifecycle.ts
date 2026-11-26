@@ -68,7 +68,22 @@ const INCOMING_MANIFEST = `${ROOT}/incoming-package-manifest.json`
 const EVENTS = "/boot/config/custom/ouro-events/spool"
 const ICON = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
 const IMAGE_REFERENCE = /^ghcr\.io\/ourostack\/ouroboros-butler:[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/u
+// A rollback restores the bundle files the migrate rewrote from the copies it took before, so edits made while held go too.
+const HELD_ROLLBACK_UNDOES = "a rollback puts agent.json, state/attachments/recent.json, state/replay-client/provision.json, skills/*.md and house/HOUSE.md back as they were before the migrate, so edits made to them during the hold are lost"
 export const SANCTUARY_UPGRADE_STEPS = ["stop", "switch", "resident", "migrate", "start"] as const
+/**
+ * What an installed package must hold before an upgrade may change the Butler's name: a rollback lands on it, so it has to
+ * rewrite the bundle's container paths for a named Butler (#1983), and its daemon has to take over and merge the other
+ * name's events and find an event Await's record under either name (M2 step 4b). Read as files, so a release is judged
+ * by what it can do, not by its version number. sanctuary-butler-upgrade.mjs carries the same list.
+ */
+export const BUTLER_RENAME_PREDECESSOR_MARKERS = [
+  ["deploy/unraid/migrate-sanctuary-bundle.mjs", "--butler-name"],
+  ["dist/heart/external-events/router.js", "externalEventAwaitRecordPath"],
+] as const
+export function butlerRenamePredecessorRefusal(running: ButlerAgentName, target: ButlerAgentName): string {
+  return `Sanctuary upgrade would rename the Butler from ${running} to ${target}, but the installed release cannot take a rollback across that rename. Ship a release from after M2 step 4b ("Butler: what the rename needs first") with the name unchanged first, then the release that renames it`
+}
 const ROOT_RECORDS = [["request.json", 1024 * 1024], ["package-manifest.json", 8 * 1024 * 1024], ["active.json", 1024 * 1024], ["activation.json", 1024 * 1024]] as const
 const EPOCH_RECORDS = ["migration.json", "stage.json", "configured.json"] as const
 interface UpgradeSide { imageId: string; imageReference: string; packageDigest: string }
@@ -744,7 +759,8 @@ export class SanctuaryAuthorityRootLifecycle {
       stop: () => this.#halt(),
       switch: async () => { await this.#halt(); this.#switchPackage(journal) },
       resident: () => this.#recreateResident(journal.to.imageReference, journal.to.imageId, { psycheMount: false, syncMount: true }),
-      migrate: () => target().#bundle(["--operation", "migrate", "--rollback-image-id", journal.from.imageId, "--target-image-id", journal.to.imageId]),
+      // The host folder keeps its name, so the migrate is told the Butler the target image runs: the bundle's own files name its container path.
+      migrate: () => target().#bundle(["--operation", "migrate", "--rollback-image-id", journal.from.imageId, "--target-image-id", journal.to.imageId, "--butler-name", this.#imageButler(journal.to.imageId)]),
       start: () => target().#startUpgraded(),
     }
     for (const step of SANCTUARY_UPGRADE_STEPS) {
@@ -823,6 +839,9 @@ export class SanctuaryAuthorityRootLifecycle {
     const current = this.#target()
     if (input.targetImageId === this.#transaction.targetImageId) throw new Error("Sanctuary already runs the requested image")
     if (this.#docker(["image", "inspect", "--format", "{{.Id}}", input.imageReference]).trim() !== input.targetImageId) throw new Error("Sanctuary upgrade image identity does not match its reference")
+    const running = this.#imageButler(this.#transaction.targetImageId)
+    const renamed = this.#imageButler(input.targetImageId)
+    if (running !== renamed && !this.#packageTakesRename(`${ROOT}/package`)) throw new Error(butlerRenamePredecessorRefusal(running, renamed))
     const request = validateRequest(JSON.parse(this.#private(INCOMING_REQUEST)))
     if ((["epochId", "botId", "ownerUserId", "ownerChatId", "predecessorContract"] as const).some((key) => request[key] !== this.#request[key])) throw new Error("Sanctuary upgrade would change the authority identity")
     if (request.packageDigest === this.#request.packageDigest) throw new Error("Sanctuary upgrade package is already installed")
@@ -1001,6 +1020,12 @@ export class SanctuaryAuthorityRootLifecycle {
     return `${AGENT}/${butlerOnDisk(this.#p(AGENT), fs.existsSync) ?? "sanctuary"}.ouro`
   }
   #offset(): string { return `${this.#hostBundle()}/${OFFSET}` }
+  /** Whether the package at `root` can be rolled back to across a change of the Butler's name (BUTLER_RENAME_PREDECESSOR_MARKERS). */
+  #packageTakesRename(root: string): boolean {
+    return BUTLER_RENAME_PREDECESSOR_MARKERS.every(([file, marker]) => {
+      try { return fs.readFileSync(this.#p(`${root}/${file}`), "utf8").includes(marker) } catch { return false }
+    })
+  }
   /** The Butler an image runs, from its own ENTRYPOINT. */
   #imageButler(imageId: string): ButlerAgentName {
     return butlerNameFromEntrypoint(JSON.parse(this.#docker(["image", "inspect", "--format", "{{json .Config.Entrypoint}}", imageId])))
@@ -1193,7 +1218,7 @@ export async function runSanctuaryAuthorityRootCli(argv: string[], write = (text
       write('{"repinned":true,"gatewayRestartRequired":true}\n')
     } else if (upgrade) {
       await lifecycle.upgrade({ targetImageId: argv[1]!, imageReference: argv[2]!, ...(argv[4] ? { failAfter: argv[4] } : {}), ...(holdCommit ? { holdCommit: true } : {}) })
-      write(`${JSON.stringify({ upgraded: argv[2], ...(holdCommit ? { held: true } : {}) })}\n`)
+      write(`${JSON.stringify({ upgraded: argv[2], ...(holdCommit ? { held: true, rollbackUndoes: HELD_ROLLBACK_UNDOES } : {}) })}\n`)
     } else if (rollback) {
       write(`${JSON.stringify({ rolledBack: await lifecycle.rollbackUpgrade() })}\n`)
     } else await lifecycle.boot()

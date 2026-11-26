@@ -5,7 +5,8 @@ import { createServer, type Server } from "node:http"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import { getAgentRoot } from "../heart/identity"
+import { getAgentBundlesRoot, getAgentRoot } from "../heart/identity"
+import { butlerOnDisk, type ButlerAgentName } from "../heart/butler-agent"
 import { readSanctuaryHouse, type SanctuaryHouse } from "./sanctuary-house"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
@@ -90,6 +91,8 @@ export interface SanctuaryHealthAcceptanceProbeReceipt {
 }
 
 export interface SanctuaryHealthAcceptanceProbeDependencies {
+  /** The Butler the probe runs as; by default the one whose bundle is on disk (see `probeButler`). */
+  butler?: ButlerAgentName
   agentRoot: string
   runtimeRoot: string
   toolContext: ReturnType<typeof createSanctuaryToolContext>
@@ -105,6 +108,14 @@ export interface SanctuaryHealthAcceptanceProbeDependencies {
   }
   createLoopbackServer?: typeof createServer
   house: Pick<SanctuaryHouse, "publicEndpoints" | "requiredContainers">
+}
+
+/**
+ * The Butler whose bundle is on disk. The probe runs as its own process, where no daemon start has said which name is
+ * running, so it asks the bundles folder; with neither bundle (or both) there it keeps `sanctuary`, the name from before the rename.
+ */
+export function probeButler(bundlesRoot = getAgentBundlesRoot(), exists: (bundlePath: string) => boolean = fs.existsSync): ButlerAgentName {
+  return butlerOnDisk(bundlesRoot, exists) ?? "sanctuary"
 }
 
 interface HealthSnapshot { exists: boolean; bytes: string }
@@ -227,7 +238,7 @@ export function createSanctuaryHealthAcceptanceProbeProcessDependencies(options:
 } = {}, host: SanctuaryHealthAcceptanceProbeProcessHost = createSanctuaryHealthAcceptanceProbeProcessHost()): SanctuaryHealthAcceptanceProbeProcessDependencies {
   const kill = options.kill ?? host.kill
   return {
-    agentRoot: options.agentRoot ?? getAgentRoot("sanctuary"),
+    agentRoot: options.agentRoot ?? getAgentRoot(probeButler()),
     listPids: () => (options.listProcEntries?.() ?? host.listProcEntries()).filter((entry) => /^[0-9]+$/u.test(entry)).map(Number),
     processAlive: (pid) => {
       try { kill(pid, 0); return true }
@@ -447,8 +458,10 @@ export function createSanctuaryHealthAcceptanceProbeDependencies(
   overrides: Partial<SanctuaryHealthAcceptanceProbeDependencies> = {},
   schedulerWait: { timeoutMs?: number; pollMs?: number } = {},
 ): SanctuaryHealthAcceptanceProbeDependencies {
-  const agentRoot = overrides.agentRoot ?? getAgentRoot("sanctuary")
+  const butler = overrides.butler ?? probeButler()
+  const agentRoot = overrides.agentRoot ?? getAgentRoot(butler)
   const defaults: SanctuaryHealthAcceptanceProbeDependencies = {
+    butler,
     agentRoot,
     runtimeRoot: overrides.runtimeRoot ?? path.join(os.homedir(), ".ouro-cli"),
     ambientFetch: overrides.ambientFetch ?? fetch,
@@ -466,7 +479,7 @@ export function createSanctuaryHealthAcceptanceProbeDependencies(
       }
       throw new Error("Sanctuary scheduler liveness receipt timed out")
     }),
-    toolContext: overrides.toolContext ?? createSanctuaryToolContext("sanctuary"),
+    toolContext: overrides.toolContext ?? createSanctuaryToolContext(butler),
     acceptanceFs: overrides.acceptanceFs,
     createLoopbackServer: overrides.createLoopbackServer,
     house: overrides.house ?? readSanctuaryHouse(agentRoot),
@@ -623,7 +636,7 @@ export async function runSanctuaryHealthAcceptanceProbe(
           toolContext: dependencies.toolContext, house: dependencies.house, statePath, fetch: fetchImpl, now: () => now, lease, endpointDebounce: false,
           acceptanceEventMeta: () => ({ scenarioHandleDigest: input.scenarioHandleDigest }),
         })
-        await runSanctuaryHealthHabit("sanctuary", {
+        await runSanctuaryHealthHabit(dependencies.butler ?? probeButler(), {
           ...dependencies.runnerOptions,
           createSweep: () => sweep,
           acceptanceMetrics: {
@@ -711,7 +724,7 @@ export async function runSanctuaryHealthAcceptanceProbe(
 export function finalizeSanctuaryHealthAcceptanceProbe(
   input: SanctuaryHealthAcceptanceProbeInput,
   after: { ownerImageDigest: string; ownerContainerDigest: string },
-  dependencies: Pick<SanctuaryHealthAcceptanceProbeDependencies, "agentRoot"> = { agentRoot: getAgentRoot("sanctuary") },
+  dependencies: Pick<SanctuaryHealthAcceptanceProbeDependencies, "agentRoot"> = { agentRoot: getAgentRoot(probeButler()) },
 ): SanctuaryHealthAcceptanceProbeReceipt {
   canonicalInput(input)
   if (!SHA256.test(after.ownerImageDigest) || !SHA256.test(after.ownerContainerDigest)) throw new Error("Sanctuary health acceptance final owner is invalid")

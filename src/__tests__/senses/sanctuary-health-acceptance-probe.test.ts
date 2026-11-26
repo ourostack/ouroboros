@@ -20,6 +20,7 @@ import {
   runSanctuaryHealthAcceptanceProbeCli,
   startSanctuaryHealthAcceptanceProbeCli,
   isSanctuaryHealthAcceptanceProbeMode,
+  probeButler,
   runSanctuaryHealthAcceptanceProbe,
   stopSanctuaryHealthAcceptanceProbeProcess,
   type SanctuaryHealthAcceptanceProbeInput,
@@ -363,6 +364,8 @@ describe("packaged Sanctuary health acceptance probe", () => {
       expect(configured.runnerOptions).toBe(runnerOptions)
       expect(configured.acceptanceFs).toBe(acceptanceFs)
       expect(configured.createLoopbackServer).toBe(createLoopbackServer)
+      expect(createSanctuaryHealthAcceptanceProbeDependencies({ ...overrides, butler: "butler" }).butler).toBe("butler")
+      expect(["butler", "sanctuary"]).toContain(createSanctuaryHealthAcceptanceProbeDependencies(overrides).butler)
     } finally { fs.rmSync(fixture.agentRoot, { recursive: true, force: true }) }
   })
 
@@ -766,6 +769,38 @@ describe("packaged Sanctuary health acceptance probe", () => {
       spy.mockRestore()
       fs.rmSync(fixture.agentRoot, { recursive: true, force: true })
     }
+  })
+
+  it.each(["butler", "sanctuary"] as const)("runs the health habit as the Butler %s whose bundle is on disk", async (butler) => {
+    const fixture = setup("unit-16g-health-transition")
+    const original = healthRunner.runSanctuaryHealthHabit
+    const names: string[] = []
+    const spy = vi.spyOn(healthRunner, "runSanctuaryHealthHabit").mockImplementation(async (agentName, options) => {
+      names.push(agentName)
+      return original(agentName, options)
+    })
+    try {
+      await runSanctuaryHealthAcceptanceProbe(fixture.input, { ...fixture.deps, butler })
+      expect(names.length).toBeGreaterThan(0)
+      expect(new Set(names)).toEqual(new Set([butler]))
+    } finally {
+      spy.mockRestore()
+      fs.rmSync(fixture.agentRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("finds the probe's Butler from the bundle on disk", () => {
+    const bundles = fs.mkdtempSync(path.join(os.tmpdir(), "probe-butler-"))
+    try {
+      expect(probeButler(bundles)).toBe("sanctuary")
+      fs.mkdirSync(path.join(bundles, "butler.ouro"))
+      expect(probeButler(bundles)).toBe("butler")
+      fs.mkdirSync(path.join(bundles, "sanctuary.ouro"))
+      expect(probeButler(bundles)).toBe("sanctuary")
+      fs.rmdirSync(path.join(bundles, "butler.ouro"))
+      expect(probeButler(bundles)).toBe("sanctuary")
+      expect(["butler", "sanctuary"]).toContain(probeButler())
+    } finally { fs.rmSync(bundles, { recursive: true, force: true }) }
   })
 
   it("closes the loopback fixture when a phase references a missing delivery receipt", async () => {

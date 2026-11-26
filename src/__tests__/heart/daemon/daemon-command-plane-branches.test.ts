@@ -570,6 +570,26 @@ describe("daemon command plane branches", () => {
     }
   })
 
+  it("runs a letter expiry pass each minute from ten minutes after start, and none after it stops", async () => {
+    vi.useFakeTimers()
+    const socketPath = tmpSocketPath("daemon-letter-expiry-tick")
+    const { daemon } = make(socketPath)
+    const expireLetters = vi.fn(async () => 0)
+    ;(daemon as unknown as { expireLetters: typeof expireLetters }).expireLetters = expireLetters
+    try {
+      await daemon.start()
+      await vi.advanceTimersByTimeAsync(9 * 60_000)
+      expect(expireLetters).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(expireLetters).toHaveBeenCalledTimes(1)
+      await daemon.stop()
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(expireLetters).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("cancels deferred sense autostart when the daemon stops first", async () => {
     vi.useFakeTimers()
     const socketPath = tmpSocketPath("daemon-start-senses-cancelled")
@@ -1875,17 +1895,20 @@ describe("daemon command plane branches", () => {
     }
   })
 
-  it("scans the spool for the Butler it runs, under that Butler's name", async () => {
+  it.each(["butler", "sanctuary"] as const)("scans the spool for the Butler %s the daemon start set, under that Butler's name", async (butler) => {
     const socketPath = tmpSocketPath("daemon-privileged-spool-butler")
     const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-privileged-butler-root-"))
     const spoolRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-privileged-butler-spool-"))
     const scanner = vi.fn(() => ({ accepted: 0, rejected: 0, replayed: 0 }))
     const { daemon, processManager } = make(socketPath, undefined, { externalEventRoot, privilegedEventSpoolRoot: spoolRoot, privilegedEventScanner: scanner })
-    processManager.listAgentSnapshots.mockImplementation(() => [{ name: "butler" }, { name: "slugger" }] as never)
+    // The process list no longer names the Butler (it has not started yet): the scan still follows the start's Butler.
+    processManager.listAgentSnapshots.mockImplementation(() => [{ name: "slugger" }] as never)
+    prepareButlerExternalEvents(externalEventRoot, [butler, "slugger"])
     try {
       await daemon.start()
-      expect(scanner).toHaveBeenLastCalledWith({ spoolRoot, eventRoot: externalEventRoot, agent: "butler" })
+      expect(scanner).toHaveBeenLastCalledWith({ spoolRoot, eventRoot: externalEventRoot, agent: butler })
     } finally {
+      prepareButlerExternalEvents(externalEventRoot, [])
       await daemon.stop()
       fs.rmSync(externalEventRoot, { recursive: true, force: true })
       fs.rmSync(spoolRoot, { recursive: true, force: true })

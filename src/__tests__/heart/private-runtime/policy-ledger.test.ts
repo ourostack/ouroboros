@@ -314,6 +314,32 @@ describe("private-runtime policy and ledger", () => {
       .resolves.toMatchObject({ result: "deny", deniedReason: "default policy deny" })
   })
 
+  it("allows an answered letter's wake only with the letter and the daemon's answer refs (2026-11-26)", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps()
+    const { letterAnsweredWake } = await import("../../../heart/letters/answered-note")
+    const wake = letterAnsweredWake("slugger", { id: "ltr_A1", code: "L7" } as never)
+    const request = (originRefs: Array<{ kind: string; id: string }>, key: string) => privateTurnRequest({ origin: "daemon.private.wake", reason: wake.reason, triggerSource: wake.triggerSource, idempotencyKey: key, originRefs })
+    await expect(privateRuntime.requestPrivateTurnDecision(request(wake.originRefs, wake.idempotencyKey), { ...deps, evaluatePolicy: undefined }))
+      .resolves.toMatchObject({ result: "allow", executable: true, reason: "the agent's person answered a letter" })
+    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "letter", id: "ltr_A2" }, { kind: "daemon-command", id: "letters.file" }], "letter-answered:slugger:ltr_A2"), { ...deps, evaluatePolicy: undefined }))
+      .resolves.toMatchObject({ result: "deny", deniedReason: "default policy deny" })
+  })
+
+  it("allows an expired letter's wake only with the letter and the expiry scheduler's refs (2026-11-26)", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps()
+    const { letterExpiredWake } = await import("../../../heart/letters/expired-note")
+    const wake = letterExpiredWake("slugger", { id: "ltr_A1", code: "L7" } as never)
+    const request = (originRefs: Array<{ kind: string; id: string }>, key: string) => privateTurnRequest({ origin: "daemon.private.wake", reason: wake.reason, triggerSource: wake.triggerSource, idempotencyKey: key, originRefs })
+    await expect(privateRuntime.requestPrivateTurnDecision(request(wake.originRefs, wake.idempotencyKey), { ...deps, evaluatePolicy: undefined }))
+      .resolves.toMatchObject({ result: "allow", executable: true, reason: "a letter expired with no answer" })
+    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "letter", id: "ltr_A2" }], "letter-expired:slugger:ltr_A2"), { ...deps, evaluatePolicy: undefined }))
+      .resolves.toMatchObject({ result: "deny", deniedReason: "default policy deny" })
+    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "scheduler", id: "letters-expiry" }], "letter-expired:slugger:ltr_A3"), { ...deps, evaluatePolicy: undefined }))
+      .resolves.toMatchObject({ result: "deny", deniedReason: "default policy deny" })
+  })
+
   it("allows a Copilot app session reply wake only with its reply id and sense refs", async () => {
     const privateRuntime = await loadPrivateRuntime()
     const deps = policyDeps()
