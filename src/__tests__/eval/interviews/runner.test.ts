@@ -141,7 +141,7 @@ describe("the interview runner", () => {
     expect(JSON.parse(log[0]!)).toMatchObject({ session: "X-pilot", preregistrationVersion: 1, kind: "job", sent: true })
     expect(JSON.parse(log[2]!)).toMatchObject({ kind: "debrief" })
     expect(JSON.parse(log.at(-1)!)).toMatchObject({ kind: "identify" })
-    expect(printed[0]).toMatch(/^X-pilot complete ouro-first=yes jobs-passed=3\/3 calls=11 tokens-in=110000 tokens-out=5500 credits=3\.960 premium=11 rewrites=ouro:none;cli-shell:none;mcp-plain:none\nspent: 3\.960 credits, 11 premium requests$/)
+    expect(printed[0]).toMatch(/^X-pilot complete ouro-first=yes jobs-passed=3\/3 calls=11 tokens-in=110000 tokens-out=5500 credits=3\.960 premium=11 rate-limit-retries=0 rewrites=ouro:none;cli-shell:none;mcp-plain:none\nspent: 3\.960 credits, 11 premium requests$/)
     expect(reports[0]).toMatchObject({ kind: "blind-interviews", stopped: null, fidelity: expect.objectContaining({ "X:all": expect.any(Array) }), sessions: [expect.objectContaining({ id: "X-pilot" })] })
   })
 
@@ -264,6 +264,69 @@ describe("the interview runner", () => {
     expect(capped.records[1]!.ended).toMatch(/premium/)
     const none = await runInterviews(args({ budgetPremium: 10 }), deps(sandbox(() => ({}))).d)
     expect(none.records[0]).toMatchObject({ status: "not-run" })
+  })
+
+  describe("version 3's 429 backoff and session gap", () => {
+    const v3 = (model: ReturnType<typeof target>, version = 3) => {
+      const waits: number[] = []
+      const run = deps(sandbox(() => ({})), model, { allocations: { [SHA]: version }, sleep: async (ms) => { waits.push(ms) } })
+      return { ...run, waits }
+    }
+    /** A job model that answers 429 for its first `n` calls, then "ok". */
+    const busyFor = (n: number) => {
+      let calls = 0
+      return (): Reply | Error => (calls++ < n ? Object.assign(new Error("busy"), { status: 429 }) : { content: "ok" })
+    }
+
+    it("sends a 429'd call again after 15 s and records one call and one retry, then waits 60 s before the next session", async () => {
+      const run = v3(target(chooseOuro, {}, busyFor(1)))
+      const { exitCode, records } = await runInterviews(args({ sessions: ["X-1", "X-2"], reduced: true }), run.d)
+      expect(exitCode).toBe(0)
+      expect(records.map((r) => [r.status, r.rateLimitRetries, r.calls.length])).toEqual([["complete", 1, 11], ["complete", 0, 11]])
+      // 12 sends for 11 calls in the first session; each call billed once.
+      expect(run.model.sent).toHaveLength(23)
+      expect(records[0]!.spent.premium).toBe(11)
+      // The retry's wait, then the one gap between the two sessions: none before the first or after the last.
+      expect(run.waits).toEqual([15_000, 60_000])
+      expect(run.printed[0]).toMatch(/^X-1 complete .* premium=11 rate-limit-retries=1 /)
+      expect((run.reports[0] as { sessions: SessionRecord[] }).sessions[0]!.rateLimitRetries).toBe(1)
+    })
+
+    it("retries three times, after 15, 45 and 120 s, and a call that then answers goes on", async () => {
+      const run = v3(target(chooseOuro, {}, busyFor(3)))
+      const { records } = await runInterviews(args({ sessions: ["X-1"], reduced: true }), run.d)
+      expect(records[0]).toMatchObject({ status: "complete", rateLimitRetries: 3 })
+      expect(run.waits).toEqual([15_000, 45_000, 120_000])
+    })
+
+    it("lets a fourth 429 stop the study as before, with no gap before a session that is not run", async () => {
+      const run = v3(target(chooseOuro, {}, busyFor(4)))
+      const { exitCode, records } = await runInterviews(args({ sessions: ["X-1", "X-2"], reduced: true }), run.d)
+      expect(exitCode).toBe(2)
+      expect(records[0]).toMatchObject({ status: "crashed", ended: expect.stringMatching(/^F: the provider answered 429: busy/), rateLimitRetries: 3 })
+      expect(records[1]).toMatchObject({ status: "not-run", ended: expect.stringMatching(/^the study stopped: the provider answered 429/), rateLimitRetries: 0 })
+      expect(run.waits).toEqual([15_000, 45_000, 120_000])
+    })
+
+    it("never retries a 402", async () => {
+      const run = v3(target(chooseOuro, {}, () => Object.assign(new Error("pay up"), { status: 402 })))
+      const { records } = await runInterviews(args({ sessions: ["X-1"], reduced: true }), run.d)
+      expect(records[0]).toMatchObject({ status: "crashed", ended: expect.stringMatching(/^F: the provider answered 402/), rateLimitRetries: 0 })
+      expect(run.model.sent).toHaveLength(1)
+      expect(run.waits).toEqual([])
+    })
+
+    it("keeps version 2 as it was: the first 429 stops the study, and sessions run back to back", async () => {
+      const stopped = v3(target(chooseOuro, {}, busyFor(1)), 2)
+      const { records } = await runInterviews(args({ sessions: ["X-1", "X-2"], reduced: true }), stopped.d)
+      expect(records.map((r) => r.status)).toEqual(["crashed", "not-run"])
+      expect(records[0]).toMatchObject({ ended: expect.stringMatching(/^F: the provider answered 429/), rateLimitRetries: 0 })
+      expect(stopped.model.sent).toHaveLength(1)
+      const paced = v3(target(chooseOuro), 2)
+      expect((await runInterviews(args({ sessions: ["X-1", "X-2"], reduced: true }), paced.d)).records.map((r) => r.status)).toEqual(["complete", "complete"])
+      expect(stopped.waits).toEqual([])
+      expect(paced.waits).toEqual([])
+    })
   })
 
   it("runs the reduced design's sessions, every one by default", async () => {
@@ -410,11 +473,11 @@ describe("scoring every arm the same way", () => {
     expect(summarizeSessions([], { premium: 0, credits: 0 }, "the provider answered 429")).toBe("spent: 0.000 credits, 0 premium requests; stopped: the provider answered 429")
     // Each arm's rewrites, by tier, so an arm that needs far more rewriting shows it.
     const record = {
-      id: "H-1", status: "complete", ouroFirst: false, calls: [], spent: { premium: 0, credits: 0 },
+      id: "H-1", status: "complete", ouroFirst: false, calls: [], rateLimitRetries: 0, spent: { premium: 0, credits: 0 },
       arms: [{ arm: "codex", passed: true, rewrites: { sentence: 2, word: 5 } }, { arm: "ouro", passed: false, rewrites: {} }],
     } as unknown as SessionRecord
     expect(summarizeSessions([record], { premium: 0, credits: 0 }, null).split("\n")[0]).toBe(
-      "H-1 complete ouro-first=no jobs-passed=1/2 calls=0 tokens-in=0 tokens-out=0 credits=0.000 premium=0 rewrites=codex:sentence 2,word 5;ouro:none",
+      "H-1 complete ouro-first=no jobs-passed=1/2 calls=0 tokens-in=0 tokens-out=0 credits=0.000 premium=0 rate-limit-retries=0 rewrites=codex:sentence 2,word 5;ouro:none",
     )
   })
 })
