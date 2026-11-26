@@ -22,6 +22,18 @@ export interface SurfaceDeliveryHint {
   channel?: SurfaceDeliveryChannel
   phoneNumber?: string
   initialAudio?: VoiceCallAudioRequest
+  /** Absolute path of a local image to send with the text on iMessage. */
+  imagePath?: string
+}
+
+const IMAGE_ONLY_ON_OUTREACH = "an image goes only with spontaneous outreach to a person (friendId) on iMessage"
+
+/** Why an image can't ride this delivery, or undefined when it can; nothing is sent when this returns a reason. */
+export function surfaceImageRefusal(hint: SurfaceDeliveryHint | undefined, route: { heldThought: boolean }): string | undefined {
+  if (!hint?.imagePath) return undefined
+  if (!hint.imagePath.startsWith("/")) return withCode("imagePath must be an absolute path to an image.", "relative-path")
+  if (hint.channel === "voice" || hint.channel === "teams" || route.heldThought) return withCode(`${IMAGE_ONLY_ON_OUTREACH}, not this delivery; nothing was sent. Send the text without imagePath.`, "image-unsupported")
+  return undefined
 }
 
 /* v8 ignore start -- surface voice delivery hints are covered at the outbound voice bridge; this adapter only normalizes optional tool args @preserve */
@@ -84,6 +96,10 @@ export const surfaceToolDef: OpenAI.ChatCompletionFunctionTool = {
           enum: ["auto", "voice", "teams"],
           description: "optional delivery channel; use voice for a live phone call to a trusted friend, teams to reach them on Teams now, otherwise omit",
         },
+        imagePath: {
+          type: "string",
+          description: "optional absolute path of a local image (png or jpg) to send with content on iMessage; only for spontaneous outreach (friendId) to a person. content becomes its caption. if the image can't go on iMessage, nothing is sent",
+        },
         phoneNumber: {
           type: "string",
           description: "optional E.164 phone override for channel=voice when the trusted friend's record has no usable phone handle",
@@ -134,7 +150,7 @@ interface OutreachSession { friendId: string; friendName?: string; channel: stri
 type OutreachAttempt =
   | { status: "delivered" | "forwarded" | "unconfirmed"; detail: string }
   | { status: "unsent"; why: string }
-  | { status: "refused"; why: string }
+  | { status: "refused"; why: string; imageProblem?: boolean }
 type OutreachSenders = Record<"bluebubbles" | "telegram" | "teams", (target: OutreachSession) => Promise<OutreachAttempt>>
 
 /**
@@ -161,6 +177,9 @@ export async function sendSpontaneousOutreach(
       attempt = await senders[target.channel as keyof OutreachSenders](target)
     } catch (error) {
       attempt = { status: "unsent", why: error instanceof Error ? error.message : String(error) }
+    }
+    if (attempt.status === "refused" && attempt.imageProblem) {
+      return { sent: { status: "failed", detail: withCode(`the image was not sent, so nothing was sent: ${attempt.why}. Fix the imagePath or send the text without it.`, "image-unsendable") } }
     }
     if (attempt.status === "refused") {
       const detail = `blocked: ${PUSH_CHANNEL_LABELS[target.channel]} refused this text as internal (${attempt.why}), so no chat sends it; rewrite it as plain words for them`
@@ -200,17 +219,21 @@ const teamsSendMayHaveGoneOut = (sent: { reason?: string; delivery?: { state: st
   sent.delivery?.state === "unknown" || (sent.reason === "send_error" && sent.delivery?.state !== "not_sent")
 
 /** How each push sense sends one spontaneous message, and what its outcome means. */
-function spontaneousOutreachSenders(agentName: string, agentRoot: string, content: string, queueItem?: AttentionItem): OutreachSenders {
+export function spontaneousOutreachSenders(agentName: string, agentRoot: string, content: string, queueItem?: AttentionItem, imagePath?: string): OutreachSenders {
+  const noImage = (sense: string): OutreachAttempt | undefined => imagePath ? { status: "unsent", why: `${sense} does not take an image from surface` } : undefined
   return {
     bluebubbles: async (target) => {
       const { sendProactiveBlueBubblesMessageToSession } = await import("../senses/bluebubbles")
-      const sent = await sendProactiveBlueBubblesMessageToSession({ friendId: target.friendId, sessionKey: target.key, text: content, intent: "generic_outreach", origin: "proactive" })
+      const sent = await sendProactiveBlueBubblesMessageToSession({ friendId: target.friendId, sessionKey: target.key, text: content, intent: "generic_outreach", origin: "proactive", ...(imagePath ? { imagePath } : {}) })
+      if (sent.reason === "image_unsendable") return { status: "refused", why: sent.detail ?? "the image could not be sent", imageProblem: true }
       if (sent.delivered) return { status: "delivered", detail: "texted them by iMessage now" }
       if (sent.delivery?.state === "unknown") return { status: "unconfirmed", detail: unconfirmedDetail("iMessage") }
       if (sent.reason && CONTENT_REFUSALS.has(sent.reason)) return { status: "refused", why: sent.reason }
       return { status: "unsent", why: sent.reason ?? "not delivered" }
     },
     telegram: async (target) => {
+      const skipped = noImage("Telegram")
+      if (skipped) return skipped
       const telegramKey = canonicalizeTelegramSessionKey(target.key)
       const hash = createHash("sha256").update(`${target.friendId}\0${telegramKey}\0${content}`).digest("hex")
       const { sendTelegramAwaitFollowUp } = await import("../senses/telegram")
@@ -228,6 +251,8 @@ function spontaneousOutreachSenders(agentName: string, agentRoot: string, conten
       return { status: "unsent", why: delivered.detail ?? delivered.status }
     },
     teams: async (target) => {
+      const skipped = noImage("Teams")
+      if (skipped) return skipped
       const { sendTeamsOffTurn } = await import("../senses/teams-off-turn")
       const sent = await sendTeamsOffTurn({ friendId: target.friendId, key: target.key, text: content, origin: "proactive", captureReceipt: true }, { agentRoot })
       if (sent?.forwardedTo) return { status: "forwarded", detail: teamsForwardedDetail(sent.forwardedTo) }
@@ -249,6 +274,8 @@ function spontaneousOutreachSenders(agentName: string, agentRoot: string, conten
  */
 export async function routeSurfaceToFriend(agentName: string, friendId: string, content: string, queueItem?: AttentionItem, hint?: SurfaceDeliveryHint): Promise<SurfaceRouteResult> {
   if (containsInternalMetaMarkers(content)) return { status: "failed", detail: "blocked: contains internal meta markers" }
+  const imageRefusal = surfaceImageRefusal(hint, { heldThought: Boolean(queueItem) })
+  if (imageRefusal) return { status: "failed", detail: imageRefusal }
   /* v8 ignore start -- routing: integration path tested via private-runtime routing tests @preserve */
   try {
     const agentRoot = getAgentRoot()
@@ -395,6 +422,7 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
       }
     })()
     if (friendKind === "agent" && allFriendSessions[0]) {
+      if (hint?.imagePath) return { status: "failed", detail: withCode(`${IMAGE_ONLY_ON_OUTREACH}, not to an agent; nothing was sent. Send the text without imagePath.`, "image-unsupported") }
       return deliverOrQueue(allFriendSessions[0], `for next interaction via ${allFriendSessions[0].channel}`)
     }
 
@@ -405,7 +433,7 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
     if (contentBlock) {
       return { status: "failed", detail: withCode(proactiveContentBlockGuidance(contentBlock), "delivery-blocked") }
     }
-    const outreach = await sendSpontaneousOutreach(friendId, allFriendSessions, spontaneousOutreachSenders(agentName, agentRoot, content, queueItem), Date.now())
+    const outreach = await sendSpontaneousOutreach(friendId, allFriendSessions, spontaneousOutreachSenders(agentName, agentRoot, content, queueItem, hint?.imagePath), Date.now())
     if ("sent" in outreach) return outreach.sent
 
     // Priority 3: Deferred — nothing sent now; their next message picks it up.
@@ -436,6 +464,9 @@ const surfaceCard: ToolDoorCard = {
   errors: [
     { code: "delivery-blocked", means: "The content carries internal meta markers, so nothing was delivered.", fix: "Rewrite the content as plain words for the person and surface it again." },
     { code: "orientation-hold", means: "This turn is on a correction hold, so surfacing waits.", fix: "Call orientation_get, settle what the person meant, then surface the thought if it still answers them." },
+    { code: "relative-path", means: "imagePath didn't start with /, so nothing was sent.", fix: "Call again with the image's absolute path." },
+    { code: "image-unsupported", means: "An image goes only with spontaneous outreach to a person on iMessage, so nothing was sent.", fix: "Send the text without imagePath." },
+    { code: "image-unsendable", means: "The image could not be read or sent on iMessage, so nothing was sent.", fix: "Fix imagePath (an existing png or jpg under the size cap) and surface again." },
     { code: "surface-not-sent", means: "No chat sent the message now, so it is saved for the friend's next message; the result says why.", fix: "If it cannot wait and the result offers a call, call them; otherwise let it wait." },
   ],
 }
@@ -450,6 +481,7 @@ export const surfaceToolDefinition: ToolDefinition = {
       channel: normalizeSurfaceDeliveryChannel(args.channel),
       phoneNumber: typeof args.phoneNumber === "string" ? args.phoneNumber : undefined,
       initialAudio: parseSurfaceVoiceInitialAudio(args),
+      imagePath: typeof args.imagePath === "string" && args.imagePath ? args.imagePath : undefined,
     }
     if (containsInternalMetaMarkers(rawContent)) {
       emitNervesEvent({
@@ -476,7 +508,7 @@ export const surfaceToolDefinition: ToolDefinition = {
       content: args.content ?? "",
       delegationId: args.delegationId,
       friendId: args.friendId,
-      deliveryHint: deliveryHint.channel !== "auto" || deliveryHint.phoneNumber ? deliveryHint : undefined,
+      deliveryHint: deliveryHint.channel !== "auto" || deliveryHint.phoneNumber || deliveryHint.imagePath ? deliveryHint : undefined,
       queue,
       routeToFriend,
       advanceObligation: (obligationId, update) => {

@@ -14265,6 +14265,60 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
     mocks.emitNervesEvent.mockReset()
   })
 
+  describe("with an image", () => {
+    const friendStore = () => ({ get: vi.fn().mockResolvedValue(makeFriend()), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn(), hasAnyFriends: vi.fn(), listAll: vi.fn() })
+    const clientWith = (sendAttachment?: any) => ({
+      sendText: mocks.sendText, ...(sendAttachment ? { sendAttachment } : {}), editMessage: mocks.editMessage, setTyping: mocks.setTyping,
+      markChatRead: mocks.markChatRead, checkHealth: mocks.checkHealth, repairEvent: mocks.repairEvent, getMessageText: mocks.getMessageText,
+    })
+    const send = async (imagePath: string, sendAttachment?: any) => {
+      const bluebubbles = await import("../../../senses/bluebubbles")
+      return bluebubbles.sendProactiveBlueBubblesMessageToSession(
+        { friendId: "friend-uuid-1", sessionKey: "chat:any;-;alice@icloud.com", text: "here you go", imagePath },
+        { createClient: () => clientWith(sendAttachment) as any, createFriendStore: () => friendStore() as any },
+      )
+    }
+    const tmpFile = async (name: string, bytes: Buffer) => {
+      const fsMod = await import("fs"); const osMod = await import("os"); const pathMod = await import("path")
+      const dir = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), "proactive-image-"))
+      const file = pathMod.join(dir, name)
+      fsMod.writeFileSync(file, bytes)
+      return file
+    }
+
+    it("sends the image, then the text", async () => {
+      const sendAttachment = vi.fn().mockResolvedValue(undefined)
+      const file = await tmpFile("shot.jpg", Buffer.from([0xff, 0xd8, 0xff]))
+      expect(await send(file, sendAttachment)).toEqual({ delivered: true })
+      expect(sendAttachment).toHaveBeenCalledWith(expect.objectContaining({ file: expect.objectContaining({ name: "shot.jpg", contentType: "image/jpeg" }) }))
+      expect(sendAttachment.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
+    })
+
+    it("sends nothing when the file is missing, not an image, or the connection takes no files", async () => {
+      const sendAttachment = vi.fn()
+      expect(await send("/nonexistent/shot.jpg", sendAttachment)).toMatchObject({ delivered: false, reason: "image_unsendable" })
+      const doc = await tmpFile("notes.txt", Buffer.from("hi"))
+      expect(await send(doc, sendAttachment)).toEqual({ delivered: false, reason: "image_unsendable", detail: "notes.txt is not an image" })
+      const png = await tmpFile("a.png", Buffer.from([1]))
+      expect(await send(png)).toMatchObject({ reason: "image_unsendable", detail: "this iMessage connection can't send files" })
+      expect(sendAttachment).not.toHaveBeenCalled()
+      expect(mocks.sendText).not.toHaveBeenCalled()
+    })
+
+    it("reports a failed image send as not delivered, without sending the text", async () => {
+      const sendAttachment = vi.fn().mockRejectedValue(new Error("boom"))
+      const png = await tmpFile("a.png", Buffer.from([1]))
+      expect(await send(png, sendAttachment)).toEqual({ delivered: false, reason: "send_error" })
+      expect(mocks.sendText).not.toHaveBeenCalled()
+    })
+
+    it("reports delivery unknown when the image went but the text failed", async () => {
+      mocks.sendText.mockRejectedValueOnce(new Error("text boom"))
+      const png = await tmpFile("a.png", Buffer.from([1]))
+      expect(await send(png, vi.fn().mockResolvedValue(undefined))).toEqual({ delivered: false, reason: "send_error", delivery: { state: "unknown" } })
+    })
+  })
+
   it("sends proactively to a specific BlueBubbles session key", async () => {
     const friendStore = {
       get: vi.fn().mockResolvedValue(makeFriend()),
