@@ -648,6 +648,21 @@ describe("send_message tool", () => {
     expect(fs.writeFileSync).not.toHaveBeenCalled()
   })
 
+  it("tells the agent why the letters chat refused its text", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+    mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: false, reason: "letter_guard", detail: "This message names a letter code. Refer to the letter by its subject instead." })
+
+    const result = await tool.handler({
+      friendId: "group-uuid",
+      channel: "bluebubbles",
+      key: "chat:any;+;project-group-123",
+      content: "about L7",
+    }, makeTrustedBlueBubblesTurnContext())
+
+    expect(result).toContain("Refer to the letter by its subject instead.")
+  })
+
   it("reports a failed result when bluebubbles live send errors", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
