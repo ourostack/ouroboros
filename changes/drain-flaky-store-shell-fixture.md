@@ -1,0 +1,1 @@
+- Fixed a flaky guardrails test (#1972): its fixture filled `R/` and then `H/` placeholders in two passes, so a temp folder whose random name ended in `H` had its path rewritten and the shell call was no longer aimed at the friends store. No change to the shipped guard.
