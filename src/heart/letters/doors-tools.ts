@@ -35,6 +35,7 @@ async function runMailboxTool(name: string, args: Record<string, unknown>, ctx: 
   try {
     return JSON.stringify(await runMailboxAction(name, input, {
       agent: ctx?.agentName ?? getAgentName(),
+      ...(ctx?.currentSession ? { session: { friendId: ctx.currentSession.friendId, channel: ctx.currentSession.channel, key: ctx.currentSession.key } } : {}),
       ...(ctx?.daemonSocketPath ? { socketPath: ctx.daemonSocketPath } : {}),
     }))
   } catch (error) {

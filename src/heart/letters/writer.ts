@@ -7,7 +7,8 @@ import { machineOwnerUsername, type FriendRecord } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { addAnsweredGuid, answerProblem, deliveryFloor, noteAnswerRefused, parseAnswer, readAnsweredGuids, type ServerMessage } from "./answer-reader"
 import { checkLetterInput, checkWithdrawReason, newLetterId, type Letter, type LetterEvent, type LetterKind } from "./letter"
-import { ownerFriendIds, readAnsweringHandles } from "./answering"
+import { listBundleFriends, ownerFriendIds, readAnsweringHandles } from "./answering"
+import { answerReturnText, queueAnswerReturn, returnDue, returnSession, type LetterSession } from "./return-to-session"
 import { renderLetter } from "./render"
 
 export { ownerFriendIds }
@@ -66,6 +67,8 @@ export interface LettersCommand {
   action: string
   input: Record<string, unknown>
   dryRun?: boolean
+  /** The turn's session a send is filed from, which the answer returns to; the in-turn tools set it. */
+  session?: LetterSession
 }
 
 export type LetterResult = Record<string, unknown> & { outcome: string }
@@ -129,21 +132,21 @@ export class LettersWriter {
   }
 
   /** Runs one action for an agent; a refusal throws LetterRefusal with its card's code. */
-  async run(agent: string, action: string, input: Record<string, unknown>, options: { dryRun?: boolean } = {}): Promise<LetterResult> {
+  async run(agent: string, action: string, input: Record<string, unknown>, options: { dryRun?: boolean; session?: unknown } = {}): Promise<LetterResult> {
     if (typeof input !== "object" || input === null || Array.isArray(input)) throw new LetterRefusal("bad-input", "The action's input must be an object.")
     const letters = this.open(agent, options.dryRun === true)
-    const result = await this.dispatch(letters, action, input, options.dryRun === true)
+    const result = await this.dispatch(letters, action, input, options.dryRun === true, returnSession(options.session))
     emitNervesEvent({ component: "daemon", event: "letters.action_done", message: "letters action done", meta: { action, outcome: result.outcome } })
     return result
   }
 
-  private dispatch(letters: AgentLetters, action: string, input: Record<string, unknown>, dryRun: boolean): Promise<LetterResult> {
+  private dispatch(letters: AgentLetters, action: string, input: Record<string, unknown>, dryRun: boolean, session: LetterSession | null): Promise<LetterResult> {
     switch (action) {
       case "mailbox_send": return this.serial(letters, () => {
         // Each send first rolls the letters closed long enough, so a daemon that runs for months still rolls them; a
         // dry run writes nothing, so it doesn't roll.
         if (!dryRun) this.rollClosed(letters)
-        return this.send(letters, input, dryRun)
+        return this.send(letters, input, dryRun, session)
       })
       case "mailbox_list": return Promise.resolve(this.list(letters, input))
       case "mailbox_read": return Promise.resolve(this.read(letters, input))
@@ -212,11 +215,11 @@ export class LettersWriter {
       : `${ids.length} family records name this machine's owner, so Ouro can't tell which one the letter is to.`)
   }
 
-  private async send(letters: AgentLetters, input: Record<string, unknown>, dryRun: boolean): Promise<LetterResult> {
+  private async send(letters: AgentLetters, input: Record<string, unknown>, dryRun: boolean, session: LetterSession | null): Promise<LetterResult> {
     const checked = checkLetterInput(input)
     if (!checked.ok) throw new LetterRefusal("invalid-letter", checked.problem)
     const { lane, ...draft } = checked.letter
-    const from: Letter["from"] = { agent: letters.agent, ...(lane ? { lane } : {}) }
+    const from: Letter["from"] = { agent: letters.agent, ...(session ? { session } : {}), ...(lane ? { lane } : {}) }
     const now = this.now()
     const duplicate = letters.index.findDuplicate({ from, dedupeKey: draft.dedupeKey }, now.getTime())
     if (duplicate) {
@@ -312,8 +315,56 @@ export class LettersWriter {
       const label = letter.options.find((option) => option.id === answer.option)!.label
       emitNervesEvent({ component: "daemon", event: "letters.answer_recorded", message: "a person's answer was recorded", meta: { code: letter.code, hostTrust } })
       this.deps.onAnswered?.(letters.agent, letter, { option: answer.option, label, ...(answer.note ? { note: answer.note } : {}), messageGuid: message.guid, at }).catch(() => undefined)
+      await this.returnAnswer(letters, letter.id)
       return { recorded: true, id: letter.id, code: letter.code, subject: letter.subject, option: answer.option, label, ...(answer.note ? { note: answer.note } : {}) }
     })
+  }
+
+  /**
+   * Returns an answered letter's answer to the session that asked, when that is due, and records the try as a
+   * `returned` event. A failed try is retried by returnAnswers; the answer stands either way.
+   */
+  private async returnAnswer(letters: AgentLetters, id: string): Promise<boolean> {
+    const entry = letters.index.get(id)!
+    const { letter } = entry
+    if (!returnDue(letter, entry.events, this.now().getTime())) return false
+    const answer = entry.events.findLast((event) => event.t === "answered")!
+    const label = letter.options.find((option) => option.id === answer.option)!.label
+    const at = this.now().toISOString()
+    try {
+      const bundle = path.join(this.deps.bundlesRoot, `${letters.agent}.ouro`)
+      const friends = await (this.deps.listFriends ?? listBundleFriends)(bundle).catch(() => [])
+      const person = friends.find((friend) => friend.id === letter.to)?.name || "my person"
+      queueAnswerReturn(letters.agent, bundle, letter.from.session!, answerReturnText(person, letter, { option: answer.option, label, ...(answer.note ? { note: answer.note } : {}) }), letter, answer.at)
+      this.addEvent(letters, id, { t: "returned", at, to: "session", ok: true })
+    } catch (error) {
+      const detail = (error as Error).message
+      this.addEvent(letters, id, { t: "returned", at, to: "session", ok: false, detail })
+      emitNervesEvent({ level: "warn", component: "daemon", event: "letters.return_failed", message: "an answer couldn't be returned to the session that asked; it will be tried again", meta: { code: letter.code, detail } })
+    }
+    return true
+  }
+
+  /**
+   * Tries again every answer whose return to its session failed and is due, across the bundles that have letters.
+   * The daemon runs it on a timer; it answers how many it tried.
+   */
+  async returnAnswers(): Promise<number> {
+    let tried = 0
+    for (const name of fs.readdirSync(this.deps.bundlesRoot)) {
+      const agent = name.endsWith(".ouro") ? name.slice(0, -".ouro".length) : ""
+      if (!AGENT_NAME.test(agent) || !fs.existsSync(path.join(this.deps.bundlesRoot, name, "state", "letters"))) continue
+      const letters = this.open(agent, false)
+      tried += await this.serial(letters, async () => {
+        const now = this.now().getTime()
+        let count = 0
+        for (const entry of letters.index.list({ all: true }).filter((entry) => entry.state === "answered")) {
+          if (returnDue(entry.letter, entry.events, now) && await this.returnAnswer(letters, entry.letter.id)) count += 1
+        }
+        return count
+      })
+    }
+    return tried
   }
 
   private list(letters: AgentLetters, input: Record<string, unknown>): LetterResult {
@@ -429,7 +480,7 @@ function mayHaveSent(error: unknown): boolean {
 /** The daemon's answer to a `letters.action` command: the result, or the refusal's code and text. */
 export async function answerLettersCommand(writer: LettersWriter, command: LettersCommand): Promise<{ ok: boolean; data?: unknown; error?: string }> {
   try {
-    return { ok: true, data: await writer.run(command.agent, command.action, command.input, { dryRun: command.dryRun === true }) }
+    return { ok: true, data: await writer.run(command.agent, command.action, command.input, { dryRun: command.dryRun === true, session: command.session }) }
   } catch (error) {
     if (error instanceof LetterRefusal) return { ok: false, error: error.message, data: { code: error.code, message: error.message } }
     emitNervesEvent({ level: "error", component: "daemon", event: "letters.action_failed", message: "letters action failed", meta: { action: command.action } })
