@@ -154,6 +154,16 @@ function text(name: string, input: unknown, limit: number, required: boolean): s
   return storedText(value)
 }
 
+/**
+ * Sender text that gets a chat line of its own (whyOnlyYou, body, a link's label): it may not open the way one of
+ * Ouro's option lines does, a small number and then a space, so "1 Merge — ships it" can't sit above the real block.
+ */
+function ownLine(name: string, input: unknown, limit: number, required: boolean): string | undefined {
+  const value = text(name, input, limit, required)
+  if (value !== undefined && /^\p{Nd}{1,2}[\s.)]/u.test(fold(value).trim())) refuse(`${name} starts with a number, which would read as one of Ouro's options. Fix: start it with a word.`)
+  return value
+}
+
 function options(kind: LetterKind, value: unknown): LetterOption[] {
   if (kind !== "decide") {
     if (value !== undefined) refuse("only a decide letter takes options; the others have Ouro's own.")
@@ -176,8 +186,8 @@ function options(kind: LetterKind, value: unknown): LetterOption[] {
   })
 }
 
-// A line anchor such as GitHub's #L207 or #L207-L213, which would otherwise read as a letter code.
-const LINE_ANCHOR = /#L\d+(?:C\d+)?(?:-L\d+(?:C\d+)?)?$/
+/** A line anchor such as GitHub's #L207 or #L207-L213, which would otherwise read as a letter code: the one place a code may sit in a url. */
+export const LINE_ANCHOR = /#L\d+(?:C\d+)?(?:-L\d+(?:C\d+)?)?$/
 
 /** A link's address: checked like other sender text, except that a line anchor at its end is allowed. */
 function url(at: string, value: unknown): string {
@@ -194,7 +204,7 @@ function links(value: unknown): LetterLink[] {
   return value.map((entry, index) => {
     const at = `link ${index + 1}`
     if (!isObject(entry)) refuse(`${at} must be { label, url }.`)
-    const label = text(`${at}'s label`, entry.label, LETTER_LIMITS.linkLabel, true)!
+    const label = ownLine(`${at}'s label`, entry.label, LETTER_LIMITS.linkLabel, true)!
     return { label, url: url(at, entry.url) }
   })
 }
@@ -212,9 +222,9 @@ function draft(input: unknown): LetterDraft {
   const kind = input.kind as LetterKind
   if (!LETTER_KINDS.includes(kind)) refuse(`kind must be one of ${LETTER_KINDS.join(", ")}.`)
   const subject = text("subject", input.subject, LETTER_LIMITS.subject, true)!
-  const whyOnlyYou = text("whyOnlyYou", input.whyOnlyYou, LETTER_LIMITS.whyOnlyYou, false)
+  const whyOnlyYou = ownLine("whyOnlyYou", input.whyOnlyYou, LETTER_LIMITS.whyOnlyYou, false)
   if (!whyOnlyYou && kind !== "know") refuse(`whyOnlyYou is required for a ${kind} letter. Fix: say in one line why only the person can answer.`)
-  const body = text("body", input.body, LETTER_LIMITS.body, false) ?? ""
+  const body = ownLine("body", input.body, LETTER_LIMITS.body, false) ?? ""
   const letterOptions = options(kind, input.options)
   const letterLinks = links(input.links)
   const urgency = (input.urgency ?? "whenever") as Urgency

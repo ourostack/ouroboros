@@ -414,6 +414,7 @@ export function usage(): string {
     "  ouro shepherd maintenance --agent <name> --expected-revision <n> --request-id <id> --destination <path> [--json]",
     "  ouro session list [--agent <name>]",
     ...mailboxUsageLines().map((line) => `  ${line}`),
+    "  ouro mailbox handle set <person> <handle> [--agent <name>]",
     "  ouro mcp list",
     "  ouro mcp call <server> <tool> [--args '{...}']",
     "  ouro mcp doctor --agent <name> [--json]",
@@ -601,10 +602,17 @@ const MAILBOX_USAGE_WORDS = Object.keys(MAILBOX_CLI_WORDS).join("|")
 function parseMailboxCommand(args: string[]): OuroCliCommand {
   const { agent, rest } = extractAgentFlag(args)
   const sub = rest[0]
+  // `handle set` is declared by hand outside the generated group (cli-commands/mailbox-handle.ts).
+  if (sub === "handle") {
+    const flag = rest.find((word) => word.startsWith("--"))
+    if (flag) throw Object.assign(new Error(`ouro mailbox handle set takes no ${flag}; it takes only --agent.`), { code: "unknown-flag" })
+    if (rest[1] !== "set" || rest.length !== 4) throw new Error("Usage: ouro mailbox handle set <person> <handle> [--agent <agent>]")
+    return { kind: "mailbox.handle.set", person: rest[2]!, handle: rest[3]!, ...(agent ? { agent } : {}) }
+  }
   const personOnly = sub === undefined ? undefined : readMailboxDoors().refusals[`mailbox_${sub}`]
   if (personOnly) throw Object.assign(new Error(personOnly.summary), { code: "person-only" })
   if (sub === undefined || !Object.hasOwn(MAILBOX_CLI_WORDS, sub)) {
-    throw new Error(`Usage: ouro mailbox ${MAILBOX_USAGE_WORDS} [--json]`)
+    throw new Error(`Usage: ouro mailbox ${MAILBOX_USAGE_WORDS}|handle set [--json]`)
   }
   const parsed = parseMailboxCli(sub, rest.slice(1))
   return {
