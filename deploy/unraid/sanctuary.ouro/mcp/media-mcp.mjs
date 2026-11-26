@@ -10,10 +10,23 @@
 // Protocol: JSON-RPC 2.0 over stdio, newline framed, MCP 2024-11-05.
 
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
-import { dirname } from "node:path"
-import { pathToFileURL } from "node:url"
+import { dirname, join } from "node:path"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
-const CRED_PATH = process.env.SANCTUARY_MEDIA_CREDENTIALS ?? "/home/ouro/AgentBundles/sanctuary.ouro/mcp/media-credentials.json"
+// Where this server's files live inside the bundle it ships in (this file is <bundle>/mcp/media-mcp.mjs).
+// Derived from the script's own location, so a bundle mounted as sanctuary.ouro or butler.ouro finds its own files.
+export function bundleMediaPaths(moduleUrl) {
+  const bundleRoot = dirname(dirname(fileURLToPath(moduleUrl)))
+  return {
+    bundleRoot,
+    credentials: join(bundleRoot, "mcp", "media-credentials.json"),
+    progress: join(bundleRoot, "state", "media", "download-progress.json"),
+    qualityAudit: join(bundleRoot, "state", "media", "quality-profile-audit.ndjson"),
+  }
+}
+const BUNDLE_PATHS = bundleMediaPaths(import.meta.url)
+
+const CRED_PATH = process.env.SANCTUARY_MEDIA_CREDENTIALS ?? BUNDLE_PATHS.credentials
 
 // Credentials are host-specific and deliberately NOT packaged. A fresh install
 // has none, and the server must still start and list its tools — otherwise the
@@ -1617,7 +1630,7 @@ const PROGRESS_FORGET_MS = 14 * 24 * 3_600_000
 // Observations further apart than this are not continuous: the download may have been paused
 // and resumed in between, so the older one stops counting.
 const PROGRESS_CONTINUITY_MS = 6 * 3_600_000
-const progressPath = () => process.env.SANCTUARY_MEDIA_STATE ?? "/home/ouro/AgentBundles/sanctuary.ouro/state/media/download-progress.json"
+const progressPath = () => process.env.SANCTUARY_MEDIA_STATE ?? BUNDLE_PATHS.progress
 let progressSeen = null
 function readProgressFile() {
   const out = new Map()
@@ -2047,7 +2060,7 @@ async function getItem(kind, serviceId) {
 }
 
 // One line per applied change: what changed, the owner's words that asked for it, who called, and when.
-const qualityAuditPath = () => process.env.SANCTUARY_MEDIA_AUDIT ?? "/home/ouro/AgentBundles/sanctuary.ouro/state/media/quality-profile-audit.ndjson"
+const qualityAuditPath = () => process.env.SANCTUARY_MEDIA_AUDIT ?? BUNDLE_PATHS.qualityAudit
 function auditQualityChange(entry) {
   try {
     mkdirSync(dirname(qualityAuditPath()), { recursive: true })

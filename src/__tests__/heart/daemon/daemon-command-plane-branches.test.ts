@@ -14,7 +14,7 @@ import { buildHabitPrivateWakeCommand } from "../../../heart/daemon/habit-privat
 import { readPrivateTurnLedger } from "../../../heart/private-runtime"
 import { readHabitLastRun } from "../../../heart/habits/habit-runtime-state"
 import { listHabitRunReceipts } from "../../../arc/flight-recorder"
-import { claimExternalEvent, commitExternalEventDisposition, failExternalEventAttempt, listExternalEventStatus, readExternalEventRecord, reconcileExternalEvent, recordExternalEvent } from "../../../heart/external-events/router"
+import { claimExternalEvent, commitExternalEventDisposition, failExternalEventAttempt, listExternalEventStatus, prepareButlerExternalEvents, readExternalEventRecord, reconcileExternalEvent, recordExternalEvent } from "../../../heart/external-events/router"
 import { cacheProviderCredentialRecords, createProviderCredentialRecord, resetProviderCredentialCache } from "../../../heart/provider-credentials"
 import { clearProviderReadinessCache, recordProviderLaneReadiness } from "../../../heart/provider-readiness-cache"
 import * as providerBindingResolver from "../../../heart/provider-binding-resolver"
@@ -1482,6 +1482,37 @@ describe("daemon command plane branches", () => {
     expect(pending.content).toContain("/tmp/feedback/screenshot-1.jpg")
     expect(readPrivateTurnLedger(ledgerPath)).toHaveLength(1)
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
+  })
+
+  it("wakes the running Butler for an event saved under the Butler's other name", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-butler")
+    const ledgerPath = path.join(os.tmpdir(), `external-event-butler-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-events-butler-"))
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-external-event-butler-bundles-"))
+    // Saved by the release before the rename, under sanctuary.
+    recordExternalEvent({ agent: "sanctuary", source: "app-store-connect", eventType: "feedback.created", eventId: "feedback-1", summary: "Feedback arrived" }, { root: externalEventRoot })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: privateRuntimePolicyDeps(ledgerPath, "allow"), externalEventRoot })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot("butler")])
+    try {
+      expect(prepareButlerExternalEvents(externalEventRoot, ["butler"])).toBe("adopted")
+      await (daemon as any).reconcileExternalEvents()
+      expect(processManager.sendToAgent).toHaveBeenCalledWith("butler", expect.objectContaining({ type: "message" }))
+      expect(processManager.sendToAgent).not.toHaveBeenCalledWith("sanctuary", expect.anything())
+      const pendingDir = path.join(bundlesRoot, "butler.ouro", "state", "pending", "self", "inner", "dialog")
+      expect(fs.readdirSync(pendingDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(1)
+      expect(fs.existsSync(path.join(bundlesRoot, "sanctuary.ouro"))).toBe(false)
+      expect(readExternalEventRecord(path.join(externalEventRoot, "butler", "app-store-connect", "feedback-1.json"))).toMatchObject({ agent: "butler", executionState: "running" })
+
+      // A new submit naming the other name is the running Butler's too.
+      const submitted = await daemon.handleCommand({ kind: "external.event.submit", agent: "sanctuary", source: "app-store-connect", eventType: "feedback.created", eventId: "feedback-2", summary: "More feedback" })
+      expect(submitted).toMatchObject({ ok: true, data: { event: expect.objectContaining({ agent: "butler" }), wake: expect.objectContaining({ message: "woke private runtime for butler" }) } })
+      expect(fs.existsSync(path.join(externalEventRoot, "sanctuary"))).toBe(false)
+    } finally {
+      prepareButlerExternalEvents(externalEventRoot, [])
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(ledgerPath, { force: true })
+    }
   })
 
   it("owns event repair with the reconciliation guard and releases it after synchronous failure", async () => {
