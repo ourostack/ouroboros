@@ -892,6 +892,10 @@ function defaultUpdaterAgentWatch(): (() => Promise<unknown>) | null {
 /* v8 ignore stop */
 
 const STATE_RETENTION_FIRST_DELAY_MS = 10 * 60_000
+/** How often the daemon closes letters past their expiresAt. */
+const LETTER_EXPIRY_TICK_MS = 60_000
+/** Matches EXPIRY_GRACE_MS in the letters writer, which daemon.ts doesn't load at start. */
+const LETTER_EXPIRY_GRACE_MS = 10 * 60_000
 const STATE_RETENTION_INTERVAL_MS = 24 * 60 * 60_000
 const UPDATER_AGENT_WATCH_FIRST_DELAY_MS = 5 * 60_000
 const UPDATER_AGENT_WATCH_INTERVAL_MS = 60 * 60_000
@@ -927,6 +931,7 @@ export class OuroDaemon {
   private socketIdentity: SocketIdentity | null = null
   private senseAutostartTimer: ReturnType<typeof setTimeout> | null = null
   private externalEventReconcileTimer: ReturnType<typeof setInterval> | null = null
+  private letterExpiryTimer: ReturnType<typeof setInterval> | null = null
   private stateRetentionTimer: ReturnType<typeof setTimeout> | null = null
   private readonly stateRetention: () => Promise<unknown>
   private updaterAgentWatchTimer: ReturnType<typeof setTimeout> | null = null
@@ -1168,6 +1173,13 @@ export class OuroDaemon {
       void this.reconcileExternalEvents()
     }, 1_000)
     this.externalEventReconcileTimer.unref?.()
+    // The first pass waits out the grace after start, so the senses' catch-up over messages missed while the daemon
+    // was down records any answer sent before a letter expired, before the sweep can close that letter.
+    const expiryFrom = Date.now() + LETTER_EXPIRY_GRACE_MS
+    this.letterExpiryTimer = setInterval(() => {
+      if (Date.now() >= expiryFrom) void this.expireLetters()
+    }, LETTER_EXPIRY_TICK_MS)
+    this.letterExpiryTimer.unref?.()
     this.scheduleStateRetention(STATE_RETENTION_FIRST_DELAY_MS)
     this.scheduleUpdaterAgentWatch(UPDATER_AGENT_WATCH_FIRST_DELAY_MS)
 
@@ -1508,6 +1520,22 @@ export class OuroDaemon {
     }
   }
 
+  /**
+   * One expiry pass. It reads no letters code until some bundle has letters, so a daemon without them loads nothing.
+   * Answers how many letters it closed.
+   */
+  async expireLetters(): Promise<number> {
+    try {
+      const any = !!this.lettersWriter || fs.readdirSync(this.bundlesRoot).some((name) => fs.existsSync(path.join(this.bundlesRoot, name, "state", "letters")))
+      return any ? await (await this.letters()).expireDue() : 0
+    } catch (error) {
+      // No bundles folder yet means no letters, not a failure worth a warning every minute.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0
+      emitNervesEvent({ level: "warn", component: "daemon", event: "daemon.letter_expiry_error", message: "the letter expiry pass failed", meta: { error: (error as Error).message } })
+      return 0
+    }
+  }
+
   async stop(): Promise<void> {
     // Must be named `_end` (not `_stop`) to satisfy the nerves audit's
     // start/end pairing rule — see src/nerves/coverage/audit-rules.ts.
@@ -1531,6 +1559,10 @@ export class OuroDaemon {
     if (this.senseAutostartTimer) {
       clearTimeout(this.senseAutostartTimer)
       this.senseAutostartTimer = null
+    }
+    if (this.letterExpiryTimer) {
+      clearInterval(this.letterExpiryTimer)
+      this.letterExpiryTimer = null
     }
     if (this.externalEventReconcileTimer) {
       clearInterval(this.externalEventReconcileTimer)
@@ -1687,6 +1719,8 @@ export class OuroDaemon {
       deliverChat: (await import("../../senses/bluebubbles/agent-client")).letterChatSender(this.bundlesRoot),
       // Filing tells the agent, in its own private runtime, so it decides when its person sees the letter.
       onFiled: (await import("../letters/filed-note")).letterFiledTeller(this.bundlesRoot, (wake) => this.handlePrivateRuntimeWake(wake)),
+      // So does a letter that expires with no answer.
+      onExpired: (await import("../letters/expired-note")).letterExpiredTeller(this.bundlesRoot, (wake) => this.handlePrivateRuntimeWake(wake)),
       // A recorded answer sends the person a receipt in the same chat and tells the agent.
       onAnswered: (await import("../letters/answered-note")).letterAnsweredTeller(
         this.bundlesRoot,
