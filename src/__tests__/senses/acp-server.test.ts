@@ -180,8 +180,51 @@ describe("Ouro ACP server", () => {
       [calls[1].toolCallId, "completed", "ls"],
       [calls[2].toolCallId, "failed", "b"],
     ])
-    // A completion with no open call keeps an id of its own instead of reopening a finished one.
-    expect(calls.map((call) => call.toolCallId)).not.toContain(ends[3].toolCallId)
+    // A completion with no open call has no row to update, so it sends nothing.
+    expect(ends).toHaveLength(3)
+    server.stop()
+  })
+
+  it("numbers a reloaded session's tool calls afresh and closes them from live events", async () => {
+    const { input, client, server, messages } = await setup()
+    client.loadResult = {
+      events: [
+        { type: "tool_started", data: { name: "read_file", args: { path: "/old" } }, turnId: "turn-done" },
+        { type: "tool_started", data: { name: "read_file", args: { path: "/crashed" } }, turnId: "turn-dead" },
+        { type: "turn_failed", data: {}, turnId: "turn-dead" },
+        { type: "tool_completed", data: { name: "read_file", summary: "old", success: true }, turnId: "turn-done" },
+        { type: "turn_completed", data: {}, turnId: "turn-done" },
+        { type: "tool_started", data: { name: "read_file", args: { path: "/live" } }, turnId: "turn-live" },
+      ],
+      lastSequence: 6,
+      hasMore: false,
+      degraded: false,
+      incompleteTurnIds: ["turn-live"],
+    }
+    const load = (id: number) => input.write(`${JSON.stringify({ jsonrpc: "2.0", id, method: "session/load", params: { sessionId: "existing-session", cwd: "/tmp", mcpServers: [] } })}\n`)
+    load(1)
+    await waitFor(messages, (message) => message.id === 1)
+    load(2)
+    await waitFor(messages, (message) => message.id === 2)
+    const updates = () => messages.filter((message) => message.method === "session/update").map((message) => message.params.update)
+    const firstLoad = updates().slice(0, 4)
+    const secondLoad = updates().slice(4)
+    expect(secondLoad.map((update) => update.toolCallId)).toEqual(firstLoad.map((update) => update.toolCallId))
+    expect(secondLoad.map((update) => update.toolCallId)).toEqual([
+      "turn-done:read_file:1",
+      "turn-dead:read_file:1",
+      "turn-done:read_file:1",
+      "turn-live:read_file:1",
+    ])
+
+    client.emit({ event: "tool.completed", sessionKey: "existing-session", turnId: "turn-live", name: "read_file", summary: "live", success: true })
+    client.emit({ event: "tool.completed", sessionKey: "existing-session", turnId: "turn-dead", name: "read_file", summary: "ghost", success: true })
+    client.emit({ event: "turn.completed", sessionKey: "existing-session", turnId: "turn-live" })
+    client.emit({ event: "tool.completed", sessionKey: "existing-session", turnId: "turn-live", name: "read_file", summary: "after end", success: true })
+    await waitFor(messages, (message) => message.params?.update?.content?.[0]?.content?.text === "live")
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const live = updates().slice(8)
+    expect(live.map((update) => [update.toolCallId, update.content[0].content.text])).toEqual([["turn-live:read_file:1", "live"]])
     server.stop()
   })
 
