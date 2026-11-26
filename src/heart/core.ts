@@ -2828,16 +2828,18 @@ async function runCountedTurn(
           }
           const { error: answerGateError, replacement } = answerGateVerdict(deliveredAnswer, intent)
           // A gap with no report ends at a polite no and fails the same way next time (#1660), so a blocked settle with
-          // report_failure on offer and unused is asked once. Never on the last iteration: a reply beats none.
+          // report_failure on offer and unused is asked once, and only while there are iterations left to file it: a reply beats none.
           const reportOffered = scopedOrdinaryActiveTools.some((tool) => tool.function.name === "report_failure")
+          // Filing takes report_failure and a settle, and find_tools first when the door waits behind it.
+          const reportDeferred = !candidateToolNames.has("report_failure")
           const blockedWithoutReport = !contentMismatch && intent === "blocked" && reportOffered && !sawBlockedReportNudge
-            && providerIterations < stepBudget - 1
+            && providerIterations < stepBudget - (reportDeferred ? 3 : 2)
             && !turnToolRecords.some((record) => record.name === "report_failure")
-            ? FLOW_TOOL_REFUSALS.settleBlockedWithoutReport(!candidateToolNames.has("report_failure"))
+            ? FLOW_TOOL_REFUSALS.settleBlockedWithoutReport(reportDeferred)
             : null
           if (blockedWithoutReport) {
             sawBlockedReportNudge = true
-            emitNervesEvent({ level: "warn", component: "engine", event: "engine.settle_blocked_without_report", message: "blocked settle with report_failure unused; asking once", meta: { deferred: !candidateToolNames.has("report_failure") } })
+            emitNervesEvent({ level: "warn", component: "engine", event: "engine.settle_blocked_without_report", message: "blocked settle with report_failure unused; asking once", meta: { deferred: reportDeferred } })
           }
           const retryError = contentMismatch
             ?? blockedWithoutReport

@@ -901,6 +901,17 @@ describe("runAgent tool loop guard", () => {
       expect(toolContents(messages)).toEqual(["(delivered)"])
     })
 
+    it("doesn't ask when too few iterations are left to file the report", async () => {
+      const { MAX_PROVIDER_ITERATIONS } = await import("../../heart/core")
+      const execTool = vi.fn(async () => "ok")
+      // Earlier iterations go to an ordinary read, so the blocked settle comes with one iteration to spare.
+      for (let index = 0; index < MAX_PROVIDER_ITERATIONS - 2; index++) mockCreate.mockReturnValueOnce(toolCall("read_file", { path: `/tmp/n${index}.txt` }, `call_read_${index}`))
+      mockCreate.mockReturnValueOnce(settleCall(blocked, "call_late"))
+      const { result } = await run({ execTool })
+      expect(result.outcome).toBe("blocked")
+      expect(mockCreate).toHaveBeenCalledTimes(MAX_PROVIDER_ITERATIONS - 1)
+    })
+
     it("names find_tools only when report_failure waits behind it", async () => {
       const { FLOW_TOOL_REFUSALS } = await import("../../repertoire/tools-flow")
       expect(FLOW_TOOL_REFUSALS.settleBlockedWithoutReport(true)).toContain("(load it with find_tools first)")
