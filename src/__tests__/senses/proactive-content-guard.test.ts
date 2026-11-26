@@ -126,6 +126,23 @@ describe("proactive content guard", () => {
       expect(getProactiveInternalContentBlockReason("Deleting the old bucket can't be undone. Do you want it gone?")).toBeNull()
       expect(getProactiveInternalContentBlockReason("Can you plug in the printer and tell me whether the light turns green?")).toBeNull()
       expect(getProactiveInternalContentBlockReason("Next I'll run `npm test` and send the result.")).toBeNull()
+      expect(getProactiveInternalContentBlockReason("Approve the passkey prompt on your phone so I can sign in to GitHub in Chrome.")).toBeNull()
+      expect(getProactiveInternalContentBlockReason("Can you approve the 2FA prompt on your phone? It's for HEY in Chrome on the Mac mini.")).toBeNull()
+      expect(getProactiveInternalContentBlockReason("Tap 47 on your phone to approve the gh auth login.")).toBeNull()
+      expect(getProactiveInternalContentBlockReason("Your vault is locked. Please run `ouro vault unlock --agent slugger` in a terminal; its secret isn't in the vault.")).not.toBe("not_theirs_to_do")
+    })
+
+    it("passes reports and owner decisions that only mention a chore", () => {
+      for (const report of [
+        "Ready: build 49 is on TestFlight. Open it and try the new share sheet.",
+        "Good news: you no longer need to run gh auth login; I fixed the token refresh.",
+        "Install complete: Ouro 1.4 is on your Mac.",
+        "I set your thermostat to 68 since the schedule broke.",
+        "I'll send you the code review notes tonight.",
+        "Do you want me to make the repo public? It can't be undone easily.",
+        "Do you want me to accept the invite from Dana for Thursday?",
+        "Let me know if the new layout works for you.",
+      ]) expect(getProactiveInternalContentBlockReason(report), report).toBeNull()
     })
 
     // Every ask that reached Ari's phone 2026-11-23..26 and wasn't his.
@@ -138,6 +155,12 @@ describe("proactive content guard", () => {
       "Please sign in to GitHub in Edge on ouroboros-host so the browser lane can continue.",
       "The owner needs to accept the GitHub Packages agreement in their account.",
       "Can you make the package public by hand in the GitHub settings?",
+      "Could you restart the daemon on Heeler?",
+      "Please create an API token in the Cloudflare dashboard and drop it in the vault.",
+      "Can you open System Settings and grant Full Disk Access to ouro?",
+      "Can you check whether the deploy finished?",
+      "The browser lane needs a sign-in. Can you grab the code from your email and send it to me?",
+      "Can you login to gh again?",
     ]
 
     it.each(notTheirs)("sends back an ask that isn't theirs: %s", (ask) => {
@@ -148,8 +171,9 @@ describe("proactive content guard", () => {
     it("drops a sign-in ask whose claim is false, checked with the claim's own status command", () => {
       execFileSync.mockReturnValue(Buffer.from(""))
       expect(getProactiveInternalContentBlockReason(notTheirs[0]!)).toBe("false_sign_in_claim")
-      expect(execFileSync).toHaveBeenCalledWith("gh", ["auth", "status"], expect.objectContaining({ timeout: 10_000 }))
+      expect(execFileSync).toHaveBeenCalledWith("gh", ["auth", "status"], expect.objectContaining({ timeout: 5_000 }))
       expect(getProactiveInternalContentBlockReason("Can you sign in to the GitHub CLI?")).toBe("false_sign_in_claim")
+      expect(getProactiveInternalContentBlockReason("Hey, gh needs a re-login: gh auth refresh -s workflow please.")).toBe("false_sign_in_claim")
       execFileSync.mockClear()
       expect(getProactiveInternalContentBlockReason(notTheirs[2]!)).toBe("not_theirs_to_do")
       expect(execFileSync).not.toHaveBeenCalled()

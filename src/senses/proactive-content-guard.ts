@@ -45,45 +45,48 @@ const PROACTIVE_INTERNAL_CONTENT_PATTERNS: Array<{ reason: ProactiveContentBlock
 // An ask reaches a person only when it names something only their body can do: approve a number or prompt on their own
 // phone, pay with their card, or make an irreversible call that is theirs. The rest goes back to the sender.
 
-// The sentence asks someone to act: it opens with a command, or speaks to them, or names who must act.
-const ASK_FRAME = /^\s*(?:[-*\u2022]\s*)?(?:\w+[:,]\s*)?(?:please\s+)?(?:run|type|press|paste|enter|sign|log|accept|make|open|check|click|install)\b|\b(?:you|your|please|need(?:s|ed)? (?:you|the (?:human|owner))|ask(?:ing)? (?:you|the (?:human|owner))|(?:the (?:human|owner)) (?:needs?|has) to)\b/i
-// Keyboard, terminal or a particular machine: never theirs, whatever else the sentence says.
+// The sentence asks them to act: it opens with a command, or asks "can you", "please", "you need to".
+const ASK_FRAME = /^\s*(?:[-*\u2022]\s*)?(?:\w+[:,]\s*)?(?:please\s+)?(?:run|type|press|paste|enter|sign|log|accept|make|open|check|click|restart|grab|copy|create|grant)\b|\b(?:(?:can|could|would|will) you|please|you(?:'ll)? (?:need|have) to|needs? you to|ask(?:ing)? you to|the (?:human|owner) (?:needs?|has) to)\b/i
+// Keyboard and terminal work, codes in their mail, a sign-in or a setting: never theirs.
 const AT_A_KEYBOARD: RegExp[] = [
-  /\b(?:run|type|paste|enter)\b[^.?!\n]{0,40}`[^`\n]+`/i,
+  /\b(?:run|type|paste|enter)\s+(?:`[^`\n]+`|(?:gh|ouro|npm|npx|git|claude|brew|bw)\b)/i,
   /\b(?:in|from|at) (?:a|your|the) (?:terminal|shell|command line)\b/i,
-  /\b(?:gh auth login|ouro up|claude (?:login|auth login))\b/i,
   /\bpress(?:ing)? (?:\d+|enter|return|y(?:es)?|no?)\b|\bat the [^.?!\n]{0,30}\bprompt\b/i,
-  /\b(?:paste|send|give|forward|tell|read)\b[^.?!\n]{0,40}\bcodes?\b/i,
-  /\baccept\b[^.?!\n]{0,40}\b(?:agreement|terms|tos|eula|licen[cs]e|invit\w*)/i,
-  /\bmake\b[^.?!\n]{0,40}\b(?:public|private)\b/i,
-  /\b(?:by hand|manually)\b/i,
-  /\b(?:in|on) (?:edge|chrome|safari|firefox|the browser|(?:the |your )?(?:mac(?: mini)?|macbook|laptop|desktop|computer)|[\w-]+-host)\b/i,
+  /\b(?:paste|send|give|forward|tell|read|grab|copy)\b[^.?!\n]{0,40}\bcodes?\b(?!\s+review)/i,
+  /(?:^\s*|\b(?:you(?:'ll)? (?:need|have) to|(?:can|could|would) you|please|needs? you to)\s+)(?:re-?)?(?:sign|log)\s*-?\s*(?:in|into|on)\b|\bre-?(?:auth(?:enticate)?|login)\b|\b(?:gh auth (?:login|refresh)|ouro up)\b/i,
+  /\baccept\b[^.?!\n]{0,40}\b(?:agreement|terms|tos|eula|licen[cs]e)\b|\bmake\b[^.?!\n]{0,40}\b(?:public|private)\b/i,
+  /\b(?:by hand|manually|system settings|full disk access)\b|\bgrant\b[^.?!\n]{0,30}\baccess\b/i,
+  /\b(?:restart|relaunch|re-?run|rotate|click|merge)\b|\b(?:create|generate)\b[^.?!\n]{0,40}\b(?:token|api key)\b/i,
 ]
-// Work an agent does with mail, vault or browser access, unless the sentence is about a phone approval or a payment.
-const AGENT_CAN: RegExp[] = [
-  /\b(?:sign|log)\s+(?:in|into|on)\b(?!\s+(?:request|prompt|attempt|notification))/i,
-  /\bre-?auth(?:enticate)?\b/i,
-  /\b(?:open|check|look at|test|try|verify|confirm)\b[^.?!]{0,160}\b(?:tell|let) me\b/i,
-  /\b(?:tell|let) me(?: know)? (?:if|whether)\b[^.?!]{0,80}\b(?:show|shows|showing|load|loads|loading|work|works|render|renders|appear|appears)\b/i,
+// A particular machine: theirs only when the sentence is about a phone approval or a payment.
+const ON_A_MACHINE = /\b(?:in|on) (?:edge|chrome|safari|firefox|the browser|(?:the |your )?(?:mac(?: mini)?|macbook|laptop|desktop|computer)|[\w-]+-host)\b/i
+// A check an agent can run, asked for in its own words ("open X and tell me if it shows").
+const ROUTINE_CHECKS: RegExp[] = [
+  /\b(?:open|check|look at|test|try|verify|confirm)\b[^.?!]{0,160}\b(?:tell|let) me\b(?![^.?!]*\bworks? for you\b)/i,
+  /\b(?:tell|let) me(?: know)? (?:if|whether)\b[^.?!]{0,80}\b(?:show|shows|showing|load|loads|loading|works?(?! for you)|render|renders|appear|appears)\b/i,
+  /\b(?:can|could) you (?:check|see|look at)\b[^.?!\n]{0,40}\b(?:whether|logs?)\b/i,
 ]
 const BODY_ONLY = /\b(?:passkey|face id|touch id|github mobile|authenticator|(?:approve|tap|confirm)\b[^.?!\n]{0,40}\b(?:on|in) (?:your|their|his|her) (?:own )?phone|tap \d+|pay|payment|(?:your|their|his|her) card|irreversible|can'?t be undone|permanently)\b/i
 // A sign-in ask whose claim the agent can check, and the command that checks it.
 const SIGN_IN_CLAIMS: Array<{ ask: RegExp; command: string; args: string[] }> = [
-  { ask: /\bgh auth login\b|\b(?:sign|log)\s+(?:in|into)\s+(?:to\s+)?(?:gh|the github cli)\b/i, command: "gh", args: ["auth", "status"] },
+  { ask: /\bgh auth (?:login|refresh)\b|\b(?:sign|log)\s*-?\s*(?:in|into)\s+(?:to\s+)?(?:gh|the github cli)\b/i, command: "gh", args: ["auth", "status"] },
 ]
 
-function isAskNotTheirs(text: string): boolean {
-  return text.split(/(?<=[.?!])\s+|\n+/).some((sentence) => ASK_FRAME.test(sentence) && (
-    AT_A_KEYBOARD.some((p) => p.test(sentence)) || (!BODY_ONLY.test(sentence) && AGENT_CAN.some((p) => p.test(sentence)))
-  ))
+/** The first sentence that asks them for something that isn't theirs to do, or null. */
+function askNotTheirs(text: string): string | null {
+  // Only they hold the vault's own unlock secret.
+  return text.split(/(?<=[.?!])\s+|\n+/).find((sentence) => !/\bouro vault (?:unlock|create)\b/i.test(sentence) && (
+    (ASK_FRAME.test(sentence) && AT_A_KEYBOARD.some((p) => p.test(sentence)))
+    || (!BODY_ONLY.test(sentence) && ((ASK_FRAME.test(sentence) && ON_A_MACHINE.test(sentence)) || ROUTINE_CHECKS.some((p) => p.test(sentence))))
+  )) ?? null
 }
 
-/** True when the sign-in the text asks for is already done, by the claim's own status command. */
-function isSignInClaimFalse(text: string): boolean {
-  const claim = SIGN_IN_CLAIMS.find((c) => c.ask.test(text))
+/** True when the sign-in the ask wants is already done, by the claim's own status command. */
+function isSignInClaimFalse(ask: string): boolean {
+  const claim = SIGN_IN_CLAIMS.find((c) => c.ask.test(ask))
   if (!claim) return false
   try {
-    execFileSync(claim.command, claim.args, { stdio: "ignore", timeout: 10_000 })
+    execFileSync(claim.command, claim.args, { stdio: "ignore", timeout: 5_000 })
     return true
   } catch {
     return false
@@ -101,7 +104,8 @@ const VERIFIED_BY_SENDER_PATTERN = /\b(?:i|we)(?:'ve| have)?\s+(?:verified|confi
 const REQUESTED_STATUS_PATTERN = /\b(?:as you asked|you asked (?:for|me)|you wanted (?:an )?update|status you asked)\b/i
 
 function getVerificationHoldReason(text: string): ProactiveContentBlockReason | null {
-  if (isAskNotTheirs(text)) return isSignInClaimFalse(text) ? "false_sign_in_claim" : "not_theirs_to_do"
+  const ask = askNotTheirs(text)
+  if (ask) return isSignInClaimFalse(ask) ? "false_sign_in_claim" : "not_theirs_to_do"
   if (REQUESTED_STATUS_PATTERN.test(text)) return null
   if (UNTESTED_CLAIM_PATTERNS.some((p) => p.test(text))) return "untested_delivery_claim"
   if (SHOULD_WORK_PATTERN.test(text) && !VERIFIED_BY_SENDER_PATTERN.test(text)) return "untested_delivery_claim"
