@@ -7,6 +7,7 @@ import { machineOwnerUsername, type FriendRecord } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { checkLetterInput, checkWithdrawReason, newLetterId, type Letter, type LetterEvent, type LetterKind } from "./letter"
 import { ownerFriendIds, readAnsweringHandles } from "./answering"
+import { renderLetter } from "./render"
 
 export { ownerFriendIds }
 import { LetterIndex, type IndexedLetter } from "./letter-index"
@@ -30,6 +31,22 @@ export interface WriterDeps {
   ownerUsername?: () => string | null
   /** How long one second of a wait's timeout lasts; tests shorten it. */
   waitUnitMs?: number
+  /** Sends a rendered letter to the person's chat as the agent; missing when this daemon has no chat to send through. */
+  deliverChat?: (request: ChatDelivery) => Promise<ChatReceipt>
+}
+
+/** One letter to send: the agent it goes out as, the handle whose chat it goes to, and the text Ouro rendered. */
+export interface ChatDelivery {
+  agent: string
+  handle: string
+  text: string
+}
+
+/** Where a delivered letter landed: the channel, its chat's key and the sent message's id. */
+export interface ChatReceipt {
+  channel: string
+  key: string
+  messageId: string
 }
 
 /** The socket command every mailbox door sends the daemon. */
@@ -117,7 +134,7 @@ export class LettersWriter {
       case "mailbox_read": return Promise.resolve(this.read(letters, input))
       case "mailbox_wait": return this.wait(letters, input)
       case "mailbox_withdraw": return this.serial(letters, () => this.withdraw(letters, input, dryRun))
-      case "mailbox_deliver": return Promise.resolve(this.deliver(letters, input))
+      case "mailbox_deliver": return this.serial(letters, () => this.deliver(letters, input, dryRun))
       default: return Promise.reject(new LetterRefusal("unknown-door", `The mailbox has no action ${action}.`))
     }
   }
@@ -280,9 +297,29 @@ export class LettersWriter {
     return { outcome: "done", state: after.state }
   }
 
-  private deliver(letters: AgentLetters, input: Record<string, unknown>): LetterResult {
+  /**
+   * Sends a waiting letter to the chat of the handle frozen into it when it was filed, in the text Ouro renders, and
+   * records where it landed. Delivering again sends it again, so a person who lost the message can have it back.
+   */
+  private async deliver(letters: AgentLetters, input: Record<string, unknown>, dryRun: boolean): Promise<LetterResult> {
     const entry = this.find(letters, input)
-    throw new LetterRefusal("no-answering-handle", `The person has no answering handle yet, so ${entry.letter.code} stays waiting until chat delivery is ready.`)
+    const { letter } = entry
+    if (entry.state !== "waiting") throw new LetterRefusal("not-waiting", `${letter.code} is already ${entry.state}, so there is nothing to deliver.`)
+    if (!letter.answeringHandle) {
+      throw new LetterRefusal("no-answering-handle", `${letter.code} was filed before the person had an answering handle, so Ouro has no chat to send it to. It stays waiting.`)
+    }
+    const text = renderLetter(letter)
+    if (dryRun) return { outcome: "preview", state: entry.state, text }
+    if (!this.deps.deliverChat) throw new LetterRefusal("chat-unavailable", `This daemon has no chat to send ${letter.code} through. It stays waiting.`)
+    let receipt: ChatReceipt
+    try {
+      receipt = await this.deps.deliverChat({ agent: letters.agent, handle: letter.answeringHandle, text })
+    } catch (error) {
+      emitNervesEvent({ level: "warn", component: "daemon", event: "letters.deliver_failed", message: "a letter's chat send failed", meta: { code: letter.code, error: (error as Error).message } })
+      throw new LetterRefusal("send-failed", `${letter.code} didn't send: ${(error as Error).message}. It stays waiting; deliver it again once the chat is back.`)
+    }
+    const after = this.addEvent(letters, letter.id, { t: "delivered", at: this.now().toISOString(), via: "chat", ...receipt })
+    return { outcome: "done", state: after.state, channel: receipt.channel }
   }
 }
 

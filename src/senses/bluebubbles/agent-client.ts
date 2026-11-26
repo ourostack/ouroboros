@@ -1,6 +1,7 @@
 // A BlueBubbles client for a named agent, built from outside that agent's sense process: the daemon delivering a
 // letter, or an `ouro rsvp` command. Its settings come from the agent's machine runtime config in the vault (held in
 // process memory once read), and its host check uses the agent's declared iMessage host account.
+import * as path from "path"
 import type { BlueBubblesChannelConfig, BlueBubblesConfig } from "../../heart/config"
 import { loadAgentConfig } from "../../heart/identity"
 import { loadOrCreateMachineIdentity } from "../../heart/machine-identity"
@@ -11,6 +12,7 @@ import {
 } from "../../heart/runtime-credentials"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesClientHostOptions } from "./client"
+import type { BlueBubblesChatRef } from "./model"
 
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : ""
@@ -76,4 +78,29 @@ export async function blueBubblesClientForAgent(agent: string, agentRoot: string
   const settings = blueBubblesSettings(await agentMachineRuntimeConfig(agent))
   emitNervesEvent({ component: "senses", event: "senses.bluebubbles_agent_client", message: "bluebubbles client built for an agent outside its sense", meta: { agent } })
   return createBlueBubblesClient(settings.config, settings.channelConfig, agentHostOptions(agent, agentRoot))
+}
+
+/** A one-to-one chat with a handle, addressed by the handle alone; the server finds or starts the chat. */
+export function chatWithHandle(handle: string): BlueBubblesChatRef {
+  return { chatIdentifier: handle, isGroup: false, sessionKey: `chat_identifier:${handle}`, sendTarget: { kind: "chat_identifier", value: handle }, participantHandles: [] }
+}
+
+/**
+ * Sends a letter Ouro rendered to the handle's chat as the agent, and says where it landed. A server that names no
+ * chat or message leaves those blank rather than failing a send that went out.
+ */
+export async function sendLetterByBlueBubbles(
+  request: { agent: string; handle: string; text: string },
+  agentRoot: string,
+  clientFor: (agent: string, agentRoot: string) => Promise<BlueBubblesClient> = blueBubblesClientForAgent,
+): Promise<{ channel: string; key: string; messageId: string }> {
+  const client = await clientFor(request.agent, agentRoot)
+  const sent = await client.sendText({ chat: chatWithHandle(request.handle), text: request.text })
+  emitNervesEvent({ component: "senses", event: "senses.bluebubbles_letter_sent", message: "a letter was sent to its person's chat", meta: { agent: request.agent, hasMessageId: Boolean(sent.messageGuid) } })
+  return { channel: "bluebubbles", key: sent.chatGuid ?? "", messageId: sent.messageGuid ?? "" }
+}
+
+/** The daemon's letter sender: each agent's letters go out through that agent's own bundle and settings. */
+export function letterChatSender(bundlesRoot: string, clientFor?: (agent: string, agentRoot: string) => Promise<BlueBubblesClient>) {
+  return (request: { agent: string; handle: string; text: string }) => sendLetterByBlueBubbles(request, path.join(bundlesRoot, `${request.agent}.ouro`), clientFor)
 }

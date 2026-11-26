@@ -18,7 +18,7 @@ import { MailboxDoorError, mailboxMcpSchema, mailboxMcpSchemas, readMailboxDoors
 /** The codes the mailbox doors answer a refusal with: the doors' own checks and the daemon's letters writer. */
 export const MAILBOX_REFUSAL_CODES: ReadonlySet<string> = new Set([
   "daemon-down", "unknown-input", "bad-input", "no-agent", "not-found",
-  "invalid-letter", "no-person", "not-sender", "not-waiting", "no-answering-handle",
+  "invalid-letter", "no-person", "not-sender", "not-waiting", "no-answering-handle", "chat-unavailable", "send-failed",
 ])
 
 export const SENSE_TURN_MAX_RETRIES = 3

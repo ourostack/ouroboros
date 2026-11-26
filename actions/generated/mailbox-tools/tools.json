@@ -446,8 +446,23 @@
         "errors": [
           {
             "code": "no-answering-handle",
-            "means": "The person has no answering handle yet, so Ouro has no chat to send the letter to.",
-            "fix": "Leave the letter waiting; the person sets the handle with `ouro mailbox handle set` when chat delivery is ready."
+            "means": "The letter was filed before the person had an answering handle, so Ouro has no chat to send it to.",
+            "fix": "Leave the letter waiting; once the person sets a handle with `ouro mailbox handle set`, letters filed after that can be delivered."
+          },
+          {
+            "code": "not-waiting",
+            "means": "The letter is already answered, withdrawn or expired.",
+            "fix": "Nothing to deliver; read the letter to see how it closed."
+          },
+          {
+            "code": "chat-unavailable",
+            "means": "This daemon has no chat to send through.",
+            "fix": "Leave the letter waiting; the person reads it in their mailbox."
+          },
+          {
+            "code": "send-failed",
+            "means": "The chat didn't take the message; the letter stays waiting.",
+            "fix": "Deliver it again once the chat is back."
           },
           {
             "code": "not-found",

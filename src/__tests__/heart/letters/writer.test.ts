@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it } from "vitest"
 import type { LetterEvent } from "../../../heart/letters/letter"
 import { writeAnsweringHandle } from "../../../heart/letters/answering"
 import { LetterStore } from "../../../heart/letters/store"
-import { LetterRefusal, LettersWriter, answerLettersCommand, ownerFriendIds, type WriterDeps } from "../../../heart/letters/writer"
+import { LetterRefusal, LettersWriter, answerLettersCommand, ownerFriendIds, type ChatDelivery, type WriterDeps } from "../../../heart/letters/writer"
+import { renderLetter } from "../../../heart/letters/render"
 
 const roots: string[] = []
 afterEach(() => {
@@ -407,6 +408,36 @@ describe("LettersWriter withdraw and deliver", () => {
     await writer.run("slugger", "mailbox_send", know)
     expect((await refusal(writer.run("slugger", "mailbox_deliver", { letter: "L1" }))).code).toBe("no-answering-handle")
     expect((await refusal(writer.run("slugger", "mailbox_deliver", { letter: "L1" }, { dryRun: true }))).code).toBe("no-answering-handle")
+  })
+
+  it("sends a waiting letter to the handle frozen into it, in Ouro's text, and records where it landed", async () => {
+    const sent: ChatDelivery[] = []
+    const { writer, lettersDir } = setup({ deliverChat: async (request) => { sent.push(request); return { channel: "bluebubbles", key: "iMessage;-;+15551234567", messageId: "msg-1" } } })
+    writeAnsweringHandle(lettersDir, "friend-ari", "+15551234567")
+    await writer.run("slugger", "mailbox_send", decide)
+    writeAnsweringHandle(lettersDir, "friend-ari", "ari@example.com")
+    const preview = await writer.run("slugger", "mailbox_deliver", { letter: "L1" }, { dryRun: true })
+    expect(preview).toEqual({ outcome: "preview", state: "waiting", text: renderLetter(new LetterStore(lettersDir).read("ltr_T1")!.letter) })
+    expect(sent).toEqual([])
+    expect(await writer.run("slugger", "mailbox_deliver", { letter: "L1" })).toEqual({ outcome: "done", state: "waiting", channel: "bluebubbles" })
+    expect(sent).toEqual([{ agent: "slugger", handle: "+15551234567", text: preview.text }])
+    expect(new LetterStore(lettersDir).read("ltr_T1")!.events).toEqual([
+      { t: "delivered", at: new Date(NOW).toISOString(), via: "chat", channel: "bluebubbles", key: "iMessage;-;+15551234567", messageId: "msg-1" },
+    ])
+  })
+
+  it("refuses to deliver a closed letter, without a chat, or when the send fails, and the letter stays waiting", async () => {
+    const { writer, lettersDir } = setup()
+    writeAnsweringHandle(lettersDir, "friend-ari", "+15551234567")
+    await writer.run("slugger", "mailbox_send", know)
+    await writer.run("slugger", "mailbox_send", know)
+    expect((await refusal(writer.run("slugger", "mailbox_deliver", { letter: "L1" }))).code).toBe("chat-unavailable")
+    depsOf(writer).deliverChat = async () => { throw new Error("server down") }
+    const failed = await refusal(writer.run("slugger", "mailbox_deliver", { letter: "L1" }))
+    expect([failed.code, failed.message]).toEqual(["send-failed", "L1 didn't send: server down. It stays waiting; deliver it again once the chat is back."])
+    expect(new LetterStore(lettersDir).read("ltr_T1")!.events).toEqual([])
+    await writer.run("slugger", "mailbox_withdraw", { letter: "L2", reason: "moot" })
+    expect((await refusal(writer.run("slugger", "mailbox_deliver", { letter: "L2" }))).code).toBe("not-waiting")
   })
 })
 

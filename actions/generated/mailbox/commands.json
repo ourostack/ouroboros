@@ -169,7 +169,7 @@
           "required": true
         }
       ],
-      "output": "{ outcome, state }"
+      "output": "{ outcome, state, channel, text }"
     }
   ],
   "personOnly": {
