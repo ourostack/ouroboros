@@ -304,8 +304,6 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
         throw new AcpProtocolError(-32601, "session/load is unavailable in observe-only mode")
       }
       const sessionId = requiredString(requestParams.sessionId, "sessionId")
-      // The replay rebuilds which calls are open; counters from an earlier load would misnumber them.
-      toolCalls.delete(sessionId)
       const frontend = await client()
       const replay = await frontend.request("session.load", {
         agent: options.agent,
@@ -316,6 +314,9 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
       if (!Array.isArray(replay?.events) || replay.events.length === 0) {
         throw new AcpProtocolError(-32001, "session not found")
       }
+      // The replay rebuilds which calls are open; counters from an earlier load, or live events that
+      // arrived while this load was pending (the journal holds them too), would misnumber them.
+      toolCalls.delete(sessionId)
       for (const event of replay.events) replayEvent(sessionId, event)
       await subscribe(sessionId)
       for (const pending of replay.pendingPermissions ?? []) permissionRequest(sessionId, pending)

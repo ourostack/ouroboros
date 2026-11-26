@@ -204,11 +204,19 @@ describe("Ouro ACP server", () => {
     const load = (id: number) => input.write(`${JSON.stringify({ jsonrpc: "2.0", id, method: "session/load", params: { sessionId: "existing-session", cwd: "/tmp", mcpServers: [] } })}\n`)
     load(1)
     await waitFor(messages, (message) => message.id === 1)
+    // A live start arrives while the second load is pending; the journal the load returns holds it too.
+    const pendingLoad = Promise.withResolvers<any>()
+    const replay = client.loadResult
+    client.loadResult = pendingLoad.promise
     load(2)
+    await waitFor(client.requests, (request) => request.method === "session.load" && client.requests.filter((r) => r.method === "session.load").length === 2)
+    client.emit({ event: "tool.started", sessionKey: "existing-session", turnId: "turn-live", name: "read_file", args: { path: "/live" } })
+    pendingLoad.resolve(replay)
     await waitFor(messages, (message) => message.id === 2)
     const updates = () => messages.filter((message) => message.method === "session/update").map((message) => message.params.update)
     const firstLoad = updates().slice(0, 4)
-    const secondLoad = updates().slice(4)
+    expect(updates()[4]).toMatchObject({ sessionUpdate: "tool_call", toolCallId: "turn-live:read_file:2" })
+    const secondLoad = updates().slice(5)
     expect(secondLoad.map((update) => update.toolCallId)).toEqual(firstLoad.map((update) => update.toolCallId))
     expect(secondLoad.map((update) => update.toolCallId)).toEqual([
       "turn-done:read_file:1",
@@ -223,7 +231,7 @@ describe("Ouro ACP server", () => {
     client.emit({ event: "tool.completed", sessionKey: "existing-session", turnId: "turn-live", name: "read_file", summary: "after end", success: true })
     await waitFor(messages, (message) => message.params?.update?.content?.[0]?.content?.text === "live")
     await new Promise((resolve) => setTimeout(resolve, 20))
-    const live = updates().slice(8)
+    const live = updates().slice(9)
     expect(live.map((update) => [update.toolCallId, update.content[0].content.text])).toEqual([["turn-live:read_file:1", "live"]])
     server.stop()
   })
