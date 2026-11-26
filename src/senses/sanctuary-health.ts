@@ -308,6 +308,8 @@ export async function probeSanctuaryEndpoint(url: string, fetchImpl: typeof fetc
 }
 
 export function createSanctuaryHealthSweep(options: {
+  /** The Butler whose acceptance marker the sweep's events carry. */
+  agentName?: string
   toolContext: Pick<ToolContext, "sanctuary">
   statePath: string
   /** The household's public endpoints and the containers it needs running; none when omitted. */
@@ -337,7 +339,7 @@ export function createSanctuaryHealthSweep(options: {
   const publicEndpoints = (options.house?.publicEndpoints ?? []).map((endpoint) => endpoint.url)
   const requiredContainers = new Set(options.house?.requiredContainers ?? [])
   const now = options.now ?? (() => new Date())
-  const acceptanceEventMeta = options.acceptanceEventMeta ?? (() => sanctuaryAcceptanceEventMeta("sanctuary"))
+  const acceptanceEventMeta = options.acceptanceEventMeta ?? (() => sanctuaryAcceptanceEventMeta(options.agentName ?? "sanctuary"))
   const runSweep = async (): Promise<SanctuaryHealthSweepResult> => {
     const sweepId = randomUUID()
     const startedAt = now().toISOString()

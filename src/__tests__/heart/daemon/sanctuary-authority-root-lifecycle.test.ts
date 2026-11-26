@@ -21,6 +21,10 @@ const rootPath = "/mnt/user/appdata/ouro-authority"
 const bundle = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"
 const runtime = "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli"
 // #vault runs `sh -c "cp ... && exec node CLI vault <op>"`, so the operation is the last word of the final docker-run argument.
+// The images whose ENTRYPOINT names the Butler `butler`; every other image names it `sanctuary`, as every image did before the rename.
+const butlerImages = new Set<string>()
+const entrypointOf = (imageId: string) => JSON.stringify(["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js", "--package-managed-agent", butlerImages.has(imageId) ? "butler" : "sanctuary"])
+const entrypointInspect = (args: readonly string[]) => args[0] === "image" && args[3] === "{{json .Config.Entrypoint}}"
 const vaultOp = (args: readonly unknown[]): string => String(args.at(-1)).trim().split(/\s+/u).at(-1)!
 const oldToken = "123:oldTokenabcdefghijklmnopqrstuvwxyz"
 const installSteps = ["freeze-resident", "stage-authority", "verify-token-rotation", "transfer-cursor", "remove-resident-token", "start-gateway", "configure-resident", "start-resident", "verify-install"]
@@ -95,6 +99,7 @@ function fixture() {
       return ""
     }
     expect(file).toBe("/usr/bin/docker")
+    if (entrypointInspect(args)) return entrypointOf(args[4]!)
     if (args[0] === "container") return JSON.stringify({ name: "/jellyfin", containerId: "1".repeat(64), imageId: digest("jellyfin"), state: "running", restartCount: 0 })
     if (args[0] === "ps") return JSON.stringify({ Names: "ouro-butler" }) + "\n"
     if (args[0] === "inspect") return JSON.stringify([{
@@ -176,7 +181,7 @@ async function installedStoppedGatewayFixture() {
   fs.rmSync(f.p("/proc/45678"), { recursive: true })
   return f
 }
-afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.resetAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
+afterEach(() => { butlerImages.clear(); vi.useRealTimers(); vi.restoreAllMocks(); vi.resetAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
 describe("fixed root installation effects", () => {
   it("refreshes only explicitly reviewed execution pins and preserves authority, cursor and owner state", async () => {
     const f = await installedStoppedGatewayFixture()
@@ -1107,6 +1112,11 @@ describe("fixed root installation effects", () => {
     await expect(f.lifecycle.effect("freeze-resident").apply()).rejects.toThrow(/poller/u)
     expect(host.exec.mock.calls.some((call) => call[1][0] === "stop")).toBe(false)
   })
+  it("refuses a container that mounts the host bundle under the Butler's other name", async () => {
+    const f = fixture()
+    host.exec.mockImplementation((_file, args) => args[0] === "ps" ? '{"Names":"rogue"}\n' : JSON.stringify([{ Name: "/rogue", State: { Running: true }, Mounts: [{ Source: "/mnt/user/appdata/ouro-butler/agent/butler.ouro" }] }]))
+    await expect(f.lifecycle.effect("freeze-resident").apply()).rejects.toThrow(/poller/u)
+  })
   it("skips a container that exits between the listing and its inspect, as the 1435 upgrade met", async () => {
     const f = fixture()
     const listed = '{"Names":"ouro-eval-1daaed8f-household"}\n'
@@ -1414,6 +1424,7 @@ describe("in-place authority upgrade", () => {
         return "{}"
       }
       if (file === "/usr/bin/docker") {
+        if (entrypointInspect(args)) return entrypointOf(args[4]!)
         if (args[0] === "image") return `${digest("next-image")}\n`
         if (args[0] === "rm") { resident.exists = false; return "" }
         if (args[0] === "create") {
@@ -1701,9 +1712,20 @@ describe("in-place authority upgrade", () => {
     expect(programs.map((name) => fs.readFileSync(f.p(`${rootPath}/package/${name}`), "utf8"))).toEqual(programs.map(next))
   })
 
+  // Each create's binds as `source:destination:mode`, whether passed with -v or --mount.
   function createMounts(): string[][] {
     return host.exec.mock.calls.filter(([file, args]) => file === "/usr/bin/docker" && (args as string[])[0] === "create")
-      .map(([, args]) => args as string[]).map((args) => args.flatMap((arg, index) => (arg === "-v" ? [args[index + 1]!] : [])))
+      .map(([, args]) => args as string[]).map((args) => args.flatMap((arg, index) => {
+        if (arg === "-v") return [args[index + 1]!]
+        if (arg !== "--mount") return []
+        const fields = Object.fromEntries(args[index + 1]!.split(",").map((field) => [field.split("=")[0], field.split("=")[1] ?? true]))
+        expect(fields.type).toBe("bind")
+        return [`${fields.src}:${fields.dst}:${fields.readonly ? "ro" : "rw"}`]
+      }))
+  }
+  function createMountFlags(): string[][] {
+    return host.exec.mock.calls.filter(([file, args]) => file === "/usr/bin/docker" && (args as string[])[0] === "create")
+      .map(([, args]) => args as string[]).map((args) => args.flatMap((arg, index) => (arg === "--mount" ? [args[index + 1]!] : [])))
   }
   const psycheBind = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro"
   const syncBind = "/mnt/user/appdata/ouro-butler/sync:/run/ouro-sync:ro"
@@ -1735,6 +1757,55 @@ describe("in-place authority upgrade", () => {
       for (const tag of ["0.1.0-alpha.990", "0.1.0-alpha.99", "0.1.0-alpha.991.1", "0.2.0-beta.1", "latest", ""]) expect(predecessorHasBundleSync(ref(tag)), tag).toBe(false)
       expect(predecessorHasBundleSync("no-tag-here")).toBe(false)
     })
+  })
+
+  it("binds the bundle, psyche and trust with --mount, so a missing host folder fails the create instead of appearing empty", async () => {
+    const f = await upgradeFixture()
+    f.resident.reference = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.978"
+    await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, holdCommit: true })
+    await expect(f.lifecycleFor().rollbackUpgrade()).resolves.toBe(true)
+    expect(createMountFlags().at(-1)).toEqual([
+      `type=bind,src=${bundle},dst=/home/ouro/AgentBundles/sanctuary.ouro`,
+      `type=bind,src=${bundle}/psyche,dst=/home/ouro/AgentBundles/sanctuary.ouro/psyche,readonly`,
+      "type=bind,src=/mnt/user/appdata/ouro-butler/trust/sanctuary,dst=/etc/ouro/trust/sanctuary,readonly",
+    ])
+  })
+
+  it("mounts the host's sanctuary.ouro folder at the butler paths for an image named butler, and back at the sanctuary paths on rollback", async () => {
+    const f = await upgradeFixture()
+    butlerImages.add(digest("next-image"))
+    f.resident.reference = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.978"
+    await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, holdCommit: true })
+    const upgraded = createMounts().at(-1)!
+    expect(upgraded).toContain(`${bundle}:/home/ouro/AgentBundles/butler.ouro:rw`)
+    expect(upgraded).toContain("/mnt/user/appdata/ouro-butler/trust/sanctuary:/etc/ouro/trust/butler:ro")
+    expect(upgraded.some((mount) => mount.includes("AgentBundles/sanctuary.ouro") || mount.endsWith("/etc/ouro/trust/sanctuary:ro"))).toBe(false)
+    expect(fs.existsSync(f.p("/mnt/user/appdata/ouro-butler/agent/butler.ouro"))).toBe(false)
+    await expect(f.lifecycleFor().rollbackUpgrade()).resolves.toBe(true)
+    const rolledBack = createMounts().at(-1)!
+    expect(rolledBack).toContain(`${bundle}:/home/ouro/AgentBundles/sanctuary.ouro:rw`)
+    expect(rolledBack).toContain(psycheBind)
+    expect(rolledBack).toContain("/mnt/user/appdata/ouro-butler/trust/sanctuary:/etc/ouro/trust/sanctuary:ro")
+  })
+
+  it("finds a host bundle folder named butler.ouro on disk, and keeps sanctuary.ouro when both are there", async () => {
+    const f = await upgradeFixture()
+    const butlerBundle = "/mnt/user/appdata/ouro-butler/agent/butler.ouro"
+    fs.renameSync(f.p(bundle), f.p(butlerBundle))
+    butlerImages.add(digest("next-image"))
+    await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+    expect(createMounts().at(-1)!).toContain(`${butlerBundle}:/home/ouro/AgentBundles/butler.ouro:rw`)
+    const migrations = host.exec.mock.calls.filter(([file, args]) => String(file).endsWith("/usr/local/bin/node") && String((args as string[])[0]).endsWith("migrate-sanctuary-bundle.mjs"))
+    expect(migrations.at(-1)![1]).toContain(f.p(butlerBundle))
+  })
+
+  it("runs the fenced vault container with the bundle where its image names it, from sanctuary.ouro when both host folders exist", async () => {
+    const f = fixture()
+    butlerImages.add(digest("new-image"))
+    fs.mkdirSync(f.p("/mnt/user/appdata/ouro-butler/agent/butler.ouro"), { recursive: true })
+    await f.lifecycle.effect("freeze-resident").apply()
+    const vaultArgs = host.exec.mock.calls.find((call) => call[1][0] === "run")![1] as string[]
+    expect(vaultArgs).toContain(`type=bind,src=${bundle},dst=/home/ouro/AgentBundles/butler.ouro,readonly`)
   })
 
   it("recreates the upgraded resident without a separate psyche mount", async () => {

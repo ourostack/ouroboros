@@ -25,7 +25,7 @@ const mocks = vi.hoisted(() => ({
   emitNervesEvent: vi.fn(),
 }))
 
-vi.mock("../../heart/identity", () => ({ getAgentRoot: mocks.getAgentRoot, getAgentName: () => "butler", loadAgentConfig: mocks.loadAgentConfig }))
+vi.mock("../../heart/identity", () => ({ getAgentRoot: mocks.getAgentRoot, getAgentName: () => "slugger", loadAgentConfig: mocks.loadAgentConfig }))
 vi.mock("../../heart/runtime-credentials", () => ({ readRuntimeCredentialConfig: mocks.readRuntimeCredentialConfig, readMachineRuntimeCredentialConfig: mocks.readMachineRuntimeCredentialConfig }))
 vi.mock("../../senses/sanctuary-authority-resident", () => ({ openSanctuaryResidentAuthority: mocks.openSanctuaryResidentAuthority }))
 vi.mock("../../senses/shared-turn", async (importOriginal) => ({
@@ -341,7 +341,7 @@ describe("Telegram sense coverage contracts", () => {
       fs.writeFileSync(path.join(root, "state", "sessions", "unrelated.txt"), "ignored")
       mocks.getAgentRoot.mockReturnValue(root)
       const fixture = defaultFixture()
-      const app = createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "k".repeat(43), approvalRuntime: fixture.runtime })
+      const app = createTelegramSenseApp({ agentName: "slugger", credentials, identityKey: "k".repeat(43), approvalRuntime: fixture.runtime })
       await app.run()
 
       const migratedNames = fs.readdirSync(path.join(root, "state", "sessions"))
@@ -361,7 +361,7 @@ describe("Telegram sense coverage contracts", () => {
       makeLegacySession(ambiguousRoot, secondLegacySubject)
       mocks.getAgentRoot.mockReturnValue(ambiguousRoot)
       const ambiguousFixture = defaultFixture()
-      const ambiguous = createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "k".repeat(43), approvalRuntime: ambiguousFixture.runtime })
+      const ambiguous = createTelegramSenseApp({ agentName: "slugger", credentials, identityKey: "k".repeat(43), approvalRuntime: ambiguousFixture.runtime })
       await expect(ambiguous.run()).rejects.toThrow("ambiguous")
       expect(ambiguousFixture.runtime.migrateIdentity).not.toHaveBeenCalled()
       expect(fs.readdirSync(path.join(ambiguousRoot, "state", "sessions")).sort()).toEqual([
@@ -382,7 +382,7 @@ describe("Telegram sense coverage contracts", () => {
       mocks.getAgentRoot.mockReturnValue(root)
       const firstFixture = defaultFixture()
       await createTelegramSenseApp({
-        agentName: "butler", credentials, identityKey: "k".repeat(43), approvalRuntime: firstFixture.runtime,
+        agentName: "slugger", credentials, identityKey: "k".repeat(43), approvalRuntime: firstFixture.runtime,
       }).run()
       const indexPath = path.join(root, "state", "senses", "telegram", "identity-subjects.json")
       const canonical = JSON.parse(fs.readFileSync(indexPath, "utf8")) as { subject: string }
@@ -391,7 +391,7 @@ describe("Telegram sense coverage contracts", () => {
 
       const validFixture = defaultFixture()
       await expect(createTelegramSenseApp({
-        agentName: "butler", credentials: { ...credentials, botToken: "rotated-again" }, identityKey: "k".repeat(43), approvalRuntime: validFixture.runtime,
+        agentName: "slugger", credentials: { ...credentials, botToken: "rotated-again" }, identityKey: "k".repeat(43), approvalRuntime: validFixture.runtime,
       }).run()).resolves.toBeUndefined()
       const rotatedIndex = JSON.parse(fs.readFileSync(indexPath, "utf8")) as { subject: string; legacySubjects: string[] }
       expect(rotatedIndex.subject).not.toBe(canonical.subject)
@@ -415,19 +415,19 @@ describe("Telegram sense coverage contracts", () => {
         fs.chmodSync(indexPath, 0o600)
         const fixture = defaultFixture()
         await expect(createTelegramSenseApp({
-          agentName: "butler", credentials, identityKey: "k".repeat(43), approvalRuntime: fixture.runtime,
+          agentName: "slugger", credentials, identityKey: "k".repeat(43), approvalRuntime: fixture.runtime,
         }).run()).rejects.toThrow("identity subject index is invalid")
       }
 
       fs.writeFileSync(indexPath, `${JSON.stringify({ version: 1, subject: canonical.subject, legacySubjects: [] })}\n`)
       fs.chmodSync(indexPath, 0o644)
-      await expect(createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "k".repeat(43) }).run())
+      await expect(createTelegramSenseApp({ agentName: "slugger", credentials, identityKey: "k".repeat(43) }).run())
         .rejects.toThrow("permissions are invalid")
 
       fs.rmSync(indexPath)
       fs.writeFileSync(target, "{}\n", { mode: 0o600 })
       fs.symlinkSync(target, indexPath)
-      await expect(createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "k".repeat(43) }).run())
+      await expect(createTelegramSenseApp({ agentName: "slugger", credentials, identityKey: "k".repeat(43) }).run())
         .rejects.toThrow()
     } finally {
       mocks.getAgentRoot.mockReturnValue(isolatedRoot)
@@ -454,7 +454,7 @@ describe("Telegram sense coverage contracts", () => {
       mocks.getAgentRoot.mockReturnValue(root)
       const fixture = defaultFixture()
       await createTelegramSenseApp({
-        agentName: "butler", credentials, identityKey: "k".repeat(43), approvalRuntime: fixture.runtime,
+        agentName: "slugger", credentials, identityKey: "k".repeat(43), approvalRuntime: fixture.runtime,
       }).run()
 
       const friend = fs.readFileSync(path.join(friendsRoot, "legacy.json"), "utf8")
@@ -475,16 +475,16 @@ describe("Telegram sense coverage contracts", () => {
       fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
       fs.writeFileSync(sessionPath, "not a directory")
       mocks.getAgentRoot.mockReturnValue(sessionRoot)
-      await expect(createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "k".repeat(43) }).run()).rejects.toThrow()
+      await expect(createTelegramSenseApp({ agentName: "slugger", credentials, identityKey: "k".repeat(43) }).run()).rejects.toThrow()
 
       const friendPath = path.join(friendsRoot, "friends")
       fs.writeFileSync(friendPath, "not a directory")
       mocks.getAgentRoot.mockReturnValue(friendsRoot)
-      await expect(createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "k".repeat(43) }).run()).rejects.toThrow()
+      await expect(createTelegramSenseApp({ agentName: "slugger", credentials, identityKey: "k".repeat(43) }).run()).rejects.toThrow()
 
       mocks.getAgentRoot.mockReturnValue(indexRoot)
       await expect(createTelegramSenseApp({
-        agentName: "butler",
+        agentName: "slugger",
         credentials,
         identityKey: "k".repeat(43),
         subjectIndexHooks: { afterCreateTemporary: () => { throw new Error("synthetic index write failure") } },
@@ -506,7 +506,7 @@ describe("Telegram sense coverage contracts", () => {
         fs.mkdirSync(path.join(root, "friends"), { recursive: true })
         fs.writeFileSync(path.join(root, "friends", "malformed.json"), JSON.stringify(friend))
         mocks.getAgentRoot.mockReturnValue(root)
-        await expect(createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "k".repeat(43) }).run())
+        await expect(createTelegramSenseApp({ agentName: "slugger", credentials, identityKey: "k".repeat(43) }).run())
           .rejects.toThrow(/Friend/u)
       } finally {
         fs.rmSync(root, { recursive: true, force: true })
@@ -565,7 +565,7 @@ describe("Telegram sense coverage contracts", () => {
     for (const id of ["0", "01", "-1", "1.5", "abc"]) {
       expect(() => parseTelegramSenseCredentials({ telegramBotToken: credentials.botToken, telegramAuthorizedUserId: id, telegramAuthorizedChatId: "43" })).toThrow("canonical positive decimal")
     }
-    expect(() => createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "invalid" }))
+    expect(() => createTelegramSenseApp({ agentName: "slugger", credentials, identityKey: "invalid" }))
       .toThrow("identity key is invalid")
   })
 
@@ -698,7 +698,7 @@ describe("Telegram sense coverage contracts", () => {
   it("emits scenario-bound hashed turn lifecycle coordinates without raw transport identity", async () => {
     const f = defaultFixture()
     createTelegramSenseApp({
-      agentName: "butler",
+      agentName: "slugger",
       credentials,
       identityKey: "k".repeat(43),
       acceptanceMarker: () => ({ schemaVersion: "sanctuary-acceptance-marker-v1", label: "unit-16d-whats-up", scenarioHandleDigest: "a".repeat(64), startedAt: "2026-08-20T00:00:00.000Z" }),
@@ -742,7 +742,7 @@ describe("Telegram sense coverage contracts", () => {
     }
     const capture = async (input: typeof privateCredentials) => {
       const f = defaultFixture()
-      createTelegramSenseApp({ agentName: "butler", credentials: input })
+      createTelegramSenseApp({ agentName: "slugger", credentials: input })
       await f.getOnMessage()({
         updateId: 716253401234567891,
         messageId: "615243019876543219",
@@ -1139,7 +1139,7 @@ describe("Telegram sense coverage contracts", () => {
   it.each([new Error("turn failed"), "primitive failure"])("records turn failure and sends one fixed safe response", async (failure) => {
     const f = defaultFixture()
     mocks.runSenseTurn.mockRejectedValueOnce(failure)
-    createTelegramSenseApp({ agentName: "butler", credentials })
+    createTelegramSenseApp({ agentName: "slugger", credentials })
     await f.getOnMessage()({ updateId: 1, messageId: "2", text: "hello" })
     expect(mocks.sendTelegramText).toHaveBeenCalledWith(f.api, "43", "I couldn't complete that turn. The failure was recorded; please try again.", {
       ...MARKDOWN_SEND,
@@ -1162,7 +1162,7 @@ describe("Telegram sense coverage contracts", () => {
       updateId,
       messageId,
     ].join("/")))
-    createTelegramSenseApp({ agentName: "butler", credentials: privateCredentials })
+    createTelegramSenseApp({ agentName: "slugger", credentials: privateCredentials })
 
     await f.getOnMessage()({ updateId, messageId, text: "fail privately" })
 
@@ -1200,7 +1200,7 @@ describe("Telegram sense coverage contracts", () => {
     const f = defaultFixture()
     mocks.createTelegramApprovalRuntime.mockReturnValue(undefined)
     createTelegramSenseApp({
-      agentName: "butler", credentials, api: f.api, offsetStore: { load: () => 0, save: vi.fn() },
+      agentName: "slugger", credentials, api: f.api, offsetStore: { load: () => 0, save: vi.fn() },
       runTurn: mocks.runSenseTurn,
     })
     await expect(f.getOnUpdate()({ update_id: 1 })).resolves.toBe(false)
@@ -1215,7 +1215,7 @@ describe("Telegram sense coverage contracts", () => {
     ]) {
       const f = defaultFixture()
       const healthSweep = Object.assign(vi.fn(async () => result), { markDeliveryAttempting: vi.fn(), markDelivered: vi.fn() })
-      const app = createTelegramSenseApp({ agentName: "butler", credentials, healthSweep })
+      const app = createTelegramSenseApp({ agentName: "slugger", credentials, healthSweep })
       await app.run()
       expect(healthSweep.markDeliveryAttempting).not.toHaveBeenCalled()
       expect(healthSweep.markDelivered).not.toHaveBeenCalled()
@@ -1226,14 +1226,14 @@ describe("Telegram sense coverage contracts", () => {
 
   it.each([new Error("health failed"), "primitive health failure"])("contains health sweep failures", async (failure) => {
     const f = defaultFixture()
-    const app = createTelegramSenseApp({ agentName: "butler", credentials, healthSweep: vi.fn(async () => { throw failure }) })
+    const app = createTelegramSenseApp({ agentName: "slugger", credentials, healthSweep: vi.fn(async () => { throw failure }) })
     await expect(app.run()).resolves.toBeUndefined()
     expect(f.poll.run).toHaveBeenCalledOnce()
   })
 
   it("validates proactive messages and forwards the exact caller signal", async () => {
     const f = defaultFixture()
-    const app = createTelegramSenseApp({ agentName: "butler", credentials })
+    const app = createTelegramSenseApp({ agentName: "slugger", credentials })
     const controller = new AbortController()
     await app.sendProactive("  hello  ", controller.signal)
     expect(mocks.sendTelegramText).toHaveBeenCalledWith(f.api, "43", "hello", {
@@ -1255,7 +1255,7 @@ describe("Telegram sense coverage contracts", () => {
 
   it("queues a Telegram await result when its direct request binding is unavailable", async () => {
     defaultFixture()
-    createTelegramSenseApp({ agentName: "butler", credentials })
+    createTelegramSenseApp({ agentName: "slugger", credentials })
     const fileAwait = awaitingToolDefinitions.find((definition) => definition.tool.function.name === "await_condition")!
     const resolveAwait = awaitingToolDefinitions.find((definition) => definition.tool.function.name === "resolve_await")!
     await fileAwait.handler({ name: "telegram_queue_fallback", condition: "ready", cadence: "5m", alert: "bluebubbles" }, {
@@ -1267,18 +1267,18 @@ describe("Telegram sense coverage contracts", () => {
 
   it("contains a primitive Telegram await authorization failure", async () => {
     const f = defaultFixture()
-    const app = createTelegramSenseApp({ agentName: "butler", credentials, authorizeEffect: vi.fn(async () => { throw "primitive authorization failure" }) })
+    const app = createTelegramSenseApp({ agentName: "slugger", credentials, authorizeEffect: vi.fn(async () => { throw "primitive authorization failure" }) })
     await expect(app.sendAwaitFollowUp({ friendId: "ari", channel: "telegram", key: "telegram:key", requestId: "request-1", content: "ready", intent: "generic_outreach" })).resolves.toEqual({ status: "blocked", detail: "primitive authorization failure" })
     await app.stop()
     expect(f.api.stop).toHaveBeenCalledOnce()
   })
 
   it("loads credentials, explains missing runtime config, and fails production start on an unbound bot identity", async () => {
-    expect(loadTelegramSenseCredentials("butler")).toEqual(credentials)
+    expect(loadTelegramSenseCredentials("slugger")).toEqual(credentials)
     mocks.readRuntimeCredentialConfig.mockReturnValueOnce({ ok: false, reason: "missing" })
-    expect(() => loadTelegramSenseCredentials("butler")).toThrow("actor: agent-runnable")
+    expect(() => loadTelegramSenseCredentials("slugger")).toThrow("actor: agent-runnable")
     defaultFixture()
-    await expect(startTelegramSenseApp("butler")).rejects.toThrow("canonical numeric bot id")
+    await expect(startTelegramSenseApp("slugger")).rejects.toThrow("canonical numeric bot id")
     expect(mocks.createTelegramBotApi).not.toHaveBeenCalled()
   })
 
@@ -1330,7 +1330,7 @@ describe("Telegram sense coverage contracts", () => {
     await expect(startTelegramSenseApp("sanctuary", true)).rejects.toBe(failure)
     expect(mocks.createTelegramBotApi).not.toHaveBeenCalled()
   })
-  it.each(["sanctuary", "butler"])("closes only its owned gateway when %s composition fails", async (agentName) => {
+  it.each(["sanctuary", "butler", "slugger"])("closes only its owned gateway when %s composition fails", async (agentName) => {
     defaultFixture()
     const stop = vi.fn()
     mocks.readRuntimeCredentialConfig.mockReturnValue({ ok: true, config: {
@@ -1342,7 +1342,7 @@ describe("Telegram sense coverage contracts", () => {
       authorityTransport: { api: { stop } },
     })
     await expect(startTelegramSenseApp(agentName)).rejects.toThrow("private user-bound chat")
-    expect(stop).toHaveBeenCalledTimes(agentName === "sanctuary" ? 1 : 0)
+    expect(stop).toHaveBeenCalledTimes(agentName === "slugger" ? 0 : 1)
   })
 
   it("runs one-shot production event and await adapters through a transient Telegram app", async () => {
@@ -1382,10 +1382,10 @@ describe("Telegram sense coverage contracts", () => {
     await sanctuary.stop()
     expect(gatewayApi.stop).toHaveBeenCalledOnce()
 
-    await sendTelegramExternalEventDecision("butler", { source: "health", eventId: "books", generation: 1, text: "Books recovered." })
-    await expect(sendTelegramOwnerNotice("butler", { noticeId: "delegated:t1", text: "Delegated command from you." })).resolves.toBe("sent")
-    await sendTelegramDelegatedAuditNotice("butler", { noticeId: "delegated:t2", text: "Another delegated command from you." })
-    await expect(sendTelegramAwaitFollowUp("butler", { friendId: "sibling", channel: "telegram", key: "telegram:777:888", content: "Ready", intent: "generic_outreach" })).resolves.toMatchObject({ status: "blocked" })
+    await sendTelegramExternalEventDecision("slugger", { source: "health", eventId: "books", generation: 1, text: "Books recovered." })
+    await expect(sendTelegramOwnerNotice("slugger", { noticeId: "delegated:t1", text: "Delegated command from you." })).resolves.toBe("sent")
+    await sendTelegramDelegatedAuditNotice("slugger", { noticeId: "delegated:t2", text: "Another delegated command from you." })
+    await expect(sendTelegramAwaitFollowUp("slugger", { friendId: "sibling", channel: "telegram", key: "telegram:777:888", content: "Ready", intent: "generic_outreach" })).resolves.toMatchObject({ status: "blocked" })
 
     expect(mocks.sendTelegramText).toHaveBeenCalledWith(f.api, "42", "Books recovered.", {
       ...MARKDOWN_SEND,

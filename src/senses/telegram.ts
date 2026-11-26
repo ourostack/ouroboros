@@ -115,6 +115,7 @@ import {
 import { createTelegramChatActions } from "./telegram-chat-actions"
 import { writeFileAtomicSync } from "../heart/atomic-file"
 import { whileRepeating } from "./repeat-while"
+import { isButlerAgent } from "../heart/butler-agent"
 
 interface FullVisibilityProgress { fallback?: () => string | undefined }
 
@@ -137,13 +138,15 @@ function createFullVisibilityProgress(): { progress: FullVisibilityProgress; emp
 }
 
 export function createSabQueueProtectiveStateVerifier(options: {
+  /** The Butler whose machine config holds the SABnzbd key. */
+  agentName?: string
   loadApiKey?: () => Promise<string>
   fetch?: typeof fetch
   now?: () => string
 } = {}): (action: PrivilegedProtectiveAction) => Promise<{ verified: boolean; reference: string }> {
   let client: ReturnType<typeof createSanctuarySabClient> | null = null
   return async (action) => {
-    client ??= createSanctuarySabClient({ loadApiKey: options.loadApiKey ?? (() => loadSanctuarySabApiKey("sanctuary")), fetch: options.fetch, now: options.now })
+    client ??= createSanctuarySabClient({ loadApiKey: options.loadApiKey ?? (() => loadSanctuarySabApiKey(options.agentName ?? "sanctuary")), fetch: options.fetch, now: options.now })
     const snapshot = await client.readQueue()
     const paused = snapshot.paused
     const digest = createHash("sha256").update(`sabnzbd.queue.paused=${String(paused)}`).digest("hex")
@@ -792,7 +795,7 @@ export function parseTelegramSenseCredentials(value: Record<string, unknown>): T
 
 export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): TelegramSenseApp {
   const authorityTransport = options.authorityTransport
-  if (authorityTransport && options.agentName !== "sanctuary") {
+  if (authorityTransport && !isButlerAgent(options.agentName)) {
     throw new Error("Sanctuary Telegram authority transport cannot serve another agent")
   }
   if (authorityTransport && options.credentials.botToken !== undefined) {
@@ -836,7 +839,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     : undefined
   const runTurn = options.runTurn ?? options._runTurn ?? runSenseTurn
   const collectToolReceipts = options._runWithToolReceiptCollection ?? runWithSanctuaryToolReceiptCollection
-  const useSanctuaryRuntime = options.agentName === "sanctuary" && !options.runTurn
+  const useSanctuaryRuntime = isButlerAgent(options.agentName) && !options.runTurn
   const readScenarioHandleDigest = (): string | undefined => (options.acceptanceMarker
     ? options.acceptanceMarker()
     : readSanctuaryAcceptanceMarker(options.agentName))?.scenarioHandleDigest
@@ -1580,8 +1583,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const relationshipCoordinates = { ...input, botId: botId! }
     return async ({ runAgentOptions, activeCares = [], careEvidenceNow = Date.now() }) => {
       const relationshipAuthorization = await resolveLiveRelationshipAuthorization(relationshipCoordinates)
-      const isSanctuaryOwner = options.agentName === "sanctuary" && relationshipAuthorization.profileId === "sanctuary-owner"
-      const isSanctuaryHouseholdConversation = options.agentName === "sanctuary"
+      const isSanctuaryOwner = isButlerAgent(options.agentName) && relationshipAuthorization.profileId === "sanctuary-owner"
+      const isSanctuaryHouseholdConversation = isButlerAgent(options.agentName)
         && (relationshipAuthorization.profileId === "sanctuary-owner" || relationshipAuthorization.profileId === "sanctuary-household")
       const storageOptimization = isSanctuaryOwner
         ? sanctuaryStorageOptimizationRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames)
@@ -2730,7 +2733,7 @@ export async function createProductionTelegramRelationshipComposition(
 export async function startTelegramSenseApp(agentName: string, waitForAuthority = false): Promise<TelegramSenseApp> {
   let authorityTransport: SanctuaryTelegramAuthorityTransport | undefined
   let credentials: TelegramSenseCredentials | TelegramGatewaySenseCredentials
-  if (agentName === "sanctuary") {
+  if (isButlerAgent(agentName)) {
     const runtime = readRuntimeCredentialConfig(agentName)
     const machine = readMachineRuntimeCredentialConfig(agentName)
     if (!runtime.ok || !machine.ok) throw new Error("Sanctuary Telegram credential inventory is unavailable; migration readback is required")
@@ -2762,9 +2765,9 @@ export async function startTelegramSenseApp(agentName: string, waitForAuthority 
       proactivePacing: { timeZone: process.env.TZ || "America/Los_Angeles" },
       ...((): { ownerRoute?: OwnerRoute } => { const ownerRoute = ownerRouteForAgent(agentName, getAgentRoot(agentName)); return ownerRoute ? { ownerRoute } : {} })(),
       ...(await createProductionTelegramRelationshipComposition(agentName, credentials, undefined, authorityTransport)),
-      ...(agentName === "sanctuary" ? { privilegedFailsafe: {
+      ...(isButlerAgent(agentName) ? { privilegedFailsafe: {
         eventRoot: getExternalEventRoot(),
-        verifyProtectiveState: createSabQueueProtectiveStateVerifier(),
+        verifyProtectiveState: createSabQueueProtectiveStateVerifier({ agentName }),
       } } : {}),
     })
   } catch (error) {

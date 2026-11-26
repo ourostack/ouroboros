@@ -35,7 +35,18 @@ export const DEFAULT_TRUST_DIR = "/mnt/user/appdata/ouro-butler/trust/sanctuary"
 // bundle: the Butler's user can neither write it nor move it, so nothing in it can be planted. Only this folder and the trust directory's replay
 // list may supply replay friend ids and DIDs; a file in the bundle never does.
 export const DEFAULT_CLIENT_DIR = "/mnt/user/appdata/ouro-butler/replay-client"
-export const CONTAINER_BUNDLE = "/home/ouro/AgentBundles/sanctuary.ouro"
+// The host folder above never moves. Inside the container the bundle sits under the Butler name the image runs (its ENTRYPOINT's
+// `--package-managed-agent <name>`, read from the live container by main), so every container path below is built from that name.
+export const BUTLER_NAMES = ["butler", "sanctuary"]
+/** The Butler name an image's ENTRYPOINT runs; anything else is sanctuary (as src/heart/butler-agent.ts butlerNameFromEntrypoint). */
+export function butlerNameFromEntrypoint(entrypoint) {
+  if (!Array.isArray(entrypoint)) return "sanctuary"
+  const flag = entrypoint.indexOf("--package-managed-agent")
+  const name = flag >= 0 ? entrypoint[flag + 1] : undefined
+  return BUTLER_NAMES.includes(name) ? name : "sanctuary"
+}
+export const containerBundle = (name) => `/home/ouro/AgentBundles/${name}.ouro`
+export const CONTAINER_BUNDLE = containerBundle("sanctuary")
 export const CONTAINER = "ouro-butler"
 // The uid the A2A sense runs as inside the container; the trust probe must see the window exactly as that process does.
 export const BUTLER_USER = "10001:10001"
@@ -169,7 +180,8 @@ export function findHedges(text, terms) {
 export const mentionsWord = (haystack, name) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, "iu").test(String(haystack ?? ""))
 /** The release's own name finder (src/heart/source-grounding.ts, the one the runtime gates replies with), run inside the container. */
 // Loads the house's own names first, as every Butler turn does, so the gate and the runtime agree on what counts as a name.
-export const NAMES_SCRIPT = 'const [t,o]=JSON.parse(require("fs").readFileSync(0,"utf8"));const g=require("/opt/ouro/dist/heart/source-grounding.js");const h=require("/opt/ouro/dist/senses/sanctuary-house.js").readSanctuaryHouse("/home/ouro/AgentBundles/sanctuary.ouro");g.addHouseVocabulary([h.ownerName,h.butlerName,h.householdName]);console.log(JSON.stringify(g.namesIn(t,o)))'
+export const namesScript = (agentRoot) => `const [t,o]=JSON.parse(require("fs").readFileSync(0,"utf8"));const g=require("/opt/ouro/dist/heart/source-grounding.js");const h=require("/opt/ouro/dist/senses/sanctuary-house.js").readSanctuaryHouse(${JSON.stringify(agentRoot)});g.addHouseVocabulary([h.ownerName,h.butlerName,h.householdName]);console.log(JSON.stringify(g.namesIn(t,o)))`
+export const NAMES_SCRIPT = namesScript(CONTAINER_BUNDLE)
 
 /** HH:MM (UTC) of the whole minute `minutes` after the start of `now`'s minute. */
 export function utcMinuteAhead(now, minutes) {
@@ -1826,8 +1838,14 @@ export const RETIRE_RECORD_SCRIPT = [
   'fs.writeFileSync(file,JSON.stringify(rec,null,2)+"\\n");',
 ].join("")
 
-function retireRecordInContainer(friendId, did) {
-  sh("docker", ["exec", "-u", BUTLER_USER, CONTAINER, "node", "-e", RETIRE_RECORD_SCRIPT, CONTAINER_BUNDLE, friendId, did ?? ""])
+export function retireRecordInContainer(friendId, did, agentRoot = CONTAINER_BUNDLE, run = sh) {
+  run("docker", ["exec", "-u", BUTLER_USER, CONTAINER, "node", "-e", RETIRE_RECORD_SCRIPT, agentRoot, friendId, did ?? ""])
+}
+
+/** The Butler name the live container's image runs. Throws when docker cannot say, so the gate never guesses a path. */
+export function liveButlerName(run = sh) {
+  const imageId = String(run("docker", ["inspect", "--format", "{{.Image}}", CONTAINER])).trim()
+  return butlerNameFromEntrypoint(JSON.parse(String(run("docker", ["image", "inspect", "--format", "{{json .Config.Entrypoint}}", imageId])).trim() || "null"))
 }
 
 /**
@@ -1836,9 +1854,9 @@ function retireRecordInContainer(friendId, did) {
  * that command must run with no more than the Butler's own rights. It runs no hooks and no fsmonitor, and takes no optional lock.
  * `env` adds `-e NAME=value` pairs (ls-remote's ssh). This is the gate's only git call.
  */
-export function bundleGit(args, run = sh, { env = [], timeout = 120_000 } = {}) {
+export function bundleGit(args, run = sh, { env = [], timeout = 120_000, agentRoot = CONTAINER_BUNDLE } = {}) {
   const envArgs = ["GIT_OPTIONAL_LOCKS=0", ...env].flatMap((pair) => ["-e", pair])
-  return run("docker", ["exec", "-u", BUTLER_USER, ...envArgs, CONTAINER, "git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", CONTAINER_BUNDLE, ...args], { timeout, maxBuffer: 256 * 1024 * 1024 })
+  return run("docker", ["exec", "-u", BUTLER_USER, ...envArgs, CONTAINER, "git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", agentRoot, ...args], { timeout, maxBuffer: 256 * 1024 * 1024 })
 }
 
 /** The untracked, unignored paths in the bundle and a hash of each (git's, with no filter run), read in the container. */
@@ -1857,10 +1875,9 @@ export function untrackedFiles(git) {
  * The host side of bundle sync for the gate: the cutover marker, sync's own pause marker, the lock, one `ouro sync` in the container,
  * and read-only git. `sleep` and `now` come from the host, so tests drive the clock.
  */
-export function makeSyncHost({ bundle, backupDir = DEFAULT_BACKUP_DIR, exec = sh, git = (args) => bundleGit(args, exec), sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = () => Date.now(), pollMs = SYNC_LOCK_POLL_MS }) {
+export function makeSyncHost({ bundle, backupDir = DEFAULT_BACKUP_DIR, exec = sh, agentName = path.basename(bundle, ".ouro"), git = (args) => bundleGit(args, exec, { agentRoot: containerBundle(agentName) }), sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = () => Date.now(), pollMs = SYNC_LOCK_POLL_MS }) {
   const state = path.join(bundle, "state")
   const marker = path.join(state, "sync-paused")
-  const agentName = path.basename(bundle, ".ouro")
   const branch = () => {
     try { return readJsonNoFollow(path.join(bundle, "agent.json"))?.sync?.branch ?? "main" } catch { return "main" }
   }
@@ -1930,7 +1947,7 @@ export function makeSyncHost({ bundle, backupDir = DEFAULT_BACKUP_DIR, exec = sh
      * not move.
      */
     agentChanges(head) {
-      const listed = bundleGit(["ls-remote", "origin", `refs/heads/${branch()}`], exec, { env: [`GIT_SSH_COMMAND=${SYNC_SSH_COMMAND}`, "GIT_SSH_VARIANT=ssh"], timeout: 60_000 })
+      const listed = bundleGit(["ls-remote", "origin", `refs/heads/${branch()}`], exec, { env: [`GIT_SSH_COMMAND=${SYNC_SSH_COMMAND}`, "GIT_SSH_VARIANT=ssh"], timeout: 60_000, agentRoot: containerBundle(agentName) })
       const remoteHead = /^([0-9a-f]{40})\s/u.exec(listed)?.[1]
       if (!remoteHead) throw new Error(`git ls-remote origin refs/heads/${branch()} listed no head`)
       const commits = lines(git(["log", "--no-merges", `--author=<${agentName}@ouro.local>`, "--format=%H", `${head}..${remoteHead}`]))
@@ -1960,7 +1977,7 @@ export function makeSyncHost({ bundle, backupDir = DEFAULT_BACKUP_DIR, exec = sh
             const entry = JSON.parse(line)
             const at = Date.parse(entry.ts)
             if (typeof entry.event !== "string" || !(at >= sinceMs)) continue
-            if (entry.meta?.agentRoot !== undefined && entry.meta.agentRoot !== CONTAINER_BUNDLE) continue
+            if (entry.meta?.agentRoot !== undefined && entry.meta.agentRoot !== containerBundle(agentName)) continue
             out.push({ event: entry.event, at })
           } catch { /* a torn line */ }
         }
@@ -1970,7 +1987,8 @@ export function makeSyncHost({ bundle, backupDir = DEFAULT_BACKUP_DIR, exec = sh
   }
 }
 
-export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR, clientDir = DEFAULT_CLIENT_DIR, backupDir = DEFAULT_BACKUP_DIR, chainRoot, cardUrl, log = console.error, exec = sh, stage = dockerStage(exec), rootUid = 0, rootGid = 0 } = {}) {
+export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR, clientDir = DEFAULT_CLIENT_DIR, backupDir = DEFAULT_BACKUP_DIR, chainRoot, cardUrl, log = console.error, exec = sh, stage = dockerStage(exec), rootUid = 0, rootGid = 0, agentName = "sanctuary" } = {}) {
+  const agentRoot = containerBundle(agentName)
   const state = path.join(bundle, "state")
   const replayDir = path.join(state, "replay")
   const clientIssue = rootOwnedDirectoryIssue(clientDir, rootUid)
@@ -2005,7 +2023,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
   }
   return {
     friends: { principal: provisioned.principal.friendId, stranger: provisioned.stranger.friendId, escalation: provisioned.escalation.friendId },
-    sync: makeSyncHost({ bundle, backupDir, exec }),
+    sync: makeSyncHost({ bundle, backupDir, exec, agentName }),
     now: () => Date.now(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     /** The Butler's A2A card must answer before the window opens: a fresh container needs a moment after it turns healthy. */
@@ -2051,7 +2069,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
     /** Asks the Butler's own replay code, inside the container, whether it opens the window for both peers. */
     async windowTrusted() {
       const ids = replayPeers
-      const script = `const h=require("/opt/ouro/dist/a2a/replay-harness.js");const o={};for(const id of ${JSON.stringify(ids)})o[id]=h.isReplayWindowOpen(${JSON.stringify(CONTAINER_BUNDLE)},id);console.log(JSON.stringify(o))`
+      const script = `const h=require("/opt/ouro/dist/a2a/replay-harness.js");const o={};for(const id of ${JSON.stringify(ids)})o[id]=h.isReplayWindowOpen(${JSON.stringify(agentRoot)},id);console.log(JSON.stringify(o))`
       try {
         const seen = JSON.parse(exec("docker", ["exec", "-u", BUTLER_USER, CONTAINER, "node", "-e", script], { timeout: 60_000 }).trim().split("\n").at(-1))
         const closed = ids.filter((id) => seen[id] !== true)
@@ -2096,7 +2114,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
       }
     },
     names(text, options) {
-      return JSON.parse(exec("docker", ["exec", "-i", "-u", BUTLER_USER, CONTAINER, "node", "-e", NAMES_SCRIPT], { input: JSON.stringify([text, options]), stdio: ["pipe", "pipe", "pipe"], timeout: 60_000 }).trim().split("\n").at(-1))
+      return JSON.parse(exec("docker", ["exec", "-i", "-u", BUTLER_USER, CONTAINER, "node", "-e", namesScript(agentRoot)], { input: JSON.stringify([text, options]), stdio: ["pipe", "pipe", "pipe"], timeout: 60_000 }).trim().split("\n").at(-1))
     },
     async readSession(context) {
       const root = path.join(state, "sessions")
@@ -2604,7 +2622,7 @@ function trustedReplayList(trustDir) {
  * the record in the root-owned replay folder (`clientDir`). Nothing in the bundle's state/replay-client or state/replay supplies either, because
  * the Butler's user writes the bundle.
  */
-export function provision({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR, clientDir = DEFAULT_CLIENT_DIR, chainRoot, cardUrl, log = console.log, run = ctr, discover = discoverCardUrl, stage = dockerStage(), retireRecord = retireRecordInContainer, retire = [], rootUid = 0, rootGid = 0, rotate = false, now = new Date() } = {}) {
+export function provision({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR, clientDir = DEFAULT_CLIENT_DIR, chainRoot, cardUrl, log = console.log, run = ctr, discover = discoverCardUrl, stage = dockerStage(), retireRecord = retireRecordInContainer, retire = [], rootUid = 0, rootGid = 0, rotate = false, now = new Date(), agentName = "sanctuary" } = {}) {
   const state = path.join(bundle, "state")
   const replayDir = path.join(state, "replay")
   refuseLinkOrWrongType(state, "directory")
@@ -2640,8 +2658,8 @@ export function provision({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DI
       // The record lives in the Butler-writable bundle, so a missing or mangled one must not stop the rotation: the trust-dir revokes
       // above are what take authority away, and they have already happened.
       try {
-        run(["friend", "update", friendId, "--agent", "sanctuary", "--admission", "revoked", "--trust", "stranger"])
-        retireRecord(friendId, did)
+        run(["friend", "update", friendId, "--agent", agentName, "--admission", "revoked", "--trust", "stranger"])
+        retireRecord(friendId, did, containerBundle(agentName))
         log(`retired friend ${friendId}`)
       } catch (error) {
         log(`revoked friend ${friendId}'s grants, but could not demote its record: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`)
@@ -2667,11 +2685,11 @@ export function provision({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DI
       handOverFile(hostIdentity, { uid: rootUid, gid: rootGid, mode: 0o600 })
       let friendId = previous[who]?.did === did ? previous[who].friendId : null
       if (!friendId) {
-        const onboarded = run(["a2a", "onboard", "--agent", "sanctuary", "--did", did, "--name", name, "--trust", trust])
+        const onboarded = run(["a2a", "onboard", "--agent", agentName, "--did", did, "--name", name, "--trust", trust])
         friendId = /friend id:\s*(\S+)/.exec(onboarded)?.[1]
         if (!friendId) throw new Error(`could not read the friend id from: ${onboarded}`)
       }
-      run(["friend", "update", friendId, "--agent", "sanctuary", "--admission", "active", "--initiative", "reactive_only", "--profile", PEER_PROFILE])
+      run(["friend", "update", friendId, "--agent", agentName, "--admission", "active", "--initiative", "reactive_only", "--profile", PEER_PROFILE])
       const record = readJsonNoFollow(friendFile(bundle, friendId))
       // The record's own delegationGrant is only a hint the Butler ignores; nobody here may hold one.
       if (record.delegationGrant && !grant) throw new Error(`${name} must not hold a delegation grant`)
@@ -2749,12 +2767,15 @@ export async function main(argv, io = { out: (text) => console.log(text), err: (
     for (const file of statusProblems((deps.readStdin ?? (() => readFileSync(0, "utf8")))())) io.out(file)
     return 0
   }
+  // The paths inside the container, and the agent its commands name, follow the Butler name the live container's image runs.
+  let agentName
+  if (options.command === "provision" || options.command === "run") try { agentName = (deps.butlerName ?? liveButlerName)() } catch (error) { io.err(`could not read the Butler's name from the ${CONTAINER} container's image: ${String(error.message).split("\n")[0]}`); return 1 }
   if (options.command === "provision") {
-    try { deps.provision({ ...(options.bundle ? { bundle: options.bundle } : {}), ...(options.trustDir ? { trustDir: options.trustDir } : {}), ...(options.cardUrl ? { cardUrl: options.cardUrl } : {}), ...(options.clientDir ? { clientDir: options.clientDir } : {}), ...(options.retire ? { retire: options.retire } : {}), ...(options.rotate ? { rotate: true } : {}), log: io.out }); return 0 } catch (error) { io.err(`provision failed: ${error.message}`); return 1 }
+    try { deps.provision({ agentName, ...(options.bundle ? { bundle: options.bundle } : {}), ...(options.trustDir ? { trustDir: options.trustDir } : {}), ...(options.cardUrl ? { cardUrl: options.cardUrl } : {}), ...(options.clientDir ? { clientDir: options.clientDir } : {}), ...(options.retire ? { retire: options.retire } : {}), ...(options.rotate ? { rotate: true } : {}), log: io.out }); return 0 } catch (error) { io.err(`provision failed: ${error.message}`); return 1 }
   }
   if (options.command === "run") {
     let host
-    try { host = deps.makeHost({ ...(options.bundle ? { bundle: options.bundle } : {}), ...(options.backupDir ? { backupDir: options.backupDir } : {}), ...(options.trustDir ? { trustDir: options.trustDir } : {}), ...(options.clientDir ? { clientDir: options.clientDir } : {}), ...(options.cardUrl ? { cardUrl: options.cardUrl } : {}), log: io.err }) } catch (error) { io.err(error.message); return 1 }
+    try { host = deps.makeHost({ agentName, ...(options.bundle ? { bundle: options.bundle } : {}), ...(options.backupDir ? { backupDir: options.backupDir } : {}), ...(options.trustDir ? { trustDir: options.trustDir } : {}), ...(options.clientDir ? { clientDir: options.clientDir } : {}), ...(options.cardUrl ? { cardUrl: options.cardUrl } : {}), log: io.err }) } catch (error) { io.err(error.message); return 1 }
     // butler-ship runs this gate against the live version first and hands the upgrade that log through the environment.
     const baselineFile = options.baseline ?? env.OURO_REPLAY_BASELINE
     let baseline
