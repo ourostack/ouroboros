@@ -3550,8 +3550,8 @@ describe("buildSystem with context", () => {
     expect(result).toContain("when i intentionally choose outward contact, i send_message")
     expect(result).toContain("ponder creates or revises typed packets")
     expect(result).toContain("HEARTBEAT_OK")
-    expect(result).toContain("HEARTBEAT_OK is real rest")
-    expect(result).toContain("repeated heartbeat/test pokes don't mean i am failing")
+    expect(result).toContain("its body is my standing order: i do what it asks before i rest")
+    expect(result).not.toContain("HEARTBEAT_OK is real rest")
   })
 
   it("buildSystem('inner') keeps the private-runtime delivery rules without an inventory", async () => {

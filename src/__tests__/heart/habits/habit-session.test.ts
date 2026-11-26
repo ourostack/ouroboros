@@ -280,6 +280,16 @@ describe("habit-session helpers", () => {
       friendStore,
     })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("target") })
 
+    // send_message's key is optional and its handler defaults it to "session"; the route check does the same
+    // (2026-11-26: Slugger's heartbeat text to Ari was blocked for leaving it out).
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope,
+      toolName: "send_message",
+      args: { friendId: "Ari", channel: "bluebubbles", content: "revived a lane" },
+      friendStore,
+    })).resolves.toMatchObject({ allowed: true, routeKind: "family", friendId: "ari", channel: "bluebubbles", key: "session" })
+
     await expect(resolveHabitReturnRoute({
       agentRoot,
       envelope,
@@ -463,7 +473,7 @@ describe("habit-session helpers", () => {
       toolName: "send_message",
       args: { friendId: "ari", channel: "cli", content: "checking in" },
       friendStore,
-    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("no permitted return route target") })
+    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("no habit return route allows ari/cli/session") })
   })
 
   it("resolves singleton delegated surface routes without mutating queues", async () => {
