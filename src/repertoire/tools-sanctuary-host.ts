@@ -54,7 +54,7 @@ function currentCoordinates(ctx: RootHostSelectionContext): RootHostBinding {
   const session = ctx.currentSession
   const friend = ctx.context?.friend
   requireOwner(isButlerAgent(ctx.agentName) && typeof ctx.agentRoot === "string" && path.isAbsolute(ctx.agentRoot)
-    && path.resolve(ctx.agentRoot) === ctx.agentRoot && path.basename(ctx.agentRoot) === "sanctuary.ouro")
+    && path.resolve(ctx.agentRoot) === ctx.agentRoot && path.basename(ctx.agentRoot) === `${ctx.agentName}.ouro`)
   requireOwner(root && root.port.isHealthy() && !ctx.currentExternalEvent)
   requireOwner(relationship?.profileId === "sanctuary-owner" && relationship.advertisedToolNames?.includes(NAME))
   ownerFriend(friend, root.port)
