@@ -1280,6 +1280,63 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
     })
   })
 
+  describe("the shell can't write the friends store or the product rules either (#1949)", () => {
+    const made: string[] = []
+    const bundle = () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "store-shell-"))
+      made.push(root)
+      fs.mkdirSync(path.join(root, "friends"))
+      fs.mkdirSync(path.join(root, "product"))
+      fs.writeFileSync(path.join(root, "friends", "p.json"), "{}")
+      return root
+    }
+    const peer = (root: string, over: Record<string, unknown> = {}) => ({ readPaths: new Set<string>(), agentRoot: root, trustLevel: "friend" as const, friendKind: "agent" as const, friendId: "peer", channel: "a2a", ...over })
+    afterEach(() => { for (const root of made.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
+    const writes = [
+      "cp /tmp/f.json R/friends/p.json", "sed -i s/friend/family/ R/friends/p.json", "cd R && sed -i s/a/b/ friends/p.json",
+      "python3 -c \"open('R/friends/p.json','w').write('x')\"", "echo x > R/friends/p.json", "cd R/friends && rm p.json", "rm -rf R/friends",
+      "mv /tmp/x R/friends/p.json", "node -e \"require('fs').writeFileSync('friends/p.json','x')\"", "cat R/friends/p.json | tee R/friends/q.json",
+      "cp /tmp/rules.md R/product/RULES.md", "ls R/friends $(rm R/friends/p.json)", "cd R && rm -rf friends", "cd R; echo ok && mv friends /tmp/f",
+    ]
+    it.each(writes)("refuses %s from an A2A peer, as the file tools do", async (command) => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      const root = bundle()
+      vi.mocked(fs.existsSync).mockReturnValue(true)
+      expect(guardInvocation("shell", { command: command.replaceAll("R/", `${root}/`) }, peer(root))).toMatchObject({ allowed: false, reason: expect.stringContaining("protected") })
+    })
+    it("refuses the owner's own turn too, since the harness writes the store", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      const root = bundle()
+      vi.mocked(fs.existsSync).mockReturnValue(true)
+      expect(guardInvocation("shell", { command: `sed -i s/a/b/ ${root}/friends/p.json` }, peer(root, { trustLevel: "family", friendKind: "human", channel: "telegram" }))).toMatchObject({ allowed: false })
+    })
+    it("refuses a path whose landing place can't be read", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      const root = bundle()
+      fs.symlinkSync(path.join(root, "friends", "loop"), path.join(root, "friends", "loop2"))
+      fs.symlinkSync(path.join(root, "friends", "loop2"), path.join(root, "friends", "loop"))
+      vi.mocked(fs.existsSync).mockReturnValue(true)
+      expect(guardInvocation("shell", { command: `cp a friends/loop/x` }, peer(root))).toMatchObject({ allowed: false })
+    })
+    it.each(["cat R/friends/p.json", "ls -la R/friends", "grep -rn family R/friends", "cd R/friends && cat p.json | head -3", "cat R/product/RULES.md", "git -C R log -- friends"])("allows the read %s", async (command) => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      const root = bundle()
+      vi.mocked(fs.existsSync).mockReturnValue(true)
+      expect(guardInvocation("shell", { command: command.replaceAll("R/", `${root}/`).replace("-C R", `-C ${root}`) }, peer(root))).toEqual({ allowed: true })
+    })
+    it("leaves other folders named friends, bundles without the store, and calls with no agent root alone", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      const root = bundle()
+      vi.mocked(fs.existsSync).mockReturnValue(true)
+      for (const command of [`echo x > ${root}/notes/friends/a.md`, "cp a /home/ari/Projects/friends/b", `echo x > ${root}/friends-notes.md`, `cp a ${root}/product-old/b`, "echo my friends are kind > /tmp/out.md"]) {
+        expect(guardInvocation("shell", { command }, peer(root)), command).toEqual({ allowed: true })
+      }
+      expect(guardInvocation("shell", { command: "cp a /bundle/friends/p.json" }, peer(root, { agentRoot: undefined }))).toEqual({ allowed: true })
+      vi.mocked(fs.existsSync).mockReturnValue(false)
+      expect(guardInvocation("shell", { command: `cp a ${root}/friends/p.json` }, peer(root))).toEqual({ allowed: true })
+    })
+  })
+
   describe("the psyche belongs to the agent, gated by trust", () => {
     const REFUSAL = "that file is part of me; I change it when my owner asks me in our own chat."
     const family = (channel: string, over: Record<string, unknown> = {}) => ({ friendId: "f1", friendKind: "human" as const, trustLevel: "family" as const, channel, ...over })

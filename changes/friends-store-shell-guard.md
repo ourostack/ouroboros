@@ -1,0 +1,1 @@
+- The shell can no longer write an agent's friends store or product rules. The file tools already refused those writes for everyone; now a shell command that names either folder runs only when every part of it plainly reads, so an A2A peer can't raise its own trust with `sed -i` ([#1949](https://github.com/ourostack/ouroboros/issues/1949)).

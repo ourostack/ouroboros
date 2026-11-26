@@ -187,7 +187,11 @@ export function psycheWriteAllowed(fileClass: "tacit" | "identity", _filePath: s
 // that may not write a psyche file may still read it from the shell: a command that names the psyche runs only when every part
 // of it is a plain read. Commands that never name the psyche are untouched.
 const PSYCHE_SHELL_FILE = /^(?:SOUL|IDENTITY|LORE|ASPIRATIONS|TACIT)\.md$/i
-const PSYCHE_SHELL_PATHLIKE = /[\w.~/-]*(?:\/psyche(?:\/[\w.*-]*)?|psyche\/[\w.*-]*)/g
+const SHELL_FOLDER_PATHLIKE: Record<"psyche" | "friends" | "product", RegExp> = {
+  psyche: /[\w.~/-]*(?:\/psyche(?:\/[\w.*-]*|(?![\w.*-]))|psyche\/[\w.*-]*)/g,
+  friends: /[\w.~/-]*(?:\/friends(?:\/[\w.*-]*|(?![\w.*-]))|friends\/[\w.*-]*)/g,
+  product: /[\w.~/-]*(?:\/product(?:\/[\w.*-]*|(?![\w.*-]))|product\/[\w.*-]*)/g,
+}
 const PSYCHE_SHELL_READERS = new Set(["cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "ls", "stat", "file", "diff", "cmp", "sha256sum", "shasum", "md5sum", "cd", "pwd", "echo", "printf", "true"])
 const PSYCHE_SHELL_GIT_READS = new Set(["log", "show", "diff", "status", "blame"])
 const PSYCHE_SHELL_SEPARATORS = /\s*(?:&&|\|\||[;&|\n])\s*/
@@ -214,15 +218,20 @@ function shellWordsLoosely(command: string): string[] {
   return words
 }
 
+/** The words in one shell word that could name the agent's `folder`: the bare folder name, or a path through it. */
+function shellFolderCandidates(word: string, folder: "psyche" | "friends" | "product"): Set<string> {
+  const candidates = new Set<string>(word === folder || word === `./${folder}` ? [word] : [])
+  for (const match of word.matchAll(SHELL_FOLDER_PATHLIKE[folder])) candidates.add(match[0])
+  return candidates
+}
+
 /** Which psyche files the command names: null for none, else whether any of them is an identity file. */
 function shellPsycheTarget(command: string, agentRoot: string): "tacit" | "identity" | null {
   let target: "tacit" | "identity" | null = null
   const note = (fileClass: "tacit" | "identity") => { if (target !== "identity") target = fileClass }
   for (const word of shellWordsLoosely(command)) {
     if (PSYCHE_SHELL_FILE.test(word)) note(/^TACIT\.md$/i.test(word) ? "tacit" : "identity")
-    const candidates = new Set<string>(word === "psyche" || word === "./psyche" ? [word] : [])
-    for (const match of word.matchAll(PSYCHE_SHELL_PATHLIKE)) candidates.add(match[0])
-    for (const candidate of candidates) {
+    for (const candidate of shellFolderCandidates(word, "psyche")) {
       try {
         const fileClass = psycheFileClass(candidate, agentRoot)
         if (fileClass) note(fileClass)
@@ -257,13 +266,51 @@ function shellPsycheRefusal(command: string, context: GuardContext): string | nu
   if (!agentRoot || !fs.existsSync(path.join(agentRoot, "psyche"))) return null
   const fileClass = shellPsycheTarget(command, agentRoot)
   if (!fileClass || psycheWriteAllowed(fileClass, "", context)) return null
+  if (shellCommandOnlyReads(command)) return null
+  emitNervesEvent({ component: "repertoire", event: "repertoire.psyche_shell_refused", message: "refused a shell command that could write a psyche file this turn may not write", meta: { fileClass, channel: context.channel ?? null } })
+  return fileClass === "tacit" && isFriendTurn(context) ? TACIT_REFUSAL : PSYCHE_REFUSAL
+}
+
+/** Whether every part of the command plainly reads: no output into a file, no tee and no substitution. */
+function shellCommandOnlyReads(command: string): boolean {
   // Output into a file (a numbered stream into /dev/null or another stream aside), a substitution or a tee can write.
   const streams = command.replace(/\d>(?:&\d|\s*\/dev\/null)/g, "")
   const writesOut = /(?:^|[^0-9&>])>|&>|>>|\btee\b/.test(streams)
-  const onlyReads = !writesOut && !SUBSHELL_PATTERN.test(command) && streams.split(PSYCHE_SHELL_SEPARATORS).filter(Boolean).every(shellSegmentOnlyReads)
-  if (onlyReads) return null
-  emitNervesEvent({ component: "repertoire", event: "repertoire.psyche_shell_refused", message: "refused a shell command that could write a psyche file this turn may not write", meta: { fileClass, channel: context.channel ?? null } })
-  return fileClass === "tacit" && isFriendTurn(context) ? TACIT_REFUSAL : PSYCHE_REFUSAL
+  return !writesOut && !SUBSHELL_PATTERN.test(command) && streams.split(PSYCHE_SHELL_SEPARATORS).filter(Boolean).every(shellSegmentOnlyReads)
+}
+
+// The harness writes the friends store (each friend's trust) and the product rules; the file tools refuse a model's write there
+// for everyone. The shell had no such check, so an A2A peer could ask for `sed -i s/friend/family/ friends/<it>.json` (#1949).
+// A command that names either folder, resolved against the agent's own root, runs only when every part of it plainly reads.
+const SHELL_STORE_FOLDERS = ["friends", "product"] as const
+
+/**
+ * Whether the command names the agent's own `folder`. A path whose landing place can't be read counts as naming it. The bare
+ * word is also an English one ("my friends are kind"), so echo and printf's words name it only as a path.
+ */
+function shellNamesAgentFolder(command: string, agentRoot: string, folder: "friends" | "product"): boolean {
+  return command.split(PSYCHE_SHELL_SEPARATORS).some((segment) => {
+    const words = shellWordsLoosely(segment)
+    const prose = /^(?:echo|printf)$/.test(words.find((word) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word))?.split("/").pop() ?? "")
+    return words.some((word) => [...shellFolderCandidates(word, folder)].some((candidate) => {
+      if (prose && !candidate.includes("/")) return false
+      try {
+        return insideAgentFolder(candidate, agentRoot, folder)
+      } catch {
+        return true
+      }
+    }))
+  })
+}
+
+/** The refusal for a shell command that could write the friends store or the product rules, or null. */
+function shellStoreRefusal(command: string, context: GuardContext): string | null {
+  const agentRoot = context.agentRoot
+  if (!agentRoot) return null
+  const folder = SHELL_STORE_FOLDERS.find((name) => fs.existsSync(path.join(agentRoot, name)) && shellNamesAgentFolder(command, agentRoot, name))
+  if (!folder || shellCommandOnlyReads(command)) return null
+  emitNervesEvent({ component: "repertoire", event: "repertoire.store_shell_refused", message: "refused a shell command that could write the friends store or the product rules", meta: { folder, channel: context.channel ?? null } })
+  return REASONS.protectedPath
 }
 
 /** A turn that carries a person who is not family: TACIT is read-only to it. */
@@ -336,6 +383,8 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>, con
     if (shellWritesToProtectedPath(command)) return deny(REASONS.protectedPath)
     const psycheRefusal = shellPsycheRefusal(command, context)
     if (psycheRefusal) return deny(psycheRefusal)
+    const storeRefusal = shellStoreRefusal(command, context)
+    if (storeRefusal) return deny(storeRefusal)
   }
 
   return allow
