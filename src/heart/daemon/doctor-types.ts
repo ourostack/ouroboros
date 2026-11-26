@@ -84,6 +84,13 @@ export interface DoctorDeps {
   rsvpCutoverLegacyRoot?: string
   /** Optional injection for side-effect-free legacy RSVP cutover probes. */
   rsvpCutoverDeps?: RsvpCutoverDeps
+  /**
+   * The macOS account the daemon runs under, for the iMessage host check: read from its socket's owner, so it holds
+   * even when `ouro doctor` runs as someone else. `user` is null when that account isn't this process's.
+   */
+  daemonAccount?: () => { running: boolean; user: string | null; uid: number }
+  /** A macOS account's uid, or null when there is none; defaults to `id -u`. */
+  accountUid?: (username: string) => number | null
   /** Optional mutation-free hosted index authority probe used by Mailroom diagnostics. */
   observeHostedMailAuthority?: (agentName: string) => Promise<HostedMailAuthorityProbeResult>
 }

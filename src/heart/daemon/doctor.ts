@@ -6,6 +6,9 @@
  * "fail" check and the remaining categories still run.
  */
 
+import { execFileSync } from "child_process"
+import * as fs from "fs"
+import * as os from "os"
 import * as path from "path"
 import { portableGitAsset, portableGitBinary, portableGitRoot } from "./portable-git"
 import type {
@@ -18,6 +21,7 @@ import type {
 import { emitNervesEvent } from "../../nerves/runtime"
 import { probeBlueBubblesHealth } from "./bluebubbles-health-diagnostics"
 import { inspectBlueBubblesWebhookRegistration } from "../../senses/bluebubbles/webhook-registration"
+import { blueBubblesUrlTrust, type BlueBubblesUrlTrust } from "../../senses/bluebubbles/url-trust"
 import {
   evaluateFreshness,
   observeAppendPerEventStore,
@@ -328,6 +332,76 @@ const DEFINITIVE_BLUEBUBBLES_WEBHOOK_STATES: ReadonlySet<BlueBubblesWebhookRegis
   "host-account-refused",
 ])
 
+const URL_TRUST_DETAIL: Record<Exclude<BlueBubblesUrlTrust, "untrusted">, string> = {
+  loopback: "on this Mac: the server password stays on this machine, and the mailbox reads letter answers from it",
+  tls: "over https: the server password is encrypted in transit, and the mailbox reads letter answers from it",
+  tailnet: "at a tailnet address: Tailscale's tunnel encrypts the server password in transit while it is up, and the mailbox reads letter answers from it",
+}
+
+/** Whether the BlueBubbles address keeps the server password, which every request carries, from the network. */
+function blueBubblesAddressCheck(agentDir: string, agentName: string, serverUrl: string): DoctorCheck {
+  const label = `${agentDir} bluebubbles server address`
+  const fix = `then re-attach with \`ouro connect bluebubbles --agent ${agentName}\``
+  if (!URL.canParse(serverUrl) || !/^https?:$/.test(new URL(serverUrl).protocol)) {
+    return { label, status: "warn", detail: `${serverUrl} isn't an http or https URL, so the mailbox won't read letter answers from it. Correct it, ${fix}` }
+  }
+  const trust = blueBubblesUrlTrust(serverUrl)
+  if (trust !== "untrusted") return { label, status: "pass", detail: URL_TRUST_DETAIL[trust] }
+  return {
+    label,
+    status: "warn",
+    detail: `plain http to an address outside this Mac and the tailnet, so the server password crosses the network readable and the mailbox won't read letter answers from it. Use https, the server's tailnet address, or a server on this Mac, ${fix}`,
+  }
+}
+
+/** The daemon's macOS account, from its socket's owner; when no daemon is running, this process's account. */
+export function daemonAccount(socketPath: string, me: { uid: number; username: string } = os.userInfo()): { running: boolean; user: string | null; uid: number } {
+  let uid: number
+  try {
+    uid = fs.statSync(socketPath).uid
+  } catch {
+    return { running: false, user: me.username, uid: me.uid }
+  }
+  return { running: true, user: uid === me.uid ? me.username : null, uid }
+}
+
+/** A macOS account's uid, or null when no such account exists here. */
+export function accountUid(username: string, run: typeof execFileSync = execFileSync): number | null {
+  try {
+    const uid = Number(String(run("id", ["-u", username], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })).trim())
+    return Number.isInteger(uid) ? uid : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Whether a shell on the daemon's account could send iMessages from the person's Apple ID (design §3.4). The declared
+ * host account is the one signed in to the agent's own Apple ID, so a daemon running under it can at most send as the
+ * agent. Accounts are compared by uid, so the check holds when ouro doctor runs as the person and the daemon doesn't.
+ */
+async function blueBubblesIMessageHostCheck(agentDir: string, hostUsername: string, deps: DoctorDeps): Promise<DoctorCheck> {
+  const label = `${agentDir} bluebubbles iMessage host`
+  let account = (deps.daemonAccount ?? (() => daemonAccount(deps.socketPath)))()
+  // A socket left behind by a daemon that died names no running daemon.
+  if (account.running && !(await deps.checkSocketAlive(deps.socketPath))) {
+    const me = os.userInfo()
+    account = { running: false, user: me.username, uid: me.uid }
+  }
+  const judged = account.running ? "" : " The daemon isn't running, so this judges the account ouro doctor runs as."
+  const hostUid = (deps.accountUid ?? accountUid)(hostUsername)
+  if (hostUid !== null && hostUid === account.uid) {
+    return { label, status: "pass", detail: `the daemon runs as ${hostUsername}, the account declared as signed in to the agent's own Apple ID, so a shell beside it can send as the agent, not from the person's Messages.${judged}` }
+  }
+  const missing = hostUid === null ? ` (no macOS account ${hostUsername} exists on this Mac)` : ""
+  const who = account.user ?? `uid ${account.uid}`
+  return {
+    label,
+    status: "warn",
+    detail: `the daemon runs as ${who}, not ${hostUsername}${missing}, the account declared for the agent's own Apple ID, so a shell on ${who} could send iMessages from whatever Apple ID that account's Messages uses, perhaps the person's. Each letter answer is marked shared-apple-id until a human runs the daemon under ${hostUsername}.${judged}`,
+  }
+}
+
 function blueBubblesUpstreamEvidence(probe: BlueBubblesHealthProbeResult): BlueBubblesInfrastructureEvidence["upstream"] {
   if (probe.ok) return "healthy"
   if (DEFINITIVE_BLUEBUBBLES_FAILURES.has(probe.classification)) {
@@ -575,6 +649,9 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
           status: "pass",
           detail: `${serverUrl} (host account ${hostUsername})`,
         })
+
+        checks.push(blueBubblesAddressCheck(agentDir, agentName, serverUrl))
+        checks.push(await blueBubblesIMessageHostCheck(agentDir, hostUsername, deps))
 
         let upstreamContext = "upstream probe not run in this pass"
         let infrastructure: BlueBubblesInfrastructureEvidence = { upstream: "not-run", webhook: null }
