@@ -11,3 +11,35 @@ export type ButlerAgentName = typeof BUTLER_AGENT_NAMES[number]
 export function isButlerAgent(agentName: unknown): agentName is ButlerAgentName {
   return typeof agentName === "string" && (BUTLER_AGENT_NAMES as readonly string[]).includes(agentName)
 }
+
+/** The Butler's own paths and names inside its container, all derived from the name its bundle has. */
+export interface ButlerContainerPaths {
+  agentRoot: string
+  crontabPath: string
+  habitNamespace: string
+  healthJobId: string
+  healthTaskPath: string
+  healthCommand: string
+  healthCronMarker: string
+}
+
+export function butlerContainerPaths(name: ButlerAgentName): ButlerContainerPaths {
+  const agentRoot = `/home/ouro/AgentBundles/${name}.ouro`
+  const habitNamespace = `habit:${name}`
+  const healthJobId = `${name}:sanctuary-health`
+  return {
+    agentRoot,
+    crontabPath: `/home/ouro/.ouro-cli/scheduler/${name}.crontab`,
+    habitNamespace,
+    healthJobId,
+    healthTaskPath: `${agentRoot}/habits/sanctuary-health.md`,
+    healthCommand: `/usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke ${name} --habit sanctuary-health --trigger cron`,
+    healthCronMarker: `# ouro:${habitNamespace}:${healthJobId}`,
+  }
+}
+
+/** The one Butler among the agents this daemon manages, or null when there is none or more than one. */
+export function managedButlerAgent(managedAgents: readonly string[]): ButlerAgentName | null {
+  const butlers = managedAgents.filter(isButlerAgent)
+  return butlers.length === 1 ? butlers[0]! : null
+}

@@ -13,13 +13,13 @@ import { ensureSanctuaryPackageManagedBundle, inspectSanctuaryDirectoryFromBase,
 const roots: string[] = []
 const VERSION = "0.1.0-alpha.798"
 
-function makeLayout(): { repoRoot: string; bundlesRoot: string; packageRoot: string; agentRoot: string } {
+function makeLayout(name = "sanctuary"): { repoRoot: string; bundlesRoot: string; packageRoot: string; agentRoot: string } {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-package-activation-")))
   roots.push(root)
   const repoRoot = path.join(root, "repo")
   const bundlesRoot = path.join(root, "AgentBundles")
   const packageRoot = path.join(repoRoot, "deploy", "unraid", "sanctuary.ouro")
-  const agentRoot = path.join(bundlesRoot, "sanctuary.ouro")
+  const agentRoot = path.join(bundlesRoot, `${name}.ouro`)
   fs.mkdirSync(packageRoot, { recursive: true })
   fs.mkdirSync(agentRoot, { recursive: true })
   return { repoRoot, bundlesRoot, packageRoot, agentRoot }
@@ -82,6 +82,16 @@ describe("Sanctuary package-management activation", () => {
     })
   })
 
+  it.each([["butler", "butler"], ["sanctuary", "butler"], ["butler", "sanctuary"]])("runs the Butler's bundle named %s whichever name the flag gives (%s)", (name, flag) => {
+    const layout = makeLayout(name)
+    const decision = resolveSanctuaryPackageManagementActivation({
+      mode: "production", argv: ["node", "daemon-entry.js", "--package-managed-agent", flag], managedAgents: [name],
+      repoRoot: layout.repoRoot, bundlesRoot: layout.bundlesRoot, runtimePackageVersion: VERSION,
+    })
+    expect(decision).toEqual({ kind: "active", packageRoot: layout.packageRoot, agentRoot: layout.agentRoot, runtimePackageVersion: VERSION })
+    expect(resolveSanctuaryPackageManagedRoots({ repoRoot: layout.repoRoot, bundlesRoot: layout.bundlesRoot, agent: name as "butler" | "sanctuary" }).agentRoot).toBe(layout.agentRoot)
+  })
+
   it.each([
     ["no package flag", ["node", "daemon-entry.js"]],
     ["an unrelated socket flag", ["node", "daemon-entry.js", "--socket", "/tmp/custom.sock"]],
@@ -98,6 +108,7 @@ describe("Sanctuary package-management activation", () => {
     [["sanctuary"], ["node", "daemon-entry.js", "--package-managed-agent", "--socket", "/tmp/ouro.sock"]],
     [["sanctuary"], ["node", "daemon-entry.js", "--package-managed-agent", "slugger"]],
     [["sanctuary"], ["node", "daemon-entry.js", "--package-managed-agent", "sanctuary", "--package-managed-agent", "sanctuary"]],
+    [["butler", "sanctuary"], ["node", "daemon-entry.js", "--package-managed-agent", "butler"]],
   ])("fails closed for agents %j and argv %j", (managedAgents, argv) => {
     const { decision } = resolve({ managedAgents, argv })
     expect(decision.kind).toBe("invalid")

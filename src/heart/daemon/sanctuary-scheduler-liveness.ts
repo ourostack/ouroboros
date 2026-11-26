@@ -5,11 +5,10 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { SupercronicSupervisorSnapshot } from "./supercronic-supervisor"
 import type { SanctuarySchedulerOrigin } from "./sanctuary-scheduler-origin"
+import { butlerContainerPaths, isButlerAgent } from "../butler-agent"
 
 const SHA256 = /^[0-9a-f]{64}$/u
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
-const CRONTAB_PATH = "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"
-const COMMAND = "/usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron"
 
 interface HealthSweepRecord {
   sweepId: string
@@ -158,15 +157,19 @@ export function verifySanctuarySchedulerLivenessReceiptMac(identityKey: string, 
 
 function validateSupervisor(snapshot: SupercronicSupervisorSnapshot): void {
   const manifest = snapshot.manifest
+  // The Butler's paths all follow the name its bundle has; the manifest's job names it.
+  const agent = manifest[0]?.agent
+  if (!isButlerAgent(agent)) throw new Error("Sanctuary scheduler supervisor attestation is invalid")
+  const paths = butlerContainerPaths(agent)
   if (snapshot.schemaVersion !== "supercronic-supervisor-snapshot-v1" || snapshot.daemonPid !== process.pid
     || snapshot.childCount !== 1 || snapshot.healthy !== true || !Number.isSafeInteger(snapshot.childPid) || snapshot.childPid <= 1
-    || snapshot.binaryPath !== "/usr/local/bin/supercronic" || snapshot.crontabPath !== CRONTAB_PATH
-    || JSON.stringify(snapshot.args) !== JSON.stringify(["-split-logs", "-inotify", CRONTAB_PATH])
-    || snapshot.namespace !== "habit:sanctuary" || manifest.length !== 1
-    || manifest[0]?.id !== "sanctuary:sanctuary-health" || manifest[0].agent !== "sanctuary"
-    || manifest[0].taskId !== "sanctuary-health" || manifest[0].schedule !== "*/15 * * * *"
-    || manifest[0].taskPath !== "/home/ouro/AgentBundles/sanctuary.ouro/habits/sanctuary-health.md"
-    || manifest[0].command !== COMMAND || !snapshot.renderedCrontab.includes(`# ouro:habit:sanctuary:sanctuary:sanctuary-health\n*/15 * * * * ${COMMAND}\n`)) {
+    || snapshot.binaryPath !== "/usr/local/bin/supercronic" || snapshot.crontabPath !== paths.crontabPath
+    || JSON.stringify(snapshot.args) !== JSON.stringify(["-split-logs", "-inotify", paths.crontabPath])
+    || snapshot.namespace !== paths.habitNamespace || manifest.length !== 1
+    || manifest[0]!.id !== paths.healthJobId
+    || manifest[0]!.taskId !== "sanctuary-health" || manifest[0]!.schedule !== "*/15 * * * *"
+    || manifest[0]!.taskPath !== paths.healthTaskPath
+    || manifest[0]!.command !== paths.healthCommand || !snapshot.renderedCrontab.includes(`${paths.healthCronMarker}\n*/15 * * * * ${paths.healthCommand}\n`)) {
     throw new Error("Sanctuary scheduler supervisor attestation is invalid")
   }
 }
