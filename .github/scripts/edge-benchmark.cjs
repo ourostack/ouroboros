@@ -242,8 +242,10 @@ const TIMINGS = ["cli.wallMs", "daemon.readyMs", "stack.upMs", "turn.firstReques
 function ratchetLimit(key, host) {
   const linux = host?.platform === "linux"
   if (COUNTS.includes(key)) return 0
-  // A short-lived child is sometimes caught by the sampler on macOS (2 or 3 between identical main runs).
-  if (key === "turn.peakProcesses") return linux ? 0 : null
+  // A short-lived child is sometimes caught by the sampler on macOS (2 or 3 between identical main runs), and one
+  // more than main's 4 read on linux-arm64 for a change that starts no process (#1938; the cause is unmeasured).
+  // A quarter lets a peak of 4 read 5; a process that stays shows up in stack.processes, which has no allowance.
+  if (key === "turn.peakProcesses") return linux ? 0.25 : null
   if (MODULES.includes(key)) return 0.01
   if (key === "install.bytes") return 0.02
   // The turn's peak is a 100 ms sample of a tree that briefly holds a second process, so whether the sampler lands on
