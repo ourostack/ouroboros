@@ -34,7 +34,7 @@ const ALLOWED_FILES: Record<string, string> = {
 
 // The generated group's words: those an agent runs, and the person-only ones every agent door refuses.
 const PERSON_ONLY_WORDS = Object.keys(JSON.parse(fs.readFileSync(path.join(__dirname, "../../actions/generated/mailbox/commands.json"), "utf8")).personOnly).map((name) => name.replace(/^mailbox /, ""))
-const NEW_MAILBOX_WORDS = [...[...Object.keys(MAILBOX_CLI_WORDS), ...PERSON_ONLY_WORDS].flatMap((word) => [`${word}\\b`, `<${word}\\b`]), "<word>", "\\$\\{(sub|MAILBOX_USAGE_WORDS)\\}"].join("|")
+const NEW_MAILBOX_WORDS = [...[...Object.keys(MAILBOX_CLI_WORDS), ...PERSON_ONLY_WORDS, "handle"].flatMap((word) => [`${word}\\b`, `<${word}\\b`]), "<word>", "\\$\\{(sub|MAILBOX_USAGE_WORDS)\\}"].join("|")
 const OLD_COMMAND = new RegExp(`ouro outlook\\b|ouro mailbox\\b(?! (${NEW_MAILBOX_WORDS}))`)
 
 const PATTERNS: { id: string; regex: RegExp }[] = [

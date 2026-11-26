@@ -6,6 +6,7 @@ import * as path from "path"
 import { FileFriendStore, isLocalMachineOwnerIdentity, machineOwnerUsername, type FriendRecord } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { checkLetterInput, checkWithdrawReason, newLetterId, type Letter, type LetterEvent, type LetterKind } from "./letter"
+import { readAnsweringHandles } from "./answering"
 import { LetterIndex, type IndexedLetter } from "./letter-index"
 import { LetterStore } from "./store"
 
@@ -208,7 +209,11 @@ export class LettersWriter {
     // The counter moves first, so a crash after it can skip a code but never reuse one.
     letters.store.writeNextCode(number + 1)
     letters.index.reserve(number + 1)
-    const letter: Letter = { v: 1, id: (this.deps.newId ?? newLetterId)(now.getTime()), code: `L${number}`, to, from, ...draft, createdAt: now.toISOString() }
+    // The person's answering handle is frozen into the letter now, so a later change leaves this letter alone.
+    const answeringHandle = readAnsweringHandles(letters.store.dir)[to]
+    const letter: Letter = {
+      v: 1, id: (this.deps.newId ?? newLetterId)(now.getTime()), code: `L${number}`, ...(answeringHandle ? { answeringHandle } : {}), to, from, ...draft, createdAt: now.toISOString(),
+    }
     try {
       letters.store.create(letter)
     } catch (error) {

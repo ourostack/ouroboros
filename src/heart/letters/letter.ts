@@ -176,8 +176,8 @@ function options(kind: LetterKind, value: unknown): LetterOption[] {
   })
 }
 
-// A line anchor such as GitHub's #L207 or #L207-L213, which would otherwise read as a letter code.
-const LINE_ANCHOR = /#L\d+(?:C\d+)?(?:-L\d+(?:C\d+)?)?$/
+/** A line anchor such as GitHub's #L207 or #L207-L213, which would otherwise read as a letter code: the one place a code may sit in a url. */
+export const LINE_ANCHOR = /#L\d+(?:C\d+)?(?:-L\d+(?:C\d+)?)?$/
 
 /** A link's address: checked like other sender text, except that a line anchor at its end is allowed. */
 function url(at: string, value: unknown): string {
