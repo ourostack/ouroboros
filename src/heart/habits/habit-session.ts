@@ -415,7 +415,7 @@ function resolveRouteTarget(input: ResolveHabitReturnRouteInput): RouteTarget | 
   if (input.toolName === "send_message") {
     const friendId = readString(input.args.friendId)
     const channel = readString(input.args.channel)
-    const key = readString(input.args.key)
+    const key = readString(input.args.key) ?? "session"
     if (!friendId || !channel || !key) return null
     return {
       friendId,
