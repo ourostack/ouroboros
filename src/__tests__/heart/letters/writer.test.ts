@@ -490,7 +490,7 @@ describe("LettersWriter deliver, once", () => {
     LetterStore.prototype.append = () => { throw new Error("disk full") }
     try {
       const refused = await refusal(writer.run("slugger", "mailbox_deliver", { letter: "L1" }))
-      expect([refused.code, refused.message]).toEqual(["sent-unrecorded", "L1 went to the chat, but Ouro couldn't record that (disk full). Don't deliver it again."])
+      expect([refused.code, refused.message]).toEqual(["sent-unrecorded", "L1 went to the chat, but writing its delivered event failed (disk full), so the mailbox doesn't show it as delivered. Don't deliver it again."])
     } finally {
       LetterStore.prototype.append = append
     }

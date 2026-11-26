@@ -335,7 +335,7 @@ export class LettersWriter {
       return { outcome: "done", state: after.state, channel: receipt.channel }
     } catch (error) {
       emitNervesEvent({ level: "error", component: "daemon", event: "letters.deliver_unrecorded", message: "a letter was sent but its delivery wasn't recorded", meta: { code: letter.code, channel: receipt.channel, messageId: receipt.messageId } })
-      throw new LetterRefusal("sent-unrecorded", `${letter.code} went to the chat, but Ouro couldn't record that (${(error as Error).message}). Don't deliver it again.`)
+      throw new LetterRefusal("sent-unrecorded", `${letter.code} went to the chat, but writing its delivered event failed (${(error as Error).message}), so the mailbox doesn't show it as delivered. Don't deliver it again.`)
     }
   }
 }

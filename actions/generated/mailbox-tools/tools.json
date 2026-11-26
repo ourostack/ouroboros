@@ -476,7 +476,7 @@
           },
           {
             "code": "sent-unrecorded",
-            "means": "The letter went to the chat, but Ouro couldn't record that.",
+            "means": "The letter went to the chat, but writing its delivered event to the letter's file failed, so the mailbox doesn't show it as delivered.",
             "fix": "Leave it; delivering again would send it twice."
           },
           {
