@@ -148,6 +148,43 @@ describe("Ouro ACP server", () => {
     server.stop()
   })
 
+  it("gives each tool call in a turn its own ACP id, even when one tool runs twice", async () => {
+    const { input, client, server, messages } = await setup()
+    input.write('{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}\n')
+    const created = await waitFor(messages, (message) => message.id === 1)
+    const sessionKey = created.result.sessionId
+    input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sessionKey, prompt: [{ type: "text", text: "read both" }] } })}\n`)
+    const started = await waitFor(client.requests, (request) => request.method === "turn.start")
+    const turnId = started.params.turnId
+    client.emit({ event: "tool.started", sessionKey, turnId, name: "read_file", args: { path: "/a" } })
+    client.emit({ event: "tool.started", sessionKey, turnId, name: "shell", args: { command: "ls" } })
+    client.emit({ event: "tool.started", sessionKey, turnId, name: "read_file", args: { path: "/b" } })
+    client.emit({ event: "tool.completed", sessionKey, turnId, name: "read_file", summary: "a", success: true })
+    client.emit({ event: "tool.completed", sessionKey, turnId, name: "shell", summary: "ls", success: true })
+    client.emit({ event: "tool.completed", sessionKey, turnId, name: "read_file", summary: "b", success: false })
+    client.emit({ event: "tool.completed", sessionKey, turnId, name: "read_file", summary: "late", success: true })
+    client.emit({ event: "turn.completed", sessionKey, turnId })
+    await waitFor(messages, (message) => message.id === 2)
+
+    const updates = messages.filter((message) => message.method === "session/update").map((message) => message.params.update)
+    const calls = updates.filter((update) => update.sessionUpdate === "tool_call")
+    expect(calls.map((call) => [call.title, call.rawInput])).toEqual([
+      ["read_file", { path: "/a" }],
+      ["shell", { command: "ls" }],
+      ["read_file", { path: "/b" }],
+    ])
+    expect(new Set(calls.map((call) => call.toolCallId)).size).toBe(3)
+    const ends = updates.filter((update) => update.sessionUpdate === "tool_call_update")
+    expect(ends.slice(0, 3).map((end) => [end.toolCallId, end.status, end.content[0].content.text])).toEqual([
+      [calls[0].toolCallId, "completed", "a"],
+      [calls[1].toolCallId, "completed", "ls"],
+      [calls[2].toolCallId, "failed", "b"],
+    ])
+    // A completion with no open call keeps an id of its own instead of reopening a finished one.
+    expect(calls.map((call) => call.toolCallId)).not.toContain(ends[3].toolCallId)
+    server.stop()
+  })
+
   it("marks observe-only prompts as tool-free frontend turns", async () => {
     const { input, client, server, messages } = await setup({ disableTools: true })
     input.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n')

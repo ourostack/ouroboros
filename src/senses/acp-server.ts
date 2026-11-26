@@ -117,6 +117,31 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
     })
   }
 
+  // The daemon names a tool call only by its tool, so each start gets the next number for that
+  // tool in its turn, and each completion closes the oldest call of that tool still open.
+  const toolCalls = new Map<string, Map<string, { started: number; open: string[] }>>()
+
+  function turnToolCalls(sessionId: string, turnId: unknown): Map<string, { started: number; open: string[] }> {
+    const key = JSON.stringify([sessionId, String(turnId)])
+    const calls = toolCalls.get(key) ?? new Map<string, { started: number; open: string[] }>()
+    toolCalls.set(key, calls)
+    return calls
+  }
+
+  function startToolCall(sessionId: string, turnId: unknown, name: string): string {
+    const turn = turnToolCalls(sessionId, turnId)
+    const calls = turn.get(name) ?? { started: 0, open: [] }
+    calls.started += 1
+    const toolCallId = `${turnId}:${name}:${calls.started}`
+    calls.open.push(toolCallId)
+    turn.set(name, calls)
+    return toolCallId
+  }
+
+  function finishToolCall(sessionId: string, turnId: unknown, name: string): string {
+    return turnToolCalls(sessionId, turnId).get(name)?.open.shift() ?? `${turnId}:${name}:unmatched:${randomUUID()}`
+  }
+
   function replayEvent(sessionId: string, event: Record<string, any>): void {
     const data = event.data ?? {}
     if (event.type === "user_message" && typeof data.text === "string") {
@@ -134,7 +159,7 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
     } else if (event.type === "tool_started") {
       sessionUpdate(sessionId, {
         sessionUpdate: "tool_call",
-        toolCallId: `${event.turnId}:${String(data.name ?? "tool")}`,
+        toolCallId: startToolCall(sessionId, event.turnId, String(data.name ?? "tool")),
         title: String(data.name ?? "tool"),
         status: "pending",
         rawInput: data.args ?? {},
@@ -142,7 +167,7 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
     } else if (event.type === "tool_completed") {
       sessionUpdate(sessionId, {
         sessionUpdate: "tool_call_update",
-        toolCallId: `${event.turnId}:${String(data.name ?? "tool")}`,
+        toolCallId: finishToolCall(sessionId, event.turnId, String(data.name ?? "tool")),
         status: data.success === false ? "failed" : "completed",
         content: [{ type: "content", content: { type: "text", text: String(data.summary ?? "") } }],
       })
@@ -163,6 +188,9 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
     if (!sessions.has(sessionId)) return
     const turnId = typeof event.turnId === "string" ? event.turnId : ""
     const active = activePrompts.get(sessionId)
+    if (event.event === "turn.completed" || event.event === "turn.cancelled" || event.event === "turn.failed") {
+      toolCalls.delete(JSON.stringify([sessionId, turnId]))
+    }
     if (event.event === "text.delta" && typeof event.text === "string") {
       sessionUpdate(sessionId, {
         sessionUpdate: "agent_message_chunk",
@@ -360,6 +388,7 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
       for (const prompt of activePrompts.values()) prompt.reject(new Error("ACP server stopped"))
       activePrompts.clear()
       pendingOutbound.clear()
+      toolCalls.clear()
       sessions.clear()
     },
   }
