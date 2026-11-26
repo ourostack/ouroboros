@@ -260,6 +260,8 @@ describe("Sanctuary pre-activation container auditor", () => {
     ["wrong technical name", (spec: any) => { spec.Name = "/Ouro Butler" }],
     ["missing package activation", (spec: any) => { spec.Args = ["/opt/ouro/dist/heart/daemon/daemon-entry.js"]; spec.Config.Entrypoint = ["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"] }],
     ["duplicate package activation", (spec: any) => { spec.Args.push("--package-managed-agent", "sanctuary"); spec.Config.Entrypoint.push("--package-managed-agent", "sanctuary") }],
+    ["another agent's package activation", (spec: any) => { spec.Args[2] = "slugger"; spec.Config.Entrypoint[3] = "slugger" }],
+    ["entrypoint and arguments naming different Butlers", (spec: any) => { spec.Args[2] = "butler" }],
     ["wrong version reference", (spec: any) => { spec.Config.Image = "ghcr.io/ourostack/ouroboros-butler:latest" }],
     ["missing DockerMan label", (spec: any) => { delete spec.Config.Labels["net.unraid.docker.managed"] }],
     ["wrong icon label", (spec: any) => { spec.Config.Labels["net.unraid.docker.icon"] = "https://example.invalid/icon.png" }],
@@ -268,6 +270,13 @@ describe("Sanctuary pre-activation container auditor", () => {
     const spec = validInspect()
     mutate(spec)
     expect(auditSanctuaryContainerSpec(spec, { expectedImage: "sha256:" + "a".repeat(64), expectedImageReference, expectedIcon, expectedEnvironment }).ok).toBe(false)
+  })
+
+  it("accepts the image's package activation under the Butler's new name", () => {
+    const spec = validInspect()
+    spec.Args[2] = "butler"
+    spec.Config.Entrypoint[3] = "butler"
+    expect(auditSanctuaryContainerSpec(spec, { expectedImage: "sha256:" + "a".repeat(64), expectedImageReference, expectedIcon, expectedEnvironment })).toEqual({ ok: true, violations: [] })
   })
 
   it("runs the packaged file-based auditor without echoing the inspect payload", () => {

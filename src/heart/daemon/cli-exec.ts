@@ -157,12 +157,16 @@ import { parseOuroCommand, inferAgentNameFromRemote } from "./cli-parse"
 import { isAgentProvider, usage } from "./cli-parse"
 import { getGroupedHelp, getCommandHelp } from "./cli-help"
 import { cliHelpJson } from "./cli-manifest"
+import { setAnsweringHandle } from "../letters/answering"
 import { MailboxDoorError, renderMailboxResult, runMailboxAction } from "../letters/doors"
 
 /** The codes the mailbox commands fail with: the doors' own checks and the daemon's letters writer. */
+/** The codes `ouro mailbox handle set` refuses with, from src/heart/letters/answering.ts. */
+export const HANDLE_SET_REFUSAL_CODES: ReadonlySet<string> = new Set(["bad-handle", "no-person", "which-person", "not-recipient", "answering-unreadable"])
+
 export const MAILBOX_CLI_REFUSAL_CODES: ReadonlySet<string> = new Set([
   "daemon-down", "bad-input", "no-agent", "not-found",
-  "invalid-letter", "no-person", "not-sender", "not-waiting", "no-answering-handle",
+  "invalid-letter", "no-person", "not-sender", "not-waiting", "no-answering-handle", "already-delivered", "chat-unavailable", "send-failed", "send-uncertain", "sent-unrecorded",
 ])
 import {
   executePluginInstall,
@@ -793,6 +797,7 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "a2a.escalation":
     case "a2a.delegatedCommands":
     case "mailbox.action":
+    case "mailbox.handle.set":
       return "throw"
     case "provider.use":
     case "provider.check":
@@ -2066,7 +2071,7 @@ async function installPortableGitForCli(deps: OuroCliDeps, force: boolean): Prom
 // ── toDaemonCommand ──
 
 function toDaemonCommand(command: Exclude<OuroCliCommand, import("../shepherd/operations").ShepherdOperation | { kind: "shepherd.chat" }
- | { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | GatewayServeCliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | DeskAdminCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | SyncCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "mail.sweep-orphans" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" } | { kind: "presence.join" } | { kind: "presence.handoff" } | { kind: "presence.status" } | { kind: "presence.failover" } | { kind: "presence.location" } | { kind: "sanctuary.git-exclude" } | { kind: "service.install" } | { kind: "service.uninstall" } | { kind: "self-update.enable" } | { kind: "self-update.disable" } | { kind: "self-update.status" } | { kind: "git.install" } | { kind: "git.status" } | { kind: "mailbox.action" }>): DaemonCommand {
+ | { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | GatewayServeCliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | DeskAdminCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | SyncCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "mail.sweep-orphans" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" } | { kind: "presence.join" } | { kind: "presence.handoff" } | { kind: "presence.status" } | { kind: "presence.failover" } | { kind: "presence.location" } | { kind: "sanctuary.git-exclude" } | { kind: "service.install" } | { kind: "service.uninstall" } | { kind: "self-update.enable" } | { kind: "self-update.disable" } | { kind: "self-update.status" } | { kind: "git.install" } | { kind: "git.status" } | { kind: "mailbox.action" } | { kind: "mailbox.handle.set" }>): DaemonCommand {
   if (command.kind === "habit.probe") {
     return {
       kind: "habit.probe",
@@ -10152,6 +10157,22 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       throw MAILBOX_CLI_REFUSAL_CODES.has(error.code) ? Object.assign(new Error(error.message), { code: error.code }) : new Error(error.message)
     }
     const message = command.json ? JSON.stringify(result) : renderMailboxResult(command.action, result)
+    deps.writeStdout(message)
+    return message
+  }
+
+  // ── mailbox handle set (local: the owner names whose messages answer a person's letters) ──
+  if (command.kind === "mailbox.handle.set") {
+    const bundlesRoot = deps.bundlesRoot ?? /* v8 ignore next -- production default @preserve */ getAgentBundlesRoot()
+    let message: string
+    try {
+      message = await setAnsweringHandle(path.join(bundlesRoot, `${command.agent}.ouro`), command.person, command.handle)
+    } catch (error) {
+      // A refusal the card names keeps its code; anything else is a failure, not a refusal.
+      const code = (error as { code?: unknown }).code
+      if (typeof code === "string" && HANDLE_SET_REFUSAL_CODES.has(code)) throw error
+      throw new Error((error as Error).message)
+    }
     deps.writeStdout(message)
     return message
   }
