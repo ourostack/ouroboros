@@ -214,7 +214,8 @@ export class LettersWriter {
     } catch (error) {
       // A create that fails after its write would leave a letter the index doesn't know, and a retry would file a
       // second one in the same dedupe scope. Remove it; if it can't be removed, index it so the retry finds it.
-      if (!letters.store.discard(letter.id)) {
+      // EEXIST means the file is another letter's, which this create never wrote, so it stays.
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST" && !letters.store.discard(letter.id)) {
         const left = letters.store.read(letter.id)
         if (left) letters.index.add(left)
       }

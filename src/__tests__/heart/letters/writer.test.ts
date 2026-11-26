@@ -178,6 +178,13 @@ describe("LettersWriter send", () => {
     expect(retry).toMatchObject({ outcome: "done", id: "ltr_T1", code: "L1", state: "waiting" })
   })
 
+  it("leaves another letter's file alone when a create finds its id taken", async () => {
+    const { writer, lettersDir } = setup({ newId: () => "ltr_SAME" })
+    await writer.run("slugger", "mailbox_send", know)
+    await expect(writer.run("slugger", "mailbox_send", { ...know, subject: "Second" })).rejects.toThrow(/EEXIST/)
+    expect(new LetterStore(lettersDir).read("ltr_SAME")!.letter.subject).toBe("The build is green")
+  })
+
   it("rethrows a failed create whose leftover can't be read or removed", async () => {
     const { writer } = setup()
     const create = LetterStore.prototype.create
