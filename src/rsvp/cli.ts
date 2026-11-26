@@ -365,7 +365,6 @@ function resolveLatestSnapshot(agentRoot: string): { ok: true; snapshot: RsvpSna
   }
 }
 
-
 async function resolveRsvpRuntimeCredentialConfig(agent: string): Promise<RuntimeCredentialConfigReadResult> {
   const cached = readRuntimeCredentialConfig(agent)
   return cached.ok ? cached : refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
@@ -389,9 +388,6 @@ function blueBubblesChatFor(config: { bluebubblesRoute: { chatGuid: string; chat
     participantHandles: [],
   }
 }
-
-
-
 
 /** The agent's declared iMessage host account; an unreadable config leaves it unset, so sending fails closed. */
 export function rsvpBlueBubblesHostOptions(agent: string, agentRoot: string): BlueBubblesClientHostOptions {

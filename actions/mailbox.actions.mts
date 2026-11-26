@@ -199,8 +199,11 @@ export const mailboxDeliver = defineAction({
   errors: [
     { code: "no-answering-handle", means: "The letter was filed before the person had an answering handle, so Ouro has no chat to send it to.", fix: "Leave the letter waiting; once the person sets a handle with `ouro mailbox handle set`, letters filed after that can be delivered." },
     { code: "not-waiting", means: "The letter is already answered, withdrawn or expired.", fix: "Nothing to deliver; read the letter to see how it closed." },
+    { code: "already-delivered", means: "The letter is already in the person's chat; each letter goes there once.", fix: "Wait for the answer with mailbox_wait." },
     { code: "chat-unavailable", means: "This daemon has no chat to send through.", fix: "Leave the letter waiting; the person reads it in their mailbox." },
-    { code: "send-failed", means: "The chat didn't take the message; the letter stays waiting.", fix: "Deliver it again once the chat is back." },
+    { code: "send-failed", means: "The message never reached the chat; the letter stays waiting.", fix: "Deliver it again once the cause the refusal names is fixed." },
+    { code: "send-uncertain", means: "The send failed after it may have reached the chat, so Ouro counts the letter as delivered and won't send it twice.", fix: "Wait for the answer with mailbox_wait; the letter is in the person's mailbox either way." },
+    { code: "sent-unrecorded", means: "The letter went to the chat, but Ouro couldn't record that.", fix: "Leave it; delivering again would send it twice." },
     notFound,
     daemonDown,
     unknownInput("mailbox_deliver"),

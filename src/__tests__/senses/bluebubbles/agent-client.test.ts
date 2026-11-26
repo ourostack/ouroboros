@@ -25,7 +25,7 @@ import {
   letterChatSender,
   sendLetterByBlueBubbles,
 } from "../../../senses/bluebubbles/agent-client"
-import type { BlueBubblesClient } from "../../../senses/bluebubbles/client"
+import { BlueBubblesSendError, type BlueBubblesClient } from "../../../senses/bluebubbles/client"
 
 const ok = (config: Record<string, unknown>) => ({ ok: true as const, itemPath: "vault:runtime/machines/machine-1/config", config, revision: "r1", updatedAt: "2026-11-26T00:00:00.000Z" })
 const configured = ok({ bluebubbles: { serverUrl: " http://127.0.0.1:1234 ", password: " pw ", ownHandles: [" me@x.io ", 7, ""] }, bluebubblesChannel: { port: 9999 } })
@@ -100,6 +100,16 @@ describe("sending a letter by BlueBubbles", () => {
   it("leaves the chat and message blank when the server names neither, rather than failing a sent message", async () => {
     const clientFor = async () => ({ sendText: async () => ({}) }) as unknown as BlueBubblesClient
     expect(await sendLetterByBlueBubbles({ agent: "slugger", handle: "a@x.io", text: "t" }, "/root", clientFor)).toEqual({ channel: "bluebubbles", key: "", messageId: "" })
+  })
+
+  it("says how to fix a chat that doesn't exist yet, and passes any other send error on as it is", async () => {
+    const unresolved = new BlueBubblesSendError({ message: "BlueBubbles send currently requires chat.chatGuid from the inbound event.", httpStatus: null, errorCode: "chat_unresolved", transportInvoked: false })
+    const failing = (error: unknown) => async () => ({ sendText: async () => { throw error } }) as unknown as BlueBubblesClient
+    await expect(sendLetterByBlueBubbles({ agent: "slugger", handle: "a@x.io", text: "t" }, "/root", failing(unresolved))).rejects.toEqual(expect.objectContaining({
+      message: "no chat with a@x.io exists yet; the person messages the agent once from that handle first", errorCode: "chat_unresolved", transportInvoked: false,
+    }))
+    const other = new BlueBubblesSendError({ message: "bad reply", httpStatus: 200, errorCode: "malformed_response", transportInvoked: true })
+    await expect(sendLetterByBlueBubbles({ agent: "slugger", handle: "a@x.io", text: "t" }, "/root", failing(other))).rejects.toBe(other)
   })
 
   it("builds the agent's own client from its machine settings", async () => {

@@ -11,7 +11,7 @@ import {
   type RuntimeCredentialConfigReadResult,
 } from "../../heart/runtime-credentials"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesClientHostOptions } from "./client"
+import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesClientHostOptions } from "./client"
 import type { BlueBubblesChatRef } from "./model"
 
 function text(value: unknown): string {
@@ -80,7 +80,7 @@ export async function blueBubblesClientForAgent(agent: string, agentRoot: string
   return createBlueBubblesClient(settings.config, settings.channelConfig, agentHostOptions(agent, agentRoot))
 }
 
-/** A one-to-one chat with a handle, addressed by the handle alone; the server finds or starts the chat. */
+/** A one-to-one chat with a handle, addressed by the handle alone; the client finds the existing chat for it. */
 export function chatWithHandle(handle: string): BlueBubblesChatRef {
   return { chatIdentifier: handle, isGroup: false, sessionKey: `chat_identifier:${handle}`, sendTarget: { kind: "chat_identifier", value: handle }, participantHandles: [] }
 }
@@ -95,7 +95,16 @@ export async function sendLetterByBlueBubbles(
   clientFor: (agent: string, agentRoot: string) => Promise<BlueBubblesClient> = blueBubblesClientForAgent,
 ): Promise<{ channel: string; key: string; messageId: string }> {
   const client = await clientFor(request.agent, agentRoot)
-  const sent = await client.sendText({ chat: chatWithHandle(request.handle), text: request.text })
+  let sent: Awaited<ReturnType<BlueBubblesClient["sendText"]>>
+  try {
+    sent = await client.sendText({ chat: chatWithHandle(request.handle), text: request.text })
+  } catch (error) {
+    // A chat that doesn't exist yet can't be found by its handle; say what the person does about it.
+    if (error instanceof BlueBubblesSendError && error.errorCode === "chat_unresolved") {
+      throw new BlueBubblesSendError({ message: `no chat with ${request.handle} exists yet; the person messages the agent once from that handle first`, httpStatus: null, errorCode: "chat_unresolved", transportInvoked: false, cause: error })
+    }
+    throw error
+  }
   emitNervesEvent({ component: "senses", event: "senses.bluebubbles_letter_sent", message: "a letter was sent to its person's chat", meta: { agent: request.agent, hasMessageId: Boolean(sent.messageGuid) } })
   return { channel: "bluebubbles", key: sent.chatGuid ?? "", messageId: sent.messageGuid ?? "" }
 }
