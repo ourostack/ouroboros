@@ -11,9 +11,16 @@
 //   literal. Every tool a built module exports must match a schema found here, or it is a gap too.
 // - A schema in a configured `passthrough` function (`<file>#<function>`) is excluded as `third-party-passthrough` when
 //   the census can prove it: its name holds no literal and reads only that function's parameters, the function holds
-//   that one schema, and no call passes it a literal. A flat schema in a configured `reshape` function is excluded as
-//   `re-encoding` (a counted tool sent in another wire shape) by the same proof over the function's own names. A
-//   schema there that fails the proof is unwalked, and a configured function with none is a census error.
+//   that one schema, and no call passes it a literal. That proof is about the function's body alone; a call that
+//   passes the passthrough a value (`harnessTools.map(passthrough)`), not just one it invokes directly, can still make
+//   it build names for tools that are not the connected server's. A passthrough spec can add a declared source, as
+//   `<file>#<function>#<source>`: the name of the parameter, or the callee, the value every legitimate call must trace
+//   back to (through locals and loop sources) with nothing else read along the way. With a source declared, a direct
+//   call or a `.map`/`.flatMap` passing the passthrough as a value is a gap at the call when its argument, or the
+//   list it maps, doesn't trace to exactly that source; without one, only a direct call is checked, as before. A flat
+//   schema in a configured `reshape` function is excluded as `re-encoding` (a counted tool sent in another wire shape)
+//   by the same proof over the function's own names. A schema there that fails the proof is unwalked, and a
+//   configured function with none is a census error.
 //
 // Approval prompts are doors of their own, found from code, never from cards: a definition literal with an
 // `approvalPolicy` that can ask (anything but a function that calls nothing and only answers `{ kind: "not_required" }`),
@@ -156,6 +163,37 @@ function declarationOf(id: ts.Identifier): ts.ParameterDeclaration | ts.Variable
   return null;
 }
 
+/** A dotted chain of plain property reads (`req.body.tools`), or null once anything but an identifier is read. */
+function dottedPath(expr: ts.Expression): string | null {
+  if (ts.isIdentifier(expr)) return expr.text;
+  if (!ts.isPropertyAccessExpression(expr)) return null;
+  const base = dottedPath(unwrap(expr.expression));
+  return base ? `${base}.${expr.name.text}` : null;
+}
+
+/**
+ * The one name a (possibly locally chained) expression is built from: a parameter's name; a call's callee, by its
+ * name or dotted path (`listTools()`, `client.listTools()`); a dotted property chain (`req.body.tools`); or an
+ * identifier's own name when it reads nothing the functions around it declare (an import, a module-scope `const`).
+ * Null for a literal, or an expression built from more than this one traceable root.
+ */
+function sourceRootOf(expr: ts.Expression, seen = new Set<ts.Node>()): string | null {
+  const e = unwrap(expr);
+  if (holdsLiteral(e)) return null;
+  if (ts.isCallExpression(e)) return dottedPath(unwrap(e.expression));
+  const dotted = ts.isPropertyAccessExpression(e) ? dottedPath(e) : null;
+  if (dotted) return dotted;
+  if (!ts.isIdentifier(e)) return null;
+  const decl = declarationOf(e);
+  if (!decl) return e.text;
+  if (ts.isParameter(decl)) return ts.isIdentifier(decl.name) ? decl.name.text : null;
+  if (seen.has(decl)) return null;
+  seen.add(decl);
+  const loop = decl.parent?.parent;
+  const source = loop && ts.isForOfStatement(loop) ? loop.expression : decl.initializer;
+  return source ? sourceRootOf(source, seen) : null;
+}
+
 /** Whether a function can be imported from its file: exported where it's declared, or by an `export { name }`. */
 function isExported(fn: Fn, sf: ts.SourceFile, name: string): boolean {
   const exportedHere = (n: ts.Node | undefined): boolean => !!n && ts.canHaveModifiers(n) && !!ts.getModifiers(n)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
@@ -256,6 +294,8 @@ interface Spec {
   file: string;
   fn: string;
   spec: string;
+  /** passthrough only: the one name (a parameter, or a call's callee) every legitimate call must trace back to. */
+  source?: string;
 }
 
 function parseSpec(spec: string, option: string, errors: string[]): Spec | null {
@@ -265,6 +305,24 @@ function parseSpec(spec: string, option: string, errors: string[]): Spec | null 
     return null;
   }
   return { file: spec.slice(0, hash), fn: spec.slice(hash + 1), spec };
+}
+
+/** `<file>#<function>`, as `parseSpec`, with an optional declared source after a second `#` (`<file>#<function>#<source>`). */
+function parsePassthroughSpec(spec: string, errors: string[]): Spec | null {
+  const first = spec.indexOf("#");
+  if (first <= 0 || first === spec.length - 1) {
+    errors.push(`tool-schemas: passthrough ${spec}: give it as <file>#<function>.`);
+    return null;
+  }
+  const rest = spec.slice(first + 1);
+  const second = rest.indexOf("#");
+  const fn = second < 0 ? rest : rest.slice(0, second);
+  const source = second < 0 ? undefined : rest.slice(second + 1);
+  if (fn.length === 0 || source === "") {
+    errors.push(`tool-schemas: passthrough ${spec}: give it as <file>#<function>, optionally with a declared source as <file>#<function>#<source>.`);
+    return null;
+  }
+  return { file: spec.slice(0, first), fn, spec, source };
 }
 
 interface Definition {
@@ -328,7 +386,7 @@ export async function walkToolSchemas(opts: WalkerOptions): Promise<WalkResult> 
   const excluded: { hit: string; category: string }[] = [];
   const found: Found[] = [];
   const factories: Factory[] = [];
-  const passthrough = (opts.passthrough ?? []).map((s) => parseSpec(s, "passthrough", errors)).filter((s): s is Spec => s !== null);
+  const passthrough = (opts.passthrough ?? []).map((s) => parsePassthroughSpec(s, errors)).filter((s): s is Spec => s !== null);
   const approvals = (opts.approvals ?? []).map((s) => parseSpec(s, "approvals", errors)).filter((s): s is Spec => s !== null);
   const reshape = (opts.reshape ?? []).map((s) => parseSpec(s, "reshape", errors)).filter((s): s is Spec => s !== null);
   // The schemas each passthrough or re-encoding function was proved to build, by spec.
@@ -529,7 +587,8 @@ export async function walkToolSchemas(opts: WalkerOptions): Promise<WalkResult> 
 
   // A passthrough called with a literal can make any name; a function holding two schemas is not one forwarder.
   // Its calls are found under its own name, an import alias, or a namespace; each argument must be built only from
-  // the caller's parameters.
+  // the caller's parameters, or, with a declared source, trace back to exactly that one. With a declared source, a
+  // call that passes the passthrough as a value to `.map`/`.flatMap` is checked too, over the list it is mapped on.
   for (const p of passthrough) {
     const target = resolve(opts.root, p.file);
     const aliases = new Map<string, Set<string>>();
@@ -537,12 +596,32 @@ export async function walkToolSchemas(opts: WalkerOptions): Promise<WalkResult> 
     for (const path of sources) {
       const sf = parse(path);
       const names = new Set([p.fn, ...(aliases.get(path) ?? [])]);
+      const isRef = (n: ts.Expression): boolean => (ts.isIdentifier(n) ? names.has(n.text) : ts.isPropertyAccessExpression(n) && n.name.text === p.fn);
       const visit = (n: ts.Node): void => {
         ts.forEachChild(n, visit);
-        if (!ts.isCallExpression(n)) return;
-        const callee = ts.isIdentifier(n.expression) ? names.has(n.expression.text) : ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === p.fn;
-        if (!callee) return;
-        const why = n.arguments.some(holdsLiteral) ? "a literal" : n.arguments.some((a) => impureRead(a)) ? "what isn't only the caller's parameters" : null;
+        if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && ["map", "flatMap"].includes(n.expression.name.text) && n.arguments[0] && isRef(n.arguments[0])) {
+          if (p.source === undefined) return;
+          const root = sourceRootOf(n.expression.expression);
+          if (root !== p.source)
+            gapAt(
+              relative(opts.root, path),
+              lineIn(sf, n),
+              n.getText(sf),
+              `name: passthrough ${p.spec} is passed to .map here over what isn't traced to the declared source ${p.source}, so its name may not come from a connected server`,
+            );
+          return;
+        }
+        if (!ts.isCallExpression(n) || !isRef(n.expression)) return;
+        const why =
+          n.arguments.some(holdsLiteral)
+            ? "a literal"
+            : p.source === undefined
+              ? n.arguments.some((a) => impureRead(a))
+                ? "what isn't only the caller's parameters"
+                : null
+              : n.arguments.some((a) => sourceRootOf(a) !== p.source)
+                ? `what isn't traced to the declared source ${p.source}`
+                : null;
         if (why) gapAt(relative(opts.root, path), lineIn(sf, n), n.getText(sf), `name: passthrough ${p.spec} is called here with ${why}, so its name may not come from a connected server`);
       };
       visit(sf);
