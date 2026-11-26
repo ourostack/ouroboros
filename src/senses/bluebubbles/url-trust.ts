@@ -1,0 +1,30 @@
+// How far the BlueBubbles server's address can be trusted (design §3.4, R3-M3). Fetches put the server password in
+// the query string, so the letter answer reader runs only when nobody between the agent and the server can read or
+// fake that traffic: the same Mac, an authenticated TLS connection, or the tailnet, whose WireGuard tunnel does both.
+import { emitNervesEvent } from "../../nerves/runtime"
+
+export type BlueBubblesUrlTrust = "loopback" | "tls" | "tailnet" | "untrusted"
+
+/** The tailnet's own address range, 100.64.0.0/10, and its MagicDNS names. */
+function isTailnetHost(host: string): boolean {
+  if (host.endsWith(".ts.net")) return true
+  const octets = host.split(".").map(Number)
+  return octets.length === 4 && octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255) && octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127
+}
+
+export function blueBubblesUrlTrust(serverUrl: string): BlueBubblesUrlTrust {
+  let url: URL
+  try {
+    url = new URL(serverUrl)
+  } catch {
+    return "untrusted"
+  }
+  const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase()
+  const trust: BlueBubblesUrlTrust =
+    host === "localhost" || host === "::1" || /^127\.\d+\.\d+\.\d+$/.test(host) ? "loopback"
+      : url.protocol === "https:" ? "tls"
+        : isTailnetHost(host) ? "tailnet"
+          : "untrusted"
+  emitNervesEvent({ level: "debug", component: "senses", event: "senses.bluebubbles_url_trust", message: "judged the BlueBubbles server address", meta: { trust } })
+  return trust
+}

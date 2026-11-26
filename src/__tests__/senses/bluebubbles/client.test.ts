@@ -3410,6 +3410,27 @@ describe("BlueBubbles client", () => {
     })
   })
 
+  describe("getServerMessage", () => {
+    const client = async () => (await import("../../../senses/bluebubbles/client")).createBlueBubblesClient(
+      { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+      { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+    )
+
+    it("reads the server's own record of a message by GUID, with its chats", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: { guid: "m-1", text: "L7 2", handle: { address: "a@x.io", service: "iMessage" }, chats: [{ guid: "iMessage;-;a@x.io" }], dateCreated: 5 } }), { status: 200 }))
+      global.fetch = fetchMock as typeof fetch
+      expect(await (await client()).getServerMessage!("m-1")).toEqual({ guid: "m-1", text: "L7 2", isFromMe: false, sender: "a@x.io", service: "iMessage", chatGuids: ["iMessage;-;a@x.io"], dateCreated: 5 })
+      expect(String(fetchMock.mock.calls[0][0])).toContain("/api/v1/message/m-1?")
+    })
+
+    it("returns null for a message the server doesn't hold, and throws on any other failure", async () => {
+      global.fetch = vi.fn().mockResolvedValue(new Response("", { status: 404 })) as typeof fetch
+      expect(await (await client()).getServerMessage!("m-9")).toBeNull()
+      global.fetch = vi.fn().mockResolvedValue(new Response("", { status: 500 })) as typeof fetch
+      await expect((await client()).getServerMessage!("m-9")).rejects.toThrow("the BlueBubbles server answered 500 for that message")
+    })
+  })
+
   describe("getMessageText", () => {
     it("returns text when API responds with valid payload", async () => {
       global.fetch = vi.fn().mockResolvedValue(

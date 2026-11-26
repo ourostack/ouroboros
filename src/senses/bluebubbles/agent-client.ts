@@ -1,7 +1,9 @@
 // A BlueBubbles client for a named agent, built from outside that agent's sense process: the daemon delivering a
 // letter, or an `ouro rsvp` command. Its settings come from the agent's machine runtime config in the vault (held in
 // process memory once read), and its host check uses the agent's declared iMessage host account.
+import * as os from "os"
 import * as path from "path"
+import type { ServerMessage } from "../../heart/letters/answer-reader"
 import type { BlueBubblesChannelConfig, BlueBubblesConfig } from "../../heart/config"
 import { loadAgentConfig } from "../../heart/identity"
 import { loadOrCreateMachineIdentity } from "../../heart/machine-identity"
@@ -14,6 +16,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesClientHostOptions } from "./client"
 import { OURO_LETTER_SEND } from "./letter-guard"
 import type { BlueBubblesChatRef } from "./model"
+import { blueBubblesUrlTrust, type BlueBubblesUrlTrust } from "./url-trust"
 
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : ""
@@ -113,4 +116,36 @@ export async function sendLetterByBlueBubbles(
 /** The daemon's letter sender: each agent's letters go out through that agent's own bundle and settings. */
 export function letterChatSender(bundlesRoot: string, clientFor?: (agent: string, agentRoot: string) => Promise<BlueBubblesClient>) {
   return (request: { agent: string; handle: string; text: string }) => sendLetterByBlueBubbles(request, path.join(bundlesRoot, `${request.agent}.ouro`), clientFor)
+}
+
+/** Where the daemon reads a person's answer from: the agent's own BlueBubbles server, and how far it is trusted. */
+export interface LetterAnswerSource {
+  trust: BlueBubblesUrlTrust
+  /**
+   * `separate` only when the agent's iMessage runs under its own declared macOS account, not the one running the
+   * daemon, so a shell in the daemon's account can't send as it. Anything else counts as shared.
+   */
+  hostTrust: "shared-apple-id" | "separate"
+  getServerMessage(messageGuid: string): Promise<ServerMessage | null>
+}
+
+export function letterAnswerSource(
+  bundlesRoot: string,
+  deps: { clientFor?: (agent: string, agentRoot: string) => Promise<BlueBubblesClient>; daemonUser?: () => string } = {},
+): (agent: string) => Promise<LetterAnswerSource> {
+  return async (agent) => {
+    const agentRoot = path.join(bundlesRoot, `${agent}.ouro`)
+    const settings = blueBubblesSettings(await agentMachineRuntimeConfig(agent))
+    const client = await (deps.clientFor ?? blueBubblesClientForAgent)(agent, agentRoot)
+    const hostUsername = agentHostOptions(agent, agentRoot).hostUsername
+    const daemonUser = (deps.daemonUser ?? (() => os.userInfo().username))()
+    return {
+      trust: blueBubblesUrlTrust(settings.config.serverUrl),
+      hostTrust: hostUsername && hostUsername !== daemonUser ? "separate" : "shared-apple-id",
+      getServerMessage: async (messageGuid) => {
+        if (!client.getServerMessage) throw new Error("this BlueBubbles client can't fetch a message's own record")
+        return client.getServerMessage(messageGuid)
+      },
+    }
+  }
 }

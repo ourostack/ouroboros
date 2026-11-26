@@ -553,6 +553,7 @@ export type DaemonCommand =
   | { kind: "mcp.list"; agent?: string }
   | { kind: "mcp.call"; agent?: string; server: string; tool: string; args?: string }
   | LettersCommand
+  | import("../letters/answer-command").LettersAnswerCommand
   | { kind: "hatch.start" }
   | { kind: "agent.senseTurn"; agent: string; friendId: string; channel: string; sessionKey: string; message: string; runtimeMcp?: RuntimeMcpServers }
   | import("../../senses/shepherd/feedback-submit").FeedbackCommand
@@ -1675,6 +1676,19 @@ export class OuroDaemon {
     return this.processManager.listAgentSnapshots().some((snapshot) =>
       snapshot.name === agent && snapshot.channel === "private-runtime",
     )
+  }
+
+  /** The one letters writer, loaded on the first mailbox call so a daemon with no letters pays nothing at start. */
+  private async letters(): Promise<LettersWriter> {
+    const letters = await import("../letters/writer")
+    this.lettersWriter ??= new letters.LettersWriter({
+      bundlesRoot: this.bundlesRoot,
+      // A letter goes to its person's iMessage chat as the agent, through the agent's own BlueBubbles settings.
+      deliverChat: (await import("../../senses/bluebubbles/agent-client")).letterChatSender(this.bundlesRoot),
+      // Filing tells the agent, in its own private runtime, so it decides when its person sees the letter.
+      onFiled: (await import("../letters/filed-note")).letterFiledTeller(this.bundlesRoot, (wake) => this.handlePrivateRuntimeWake(wake)),
+    })
+    return this.lettersWriter
   }
 
   private buildPrivateRuntimeWakeRequest(
@@ -2923,16 +2937,15 @@ export class OuroDaemon {
       }
       case "letters.action":
       {
-        // Loaded on the first mailbox call so a daemon with no letters pays nothing at start.
         const letters = await import("../letters/writer")
-        this.lettersWriter ??= new letters.LettersWriter({
-          bundlesRoot: this.bundlesRoot,
-          // A letter goes to its person's iMessage chat as the agent, through the agent's own BlueBubbles settings.
-          deliverChat: (await import("../../senses/bluebubbles/agent-client")).letterChatSender(this.bundlesRoot),
-          // Filing tells the agent, in its own private runtime, so it decides when its person sees the letter.
-          onFiled: (await import("../letters/filed-note")).letterFiledTeller(this.bundlesRoot, (wake) => this.handlePrivateRuntimeWake(wake)),
-        })
-        return letters.answerLettersCommand(this.lettersWriter, command)
+        return letters.answerLettersCommand(await this.letters(), command)
+      }
+      case "letters.answer":
+      {
+        // The person's own message, named by GUID; the daemon reads it from the agent's BlueBubbles server itself.
+        const { answerLettersAnswerCommand } = await import("../letters/answer-command")
+        const { letterAnswerSource } = await import("../../senses/bluebubbles/agent-client")
+        return answerLettersAnswerCommand(await this.letters(), command, letterAnswerSource(this.bundlesRoot))
       }
       case "mcp.list": {
         return withTurnExecutionLease(async () => {
