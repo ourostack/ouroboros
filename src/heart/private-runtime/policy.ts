@@ -220,6 +220,16 @@ async function evaluatePolicy(
       reason: "a letter was filed for the agent's person",
     }
   }
+  if (
+    request.triggerSource === "letter-expired"
+    && hasNonEmptyOriginRef(originRefs, "letter")
+    && hasOriginRef(originRefs, "scheduler", "letters-expiry")
+  ) {
+    return {
+      result: "allow",
+      reason: "a letter expired with no answer",
+    }
+  }
   if (isVerifiedHabitWake(request.triggerSource, originRefs)) {
     return {
       result: "allow",

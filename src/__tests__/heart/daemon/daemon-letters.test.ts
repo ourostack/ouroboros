@@ -36,7 +36,24 @@ describe("the daemon's letters.action command", () => {
   })
 })
 
-describe("the daemon's filing note", () => {
+describe("the daemon's letter expiry pass", () => {
+  it("loads no letters code until a bundle has letters, then closes the letters past their expiry", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "c21-daemon-expiry-"))
+    made.push(bundlesRoot)
+    fs.mkdirSync(path.join(bundlesRoot, "slugger.ouro"))
+    const { OuroDaemon } = await import("../../../heart/daemon/daemon")
+    const daemon = new OuroDaemon(daemonOptions(bundlesRoot) as ConstructorParameters<typeof OuroDaemon>[0])
+    expect(await daemon.expireLetters()).toBe(0)
+    expect((daemon as unknown as { lettersWriter: unknown }).lettersWriter).toBeNull()
+    const lettersDir = path.join(bundlesRoot, "slugger.ouro", "state", "letters")
+    fs.mkdirSync(lettersDir, { recursive: true })
+    fs.writeFileSync(path.join(lettersDir, "ltr_A1.jsonl"), `${JSON.stringify({ v: 1, id: "ltr_A1", code: "L1", to: "friend-ari", from: { agent: "slugger" }, kind: "know", subject: "Gone", whyOnlyYou: "", body: "", options: [], links: [], urgency: "now", expiresAt: "2026-01-01T00:00:00.000Z", createdAt: "2025-12-31T00:00:00.000Z" })}\n`)
+    const wake = vi.spyOn(daemon as unknown as { handlePrivateRuntimeWake: (command: unknown) => Promise<unknown> }, "handlePrivateRuntimeWake").mockResolvedValue({ ok: true })
+    expect(await daemon.expireLetters()).toBe(1)
+    expect(await daemon.expireLetters()).toBe(0)
+    await vi.waitFor(() => expect(wake).toHaveBeenCalledWith(expect.objectContaining({ triggerSource: "letter-expired" })))
+  })
+
   it("tells the agent through its private runtime when a letter is filed through the daemon", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "c21-daemon-filed-"))
     made.push(bundlesRoot)
@@ -53,5 +70,12 @@ describe("the daemon's filing note", () => {
     await expect(daemon.handleCommand({ kind: "letters.action", agent: "slugger", action: "mailbox_send", input: { kind: "know", subject: "Built" } }))
       .resolves.toMatchObject({ ok: true, data: { outcome: "needs-human", code: "L1" } })
     await vi.waitFor(() => expect(wake).toHaveBeenCalledWith(expect.objectContaining({ triggerSource: "letter-filed" })))
+  })
+
+  it("logs a pass that fails, such as a bundles folder that is gone", async () => {
+    const bundlesRoot = path.join(os.tmpdir(), "c21-daemon-expiry-gone-does-not-exist")
+    const { OuroDaemon } = await import("../../../heart/daemon/daemon")
+    const daemon = new OuroDaemon(daemonOptions(bundlesRoot) as ConstructorParameters<typeof OuroDaemon>[0])
+    expect(await daemon.expireLetters()).toBe(0)
   })
 })

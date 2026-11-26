@@ -1,0 +1,3 @@
+- A letter now closes as expired once its `expiresAt` passes with no answer. The daemon checks every minute, releases anyone waiting on the letter, and wakes the agent that owns it with a note in its private runtime: "letter L7 expired at … with no answer from my person". An expired letter can't be answered or delivered. A new private-runtime policy rule allows that wake only when it names the letter and comes from the expiry pass.
+- A `now` letter whose sender sets no `expiresAt` now expires 24 hours after it is filed. Other letters still never expire unless their sender says so.
+- A daemon with no letters loads none of the mailbox's code for the expiry pass.

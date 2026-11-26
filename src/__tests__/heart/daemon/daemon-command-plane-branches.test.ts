@@ -570,6 +570,24 @@ describe("daemon command plane branches", () => {
     }
   })
 
+  it("runs a letter expiry pass each minute while it is up, and none after it stops", async () => {
+    vi.useFakeTimers()
+    const socketPath = tmpSocketPath("daemon-letter-expiry-tick")
+    const { daemon } = make(socketPath)
+    const expireLetters = vi.fn(async () => 0)
+    ;(daemon as unknown as { expireLetters: typeof expireLetters }).expireLetters = expireLetters
+    try {
+      await daemon.start()
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(expireLetters).toHaveBeenCalledTimes(1)
+      await daemon.stop()
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(expireLetters).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("cancels deferred sense autostart when the daemon stops first", async () => {
     vi.useFakeTimers()
     const socketPath = tmpSocketPath("daemon-start-senses-cancelled")

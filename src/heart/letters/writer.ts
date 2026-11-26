@@ -37,7 +37,12 @@ export interface WriterDeps {
   deliverDeadlineMs?: number
   /** Tells the owning agent a new letter was filed; it runs after the filing answers and never fails it. */
   onFiled?: (agent: string, letter: Letter) => Promise<void>
+  /** Tells the owning agent a letter expired with no answer; it runs after the expired event is written. */
+  onExpired?: (agent: string, letter: Letter) => Promise<void>
 }
+
+/** How long a `now` letter waits when its sender sets no expiresAt (design §3.4, "Expiry"); other letters never expire. */
+export const NOW_LETTER_EXPIRY_MS = 24 * 60 * 60_000
 
 /** Under the door's own timeout for a deliver (doors.ts), so the daemon always answers before the door gives up. */
 export const DELIVER_DEADLINE_MS = 25_000
@@ -146,6 +151,35 @@ export class LettersWriter {
     }
   }
 
+  /**
+   * Closes every waiting letter past its expiresAt, in each agent's bundle that has letters, and tells its agent.
+   * The daemon runs it on a timer; it answers how many letters it closed.
+   */
+  async expireDue(): Promise<number> {
+    let closed = 0
+    for (const name of fs.readdirSync(this.deps.bundlesRoot)) {
+      const agent = name.endsWith(".ouro") ? name.slice(0, -".ouro".length) : ""
+      if (!AGENT_NAME.test(agent) || !fs.existsSync(path.join(this.deps.bundlesRoot, name, "state", "letters"))) continue
+      try {
+        const letters = this.open(agent, false)
+        closed += await this.serial(letters, async () => {
+          const now = this.now()
+          const due = letters.index.list({}).filter((entry) => entry.letter.expiresAt && Date.parse(entry.letter.expiresAt) <= now.getTime())
+          for (const entry of due) {
+            this.addEvent(letters, entry.letter.id, { t: "expired", at: now.toISOString() })
+            emitNervesEvent({ component: "daemon", event: "letters.letter_expired", message: "a letter expired with no answer", meta: { code: entry.letter.code } })
+            this.deps.onExpired?.(agent, entry.letter).catch(() => undefined)
+          }
+          return due.length
+        })
+      } catch (error) {
+        // One agent's letters that don't read leave the others' expiry alone.
+        emitNervesEvent({ level: "warn", component: "daemon", event: "letters.expiry_failed", message: "an agent's letters could not be checked for expiry", meta: { agent, reason: (error as Error).message } })
+      }
+    }
+    return closed
+  }
+
   /** The agent's letters, read from its bundle the first time; letters closed long enough are rolled then, unless that first call is a dry run, which writes nothing. */
   private open(agent: string, dryRun: boolean): AgentLetters {
     const bundle = path.join(this.deps.bundlesRoot, `${agent}.ouro`)
@@ -176,7 +210,7 @@ export class LettersWriter {
   }
 
   /** Runs a write after every write queued before it; a failed write doesn't stop the ones after it. */
-  private serial(letters: AgentLetters, work: () => Promise<LetterResult>): Promise<LetterResult> {
+  private serial<T>(letters: AgentLetters, work: () => Promise<T>): Promise<T> {
     const next = letters.queue.then(work)
     letters.queue = next.catch(() => undefined)
     return next
@@ -229,8 +263,10 @@ export class LettersWriter {
     letters.index.reserve(number + 1)
     // The person's answering handle is frozen into the letter now, so a later change leaves this letter alone.
     const answeringHandle = readAnsweringHandles(letters.store.dir)[to]
+    const expiresAt = draft.expiresAt ?? (draft.urgency === "now" ? new Date(now.getTime() + NOW_LETTER_EXPIRY_MS).toISOString() : undefined)
     const letter: Letter = {
-      v: 1, id: (this.deps.newId ?? newLetterId)(now.getTime()), code: `L${number}`, ...(answeringHandle ? { answeringHandle } : {}), to, from, ...draft, createdAt: now.toISOString(),
+      v: 1, id: (this.deps.newId ?? newLetterId)(now.getTime()), code: `L${number}`, ...(answeringHandle ? { answeringHandle } : {}), to, from, ...draft,
+      ...(expiresAt ? { expiresAt } : {}), createdAt: now.toISOString(),
     }
     try {
       letters.store.create(letter)
