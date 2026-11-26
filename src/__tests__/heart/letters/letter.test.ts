@@ -156,7 +156,6 @@ describe("checkLetterInput", () => {
     [{ ...decide, urgency: "soon" }, /urgency must be one of now, today, whenever/],
     [{ ...decide, holdUntil: "later" }, /holdUntil must be "interactive" or an ISO time/],
     [{ ...decide, expiresAt: "tomorrow" }, /expiresAt must be an ISO time/],
-    [{ ...decide, dedupeKey: "" }, /dedupeKey is required/],
     [{ ...decide, to: "friend-1" }, /to is set by Ouro/],
     [{ ...decide, from: { session: {} } }, /from is set by Ouro/],
     [{ ...decide, session: {} }, /session is set by Ouro/],
@@ -173,10 +172,41 @@ describe("checkLetterInput", () => {
     ["option 1's label", { ...decide, options: [{ label: "Ⅼ8", effect: "a" }, decide.options[1]] }],
     ["option 2's effect", { ...decide, options: [decide.options[0], { label: "Friday", effect: "same as L 9" }] }],
     ["link 1's label", { ...decide, links: [{ label: "Ｌ８", url: "https://x.example" }] }],
-    ["link 1's url", { ...decide, links: [{ label: "Doc", url: "https://x.example/L8" }] }],
     ["lane", { ...decide, lane: "desk/l8" }],
   ])("refuses a letter code in %s", (field, input) => {
     expect(refusal(input)).toBe(`${field} contains a letter code or Ouro's answer form, which only Ouro writes. Fix: say it without a code such as L8.`)
+  })
+
+  it.each([
+    "https://x.example/L8",
+    "https://x.example/ʟ8/page",
+    "https://github.com/o/r/blob/main/a.ts#L8-x",
+  ])("refuses a letter code in a link's url, %s, with its own fix", (url) => {
+    expect(refusal({ ...decide, links: [{ label: "Doc", url }] })).toBe("link 1's url contains a letter code, which only Ouro writes. Fix: link to a page whose address has no code such as L8.")
+  })
+
+  it.each([
+    "https://github.com/ourostack/ouroboros/blob/main/src/heart/letters/writer.ts#L207",
+    "https://github.com/ourostack/ouroboros/blob/main/src/heart/letters/writer.ts#L207-L213",
+    "https://github.com/o/r/blob/main/a.ts#L3C2-L4C9",
+  ])("keeps a GitHub line anchor in a link's url, %s", (url) => {
+    const checked = checkLetterInput({ ...decide, links: [{ label: "Code", url }] })
+    expect(checked.ok && checked.letter.links).toEqual([{ label: "Code", url }])
+  })
+
+  it("takes at most 10 links", () => {
+    const link = { label: "Doc", url: "https://x.example" }
+    expect(checkLetterInput({ ...decide, links: Array(10).fill(link) }).ok).toBe(true)
+    expect(refusal({ ...decide, links: Array(11).fill(link) })).toBe("a letter takes at most 10 links.")
+  })
+
+  it("reads an empty dedupeKey as no key", () => {
+    const checked = checkLetterInput({ ...decide, dedupeKey: "" })
+    expect(checked.ok && "dedupeKey" in checked.letter).toBe(false)
+  })
+
+  it.each(["ꓡ8", "Ꮮ8"])("folds the Lisu and Cherokee L in %s into a code", (subject) => {
+    expect(refusal({ ...decide, subject })).toMatch(/subject contains a letter code/)
   })
 
   it("lets an error that is not a refusal through, rather than calling it the sender's mistake", () => {

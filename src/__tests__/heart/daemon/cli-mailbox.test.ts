@@ -116,10 +116,16 @@ describe("the mailbox group's CLI commands, dispatched from the generated comman
     expect((odd as { code?: string }).code).toBeUndefined()
   })
 
+  it("passes the daemon's no-agent refusal through with its code", async () => {
+    socket.answer = () => ({ ok: false, error: "No agent bundle slugr.ouro is on this machine.", data: { code: "no-agent", message: "No agent bundle slugr.ouro is on this machine." } })
+    await expect(runOuroCli(["mailbox", "list", "--agent", "slugr"], deps())).rejects.toEqual(expect.objectContaining({ code: "no-agent", message: "No agent bundle slugr.ouro is on this machine." }))
+  })
+
   it("fails with a code for each refusal the commands' cards give, and only those", async () => {
     const { MAILBOX_CLI_REFUSAL_CODES } = await import("../../../heart/daemon/cli-exec")
-    // no-agent, which-agent, unknown-input, unknown-flag and usage are raised before the action runs.
-    const before = new Set(["no-agent", "which-agent", "unknown-input", "unknown-flag", "usage"])
+    // which-agent, unknown-input, unknown-flag and usage are raised before the action runs; no-agent is raised both
+    // before (no bundles at all) and by the daemon (an --agent it has no bundle for).
+    const before = new Set(["which-agent", "unknown-input", "unknown-flag", "usage"])
     const carded = new Set(mailboxCliDeclarations().filter((d) => d.name !== "mailbox").flatMap((d) => d.ax!.errors.map((e) => e.code)).filter((code) => !before.has(code)))
     expect([...MAILBOX_CLI_REFUSAL_CODES].sort()).toEqual([...carded].sort())
   })
