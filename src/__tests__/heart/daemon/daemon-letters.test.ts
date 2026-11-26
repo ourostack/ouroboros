@@ -54,8 +54,12 @@ describe("the daemon's letter expiry pass", () => {
     fs.mkdirSync(lettersDir, { recursive: true })
     fs.writeFileSync(path.join(lettersDir, "ltr_A1.jsonl"), `${JSON.stringify({ v: 1, id: "ltr_A1", code: "L1", to: "friend-ari", from: { agent: "slugger" }, kind: "know", subject: "Gone", whyOnlyYou: "", body: "", options: [], links: [], urgency: "now", expiresAt: "2026-01-01T00:00:00.000Z", createdAt: "2025-12-31T00:00:00.000Z" })}\n`)
     const wake = vi.spyOn(daemon as unknown as { handlePrivateRuntimeWake: (command: unknown) => Promise<unknown> }, "handlePrivateRuntimeWake").mockResolvedValue({ ok: true })
+    const writer = await (daemon as unknown as { letters: () => Promise<{ returnAnswers: () => Promise<number> }> }).letters()
+    const returns = vi.spyOn(writer, "returnAnswers")
     expect(await daemon.expireLetters()).toBe(1)
     expect(await daemon.expireLetters()).toBe(0)
+    // Each pass also retries returning answers to the sessions that asked.
+    expect(returns).toHaveBeenCalledTimes(2)
     await vi.waitFor(() => expect(wake).toHaveBeenCalledWith(expect.objectContaining({ triggerSource: "letter-expired" })))
   })
 

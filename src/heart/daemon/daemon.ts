@@ -1522,13 +1522,17 @@ export class OuroDaemon {
   }
 
   /**
-   * One expiry pass. It reads no letters code until some bundle has letters, so a daemon without them loads nothing.
-   * Answers how many letters it closed.
+   * One expiry pass, which also retries returning answers to the sessions that asked. It reads no letters code until
+   * some bundle has letters, so a daemon without them loads nothing. Answers how many letters it closed.
    */
   async expireLetters(): Promise<number> {
     try {
       const any = !!this.lettersWriter || fs.readdirSync(this.bundlesRoot).some((name) => fs.existsSync(path.join(this.bundlesRoot, name, "state", "letters")))
-      return any ? await (await this.letters()).expireDue() : 0
+      if (!any) return 0
+      const writer = await this.letters()
+      const expired = await writer.expireDue()
+      await writer.returnAnswers()
+      return expired
     } catch (error) {
       // No bundles folder yet means no letters, not a failure worth a warning every minute.
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0

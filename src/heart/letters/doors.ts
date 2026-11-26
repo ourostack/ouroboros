@@ -88,6 +88,8 @@ export interface MailboxCaller {
   /** The agent whose letters these are: the CLI's --agent, the MCP server's agent, the agent in the turn. */
   agent: string
   dryRun?: boolean
+  /** The turn's session, for an in-turn call: a letter filed from it returns its answer there. */
+  session?: { friendId: string; channel: string; key: string }
   socketPath?: string
   /** For tests; the default is the daemon socket client. */
   send?: SendCommand
@@ -245,7 +247,10 @@ export async function runMailboxAction(action: string, input: Record<string, unk
   }
   const send = caller.send ?? (await import("../daemon/socket-client")).sendDaemonCommand
   const socketPath = caller.socketPath ?? (await import("../daemon/socket-client")).DEFAULT_DAEMON_SOCKET_PATH
-  const command: DaemonCommand = { kind: "letters.action", agent: caller.agent, action, input, ...(caller.dryRun ? { dryRun: true } : {}) }
+  const command: DaemonCommand = {
+    kind: "letters.action", agent: caller.agent, action, input, ...(caller.dryRun ? { dryRun: true } : {}),
+    ...(caller.session && action === "mailbox_send" ? { session: caller.session } : {}),
+  }
   // A wait holds the socket for its own timeout, and a deliver for its chat send (the daemon answers within
   // DELIVER_DEADLINE_MS of starting it, perhaps after another deliver ahead of it); anything else answers at once.
   const waitSeconds = action === "mailbox_wait" ? Number(input.timeout ?? 60) : action === "mailbox_deliver" ? 60 : 0
