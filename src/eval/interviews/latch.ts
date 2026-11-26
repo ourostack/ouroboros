@@ -9,11 +9,15 @@
  * (system prompt, tools, messages and tool results) for the brand pattern first and refuses a match unsent, voiding
  * the session (section 3), then takes the conversation's call, then calls the metered runtime, which settles the
  * call's measured cost on the hold. Each call's usage is kept for the report.
+ *
+ * Under versions 1 and 2 the first 429 stops the study. From version 3 (`BACKOFF_FROM_VERSION`) a 429 or rate limit is
+ * waited out with `RATE_LIMIT_BACKOFF_MS` beneath the metering, and only a fourth one in a row stops the study; a 402 or
+ * usage limit stops it at once in every version.
  */
 import type { ProviderRuntime, ProviderTurnRequest } from "../../heart/core"
 import type { UsageData } from "../../heart/streaming"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { creditsOf, meteredRuntime, type BudgetLedger, type Cost, type Hold, type Pricing } from "../budget"
+import { creditsOf, meteredRuntime, type BudgetLedger, type Cost, type Hold, type Pricing, type RateLimitRetry } from "../budget"
 import { brandHits, scannedText } from "./protocol"
 import { rewriteRequest, type Replacement, type RewriteCounts } from "./rewrite"
 
@@ -22,6 +26,21 @@ import { rewriteRequest, type Replacement, type RewriteCounts } from "./rewrite"
  * nudge the choice may get (36 + 6 + 2 + 1). The pilot amendment of 2026-11-23 reserves the nudge's call too.
  */
 export const SESSION_CALLS = 45
+
+/**
+ * Version 3's pacing, pre-registered in preregistration-v3.md section 5, and applied from `BACKOFF_FROM_VERSION` on.
+ * A call that gets a 429 (or a "rate-limit" classification) is sent again after 15 s, then 45 s, then 120 s: three
+ * retries, 180 s at most; a fourth 429 stops the study. The runner waits `SESSION_GAP_MS` between one session's end
+ * and the next one's start.
+ */
+export const RATE_LIMIT_BACKOFF_MS: readonly number[] = Object.freeze([15_000, 45_000, 120_000])
+export const SESSION_GAP_MS = 60_000
+export const BACKOFF_FROM_VERSION = 3
+
+/** The real wait; tests inject their own. */
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 export type ConversationKind = "job" | "debrief" | "choose" | "identify"
 export const CALL_LIMITS: Readonly<Record<ConversationKind, number>> = { job: 12, debrief: 2, choose: 1, identify: 1 }
@@ -44,6 +63,8 @@ export type SessionLatch = {
   /** The brand words of the first request refused for them, or null while no request has had any. */
   voided(): string[] | null
   calls(): CallRecord[]
+  /** How many times a rate-limited call was sent again in this session. */
+  rateLimitRetries(): number
   release(): Cost
 }
 
@@ -51,6 +72,8 @@ export type InterviewLatch = {
   reserve(label: string, units?: number): SessionLatch | { refused: string }
   ledger: BudgetLedger
 }
+
+type Internal = SessionLatch & { _void(hits: string[]): void; _record(entry: CallRecord): void; _retried(): void }
 
 export function createInterviewLatch(input: { ledger: BudgetLedger; pricing: Pricing; perCall(): Cost }): InterviewLatch {
   return {
@@ -60,10 +83,13 @@ export function createInterviewLatch(input: { ledger: BudgetLedger; pricing: Pri
       if ("refused" in hold) return hold
       let voided: string[] | null = null
       const records: CallRecord[] = []
-      const latch: SessionLatch & { _void(hits: string[]): void; _record(entry: CallRecord): void } = {
+      let retries = 0
+      const latch: Internal = {
         hold,
         voided: () => voided,
         calls: () => [...records],
+        rateLimitRetries: () => retries,
+        _retried: () => { retries += 1 },
         release: () => hold.release(),
         _void: (hits) => { voided ??= hits },
         _record: (entry) => { records.push(entry) },
@@ -137,9 +163,12 @@ export function guardedRuntime(input: {
   replacements?: readonly Replacement[]
   /** The arm's running count of matches rewritten, by tier; each request's are also on its log line. */
   rewrites?: RewriteCounts
+  /** From version 3: how a rate-limited call is waited out and sent again, each retry counted on the session. */
+  backoff?: Omit<RateLimitRetry, "onRetry">
 }): ProviderRuntime {
-  const latch = input.latch as SessionLatch & { _void(hits: string[]): void; _record(entry: CallRecord): void }
-  const metered = meteredRuntime(input.inner, latch.hold, input.ledger)
+  const latch = input.latch as Internal
+  const retry = input.backoff ? { ...input.backoff, onRetry: () => latch._retried() } : undefined
+  const metered = meteredRuntime(input.inner, latch.hold, input.ledger, retry)
   const streamTurn: ProviderRuntime["streamTurn"] = async (own) => {
     const gate = input.gateFor(own)
     const rewritten = input.replacements ? rewriteRequest(own, input.replacements) : undefined
