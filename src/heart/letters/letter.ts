@@ -66,6 +66,7 @@ export const LETTER_LIMITS = {
   effect: 160,
   linkLabel: 80,
   url: 500,
+  links: 10,
   dedupeKey: 120,
   lane: 120,
   reason: 200,
@@ -94,6 +95,8 @@ const LOOK_ALIKES: Readonly<Record<string, string>> = {
   "Α": "A", "Β": "B", "Ε": "E", "Ζ": "Z", "Η": "H", "Ι": "I", "Κ": "K", "Μ": "M",
   "Ν": "N", "Ο": "O", "Ρ": "P", "Τ": "T", "Υ": "Y", "Χ": "X", "ο": "o", "ι": "i",
   "ν": "v", "ρ": "p", "ı": "i", "ʟ": "L",
+  // Lisu and Cherokee capitals that NFKC leaves alone.
+  "ꓡ": "L", "Ꮮ": "L",
 }
 
 const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu
@@ -173,16 +176,26 @@ function options(kind: LetterKind, value: unknown): LetterOption[] {
   })
 }
 
+// A line anchor such as GitHub's #L207 or #L207-L213, which would otherwise read as a letter code.
+const LINE_ANCHOR = /#L\d+(?:C\d+)?(?:-L\d+(?:C\d+)?)?$/
+
+/** A link's address: checked like other sender text, except that a line anchor at its end is allowed. */
+function url(at: string, value: unknown): string {
+  const address = plain(`${at}'s url`, value, LETTER_LIMITS.url, true)!
+  if (!/^https?:\/\//.test(address)) refuse(`${at}'s url must start with https:// or http://.`)
+  if (hasLetterCode(address.replace(LINE_ANCHOR, ""))) refuse(`${at}'s url contains a letter code, which only Ouro writes. Fix: link to a page whose address has no code such as L8.`)
+  return storedText(address)
+}
+
 function links(value: unknown): LetterLink[] {
   if (value === undefined) return []
   if (!Array.isArray(value)) refuse("links must be a list of { label, url }.")
+  if (value.length > LETTER_LIMITS.links) refuse(`a letter takes at most ${LETTER_LIMITS.links} links.`)
   return value.map((entry, index) => {
     const at = `link ${index + 1}`
     if (!isObject(entry)) refuse(`${at} must be { label, url }.`)
     const label = text(`${at}'s label`, entry.label, LETTER_LIMITS.linkLabel, true)!
-    const url = text(`${at}'s url`, entry.url, LETTER_LIMITS.url, true)!
-    if (!/^https?:\/\//.test(url)) refuse(`${at}'s url must start with https:// or http://.`)
-    return { label, url }
+    return { label, url: url(at, entry.url) }
   })
 }
 
@@ -211,7 +224,8 @@ function draft(input: unknown): LetterDraft {
   const expiresAt = input.expiresAt
   if (expiresAt !== undefined && (typeof expiresAt !== "string" || !isoTime(expiresAt))) refuse("expiresAt must be an ISO time.")
   // The person never sees the dedupe key, so it may hold anything, a code such as L2 included.
-  const dedupeKey = input.dedupeKey === undefined ? undefined : plain("dedupeKey", input.dedupeKey, LETTER_LIMITS.dedupeKey, true)
+  // An empty key means no key.
+  const dedupeKey = plain("dedupeKey", input.dedupeKey, LETTER_LIMITS.dedupeKey, false)
   const lane = text("lane", input.lane, LETTER_LIMITS.lane, false)
   return {
     kind,
