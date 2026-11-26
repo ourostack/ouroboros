@@ -2,3 +2,5 @@
 - `ouro <command> --help` answers with that command's help only (its usage, when to pick it and the errors it can give), never the whole CLI's usage, and every help line fits 100 columns.
 - A failed command prints one line on stderr that says what to do instead, with its code at the end; a usage mistake names that command's usage rather than dumping every command's.
 - Piping `ouro` into `head` or another reader that closes early no longer prints a stack trace.
+- `ouro help --json` gives each command its own usage lines, with the words and flags it needs, instead of a bare `ouro <name>`.
+- A command group that runs nothing itself, such as `ouro vault --json`, answers with its commands as data.

@@ -490,6 +490,13 @@ describe("runOuroCli help execution", () => {
     expect(help.exitCodes.map((exit) => exit.code)).toEqual([0, 1])
   })
 
+  it("ouro help --json gives each command its own usage lines, so an agent sees the flags a command needs", async () => {
+    const help = JSON.parse(await runOuroCli(["help", "--json"], makeDeps())) as { commands: Array<{ name: string; usage: string[] }> }
+    const usageOf = (name: string) => help.commands.find((command) => command.name === name)!.usage
+    expect(usageOf("check")).toEqual(["ouro check [--agent <name>] --lane outward|inner"])
+    expect(usageOf("vault")).toEqual(["ouro vault"])
+  })
+
   it("ouro help --json serves each command's Ouro AX card, the entry points, and the unknown-command card", async () => {
     const help = JSON.parse(await runOuroCli(["help", "--json"], makeDeps())) as {
       commands: Array<Record<string, unknown>>

@@ -101,12 +101,12 @@ export const CLI_EXIT_CODES = [
  * What `help --json` says about one declaration: the card's fields beside the name, effect and summary. A command's
  * usage starts with `ouro`; an entry point's is its own command line.
  */
-export function helpEntry(command: CliCommandDeclaration, usage: string = `ouro ${command.name}`): Record<string, unknown> {
+export function helpEntry(command: CliCommandDeclaration, usage: readonly string[] = []): Record<string, unknown> {
   return {
     name: command.name,
     effect: command.effect,
     summary: command.summary,
-    usage: [usage],
+    usage: usage.length > 0 ? [...usage] : [`ouro ${command.name}`],
     ...(command.readOnly ? { readOnly: true } : {}),
     ...(command.hidden ? { hidden: true } : {}),
     ...(command.example ? { example: `ouro ${command.example}` } : {}),
@@ -136,11 +136,12 @@ function withPackageRoot(value: unknown, root: string): unknown {
  * anywhere (and which the X-ray doesn't take for a developer's source-checkout command).
  */
 export function entryPointHelp(entry: CliCommandDeclaration, root: string = getRepoRoot()): Record<string, unknown> {
-  return withPackageRoot(helpEntry(entry, entry.name), root) as Record<string, unknown>
+  return withPackageRoot(helpEntry(entry, [entry.name]), root) as Record<string, unknown>
 }
 
 /** The help as data: every declared command and entry point with its effect and card, and the exit codes. */
-export function cliHelpJson(root: string = getRepoRoot()): string {
+/** `usageOf` gives a command's usage lines, as `ouro --help` prints them, so an agent learns which words and flags it needs. */
+export function cliHelpJson(root: string = getRepoRoot(), usageOf: (name: string) => readonly string[] = () => []): string {
   emitNervesEvent({
     component: "daemon",
     event: "daemon.cli_help_json",
@@ -150,7 +151,7 @@ export function cliHelpJson(root: string = getRepoRoot()): string {
   return JSON.stringify(
     {
       tool: "ouro",
-      commands: CLI_COMMANDS.map((command) => helpEntry(command)),
+      commands: CLI_COMMANDS.map((command) => helpEntry(command, usageOf(command.name))),
       entryPoints: CLI_ENTRY_POINTS.map((entry) => entryPointHelp(entry, root)),
       exitCodes: CLI_EXIT_CODES,
       errors: serverErrors,

@@ -1,6 +1,6 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 import { usage } from "./cli-parse"
-import { CLI_COMMANDS, type CliCommandDeclaration } from "./cli-manifest"
+import { CLI_COMMANDS, helpEntry, type CliCommandDeclaration } from "./cli-manifest"
 import { getCommandHelp } from "./cli-help"
 import { DEFAULT_WIDTH, wrap } from "../../ouro-ax/help"
 
@@ -55,7 +55,8 @@ interface CommandShape {
   positionals: number;
 }
 
-function usageLinesFor(name: string): string[] {
+/** A command's lines from the CLI's usage, each `  ouro <words> ...`. */
+export function usageLinesFor(name: string): string[] {
   const words = name.split(" ");
   const last = words[words.length - 1]!;
   const head = words.slice(0, -1).map((word) => `${word} `).join("");
@@ -144,6 +145,25 @@ function refuse(name: string, code: GateRefusal, message: string): GateResult {
   return { kind: "refuse", code, message };
 }
 
+/** The commands declared under `name`, longer by a word or more: a group's members. */
+function membersOf(name: string): CliCommandDeclaration[] {
+  return CLI_COMMANDS.filter((command) => command.name.startsWith(`${name} `));
+}
+
+/** A command's own usage lines, trimmed: the CLI's usage for it, less the lines of the longer commands declared under it. */
+export function ownUsageLines(name: string): string[] {
+  const members = membersOf(name);
+  return usageLinesFor(name)
+    .map((line) => line.trim())
+    .filter((line) => !members.some((member) => line === `ouro ${member.name}` || line.startsWith(`ouro ${member.name} `)));
+}
+
+/** A group's answer to `--json`: its commands as `help --json` describes them, since the group runs nothing itself. */
+function groupJson(declaration: CliCommandDeclaration): string {
+  const commands = membersOf(declaration.name).map((member) => helpEntry(member, ownUsageLines(member.name)));
+  return JSON.stringify({ tool: "ouro", group: declaration.name, summary: declaration.summary, commands }, null, 2);
+}
+
 /** Every line at most the kit's width: a longer one wraps under its own indent, continuing two columns in. */
 export function fitWidth(text: string): string {
   return text
@@ -211,6 +231,7 @@ export function gateCommandArgs(args: string[]): GateResult {
   const known = [...new Set([...PARSER_FLAGS, ...GLOBAL_FLAGS, ...flags.keys()])];
 
   if (rest.includes("--help")) return { kind: "help", text: commandHelp(declaration) };
+  if (rest.length === 1 && rest[0] === "--json" && membersOf(name).length > 0 && ownUsageLines(name).length === 0) return { kind: "help", text: groupJson(declaration) };
 
   for (let index = 0; index < rest.length; index++) {
     const token = rest[index]!;

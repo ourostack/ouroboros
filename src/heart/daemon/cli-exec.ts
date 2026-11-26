@@ -157,6 +157,7 @@ import { parseOuroCommand, inferAgentNameFromRemote } from "./cli-parse"
 import { isAgentProvider, usage } from "./cli-parse"
 import { getGroupedHelp, getCommandHelp } from "./cli-help"
 import { cliHelpJson } from "./cli-manifest"
+import { ownUsageLines } from "./cli-gate"
 import { MailboxDoorError, renderMailboxResult, runMailboxAction } from "../letters/doors"
 
 /** The codes the mailbox commands fail with: the doors' own checks and the daemon's letters writer. */
@@ -7936,7 +7937,7 @@ async function refreshHookSentinel(command: HookCliCommand, deps: OuroCliDeps): 
 
 export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefaultOuroCliDeps()): Promise<string> {
   if (args.length === 2 && args[1] === "--json" && (args[0] === "help" || args[0] === "--help" || args[0] === "-h")) {
-    const text = cliHelpJson()
+    const text = cliHelpJson(undefined, ownUsageLines)
     deps.writeStdout(text)
     return text
   }

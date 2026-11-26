@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { commandHelp, errorText, fitWidth, gateCommandArgs } from "../../../heart/daemon/cli-gate"
+import { commandHelp, errorText, fitWidth, gateCommandArgs, ownUsageLines } from "../../../heart/daemon/cli-gate"
 import type { CliCommandDeclaration } from "../../../heart/daemon/cli-manifest"
 
 describe("the flag gate in front of the ouro CLI", () => {
@@ -131,5 +131,23 @@ describe("one command's help and one-line errors, on the Ouro AX kit's width", (
   it("folds any other message onto one line and puts the code on the end", () => {
     expect(errorText(["up"], "first part\n  second part")).toBe("first part second part")
     expect(errorText(["up"], "daemon unavailable", "daemon-down")).toBe("daemon unavailable (code: daemon-down)")
+  })
+})
+
+describe("a command's own usage, and a group's answer to --json", () => {
+  it("gives a command its usage lines, less the lines of the commands declared under it", () => {
+    expect(ownUsageLines("check")).toEqual(["ouro check [--agent <name>] --lane outward|inner"])
+    expect(ownUsageLines("logs")).not.toContainEqual(expect.stringContaining("logs prune"))
+    expect(ownUsageLines("vault")).toEqual([])
+  })
+
+  it("answers a group that runs nothing itself with its commands as data", () => {
+    const result = gateCommandArgs(["vault", "--json"])
+    expect(result.kind).toBe("help")
+    const doc = JSON.parse(result.kind === "help" ? result.text : "{}")
+    expect(doc).toMatchObject({ tool: "ouro", group: "vault" })
+    expect(doc.commands.map((command: { name: string }) => command.name)).toContain("vault status")
+    expect(doc.commands.find((command: { name: string }) => command.name === "vault status").usage[0]).toMatch(/^ouro vault status \[--agent <name>\]/)
+    expect(gateCommandArgs(["check", "--json"])).toMatchObject({ kind: "pass" })
   })
 })
