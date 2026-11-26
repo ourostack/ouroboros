@@ -20,8 +20,8 @@ export type SandboxRun = Observation & { gaps: string[]; followUps?: FollowUp[];
  * token of the host lock this command holds there, if any.
  */
 export type RemotePaths = { bundleDir: string; seedBundleDir: string; workRoot?: string; oracleBooks?: string; images?: SandboxImages; hostLockToken?: string }
-/** Another guest than the Telegram turn, as `runSandboxed` takes it, and the name of its own agent image, if any. */
-export type GuestChoice = { entry: InterviewGuestEntry; turn: unknown; image?: string }
+/** Another guest than the Telegram turn, as `runSandboxed` takes it: the name of its own agent image and its memory, if any. */
+export type GuestChoice = { entry: InterviewGuestEntry; turn: unknown; image?: string; memory?: string }
 export type RemoteJob = RemotePaths & { case: Case; guest?: GuestChoice }
 export type RemoteProcess = { stdin: Writable; stdout: Readable; exited: Promise<number>; stderr(): string; kill?(): void }
 export type RunCase = (input: { case: Case; host: ProviderRuntime; budget: { take(): boolean }; guest?: GuestChoice }) => Promise<SandboxRun>
