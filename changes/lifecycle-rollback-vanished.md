@@ -1,0 +1,1 @@
+- Tests now prove that the Butler's rollback, like its upgrade, skips a container that disappears while it checks for other programs reading the bundle. On 2026-11-23 the 1435 rollback failed on exactly that. Nothing changes for people using it ([#1761](https://github.com/ourostack/ouroboros/issues/1761)).
