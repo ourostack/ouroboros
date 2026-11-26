@@ -182,7 +182,7 @@ describe("Sanctuary runtime tool context", () => {
       agentRoot: "/home/ouro/AgentBundles/sanctuary.ouro",
       runtimePackageVersion: "0.1.0-alpha.798",
     })
-    expect(runtimeMocks.resolveSanctuaryPackageManagedRoots).toHaveBeenCalledExactlyOnceWith({ repoRoot: "/opt/ouro", bundlesRoot: "/home/ouro/AgentBundles" })
+    expect(runtimeMocks.resolveSanctuaryPackageManagedRoots).toHaveBeenCalledExactlyOnceWith({ repoRoot: "/opt/ouro", bundlesRoot: "/home/ouro/AgentBundles", agent: "sanctuary" })
   })
 
   it("passes bounded install inspection failures through without exposing implementation details", async () => {
@@ -198,6 +198,10 @@ describe("Sanctuary runtime tool context", () => {
     runtimeMocks.inspectSanctuaryPackageManagedBundle.mockReturnValue(failure)
 
     await expect(createSanctuaryToolContext("sanctuary").sanctuary!.getInstallState()).resolves.toEqual(failure)
+    // Another agent's install read keeps the default bundle name.
+    runtimeMocks.resolveSanctuaryPackageManagedRoots.mockClear()
+    await createSanctuaryToolContext("slugger").sanctuary!.getInstallState()
+    expect(runtimeMocks.resolveSanctuaryPackageManagedRoots).toHaveBeenCalledExactlyOnceWith({ repoRoot: "/opt/ouro", bundlesRoot: "/home/ouro/AgentBundles" })
     expect(JSON.stringify(failure)).not.toMatch(/(?:\/opt\/|\/home\/|sha256:|credential|stack)/u)
   })
 

@@ -1,0 +1,1 @@
+- The Butler's scheduler now follows the name its bundle has. Its cron proof, its health-check liveness receipt, its crontab and the daemon's package-managed start all work for a bundle named `butler.ouro` as well as `sanctuary.ouro`. A daemon that finds both bundles refuses to start rather than guess which one is the Butler.
