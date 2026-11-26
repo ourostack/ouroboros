@@ -71,4 +71,18 @@ describe("the daemon's letters.answer command", () => {
     await expect(daemon.handleCommand({ kind: "letters.answer", agent: "slugger", messageGuid: "m-1" }))
       .resolves.toEqual({ ok: true, data: { recorded: false, reason: "untrusted-server-url" } })
   })
+
+  it("tells the agent through its private runtime once an answer is recorded", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "c21-daemon-answered-"))
+    made.push(bundlesRoot)
+    fs.mkdirSync(path.join(bundlesRoot, "slugger.ouro"))
+    const { OuroDaemon } = await import("../../../heart/daemon/daemon")
+    const daemon = new OuroDaemon(daemonOptions(bundlesRoot) as ConstructorParameters<typeof OuroDaemon>[0])
+    const wake = vi.spyOn(daemon as unknown as { handlePrivateRuntimeWake: (command: unknown) => Promise<unknown> }, "handlePrivateRuntimeWake").mockResolvedValue({ ok: true })
+    const writer = await (daemon as unknown as { letters: () => Promise<{ deps: { onAnswered: (agent: string, letter: unknown, answer: unknown) => Promise<void> } }> }).letters()
+    // A letter with no answering handle has no chat for a receipt, so only the agent is told.
+    const letter = { v: 1, id: "ltr_A1", code: "L1", to: "friend-ari", from: { agent: "slugger" }, kind: "decide", subject: "Which name?", whyOnlyYou: "", body: "", options: [{ id: "1", label: "Ouro" }], links: [], urgency: "today", createdAt: "2026-11-26T00:00:00.000Z" }
+    await writer.deps.onAnswered("slugger", letter, { option: "1", label: "Ouro", messageGuid: "m-1", at: "2026-11-26T01:00:00.000Z" })
+    expect(wake).toHaveBeenCalledWith(expect.objectContaining({ triggerSource: "letter-answered" }))
+  })
 })
