@@ -5035,7 +5035,7 @@ export async function sendProactiveBlueBubblesMessageToSession(
     return { delivered: false, reason: "internal_content_blocked" }
   }
 
-  let image: Awaited<ReturnType<typeof readProactiveImage>> | undefined
+  let image: ChatFile | undefined
   if (params.imagePath) {
     const read = await readProactiveImage(client, params.imagePath)
     if ("unsendable" in read) {
