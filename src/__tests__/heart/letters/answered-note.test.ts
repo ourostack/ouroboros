@@ -35,6 +35,8 @@ describe("what a recorded answer says", () => {
     expect(answerReceipt(letter, answer)).toBe("Recorded L7 · Slugger asks: Which name? → 2 Ouro")
     expect(letterAnsweredNote(letter, answer)).toBe("my person answered letter L7 (its sender's subject: \"Which name?\") with option 2, \"Ouro\", with the note \"ship it\". mailbox_read shows it.")
     expect(letterAnsweredNote(letter, { ...answer, note: undefined })).toBe("my person answered letter L7 (its sender's subject: \"Which name?\") with option 2, \"Ouro\". mailbox_read shows it.")
+    const asked = { ...letter, from: { ...letter.from, session: { friendId: "friend-bo", channel: "teams", key: "thread-1" } } }
+    expect(letterAnsweredNote(asked, { ...answer, note: undefined })).toBe("my person answered letter L7 (its sender's subject: \"Which name?\") with option 2, \"Ouro\". it was asked from my teams session with friend-bo (\"thread-1\"), where the answer is left too. mailbox_read shows it.")
   })
 })
 

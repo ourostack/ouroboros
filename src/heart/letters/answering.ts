@@ -15,7 +15,7 @@ export type HandleCheck = { ok: true; handle: string } | { ok: false; problem: s
 
 type ListFriends = (bundleRoot: string) => Promise<FriendRecord[]>
 
-const listBundleFriends: ListFriends = (root) => new FileFriendStore(path.join(root, "friends")).listAll()
+export const listBundleFriends: ListFriends = (root) => new FileFriendStore(path.join(root, "friends")).listAll()
 
 /** The family records in a bundle's friends folder that name this machine's owner, the rule `ouro friend link-code` uses. */
 export async function ownerFriendIds(bundleRoot: string, owner: string | null, list: ListFriends = listBundleFriends): Promise<string[]> {

@@ -27,7 +27,10 @@ export function answerReceipt(letter: Letter, answer: RecordedAnswer): string {
 /** The agent's note; the subject, label and note are other people's words, so they are quoted as theirs. */
 export function letterAnsweredNote(letter: Letter, answer: RecordedAnswer): string {
   const note = answer.note ? `, with the note ${JSON.stringify(answer.note)}` : ""
-  return `my person answered letter ${letter.code} (its sender's subject: ${JSON.stringify(letter.subject)}) with option ${answer.option}, ${JSON.stringify(answer.label)}${note}. mailbox_read shows it.`
+  const session = letter.from.session
+  // The session that asked reads the answer on its next turn; naming it lets me raise the answer there sooner.
+  const asked = session ? ` it was asked from my ${session.channel} session with ${session.friendId} (${JSON.stringify(session.key)}), where the answer is left too.` : ""
+  return `my person answered letter ${letter.code} (its sender's subject: ${JSON.stringify(letter.subject)}) with option ${answer.option}, ${JSON.stringify(answer.label)}${note}.${asked} mailbox_read shows it.`
 }
 
 export function letterAnsweredWake(agent: string, letter: Letter) {
