@@ -4902,7 +4902,7 @@ async function readProactiveImage(client: BlueBubblesClient, imagePath: string):
     const file = await readChatFile(imagePath, MAX_IMESSAGE_FILE_BYTES)
     return file.contentType.startsWith("image/") ? file : { unsendable: `${file.name} is not an image` }
   } catch (error) {
-    return { unsendable: error instanceof Error ? error.message : String(error) }
+    return { unsendable: (error as Error).message }
   }
 }
 
