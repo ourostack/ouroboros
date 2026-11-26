@@ -431,6 +431,26 @@ describe("runSandboxed", () => {
     expect(agentImageOf(images, undefined)).toBe(SANDBOX_IMAGE)
   })
 
+  it("gives the agent container the memory a guest names, 2g otherwise, and refuses a malformed amount before any run", async () => {
+    const reply = { timeline: [], finalReply: "", outcome: "settled", steps: 0, turns: [{ start: 0, finalReply: "", outcome: "settled", calls: 0 }] }
+    const memoryOf = (args: string[]): string[] => [args[args.indexOf("--memory") + 1]!, args[args.indexOf("--memory-swap") + 1]!]
+    const agentOf = (calls: string[][]): string[] => calls.find((args) => args.includes("--name") && args[args.indexOf("--name") + 1]!.endsWith("-agent"))!
+    const guest = { entry: "interview-guest-entry.js" as const, turn: { prefix: [], userText: "x" } }
+    const big = fakeDocker({ runTurn: async () => reply as never })
+    expect((await runSandboxed(input(big.docker, { guest: { ...guest, memory: "4g" } }))).outcome).toBe("settled")
+    expect(memoryOf(agentOf(big.calls))).toEqual(["4g", "4g"])
+    // Only the agent container takes the guest's memory; the household and the helpers keep 2g.
+    for (const args of big.calls.filter((call) => call.includes("--memory") && call !== agentOf(big.calls))) expect(memoryOf(args)).toEqual(["2g", "2g"])
+    const plain = fakeDocker({ runTurn: async () => reply as never })
+    await runSandboxed(input(plain.docker, { guest }))
+    expect(memoryOf(agentOf(plain.calls))).toEqual(["2g", "2g"])
+    for (const bad of ["4", "0g", "4 g", "4g --privileged", "4k", "-1g"]) {
+      const refused = fakeDocker({ runTurn: async () => reply as never })
+      await expect(runSandboxed(input(refused.docker, { guest: { ...guest, memory: bad } }))).rejects.toThrow(`a guest's memory is a whole number of m or g, such as 4g, not ${bad}`)
+      expect(refused.calls).toEqual([])
+    }
+  })
+
   it("reports another guest's malformed turns as a sandbox error, and a single turn as no follow-ups", async () => {
     const reply = { timeline: [], finalReply: "", outcome: "settled", steps: 0 }
     const bad = fakeDocker({ runTurn: async () => ({ ...reply, turns: [{ start: "0" }] }) as never })
