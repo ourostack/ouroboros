@@ -131,6 +131,33 @@ describe("daemon socket client", () => {
     }) + "\n")
   })
 
+  it("decodes an answer whose chunks split a UTF-8 character", async () => {
+    const body = Buffer.from(JSON.stringify({ ok: true, message: "信".repeat(4000) }), "utf-8")
+    // Cut one byte into a three-byte character, so neither chunk decodes on its own.
+    const cut = body.indexOf(Buffer.from("信", "utf-8")) + 1
+    class MockConnection extends EventEmitter {
+      write = vi.fn(() => {
+        queueMicrotask(() => {
+          this.emit("data", body.subarray(0, cut))
+          this.emit("data", body.subarray(cut))
+          this.emit("end")
+        })
+      })
+      end = vi.fn()
+    }
+    const createConnection = vi.fn(() => {
+      const connection = new MockConnection()
+      queueMicrotask(() => connection.emit("connect"))
+      return connection
+    })
+    vi.doMock("fs", () => ({ existsSync: vi.fn(() => true) }))
+    vi.doMock("net", () => ({ createConnection }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+    const { sendDaemonCommand } = await import("../../../heart/daemon/socket-client")
+    const response = await sendDaemonCommand("/tmp/daemon.sock", { kind: "daemon.status" })
+    expect(response).toEqual({ ok: true, message: "信".repeat(4000) })
+  })
+
   it("returns null for private wake when the daemon socket does not exist", async () => {
     const createConnection = vi.fn()
 
