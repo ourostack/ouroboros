@@ -8,6 +8,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { registerGlobalLogSink } from "../../nerves/index"
 import { FileMessageRouter } from "./message-router"
 import { HealthMonitor, readDiskFreeBytes, readDiskUsagePercent } from "./health-monitor"
+import { OwnerChannelOutageWatcher, lazyOwnerAlertRoutes } from "./owner-channel-outage"
 import {
   DaemonHealthWriter,
   createHealthNervesSink,
@@ -22,7 +23,7 @@ import { configureDaemonRuntimeLogger } from "./runtime-logging"
 import { DaemonSenseManager } from "./sense-manager"
 import { listBundleSyncRows, listHomeBundleAgents, readPrivateRuntimeConfig } from "./agent-discovery"
 import { checkAgentHomes } from "./agent-home"
-import { getRepoRoot, getAgentBundlesRoot } from "../identity"
+import { getRepoRoot, getAgentBundlesRoot, loadAgentConfig } from "../identity"
 import { appSessionsRecord } from "./app-sessions-record"
 import { detectRuntimeMode } from "./runtime-mode"
 import { HabitScheduler } from "../habits/habit-scheduler"
@@ -423,7 +424,18 @@ const senseManager = new DaemonSenseManager({
   agents: [...managedAgents],
 })
 
+// Tells the owner over a working channel when the channel they hear the agent on stays down (owner-channel-outage.ts).
+const ownerChannelOutageWatcher = new OwnerChannelOutageWatcher({
+  agents: () => [...managedAgents],
+  listSenseRows: () => senseManager.listSenseRows(),
+  statePath: (agent) => path.join(getAgentBundlesRoot(), `${agent}.ouro`, "state", "owner-channel-outage.json"),
+  routes: (agent) => lazyOwnerAlertRoutes(agent, path.join(getAgentBundlesRoot(), `${agent}.ouro`)),
+  /* v8 ignore next -- wiring: reads the agent's own config @preserve */
+  displayName: (agent) => { try { return loadAgentConfig({ agentName: agent, agentRoot: path.join(getAgentBundlesRoot(), `${agent}.ouro`) }).displayName ?? agent } catch { return agent } },
+})
+
 const healthMonitor = new HealthMonitor({
+  afterChecks: (results) => ownerChannelOutageWatcher.check(results),
   processManager,
   scheduler,
   diskUsagePercent: () => readDiskUsagePercent(getAgentBundlesRoot()),

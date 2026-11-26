@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 import * as fs from "fs"
 import * as os from "os"
@@ -177,6 +177,20 @@ vi.mock("../../mind/file-state", () => ({
 vi.mock("../../mind/scrutiny", () => ({
   resetSessionModifiedFiles: (...args: any[]) => mockResetSessionModifiedFiles(...args),
 }))
+
+// The reply gate runs for real unless a test sets one of these.
+const replyGateOverrides = vi.hoisted(() => ({
+  read: null as null | ((agentName: string) => unknown),
+  ask: null as null | ((input: unknown) => Promise<unknown>),
+}))
+vi.mock("../../senses/reply-gate", async () => {
+  const actual = await vi.importActual<typeof import("../../senses/reply-gate")>("../../senses/reply-gate")
+  return {
+    ...actual,
+    readReplyGateConfig: (agentName: string) => replyGateOverrides.read ? replyGateOverrides.read(agentName) : actual.readReplyGateConfig(agentName),
+    askReplyGate: (input: Parameters<typeof actual.askReplyGate>[0]) => replyGateOverrides.ask ? replyGateOverrides.ask(input) : actual.askReplyGate(input),
+  }
+})
 
 const mockBuildTurnContext = vi.fn()
 vi.mock("../../heart/turn-context", () => ({
@@ -4130,5 +4144,130 @@ describe("handleInboundTurn records each watched turn so status can see one stal
     } finally {
       vi.restoreAllMocks()
     }
+  })
+})
+
+describe("handleInboundTurn asks the reply gate before a group-chat turn", () => {
+  beforeEach(() => {
+    mockFindBridgesForSession.mockReset().mockReturnValue([])
+    mockListTargetSessionCandidates.mockReset().mockResolvedValue([])
+    mockListCodingSessions.mockReset().mockReturnValue([])
+    mockEmitNervesEvent.mockReset()
+    mockBuildTurnContext.mockReset().mockResolvedValue(defaultTurnContext())
+    replyGateOverrides.read = () => ({ deployment: "decision-1-1" })
+    replyGateOverrides.ask = null
+    vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+  })
+
+  afterEach(() => {
+    replyGateOverrides.read = null
+    vi.restoreAllMocks()
+  })
+
+  function groupInput(overrides: Partial<InboundTurnInput> = {}): InboundTurnInput {
+    const caps = makeCapabilities({ channel: "bluebubbles", senseType: "open" })
+    return makeInput({
+      channel: "bluebubbles",
+      capabilities: caps,
+      friendResolver: { resolve: vi.fn().mockResolvedValue({ friend: makeFriend(), channel: caps }) },
+      messages: [{ role: "user", content: "lunch anyone?" }],
+      isGroupChat: true,
+      ...overrides,
+    })
+  }
+
+  it("stays quiet without a model turn when the gate says a reply is not worth it, and records it as observe", async () => {
+    const ask = vi.fn().mockResolvedValue({ reply: false, reason: "not-worth-it", value: 0.2 })
+    replyGateOverrides.ask = ask
+    const input = groupInput()
+    try {
+      const result = await handleInboundTurn(input)
+
+      expect(input.runAgent).not.toHaveBeenCalled()
+      expect(result.turnOutcome).toBe("observed")
+      expect(ask).toHaveBeenCalledWith(expect.objectContaining({ config: { deployment: "decision-1-1" } }))
+      const saved = (input.postTurn as ReturnType<typeof vi.fn>).mock.calls[0][0] as ChatCompletionMessageParam[]
+      const [call, toolResult] = saved.slice(-2)
+      expect(call).toMatchObject({ role: "assistant", tool_calls: [{ function: { name: "observe" } }] })
+      expect(toolResult).toMatchObject({ role: "tool", content: "(silenced)" })
+    } finally {
+      replyGateOverrides.ask = null
+    }
+  })
+
+  it("runs the turn when the gate says a reply is worth it", async () => {
+    replyGateOverrides.ask = vi.fn().mockResolvedValue({ reply: true, reason: "worth-it", value: 2.2 })
+    const input = groupInput()
+    try {
+      const result = await handleInboundTurn(input)
+      expect(input.runAgent).toHaveBeenCalledTimes(1)
+      expect(result.turnOutcome).toBe("settled")
+    } finally {
+      replyGateOverrides.ask = null
+    }
+  })
+
+  it("never asks the gate outside a group chat", async () => {
+    const ask = vi.fn()
+    replyGateOverrides.ask = ask
+    const input = groupInput({ isGroupChat: false })
+    try {
+      await handleInboundTurn(input)
+      expect(ask).not.toHaveBeenCalled()
+      expect(input.runAgent).toHaveBeenCalledTimes(1)
+    } finally {
+      replyGateOverrides.ask = null
+    }
+  })
+
+  it("runs the turn without asking the gate when something is queued for it, so the queued message is delivered", async () => {
+    const ask = vi.fn().mockResolvedValue({ reply: false, reason: "not-worth-it", value: 0 })
+    replyGateOverrides.ask = ask
+    const queued: PendingMessage = { from: "inner", content: "tell the group the review moved to Thursday", timestamp: Date.now() } as PendingMessage
+    const input = groupInput({ drainPending: vi.fn().mockReturnValue([queued]) })
+    await handleInboundTurn(input)
+    expect(ask).not.toHaveBeenCalled()
+    expect(input.runAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it("runs the turn without asking the gate when a wake section is queued", async () => {
+    const ask = vi.fn()
+    replyGateOverrides.ask = ask
+    const input = groupInput({ onPendingDrained: () => ["## wake"] })
+    await handleInboundTurn(input)
+    expect(ask).not.toHaveBeenCalled()
+    expect(input.runAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it("never asks the gate in Teams, where a group message reaches the bot only when it is @mentioned", async () => {
+    const ask = vi.fn()
+    replyGateOverrides.ask = ask
+    const caps = makeCapabilities({ channel: "teams", senseType: "closed" })
+    const input = groupInput({ channel: "teams", capabilities: caps, friendResolver: { resolve: vi.fn().mockResolvedValue({ friend: makeFriend(), channel: caps }) } })
+    await handleInboundTurn(input)
+    expect(ask).not.toHaveBeenCalled()
+    expect(input.runAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it("runs the turn and says why when agent.json's replyGate cannot be read", async () => {
+    replyGateOverrides.read = () => { throw new Error("agent.json replyGate must be { deployment }") }
+    const input = groupInput()
+    await handleInboundTurn(input)
+
+    expect(input.runAgent).toHaveBeenCalledTimes(1)
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.reply_gate_config_error",
+      meta: expect.objectContaining({ error: "agent.json replyGate must be { deployment }" }),
+    }))
+  })
+
+  it("reports a replyGate read failure that is not an Error", async () => {
+    replyGateOverrides.read = () => { throw "unreadable" }
+    const input = groupInput()
+    await handleInboundTurn(input)
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.reply_gate_config_error",
+      meta: expect.objectContaining({ error: "unreadable" }),
+    }))
   })
 })

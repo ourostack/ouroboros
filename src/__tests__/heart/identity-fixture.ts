@@ -35,6 +35,7 @@ export const FULL_AGENT_JSON = {
   humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
   agentFacing: { provider: "minimax", model: "minimax-text-01" },
   providerFallback: [{ provider: "minimax", model: "MiniMax-M3" }],
+  replyGate: { deployment: "decision-1-1", replyAtValue: 1.5 },
   context: {
     maxTokens: 12345,
     contextMargin: 15,

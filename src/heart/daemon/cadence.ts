@@ -150,6 +150,22 @@ export function cadenceFallbackDelayMs(raw: unknown, nowMs: number): number | nu
   return delay
 }
 
+/**
+ * The suffix that moves an interval habit to a new occurrence once a whole interval has passed since it fell due.
+ * A run that is lost before it records `lastRun` (the daemon restarts, the Mac crashes) leaves `lastRun` where it was,
+ * so an occurrence keyed only on `lastRun` is the one the lost run already spent, and every later firing is refused as
+ * its duplicate. The heartbeat stopped this way for 14 hours on 2026-11-25. Firings within one interval still share
+ * an occurrence, so the 5-minute reconcile cannot start a run per pass.
+ */
+export function cadenceRetrySuffix(raw: unknown, lastRun: string | null, nowMs: number): string {
+  const intervalMs = parseCadenceToMs(raw)
+  if (intervalMs === null || lastRun === null) return ""
+  const lastRunMs = Date.parse(lastRun)
+  if (!Number.isFinite(lastRunMs)) return ""
+  const missedIntervals = Math.floor((nowMs - lastRunMs) / intervalMs) - 1
+  return missedIntervals >= 1 ? `:retry:${missedIntervals}` : ""
+}
+
 export function evaluateCadenceDue(raw: unknown, lastRun: string | null, nowMs: number): CadenceDueState | null {
   const intervalMs = parseCadenceToMs(raw)
   if (intervalMs !== null) {
@@ -162,7 +178,9 @@ export function evaluateCadenceDue(raw: unknown, lastRun: string | null, nowMs: 
     return {
       due: elapsedMs >= intervalMs,
       elapsedMs,
-      occurrenceId: elapsedMs >= intervalMs ? `overdue:last-run:${lastRun}:cadence:${String(raw).trim()}` : null,
+      occurrenceId: elapsedMs >= intervalMs
+        ? `overdue:last-run:${lastRun}:cadence:${String(raw).trim()}${cadenceRetrySuffix(raw, lastRun, nowMs)}`
+        : null,
     }
   }
 

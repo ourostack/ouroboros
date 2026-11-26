@@ -491,7 +491,7 @@ describe("Teams createTeamsCallbacks - typing keepalive while a tool runs", () =
     vi.useFakeTimers()
     const teams = await import("../../senses/teams")
     const stream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
-    const callbacks = teams.createTeamsCallbacks(stream as any, new AbortController(), undefined, { typingKeepaliveMs: 1_000, suppressEmptyStreamMessage: true })
+    const callbacks = teams.createTeamsCallbacks(stream as any, new AbortController(), undefined, { typingKeepaliveMs: 1_000 })
     callbacks.onToolStart("settle", { answer: "x" })
     vi.advanceTimersByTime(1_000)
     expect(stream.update).toHaveBeenLastCalledWith("working...")
@@ -507,6 +507,18 @@ describe("Teams createTeamsCallbacks - typing keepalive while a tool runs", () =
     stream.update.mockClear()
     vi.advanceTimersByTime(3_000)
     expect(stream.update).not.toHaveBeenCalled()
+  })
+
+  it("on a turn that may send no text, the keepalive never opens a stream that could not be closed", async () => {
+    vi.resetModules()
+    vi.useFakeTimers()
+    const teams = await import("../../senses/teams")
+    const stream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const callbacks = teams.createTeamsCallbacks(stream as any, new AbortController(), undefined, { typingKeepaliveMs: 1_000, suppressEmptyStreamMessage: true })
+    callbacks.onToolStart("settle", { answer: "x" })
+    vi.advanceTimersByTime(3_000)
+    expect(stream.update).not.toHaveBeenCalled()
+    await callbacks.flush()
   })
 })
 

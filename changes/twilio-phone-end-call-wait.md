@@ -1,0 +1,1 @@
+- Test-only: the Twilio phone SIP test now waits for the end-call tool output, instead of reading it the instant the hangup request is seen; the output and the hangup are sent by separate asynchronous steps, so the instant read could miss it.

@@ -348,7 +348,9 @@ export function createNdjsonFileSink(
   const verbose = process.env.OURO_LOG_VERBOSE === "1"
   const queue: string[] = []
   let flushing = false
-  let bytesSinceCheck = 0
+  // Start due: a short-lived process (each `ouro` CLI call) writes far less than one interval, so without a check on
+  // its first write an oversized file left by earlier processes would never be rotated.
+  let bytesSinceCheck = rotationCheckInterval
   let enqueued = 0
   let completed = 0
   let appendFailure: Error | null = null
