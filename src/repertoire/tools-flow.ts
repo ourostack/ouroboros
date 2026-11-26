@@ -139,6 +139,7 @@ export const FLOW_TOOL_REFUSALS = {
   restAlone: withCode("rejected: rest must be the only tool call. finish your work first, then call rest alone.", "rest-alone"),
   settleCheckBackIncomplete: withCode("settle takes check_back_at and condition together: give both to leave a check-back, or neither. nothing was sent.", "check-back-incomplete"),
   settleCheckBackNotFiled: (detail: string): string => withCode(`settle couldn't leave the check-back: ${detail}. nothing was sent; fix it and settle again, or settle without check_back_at.`, "check-back-not-filed"),
+  settleBlockedWithoutReport: (deferred: boolean): string => withCode(`you settled as blocked and filed no report_failure this turn. if the block is a tool i lack or one that keeps failing, call report_failure (ari_words, tried, error)${deferred ? " (load it with find_tools first)" : ""}, then settle; the engineers who fix me hear about it. if you're waiting on the person instead, settle again as it is. nothing was sent.`, "blocked-without-report"),
   settleHeldWork: withCode("current held-work frame still has unsurfaced items — return each listed item with surface(delegationId=...) before you settle. Older transcript claims are historical; only the current held-work frame is the gate.", "held-work-unsurfaced"),
   restHeldWork: withCode("current held-work frame still has unsurfaced items — return each listed item with surface(delegationId=...) before you rest. Older transcript claims are historical; only the current held-work frame is the gate.", "held-work-unsurfaced"),
   restFreshWork: withCode("fresh work arrived for me this turn — inspect the pending messages above and take the next concrete action before you rest.", "fresh-work-pending"),
@@ -155,6 +156,7 @@ export const FLOW_TOOL_REFUSALS = {
 export const toolCards: ToolDoorCard[] = [
   { id: "tool:settle", group: "turn-flow", when: "Pick this to give your final answer and hand the turn back: the work is done, you're blocked, or the person asked something that needs an answer now. For progress while you keep working, use speak.", effect: "write", errors: [
     { code: "settle-alone", means: "settle came in one batch with other tool calls, so nothing in the batch ran.", fix: "Make the other calls first, read their results, then call settle on its own." },
+    { code: "blocked-without-report", means: "settle said blocked, report_failure was on offer and wasn't called this turn, so the engine asked once before sending.", fix: "If a missing or failing tool is the block, call report_failure, then settle. Otherwise settle again unchanged; it is asked only once a turn." },
     { code: "check-back-incomplete", means: "settle had check_back_at or condition but not both, so nothing was sent.", fix: "Give both to leave a check-back, or neither." },
     { code: "check-back-not-filed", means: "The check-back couldn't be filed (the reason is in the reply), so nothing was sent.", fix: "Fix what the reply names, such as the time's format, then settle again, or settle without check_back_at." },
   ] },
