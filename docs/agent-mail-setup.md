@@ -11,7 +11,7 @@ The human should not be the CLI operator for Agent Mail setup. The correct human
 1. The human asks the agent to set up email.
 2. The agent explains the current setup phase and what it needs next.
 3. The agent runs agent-runnable commands itself when it has shell/tool access.
-4. The human only performs human-required actions: browser auth, HEY export, HEY forwarding, DNS/MX edits, secret entry, and final confirmations.
+4. The human only approves what their phone shows and makes the final calls (production MX, autonomous sending); the agent does HEY export, forwarding, DNS and sign-ins with its vault and browser.
 5. The agent verifies each step before asking for the next one.
 
 Do not turn this into a terminal checklist for the human. CLI commands below are the substrate the agent operates, not the primary product experience.
@@ -23,7 +23,7 @@ Hard rule: the agent must not tell the human to run `ouro account ensure`, `ouro
 - **Implemented in the harness:** `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, Mail sense readiness checks, bounded mail read tools, guarded native autonomous send policy evaluation, confirmed outbound drafts/sends, and the mail audit tools.
 - **Hosted service source:** production-oriented Mail ingress, Vault control, shared work protocol, and Azure infra live in [`ourostack/ouro-work-substrate`](https://github.com/ourostack/ouro-work-substrate). This harness keeps local runtime, agent setup, sense orchestration, and tools.
 - **Agent-runnable:** provisioning Mailroom, storing private keys in the agent vault, enabling `senses.mail.enabled`, importing a human-provided MBOX, verifying the Mail sense, and managing Screener decisions after family authorization.
-- **Human-required:** HEY browser export, HEY forwarding/extension changes, DNS changes at the registrar, provider/browser auth, secret entry, and final autonomous-send enablement.
+- **Human-required:** a phone approval during a sign-in, and the final autonomous-send enablement.
 - **Not enabled by default:** autonomous sending, destructive mail actions, and new DNS/provider changes.
 - **Not the implementation:** HEY OAuth, HEY IMAP, `ouro auth verify --provider mail`, `ouro mcp call mail ...`, and ad hoc policy flags. Do not invent those steps.
 
@@ -222,9 +222,7 @@ Human-only DNS/provider changes:
 
 Do this only after SMTP ingress and production MX are explicitly accepted by the human.
 
-Human-required step, agent-guided:
-
-The agent drives the browser-automation portion when browser MCP is available. The human remains at the keyboard for HEY login, MFA, CAPTCHA, export download, and final forwarding confirmation. The target is always the delegated source alias (for example `<source-label>.<agent>@ouro.bot`). Do not forward the human's HEY mailbox to the agent's native `<agent>@ouro.bot` address; that would erase the executive-assistant provenance boundary.
+The agent does this in the browser, signing in to HEY with the password from its vault; the human only approves the sign-in on their phone and confirms the forwarding. The target is always the delegated source alias (for example `<source-label>.<agent>@ouro.bot`). Do not forward the human's HEY mailbox to the agent's native `<agent>@ouro.bot` address; that would erase the executive-assistant provenance boundary.
 
 - In HEY for Domains, configure forwarding or an extension to send delegated mail to the alias verified by the agent.
 - Prefer a HEY setup that still leaves critical mail accessible in HEY itself. HEY notes that forwarding can miss spam-classified mail and can be affected by mail-authentication forwarding behavior.

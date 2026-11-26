@@ -8,7 +8,7 @@ import { advanceReturnObligation, findPendingObligationForOrigin, fulfillObligat
 import { completePonderPacket } from "../arc/packets";
 import { listSessionActivity } from "../heart/session-activity";
 import { containsInternalMetaMarkers } from "../senses/bluebubbles-meta-guard";
-import { getProactiveInternalContentBlockReason, isVerificationHoldReason, proactiveContentBlockGuidance } from "../senses/proactive-content-guard";
+import { getProactiveInternalContentBlockReason, isReturnToSenderReason, proactiveContentBlockGuidance } from "../senses/proactive-content-guard";
 import { emitNervesEvent } from "../nerves/runtime";
 import * as path from "path";
 import type { AttentionItem } from "../arc/attention-types";
@@ -327,7 +327,7 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
       if (sent && teamsSendMayHaveGoneOut(sent)) return { status: "unconfirmed", detail: unconfirmedDetail("Teams") }
       if (sent?.reason && CONTENT_REFUSALS.has(sent.reason)) {
         const held = getProactiveInternalContentBlockReason(content)
-        const detail = isVerificationHoldReason(held)
+        const detail = isReturnToSenderReason(held)
           ? proactiveContentBlockGuidance(held)
           : `blocked: Teams refused this text as internal (${sent.reason}); rewrite it as plain words for them`
         return { status: "failed", detail: withCode(detail, "delivery-blocked") }
