@@ -59,6 +59,24 @@ describe("Sanctuary scheduler origin", () => {
     })).toEqual(expect.objectContaining({ slot, occurrenceId: `cron:${slot}`, schedulerRunId: "11111111-1111-4111-8111-111111111111" }))
   })
 
+  it.each(["butler", "sanctuary"])("mints and verifies a command for the Butler named %s, and none for another agent", (agent) => {
+    const deps = {
+      platform: "linux" as const, pid: 101, ppid: 42, now: () => new Date("2026-08-21T07:16:01.000Z"),
+      readFile: (file: string) => file === "/proc/101/stat" ? procStat(101, 42, "9001") : file === "/proc/42/stat" ? procStat(42, 1, "8001") : parentCmdline,
+      readLink: () => "/usr/local/bin/supercronic", identityKey: () => identityKey, marker: () => null,
+      randomId: () => "11111111-1111-4111-8111-111111111111",
+    }
+    const command = createSanctuarySchedulerFireCommand({ agent, habitName: "sanctuary-health", trigger: "cron" }, deps)
+    expect(command).toMatchObject({ agent })
+    expect(verifySanctuarySchedulerFireCommand(command!, {
+      childPid: 42, identityKey, now: () => new Date("2026-08-21T07:16:02.000Z"), readFile: deps.readFile, readLink: deps.readLink, scenarioHandleDigest: null,
+    })).toEqual(expect.objectContaining({ slot }))
+    expect(createSanctuarySchedulerFireCommand({ agent: "slugger", habitName: "sanctuary-health", trigger: "cron" }, deps)).toBeNull()
+    expect(() => verifySanctuarySchedulerFireCommand({ ...command!, agent: "slugger" as never }, {
+      childPid: 42, identityKey, now: () => new Date("2026-08-21T07:16:02.000Z"), readFile: deps.readFile, readLink: deps.readLink, scenarioHandleDigest: null,
+    })).toThrow("scheduler fire slot or binding is invalid")
+  })
+
   it("mints and verifies the real shell-mediated Supercronic cron process tree", () => {
     const readFile = (file: string) => {
       if (file === "/proc/101/stat") return procStat(101, 77, "9001")
