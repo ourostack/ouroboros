@@ -1,5 +1,6 @@
 import * as fs from "fs"
 import * as net from "net"
+import { StringDecoder } from "node:string_decoder"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { DaemonCommand, DaemonResponse } from "./daemon"
 
@@ -162,8 +163,10 @@ export function sendDaemonCommand(
       // fix" but actually *added* the half-close back).
       client.write(JSON.stringify(command) + "\n")
     })
-    client.on("data", (chunk) => {
-      raw += chunk.toString("utf-8")
+    // A long answer comes in several chunks, and one can end inside a UTF-8 character, so decode it as a stream.
+    const decoder = new StringDecoder("utf8")
+    client.on("data", (chunk: Buffer) => {
+      raw += decoder.write(chunk)
     })
     client.on("error", (error) => {
       /* v8 ignore next -- duplicate post-settlement socket errors are ignored defensively @preserve */
@@ -184,6 +187,7 @@ export function sendDaemonCommand(
     client.on("end", () => {
       /* v8 ignore next -- duplicate post-settlement socket end events are ignored defensively @preserve */
       if (settled) return
+      raw += decoder.end()
       const trimmed = raw.trim()
       if (trimmed.length === 0 && command.kind === "daemon.stop") {
         emitNervesEvent({
