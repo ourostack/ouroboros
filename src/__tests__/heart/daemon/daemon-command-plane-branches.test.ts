@@ -1895,17 +1895,20 @@ describe("daemon command plane branches", () => {
     }
   })
 
-  it("scans the spool for the Butler it runs, under that Butler's name", async () => {
+  it.each(["butler", "sanctuary"] as const)("scans the spool for the Butler %s the daemon start set, under that Butler's name", async (butler) => {
     const socketPath = tmpSocketPath("daemon-privileged-spool-butler")
     const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-privileged-butler-root-"))
     const spoolRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-privileged-butler-spool-"))
     const scanner = vi.fn(() => ({ accepted: 0, rejected: 0, replayed: 0 }))
     const { daemon, processManager } = make(socketPath, undefined, { externalEventRoot, privilegedEventSpoolRoot: spoolRoot, privilegedEventScanner: scanner })
-    processManager.listAgentSnapshots.mockImplementation(() => [{ name: "butler" }, { name: "slugger" }] as never)
+    // The process list no longer names the Butler (it has not started yet): the scan still follows the start's Butler.
+    processManager.listAgentSnapshots.mockImplementation(() => [{ name: "slugger" }] as never)
+    prepareButlerExternalEvents(externalEventRoot, [butler, "slugger"])
     try {
       await daemon.start()
-      expect(scanner).toHaveBeenLastCalledWith({ spoolRoot, eventRoot: externalEventRoot, agent: "butler" })
+      expect(scanner).toHaveBeenLastCalledWith({ spoolRoot, eventRoot: externalEventRoot, agent: butler })
     } finally {
+      prepareButlerExternalEvents(externalEventRoot, [])
       await daemon.stop()
       fs.rmSync(externalEventRoot, { recursive: true, force: true })
       fs.rmSync(spoolRoot, { recursive: true, force: true })

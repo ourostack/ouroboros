@@ -483,6 +483,34 @@ describe("daemon entrypoint", () => {
     vi.doUnmock("../../../heart/daemon/daemon-health")
   })
 
+  it("stops before runtime constructors when the Butler's external events can't be adopted", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["butler"])
+    const capturedEvents: Array<{ event: string; level?: string }> = []
+    const nerves = await import("../../../nerves/runtime")
+    const { createLogger } = await import("../../../nerves")
+    const configureDaemonRuntimeLogger = vi.fn(() => nerves.setRuntimeLogger(createLogger({ sinks: [(entry) => capturedEvents.push(entry)] })))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
+    const router = await vi.importActual<typeof import("../../../heart/external-events/router")>("../../../heart/external-events/router")
+    const prepare = vi.fn(() => { throw new router.ButlerExternalEventAdoptionError("Butler external events need attention: merging failed\n  agent-runnable: fix the folder") })
+    vi.doMock("../../../heart/external-events/router", () => ({ ...router, prepareButlerExternalEvents: prepare }))
+    const daemonCtor = vi.fn()
+    const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
+    vi.doMock("../../../heart/daemon/daemon", () => ({ OuroDaemon: class { constructor() { daemonCtor() } } }))
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
+
+    try {
+      await expect(import("../../../heart/daemon/daemon-entry")).rejects.toThrow("agent-runnable: fix the folder")
+      expect(prepare).toHaveBeenCalledWith(expect.any(String), ["butler"])
+      expect(exit).toHaveBeenCalledWith(1)
+      expect(capturedEvents).toContainEqual(expect.objectContaining({ level: "error", component: "daemon", event: "daemon.entry_error" }))
+      expect(daemonCtor).not.toHaveBeenCalled()
+    } finally {
+      nerves.setRuntimeLogger(null)
+      vi.doUnmock("../../../heart/external-events/router")
+    }
+  })
+
   async function importDaemonEntryWithPulseDispatch(options: {
     socketPath: string
     sendDaemonCommand?: ReturnType<typeof vi.fn>

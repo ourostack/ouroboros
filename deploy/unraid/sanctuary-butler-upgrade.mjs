@@ -119,6 +119,33 @@ function liveButlerName() {
   return imageButlerName(docker(["inspect", CONTAINER, "--format", "{{.Image}}"], { stdio: ["ignore", "pipe", "pipe"] }).trim())
 }
 
+// ---- a rename's predecessor ----------------------------------------------------
+// What the running release must hold before an upgrade may change the Butler's name, as the root lifecycle has it
+// (BUTLER_RENAME_PREDECESSOR_MARKERS): a rollback lands on that release, so it has to rewrite the bundle's container
+// paths for a named Butler (#1983), and its daemon has to merge the other name's events and find an event Await's record
+// under either name (M2 step 4b). Read as files, so a release is judged by what it can do, not by its version number.
+export const BUTLER_RENAME_PREDECESSOR_MARKERS = [
+  ["deploy/unraid/migrate-sanctuary-bundle.mjs", "--butler-name"],
+  ["dist/heart/external-events/router.js", "externalEventAwaitRecordPath"],
+]
+/** Null when an upgrade from Butler name `running` to `target` may go ahead; otherwise why not. `read(file)` is the running release's file, or null. */
+export function renamePredecessorProblem(running, target, read) {
+  if (running === target) return null
+  const missing = BUTLER_RENAME_PREDECESSOR_MARKERS.filter(([file, marker]) => !(read(file) ?? "").includes(marker)).map(([file]) => file)
+  if (missing.length === 0) return null
+  return `this upgrade renames the Butler from ${running} to ${target}, but the running release cannot take a rollback across that rename (its ${missing.join(" and ")} predate it). Ship a release from after M2 step 4b ("Butler: what the rename needs first") with the name unchanged first, then the release that renames it`
+}
+/** The running release's file: from the installed package, or from the running image when no authority is installed yet. */
+function runningReleaseFile(runningImage, file) {
+  try {
+    return existsSync(`${ROOT}/active.json`) ? readFileSync(`${ROOT}/package/${file}`, "utf8")
+      : docker(["run", "--rm", "--entrypoint", "/bin/cat", runningImage, `/opt/ouro/${file}`], { stdio: ["ignore", "pipe", "ignore"] })
+  } catch { return null }
+}
+function renamePredecessorIssue(version, runningImage) {
+  return renamePredecessorProblem(imageButlerName(runningImage), imageButlerName(image(version)), (file) => runningReleaseFile(runningImage, file))
+}
+
 // Unraid's cgroup2-unraid daemon watches /sys/fs/cgroup via inotify and rmdir's any
 // cgroup that reports `populated 0`. The authority install creates its cgroup empty and
 // keeps it empty through staging/verification (which asserts cgroup.procs === ""), so the
@@ -227,6 +254,15 @@ function preflight(version, { fresh = false } = {}) {
     const dropped = escalationGrantProblems(name)
     dropped.length === 0 ? ok("every escalation holder in the bundle is already in the trusted file") : dropped.forEach((line) => bad(line))
   }
+
+  say("a rollback can undo a change of the Butler's name")
+  if (id && runningImage) {
+    try {
+      const issue = renamePredecessorIssue(version, runningImage)
+      issue ? bad(issue) : ok("the name stays the same, or the running release can take a rollback across the rename")
+    } catch (e) { bad(`could not check the Butler's name: ${String(e.message).split("\n")[0]}`) }
+  } else if (!fresh) bad("skipped (no image or no running Butler)")
+  else ok("not needed: a fresh install has nothing to roll back to")
 
   say("no credential handoff left for another Butler name")
   if (id) {
@@ -818,8 +854,9 @@ function migrateBundle(version, rollbackImage) {
     sh("/usr/local/bin/node", [migrate, "--package-root", pkgBundle, "--agent-root", bundle, "--operation", "seed"])
     ok("bundle seeded from the package (fresh install)")
   } else {
+    // The host folder keeps its name, so the migrate is told the Butler the target image runs: the bundle's own files name its container path.
     sh("/usr/local/bin/node", [migrate, "--package-root", pkgBundle, "--agent-root", bundle, "--operation", "migrate",
-      "--rollback-image-id", rollbackImage, "--target-image-id", imageId(version)])
+      "--rollback-image-id", rollbackImage, "--target-image-id", imageId(version), "--butler-name", imageButlerName(image(version))])
     ok("bundle migrated (rollback retained)")
     sh("/usr/local/bin/node", [migrate, "--package-root", pkgBundle, "--agent-root", bundle, "--operation", "commit"])
   }
@@ -1023,6 +1060,8 @@ function install(version) {
   if (fresh && containerExists(CONTAINER)) fail(`an ${CONTAINER} container already exists; a fresh install needs a host without one`)
   const rollbackImage = fresh ? null : docker(["inspect", CONTAINER, "--format", "{{.Image}}"]).trim()
   if (!targetImage || targetImage === rollbackImage) fail("target/rollback image identity invalid")
+  const renameIssue = rollbackImage ? renamePredecessorIssue(version, rollbackImage) : null
+  if (renameIssue) fail(`${renameIssue}; nothing was changed`)
   const jellyfinBefore = jellyfinState()
   const policyBefore = fresh ? policyState() : policyState() ?? fail(`steward policy missing`)
   ok(`target ${targetImage.slice(0,19)}… rollback ${rollbackImage ? `${rollbackImage.slice(0,19)}…` : "none (fresh install)"} policy ${policyBefore ?? "none yet"}`)
@@ -1520,6 +1559,9 @@ async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
   const current = JSON.parse(readFileSync(`${ROOT}/request.json`, "utf8"))
   if (existsSync(UPGRADE_JOURNAL)) console.log("  note: resuming the pending in-place upgrade with its staged package")
   else {
+    // The root lifecycle refuses this too when the upgrade begins; refusing here leaves nothing staged or paused.
+    const renameIssue = renamePredecessorIssue(version, docker(["inspect", CONTAINER, "--format", "{{.Image}}"]).trim())
+    if (renameIssue) fail(`${renameIssue}; nothing was paused or changed`)
     const manifestBytes = stageIncomingPackage(version)
     const pkgVersion = JSON.parse(readFileSync(`${ROOT}/incoming-package/deploy/unraid/sanctuary.ouro/bundle-meta.json`, "utf8")).runtimeVersion
     if (pkgVersion !== version) fail(`staged package is ${pkgVersion}, not ${version}`)

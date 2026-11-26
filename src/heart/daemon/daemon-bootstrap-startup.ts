@@ -1,5 +1,6 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 import { writeDaemonTombstone } from "./daemon-tombstone"
+import { ButlerExternalEventAdoptionError } from "../external-events/router"
 
 const REDACTED_BOOTSTRAP_STARTUP_ERROR = "container credential bootstrap rejected; recoverable claim retained for reconciliation"
 const SANCTUARY_BUNDLE_RECOVERY_GUIDANCE = {
@@ -97,6 +98,14 @@ function failFastDaemonStartup(input: {
 
 export function failFastSanctuaryBundlePreparationStartup(input: { failure: unknown; exit: (code: number) => void }): void {
   const message = input.failure instanceof DaemonPreparationFailure ? input.failure.message : REDACTED_SANCTUARY_BUNDLE_PREPARATION_ERROR
+  failFastDaemonStartup({ exit: input.exit, errorMessage: message, eventMessage: message })
+}
+
+const REDACTED_BUTLER_EXTERNAL_EVENTS_ERROR = "Butler external events need attention\n  agent-runnable: read the daemon.external_events_adoption_failed event, fix the external-events folder it names, then restart the daemon"
+
+/** The running Butler could not take over its other name's external events: stop the start, saying what to fix. */
+export function failFastButlerExternalEventsStartup(input: { failure: unknown; exit: (code: number) => void }): void {
+  const message = input.failure instanceof ButlerExternalEventAdoptionError ? input.failure.message : REDACTED_BUTLER_EXTERNAL_EVENTS_ERROR
   failFastDaemonStartup({ exit: input.exit, errorMessage: message, eventMessage: message })
 }
 

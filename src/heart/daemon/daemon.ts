@@ -5,7 +5,7 @@ import * as path from "path"
 import { randomUUID } from "node:crypto"
 import { StringDecoder } from "node:string_decoder"
 import { getAgentBundlesRoot, getAgentRoot, getRepoRoot, setAgentName } from "../identity"
-import { isButlerAgent, managedButlerAgent } from "../butler-agent"
+import { isButlerAgent } from "../butler-agent"
 import { runAgentStateRetention } from "./state-retention"
 import {
   listAllBundleAgents,
@@ -53,7 +53,7 @@ import { awaitNameFromPrivateWakeCommand, buildAwaitPrivateWakeCommand } from ".
 import { buildHabitPrivateWakeCommand, habitMessageFromPrivateWakeCommand } from "./habit-private-wake"
 import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../habits/habit-parser"
 import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
-import { buildExternalEventMessage, claimExternalEvent, externalEventRecoveryFailure, getExternalEventRoot, isExactLegacyProviderRecoveryFailure, listExternalEventStatus, ExternalEventScanCache, reconcileExternalEvent, recordExternalEvent, repairExternalEventsFromManifest, reviveExternalEventAfterRecovery, scanPrivilegedEventSpool, settleExternalEventFailureIfOwned, type ExternalEventFailureClass, type ExternalEventLeaseContext, type ExternalEventLeaseMember, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
+import { buildExternalEventMessage, claimExternalEvent, runningButlerAgent, externalEventRecoveryFailure, getExternalEventRoot, isExactLegacyProviderRecoveryFailure, listExternalEventStatus, ExternalEventScanCache, reconcileExternalEvent, recordExternalEvent, repairExternalEventsFromManifest, reviveExternalEventAfterRecovery, scanPrivilegedEventSpool, settleExternalEventFailureIfOwned, type ExternalEventFailureClass, type ExternalEventLeaseContext, type ExternalEventLeaseMember, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
 import { isRsvpHabitName } from "../../rsvp/habit-policy"
 import { readContainerRuntimePolicy } from "./container-runtime"
 import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
@@ -2216,7 +2216,8 @@ export class OuroDaemon {
     try {
       const now = new Date().toISOString()
       if (fs.existsSync(this.privilegedEventSpoolRoot)) {
-        const butler = managedButlerAgent(this.processManager.listAgentSnapshots().map((snapshot) => snapshot.name))
+        // The Butler the daemon start adopted the event folders for, so envelopes are filed where it reads them.
+        const butler = runningButlerAgent()
         this.privilegedEventScanner({ spoolRoot: this.privilegedEventSpoolRoot, eventRoot: this.externalEventRootPath(), ...(butler ? { agent: butler } : {}) })
       }
       const scanned = this.externalEventScanCache.scan(this.externalEventRootPath())

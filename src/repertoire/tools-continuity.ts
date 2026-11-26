@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { getAgentRoot, getAgentName } from "../heart/identity";
-import { commitExternalEventDisposition, getExternalEventRoot, readExternalEventRecord } from "../heart/external-events/router";
+import { commitExternalEventDisposition, externalEventAwaitRecordPath, getExternalEventRoot, readExternalEventRecord } from "../heart/external-events/router";
 import { emitNervesEvent } from "../nerves/runtime";
 import { readRecentEpisodes, emitEpisode } from "../arc/episodes";
 import { bindCareIncident, createCare, projectCareEvidence, readActiveCares, readCares, resolveCare, resolveCareIncident, updateCare, upsertCareForIncident } from "../arc/cares";
@@ -125,7 +125,7 @@ function prepareExternalEventDisposition(a: Record<string, unknown>, ctx?: ToolC
       throw new Error(withCode("External event timed disposition requires a current pending Await", "await-mismatch"));
     }
     const expectedOwnerId = ctx?.context?.friend.id;
-    if (pendingAwait.filed_from !== "external-event" || pendingAwait.filed_from_key !== record.recordPath
+    if (pendingAwait.filed_from !== "external-event" || externalEventAwaitRecordPath(agentName, pendingAwait.filed_from_key ?? "", getExternalEventRoot()) !== record.recordPath
       || (expectedOwnerId && pendingAwait.filed_for_friend_id !== expectedOwnerId)) {
       throw new Error(withCode("External event timed disposition Await is not owned by this exact external event", "await-mismatch"));
     }
