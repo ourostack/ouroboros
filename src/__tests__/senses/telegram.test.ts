@@ -365,7 +365,7 @@ describe("Telegram sense", () => {
   })
 
   it.each([
-    ["another agent", "butler", "Why aren't my shows downloading?", "Credit is exhausted. Top up at https://www.astraweb.com/login."],
+    ["another agent", "slugger", "Why aren't my shows downloading?", "Credit is exhausted. Top up at https://www.astraweb.com/login."],
     ["another question", "sanctuary", "What is Astraweb?", "Credit is exhausted. Top up at https://www.astraweb.com/login."],
     ["no locked link", "sanctuary", "Why aren't my shows downloading?", "The prepaid credit appears exhausted."],
     ["no credit conclusion", "sanctuary", "Why aren't my shows downloading?", "Your account is at https://www.astraweb.com/login."],
