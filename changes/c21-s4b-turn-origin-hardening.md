@@ -1,0 +1,3 @@
+- iMessage: the BlueBubbles webhook now listens only on 127.0.0.1, the address Ouro registers it at, and refuses a post that doesn't carry the server's password (before, a post with no password at all was let through).
+- Turns asked for over the daemon socket (MCP `send_message`, `agent.ask`, `agent.senseTurn`) are now marked as socket turns, and `friend_link_code` refuses them with code `socket-turn`: a socket caller picks its own friend and channel, so it can't prove the family member is present.
+- The file and shell tools now refuse writes under `state/letters/`, the mailbox's letters, and paths are normalised before the check, so `state//letters/` or a quoted redirect is caught too.

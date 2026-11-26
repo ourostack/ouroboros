@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as http from "node:http"
 import * as path from "node:path"
-import { createHash, randomUUID } from "node:crypto"
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto"
 import OpenAI from "openai"
 import { runAgent, type ChannelCallbacks, createSummarize } from "../../heart/core"
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig, sessionPath } from "../../heart/config"
@@ -1858,9 +1858,11 @@ function writeSemanticCaptureFailure(res: http.ServerResponse): void {
   res.end('{"ok":false,"error":"semantic_capture_failed"}')
 }
 
+/** The webhook takes a post only with the server's password; one without it is refused, not let through. */
 function isWebhookPasswordValid(url: URL, expectedPassword: string): boolean {
-  const provided = url.searchParams.get("password")
-  return !provided || provided === expectedPassword
+  const provided = Buffer.from(url.searchParams.get("password") ?? "", "utf8")
+  const expected = Buffer.from(expectedPassword, "utf8")
+  return expected.length > 0 && provided.length === expected.length && timingSafeEqual(provided, expected)
 }
 
 function normalizeHandleForSelfMatch(handle: string): string {
@@ -2664,6 +2666,7 @@ async function handleBlueBubblesNormalizedEvent(
               signin: async () => undefined,
               ...safeToolContext,
               ...mcpOwner,
+              turnOrigin: "sense-ingress",
               summarize,
               chatActions: chatActionsForTurn({
                 setReplyTarget: (selection: ReplyTargetSelection) => replyTarget.setSelection(selection),
@@ -2703,6 +2706,7 @@ async function handleBlueBubblesNormalizedEvent(
           toolContext: {
             signin: async () => undefined,
             ...mcpOwner,
+            turnOrigin: "sense-ingress",
             currentIngressEvidence: options.currentIngressEvidence,
           },
           ...(options.isReactionSignal ? { isReactionSignal: true } : {}),
@@ -5470,7 +5474,9 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
   }
   server.on?.("close", shutdown)
   runningBlueBubblesApps.set(server, shutdown)
-  server.listen(channelConfig.port, () => {
+  // Loopback only: the reconciler registers the webhook at http://127.0.0.1 (webhook-registration.ts), so nothing
+  // off this Mac has a reason to reach it.
+  server.listen(channelConfig.port, "127.0.0.1", () => {
     const blueBubblesConfig = getBlueBubblesConfig()
     webhookReconciler = createBlueBubblesWebhookReconciler({
       serverUrl: blueBubblesConfig.serverUrl,

@@ -203,6 +203,13 @@ export interface ToolContext {
   /** The name of the await this turn ticks, set by the private runtime for every await turn (relationship or system). */
   readonly autonomousAwaitName?: string;
   readonly autonomousTurnKind?: "await" | "habit" | "external-event" | "instinct" | "scheduler";
+  /**
+   * Where the turn came from, set by the code that starts it and never by a caller: "sense-ingress" for a person's
+   * message a sense received (BlueBubbles), "socket" for a turn a daemon socket client asked for (agent.senseTurn,
+   * agent.ask, MCP send_message). The socket's caller picks its own friendId and channel, so nothing that must know a
+   * person is present may trust those on a "socket" turn (mailbox design §3.4).
+   */
+  readonly turnOrigin?: "sense-ingress" | "socket";
   daemonSocketPath?: string;
   agentName?: string;
   agentRoot?: string;

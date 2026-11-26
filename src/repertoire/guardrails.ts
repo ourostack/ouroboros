@@ -62,6 +62,9 @@ const PROTECTED_PATH_SEGMENTS = [
   "state/senses/",
   "state/outbox/",
   "state/reports/",
+  // The mailbox's letters, its answering handle and its answered-message ledger: only the daemon's writer and the
+  // owner's `ouro mailbox handle set` write them (design §3.4).
+  "state/letters/",
 ]
 const PROTECTED_FILENAMES = ["agent.json", "tool-profiles.json"]
 
@@ -276,7 +279,11 @@ export function psycheEditNote(file: string): string {
   return `psyche edit: I changed psyche/${file}. I tell my owner in one line which file changed and why.`
 }
 
-function isProtectedPath(filePath: string): boolean {
+function isProtectedPath(rawPath: string): boolean {
+  // Read the path as the filesystem would: quotes a shell strips, then doubled slashes and dot segments collapsed, so
+  // `state//letters/` or `state/./letters/` is the same folder as `state/letters/`.
+  const unquoted = rawPath.replace(/^(['"])(.*)\1$/, "$2").replace(/^['"]/, "")
+  const filePath = path.posix.normalize(unquoted)
   for (const segment of PROTECTED_PATH_SEGMENTS) {
     if (filePath.includes(`/${segment}`) || filePath.startsWith(segment)) return true
   }

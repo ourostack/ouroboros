@@ -833,7 +833,8 @@ export async function handleAgentSenseTurn(
         sessionKey: command.sessionKey,
         friendId: command.friendId,
         userMessage: command.message,
-        ...(runtime?.socketPath ? { toolContext: { daemonSocketPath: runtime.socketPath } } : {}),
+        // The socket's caller chose friendId and channel, so the turn is marked as a socket turn.
+        toolContext: { turnOrigin: "socket", ...(runtime?.socketPath ? { daemonSocketPath: runtime.socketPath } : {}) },
         // Per-turn, per-agent runtime MCP injection (e.g. Workbench's ouro_workbench).
         // Scoped to THIS turn only — never stored as module state, so a concurrent
         // turn for a different agent cannot inherit these servers.
