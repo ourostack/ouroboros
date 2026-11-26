@@ -221,6 +221,16 @@ async function evaluatePolicy(
     }
   }
   if (
+    request.triggerSource === "letter-expired"
+    && hasNonEmptyOriginRef(originRefs, "letter")
+    && hasOriginRef(originRefs, "scheduler", "letters-expiry")
+  ) {
+    return {
+      result: "allow",
+      reason: "a letter expired with no answer",
+    }
+  }
+  if (
     request.triggerSource === "letter-answered"
     && hasNonEmptyOriginRef(originRefs, "letter")
     && hasOriginRef(originRefs, "daemon-command", "letters.answer")
