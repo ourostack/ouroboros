@@ -129,6 +129,21 @@ function tail(text: string, lines = 20): string {
   return text.trimEnd().split("\n").slice(-lines).map((l) => `  ${l}`).join("\n");
 }
 
+/** The walker whose `ax-census: start <name>` line in the child's stderr has no matching `finish` after it, if any. */
+function inProgressWalker(stderr: string): string | null {
+  let open: string | null = null;
+  for (const line of stderr.split("\n")) {
+    const start = /^ax-census: start (\S+)$/.exec(line);
+    if (start) {
+      open = start[1]!;
+      continue;
+    }
+    const finish = /^ax-census: finish (\S+) in \d+ms$/.exec(line);
+    if (finish && finish[1] === open) open = null;
+  }
+  return open;
+}
+
 /** Start the isolated child, wait for its one JSON line, and return it. Throws CensusFailure for anything else. */
 export async function runWalkers(options: { config: string; root: string; timeoutMs?: number; childScript?: string }): Promise<WalkResult> {
   await readConfig(options.config);
@@ -167,7 +182,12 @@ export async function runWalkers(options: { config: string; root: string; timeou
     clearTimeout(timer);
     // Nothing the walkers started outlives them.
     killGroup();
-    if (exit === "timeout") throw new CensusFailure(`ax-census: the walkers didn't finish within ${timeoutMs / 1000} seconds`);
+    if (exit === "timeout") {
+      const walker = inProgressWalker(stderr);
+      throw new CensusFailure(
+        `ax-census: the walkers didn't finish within ${timeoutMs / 1000} seconds${walker ? ` (${walker} was running)` : ""}; their stderr ends:\n${tail(stderr)}`,
+      );
+    }
     if (exit.code !== 0) {
       throw new CensusFailure(`ax-census: the walkers failed (${exit.signal ? `signal ${exit.signal}` : `exit ${exit.code}`}); their stderr ends:\n${tail(stderr)}`);
     }
