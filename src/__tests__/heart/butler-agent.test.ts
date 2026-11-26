@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { butlerContainerPaths, managedButlerAgent } from "../../heart/butler-agent"
+import { butlerContainerPaths, butlerOnDisk, managedButlerAgent } from "../../heart/butler-agent"
 
 describe("the Butler's container paths", () => {
   it("derives every path and name from the bundle's name", () => {
@@ -26,5 +26,13 @@ describe("the Butler's container paths", () => {
     expect(managedButlerAgent(["sanctuary"])).toBe("sanctuary")
     expect(managedButlerAgent(["slugger"])).toBeNull()
     expect(managedButlerAgent(["butler", "sanctuary"])).toBeNull()
+  })
+
+  it("names the Butler after the one bundle on disk, and none with both or neither", () => {
+    const disk = (...present: string[]) => (bundlePath: string) => present.includes(bundlePath)
+    expect(butlerOnDisk("/b", disk("/b/butler.ouro"))).toBe("butler")
+    expect(butlerOnDisk("/b", disk("/b/sanctuary.ouro", "/b/slugger.ouro"))).toBe("sanctuary")
+    expect(butlerOnDisk("/b", disk("/b/butler.ouro", "/b/sanctuary.ouro"))).toBeNull()
+    expect(butlerOnDisk("/b", disk("/b/slugger.ouro"))).toBeNull()
   })
 })

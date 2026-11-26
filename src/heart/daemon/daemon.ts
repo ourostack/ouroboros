@@ -5,7 +5,7 @@ import * as path from "path"
 import { randomUUID } from "node:crypto"
 import { StringDecoder } from "node:string_decoder"
 import { getAgentBundlesRoot, getAgentRoot, getRepoRoot, setAgentName } from "../identity"
-import { isButlerAgent } from "../butler-agent"
+import { isButlerAgent, managedButlerAgent } from "../butler-agent"
 import { runAgentStateRetention } from "./state-retention"
 import {
   listAllBundleAgents,
@@ -2157,7 +2157,8 @@ export class OuroDaemon {
     try {
       const now = new Date().toISOString()
       if (fs.existsSync(this.privilegedEventSpoolRoot)) {
-        this.privilegedEventScanner({ spoolRoot: this.privilegedEventSpoolRoot, eventRoot: this.externalEventRootPath() })
+        const butler = managedButlerAgent(this.processManager.listAgentSnapshots().map((snapshot) => snapshot.name))
+        this.privilegedEventScanner({ spoolRoot: this.privilegedEventSpoolRoot, eventRoot: this.externalEventRootPath(), ...(butler ? { agent: butler } : {}) })
       }
       const scanned = this.externalEventScanCache.scan(this.externalEventRootPath())
       const readinessKeys = new Set<string>()

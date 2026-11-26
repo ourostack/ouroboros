@@ -43,3 +43,9 @@ export function managedButlerAgent(managedAgents: readonly string[]): ButlerAgen
   const butlers = managedAgents.filter(isButlerAgent)
   return butlers.length === 1 ? butlers[0]! : null
 }
+
+/** The Butler named by the one bundle under `bundlesRoot`; null with both bundles there, or neither. */
+export function butlerOnDisk(bundlesRoot: string, exists: (bundlePath: string) => boolean): ButlerAgentName | null {
+  const present = BUTLER_AGENT_NAMES.filter((name) => exists(`${bundlesRoot}/${name}.ouro`))
+  return present.length === 1 ? present[0]! : null
+}

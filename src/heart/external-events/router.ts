@@ -1159,12 +1159,12 @@ function acquirePrivilegedReplayLock(sourceDir: string): PrivilegedLockHandle | 
   return null
 }
 
-function replayStatePath(eventRoot: string): string {
-  return path.join(eventRoot, "sanctuary", PRIVILEGED_EVENT_SOURCE, PRIVILEGED_REPLAY_STATE_FILE)
+function replayStatePath(eventRoot: string, agent: ButlerAgentName): string {
+  return path.join(eventRoot, agent, PRIVILEGED_EVENT_SOURCE, PRIVILEGED_REPLAY_STATE_FILE)
 }
 
-function replayStateFromManifest(manifest: ExternalEventReplayManifest, updatedAt: string): PrivilegedReplayState {
-  return { schemaVersion: 1, agent: "sanctuary", source: PRIVILEGED_EVENT_SOURCE, ...manifest, updatedAt }
+function replayStateFromManifest(manifest: ExternalEventReplayManifest, updatedAt: string, agent: ButlerAgentName): PrivilegedReplayState {
+  return { schemaVersion: 1, agent, source: PRIVILEGED_EVENT_SOURCE, ...manifest, updatedAt }
 }
 
 function isReplayState(value: unknown): value is PrivilegedReplayState {
@@ -1174,8 +1174,8 @@ function isReplayState(value: unknown): value is PrivilegedReplayState {
   try { replayBytes(state as PrivilegedReplayState); return true } catch { return false }
 }
 
-function loadReplayState(eventRoot: string, sourceExisted: boolean, now: string): PrivilegedReplayState {
-  const statePath = replayStatePath(eventRoot)
+function loadReplayState(eventRoot: string, agent: ButlerAgentName, sourceExisted: boolean, now: string): PrivilegedReplayState {
+  const statePath = replayStatePath(eventRoot, agent)
   const sourceDir = path.dirname(statePath)
   const stateExists = fs.existsSync(statePath)
   let state: PrivilegedReplayState | null = null
@@ -1203,7 +1203,7 @@ function loadReplayState(eventRoot: string, sourceExisted: boolean, now: string)
     }
   }
   if (!state && sourceExisted && !legacyFound) throw new Error("Privileged replay manifest is missing")
-  const next = replayStateFromManifest(authority, now)
+  const next = replayStateFromManifest(authority, now, agent)
   atomicWriteJson(statePath, next, "Privileged replay manifest")
   for (const migration of migrations) {
     const retentionSummary = migration.record.retentionSummary ? retentionWithoutReplayManifest(migration.record.retentionSummary) : undefined
@@ -1217,13 +1217,15 @@ function loadReplayState(eventRoot: string, sourceExisted: boolean, now: string)
   return next
 }
 
-export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot?: string; now?: () => string }): { accepted: number; rejected: number; replayed: number } {
+/** `agent` is the Butler the daemon runs: its events, and the replay manifest that guards them, live under its name. */
+export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot?: string; agent?: ButlerAgentName; now?: () => string }): { accepted: number; rejected: number; replayed: number } {
   const entries = safeSpoolEntries(options.spoolRoot)
   let accepted = 0
   let rejected = 0
   let replayed = 0
   const eventRoot = options.eventRoot ?? getExternalEventRoot()
-  const sourceDir = path.dirname(replayStatePath(eventRoot))
+  const agent = options.agent ?? "sanctuary"
+  const sourceDir = path.dirname(replayStatePath(eventRoot, agent))
   const sourceExisted = fs.existsSync(sourceDir)
   let rootSafe = false
   try {
@@ -1236,9 +1238,9 @@ export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot
     if (replayLock) try {
       const initialNow = options.now?.() ?? new Date().toISOString()
       let replayState: PrivilegedReplayState
-      try { replayState = loadReplayState(eventRoot, sourceExisted, initialNow) } catch {
+      try { replayState = loadReplayState(eventRoot, agent, sourceExisted, initialNow) } catch {
         rejected = Math.max(1, entries.length)
-        replayState = replayStateFromManifest(emptyReplayManifest(), initialNow)
+        replayState = replayStateFromManifest(emptyReplayManifest(), initialNow, agent)
       }
       if (rejected === 0) for (const entry of entries) {
         replayLock.refresh()
@@ -1257,6 +1259,7 @@ export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot
         } finally { fs.closeSync(handle) }
         const now = options.now?.() ?? new Date().toISOString()
         const envelope = parsePrivilegedEnvelope(raw, entry.name, now)
+        if (envelope.agent !== agent) throw new Error("Privileged external event names another Butler")
         if (replayContains(replayState, envelope.nonce)) throw new Error("Privileged external event replayed nonce")
         const protectiveAction = envelope.action === "usenet.observe" ? undefined : {
           action: envelope.action,
@@ -1281,8 +1284,8 @@ export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot
           observationRevision: envelope.observationRevision,
           transition,
         }, { root: eventRoot, now: () => now, quietInitialReceipt, [privilegedIngress]: { nonce: envelope.nonce, protectiveAction } })
-        replayState = replayStateFromManifest(replayAdd(replayState, envelope.nonce), now)
-        atomicWriteJson(replayStatePath(eventRoot), replayState, "Privileged replay manifest")
+        replayState = replayStateFromManifest(replayAdd(replayState, envelope.nonce), now, agent)
+        atomicWriteJson(replayStatePath(eventRoot, agent), replayState, "Privileged replay manifest")
         accepted += 1
       } catch (error) {
         if (error instanceof Error && error.message === "Privileged external event replayed nonce") replayed += 1

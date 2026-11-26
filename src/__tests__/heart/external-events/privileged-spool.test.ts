@@ -214,9 +214,22 @@ describe("privileged external-event spool", () => {
     writeSpoolFile(spoolRoot, envelope({ agent: "butler" }))
     spoofRootOwnership(spoolRoot)
 
-    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 1, rejected: 0, replayed: 0 })
-    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 0, rejected: 0, replayed: 1 })
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, agent: "butler", now: () => NOW })).toEqual({ accepted: 1, rejected: 0, replayed: 0 })
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, agent: "butler", now: () => NOW })).toEqual({ accepted: 0, rejected: 0, replayed: 1 })
     expect(listExternalEventStatus(eventRoot)).toEqual([expect.objectContaining({ agent: "butler", source: "sanctuary-usenet", eventId: "spend-guard" })])
+    const manifest = JSON.parse(fs.readFileSync(path.join(eventRoot, "butler", "sanctuary-usenet", ".privileged-replay-manifest.json"), "utf8"))
+    expect(manifest).toMatchObject({ agent: "butler", source: "sanctuary-usenet" })
+    expect(fs.existsSync(path.join(eventRoot, "sanctuary"))).toBe(false)
+  })
+
+  it.each([["butler", "sanctuary"], ["sanctuary", "butler"]] as const)("a daemon running the Butler as %s refuses an envelope that names it %s", (agent, named) => {
+    const spoolRoot = root(`ouro-privileged-${agent}-other`)
+    const eventRoot = root(`ouro-privileged-${agent}-other-events`)
+    fs.chmodSync(spoolRoot, 0o755)
+    writeSpoolFile(spoolRoot, envelope({ agent: named }))
+    spoofRootOwnership(spoolRoot)
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, agent, now: () => NOW })).toEqual({ accepted: 0, rejected: 1, replayed: 0 })
+    expect(listExternalEventStatus(eventRoot)).toEqual([])
   })
 
   it("retains replay authority after more than 128 transitions and a scanner restart", () => {
