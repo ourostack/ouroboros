@@ -1,3 +1,4 @@
+import { execFileSync } from "child_process"
 import { emitNervesEvent } from "../nerves/runtime"
 
 // ── Content block reasons ───────────────────────────────────────
@@ -11,7 +12,8 @@ export type ProactiveContentBlockReason =
   | "prompt_reference"
   | "routing_reference"
   | "heartbeat_status"
-  | "routine_verification_request"
+  | "not_theirs_to_do"
+  | "false_sign_in_claim"
   | "untested_delivery_claim"
 
 // ── Patterns ────────────────────────────────────────────────────
@@ -39,16 +41,54 @@ const PROACTIVE_INTERNAL_CONTENT_PATTERNS: Array<{ reason: ProactiveContentBlock
   { reason: "heartbeat_status", pattern: /\bsame state\b/i },
 ]
 
-// Asking the person to run a check an agent could run ("open X and tell me if it shows").
-const ROUTINE_VERIFICATION_REQUEST_PATTERNS: RegExp[] = [
-  /\b(?:could|can|would|will)\s+you\s+(?:please\s+)?(?:quickly\s+)?(?:open|check|look at|take a look at|test|try|verify|confirm)\b[^.?!]{0,160}\b(?:tell|let) me\b/i,
-  /\b(?:please\s+)?(?:open|check|look at|test|try)\b[^.?!]{0,120}\b(?:and\s+)?(?:tell|let) me(?: know)? (?:if|whether)\b/i,
+// ── Asks that aren't theirs ─────────────────────────────────────
+// An ask reaches a person only when it names something only their body can do: approve a number or prompt on their own
+// phone, pay with their card, or make an irreversible call that is theirs. The rest goes back to the sender.
+
+// The sentence asks someone to act: it opens with a command, or speaks to them, or names who must act.
+const ASK_FRAME = /^\s*(?:[-*\u2022]\s*)?(?:\w+[:,]\s*)?(?:please\s+)?(?:run|type|press|paste|enter|sign|log|accept|make|open|check|click|install)\b|\b(?:you|your|please|need(?:s|ed)? (?:you|the (?:human|owner))|ask(?:ing)? (?:you|the (?:human|owner))|(?:the (?:human|owner)) (?:needs?|has) to)\b/i
+// Keyboard, terminal or a particular machine: never theirs, whatever else the sentence says.
+const AT_A_KEYBOARD: RegExp[] = [
+  /\b(?:run|type|paste|enter)\b[^.?!\n]{0,40}`[^`\n]+`/i,
+  /\b(?:in|from|at) (?:a|your|the) (?:terminal|shell|command line)\b/i,
+  /\b(?:gh auth login|ouro up|claude (?:login|auth login))\b/i,
+  /\bpress(?:ing)? (?:\d+|enter|return|y(?:es)?|no?)\b|\bat the [^.?!\n]{0,30}\bprompt\b/i,
+  /\b(?:paste|send|give|forward|tell|read)\b[^.?!\n]{0,40}\bcodes?\b/i,
+  /\baccept\b[^.?!\n]{0,40}\b(?:agreement|terms|tos|eula|licen[cs]e|invit\w*)/i,
+  /\bmake\b[^.?!\n]{0,40}\b(?:public|private)\b/i,
+  /\b(?:by hand|manually)\b/i,
+  /\b(?:in|on) (?:edge|chrome|safari|firefox|the browser|(?:the |your )?(?:mac(?: mini)?|macbook|laptop|desktop|computer)|[\w-]+-host)\b/i,
+]
+// Work an agent does with mail, vault or browser access, unless the sentence is about a phone approval or a payment.
+const AGENT_CAN: RegExp[] = [
+  /\b(?:sign|log)\s+(?:in|into|on)\b(?!\s+(?:request|prompt|attempt|notification))/i,
+  /\bre-?auth(?:enticate)?\b/i,
+  /\b(?:open|check|look at|test|try|verify|confirm)\b[^.?!]{0,160}\b(?:tell|let) me\b/i,
   /\b(?:tell|let) me(?: know)? (?:if|whether)\b[^.?!]{0,80}\b(?:show|shows|showing|load|loads|loading|work|works|render|renders|appear|appears)\b/i,
 ]
+const BODY_ONLY = /\b(?:passkey|face id|touch id|github mobile|authenticator|(?:approve|tap|confirm)\b[^.?!\n]{0,40}\b(?:on|in) (?:your|their|his|her) (?:own )?phone|tap \d+|pay|payment|(?:your|their|his|her) card|irreversible|can'?t be undone|permanently)\b/i
+// A sign-in ask whose claim the agent can check, and the command that checks it.
+const SIGN_IN_CLAIMS: Array<{ ask: RegExp; command: string; args: string[] }> = [
+  { ask: /\bgh auth login\b|\b(?:sign|log)\s+(?:in|into)\s+(?:to\s+)?(?:gh|the github cli)\b/i, command: "gh", args: ["auth", "status"] },
+]
 
-// Only the person can do these, so asking is not a chore an agent could take.
-const USER_ONLY_BLOCKER_PATTERN =
-  /\b(?:sign[- ]?in|log[- ]?in|mfa|2fa|passkey|password|one[- ]time code|verification code|payment|invoice|approve|approval|authori[sz]e|consent|irreversible|permanent(?:ly)?|plug(?:ged)? in|power[- ]cycle|press the)\b/i
+function isAskNotTheirs(text: string): boolean {
+  return text.split(/(?<=[.?!])\s+|\n+/).some((sentence) => ASK_FRAME.test(sentence) && (
+    AT_A_KEYBOARD.some((p) => p.test(sentence)) || (!BODY_ONLY.test(sentence) && AGENT_CAN.some((p) => p.test(sentence)))
+  ))
+}
+
+/** True when the sign-in the text asks for is already done, by the claim's own status command. */
+function isSignInClaimFalse(text: string): boolean {
+  const claim = SIGN_IN_CLAIMS.find((c) => c.ask.test(text))
+  if (!claim) return false
+  try {
+    execFileSync(claim.command, claim.args, { stdio: "ignore", timeout: 10_000 })
+    return true
+  } catch {
+    return false
+  }
+}
 
 // An untested result offered as the news.
 const UNTESTED_CLAIM_PATTERNS: RegExp[] = [
@@ -61,9 +101,7 @@ const VERIFIED_BY_SENDER_PATTERN = /\b(?:i|we)(?:'ve| have)?\s+(?:verified|confi
 const REQUESTED_STATUS_PATTERN = /\b(?:as you asked|you asked (?:for|me)|you wanted (?:an )?update|status you asked)\b/i
 
 function getVerificationHoldReason(text: string): ProactiveContentBlockReason | null {
-  if (!USER_ONLY_BLOCKER_PATTERN.test(text) && ROUTINE_VERIFICATION_REQUEST_PATTERNS.some((p) => p.test(text))) {
-    return "routine_verification_request"
-  }
+  if (isAskNotTheirs(text)) return isSignInClaimFalse(text) ? "false_sign_in_claim" : "not_theirs_to_do"
   if (REQUESTED_STATUS_PATTERN.test(text)) return null
   if (UNTESTED_CLAIM_PATTERNS.some((p) => p.test(text))) return "untested_delivery_claim"
   if (SHOULD_WORK_PATTERN.test(text) && !VERIFIED_BY_SENDER_PATTERN.test(text)) return "untested_delivery_claim"
@@ -83,14 +121,21 @@ export function getProactiveInternalContentBlockReason(text: string): ProactiveC
   return getVerificationHoldReason(text)
 }
 
-export function isVerificationHoldReason(reason: ProactiveContentBlockReason | null | undefined): boolean {
-  return reason === "routine_verification_request" || reason === "untested_delivery_claim"
+/** Reasons the sender is told about, so it can do the work itself instead of asking. */
+export function isReturnToSenderReason(reason: ProactiveContentBlockReason | null | undefined): boolean {
+  return reason === "not_theirs_to_do" || reason === "false_sign_in_claim" || reason === "untested_delivery_claim"
 }
 
 /** What the sending lane is told when the guard refuses its text. */
 export function proactiveContentBlockGuidance(reason: ProactiveContentBlockReason | null | undefined): string {
-  if (isVerificationHoldReason(reason)) {
-    return `held back, not sent (${reason}): do not ask them to run a routine check or report an untested result. Verify it yourself, then send the verified result with its proof, naming exactly what you verified (a mobile-web browser render is not proof for the native app). Only a step that needs them (sign-in, MFA, payment, contacting someone, an irreversible decision, a physical action) or a status update they asked for, labelled unverified ("as you asked"), may go to them unverified`
+  if (reason === "not_theirs_to_do") {
+    return "held back, not sent (not_theirs_to_do): do it yourself; you have standing authority. An ask reaches them only when their body must do it: approve a number or prompt on their own phone (2FA, GitHub Mobile, passkey), pay with their card, or an irreversible call that is theirs. Keyboard and terminal steps, anything on a particular machine, codes in their mail, sign-ins (the password is in your vault) and checks you can run are yours; when a sign-in ends in a phone prompt, send only the number to approve"
+  }
+  if (reason === "false_sign_in_claim") {
+    return "dropped, not sent (false_sign_in_claim): its status command says that sign-in is already done (for gh, `gh auth status` passes), so there is nothing to ask them; retry what failed and read its real error"
+  }
+  if (reason === "untested_delivery_claim") {
+    return "held back, not sent (untested_delivery_claim): do not report an untested result. Verify it yourself, then send the verified result with its proof, naming exactly what you verified (a mobile-web browser render is not proof for the native app). A status update they asked for may go unverified if it says so (\"as you asked\")"
   }
   return `blocked: this reads as internal status${reason ? ` (${reason})` : ""}, so no chat sends it; rewrite it as plain words for them`
 }

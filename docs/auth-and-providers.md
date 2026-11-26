@@ -409,40 +409,10 @@ If the vault does not answer at all (a network timeout, refused or reset connect
 Repair guidance must include an actor:
 
 - `agent-runnable`: safe for the agent to run when it has tool access, such as status, verify, and refresh commands.
-- `human-required`: requires browser login, MFA, provider dashboard access, API token creation, or secret entry.
+- `human-required`: only the person's body can do it: approve a number or prompt on their own phone (MFA, GitHub Mobile, passkey), pay with their card, or make an irreversible call that is theirs. Browser login, provider dashboards and API-token creation are the agent's, with its vault and browser.
 - `human-choice`: requires the human to decide which provider/model this machine should use.
 
-Agents may run agent-runnable checks and refreshes. Agents must not ask the user to paste secrets into chat. When repair requires a human, the agent should say why and direct the human to the terminal, browser auth flow, or provider console.
-
-Example human-required repair:
-
-```text
-openai-codex / gpt-5.5 failed after refresh retry.
-
-Why I cannot fix this automatically:
-  OpenAI Codex auth requires a human browser login or refreshed OAuth credentials.
-
-Do this in your terminal:
-  ouro auth --agent <agent> --provider openai-codex
-
-Then verify:
-  ouro auth verify --agent <agent> --provider openai-codex
-```
-
-Example manual API-key repair:
-
-```text
-anthropic / claude-opus-5-5 has no valid credentials.
-
-Why I cannot fix this automatically:
-  Anthropic API keys must be created or rotated by a human in the provider console.
-
-Do this:
-  1. Create a new Anthropic API key in the Anthropic console.
-  2. Run:
-     ouro auth --agent <agent> --provider anthropic
-  3. Paste the key into the terminal prompt, not into chat.
-```
+Agents may run agent-runnable checks and refreshes. Agents must not ask the user to paste secrets into chat. When repair requires a human, the agent does every other step itself and hands them only that approval, payment or call.
 
 ## Agent-Facing Knowledge
 
