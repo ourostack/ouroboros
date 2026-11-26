@@ -73,7 +73,8 @@ export class LetterIndex {
     if (!scope) return null
     for (const entry of this.byId.values()) {
       if (dedupeScope(entry.letter) !== scope) continue
-      if (entry.state === "waiting") return { entry, why: "open" }
+      // A letter past its expiry is as good as expired, though the sweep hasn't closed it yet, so a new one is filed.
+      if (entry.state === "waiting" && !(entry.letter.expiresAt && Date.parse(entry.letter.expiresAt) <= now)) return { entry, why: "open" }
       const answer = entry.events.find((event) => event.t === "answered")
       if (answer && now - Date.parse(answer.at) <= ANSWERED_DEDUPE_MS) return { entry, why: "answered" }
     }

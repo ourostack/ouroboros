@@ -2,9 +2,9 @@
 // decide whether and when its person sees the letter. The note goes to the agent's own private runtime, the way a
 // habit that can't run tells it, and a wake has the agent read it now. It is the harness speaking, never the person.
 import * as path from "path"
-import { getPrivateRuntimePendingDir, queuePendingMessageOnce } from "../../mind/pending"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { Letter } from "./letter"
+import { queueNoteAndWake, type WakeAnswer } from "./tell-agent"
 
 /** The note in the agent's own words, the way its private runtime notes read. */
 export function letterFiledNote(letter: Letter): string {
@@ -38,26 +38,15 @@ export async function tellAgentLetterFiled(
   agent: string,
   agentRoot: string,
   letter: Letter,
-  wake: (command: ReturnType<typeof letterFiledWake>) => Promise<{ ok: boolean; error?: string; message?: string; data?: unknown }>,
+  wake: (command: ReturnType<typeof letterFiledWake>) => Promise<WakeAnswer>,
 ): Promise<void> {
   // The queue names a note by its timestamp and packet id, so the letter's own filing time makes a repeat one note.
-  queuePendingMessageOnce(getPrivateRuntimePendingDir(agent, agentRoot), {
-    from: agent,
-    friendId: "self",
-    channel: "inner",
-    key: "dialog",
-    content: letterFiledNote(letter),
-    timestamp: Date.parse(letter.createdAt),
-    packetId: `letter-filed:${letter.id}`,
-  })
-  try {
-    const answer = await wake(letterFiledWake(agent, letter))
-    if (!answer.ok) throw new Error(answer.error ?? "the wake was refused")
-    // A wake policy denies still answers ok; only an executable decision woke the agent.
-    if ((answer.data as { decision?: { executable?: unknown } } | undefined)?.decision?.executable === false) throw new Error(answer.message ?? "the wake was denied")
+  const note = { content: letterFiledNote(letter), timestamp: Date.parse(letter.createdAt), packetId: `letter-filed:${letter.id}` }
+  const problem = await queueNoteAndWake(agent, agentRoot, note, () => wake(letterFiledWake(agent, letter)))
+  if (problem === null) {
     emitNervesEvent({ component: "daemon", event: "letters.filed_told", message: "the agent was told a letter was filed", meta: { code: letter.code } })
-  } catch (error) {
-    emitNervesEvent({ level: "warn", component: "daemon", event: "letters.filed_wake_failed", message: "a filed letter's note waits for the agent's next private turn", meta: { code: letter.code, error: (error as Error).message } })
+  } else {
+    emitNervesEvent({ level: "warn", component: "daemon", event: "letters.filed_wake_failed", message: "a filed letter's note waits for the agent's next private turn", meta: { code: letter.code, error: problem } })
   }
 }
 
