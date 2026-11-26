@@ -2675,6 +2675,28 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.markChatRead).not.toHaveBeenCalled()
   })
 
+  it("tells the daemon of a read receipt on a message this side sent one-to-one, without waiting on it (2026-11-26)", async () => {
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const letterSeen = vi.fn(async () => true)
+    const sent = (guid: string, extra: Record<string, unknown> = {}) => ({ ...readPayload, data: { ...readPayload.data, guid, isFromMe: true, ...extra } })
+    const runtimeDeps = { getAgentName: () => "testagent", recordMutation: mocks.recordMutation, letterSeen } as any
+    expect(await bluebubbles.handleBlueBubblesEvent(sent("SEEN-1"), runtimeDeps)).toEqual(expect.objectContaining({ reason: "from_me", notifiedAgent: false }))
+    expect(letterSeen).toHaveBeenCalledWith("testagent", "SEEN-1")
+    // The person's own message being read, or a group chat, is no letter of ours.
+    await bluebubbles.handleBlueBubblesEvent({ ...readPayload, data: { ...readPayload.data, guid: "SEEN-2" } }, runtimeDeps)
+    await bluebubbles.handleBlueBubblesEvent(sent("SEEN-3", { chats: [{ guid: "iMessage;+;chat-group", style: 43, chatIdentifier: "chat-group", displayName: "Group" }] }), runtimeDeps)
+    expect(letterSeen).toHaveBeenCalledTimes(1)
+    // A daemon that can't be told only loses the "seen".
+    const failing = vi.fn(async () => { throw new Error("daemon down") })
+    expect(await bluebubbles.handleBlueBubblesEvent(sent("SEEN-4"), { ...runtimeDeps, letterSeen: failing })).toEqual(expect.objectContaining({ reason: "from_me" }))
+    expect(failing).toHaveBeenCalledTimes(1)
+    // By default it goes over the daemon socket, which tests never reach.
+    expect(await bluebubbles.handleBlueBubblesEvent(sent("SEEN-5"), { getAgentName: () => "testagent", recordMutation: mocks.recordMutation } as any)).toEqual(expect.objectContaining({ reason: "from_me" }))
+    // A delivery receipt on a sent message is no read.
+    await bluebubbles.handleBlueBubblesEvent({ ...deliveryPayload, data: { ...deliveryPayload.data, guid: "SEEN-6", isFromMe: true } }, runtimeDeps)
+    expect(letterSeen).toHaveBeenCalledTimes(1)
+  })
+
   it("keeps unsend and delivery mutations capture-only", async () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const runtimeDeps = {

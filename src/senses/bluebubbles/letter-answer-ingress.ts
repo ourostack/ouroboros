@@ -12,6 +12,18 @@ const ANSWER_DEADLINE_MS = 27_000
  * Asks the daemon whether a message answers one of the agent's letters; true when it recorded an answer now or
  * before (a replay). Past the deadline the daemon records nothing, so a timed-out ask leaves the message a chat turn.
  */
+/** How long the sense waits for the daemon to check a read receipt; nothing waits on the answer. */
+const SEEN_TIMEOUT_MS = 30_000
+
+/** Tells the daemon the server reported a message read; it records `seen` if that message delivered a letter. */
+export async function tellDaemonLetterSeen(agent: string, messageGuid: string, send: typeof sendDaemonCommand = sendDaemonCommand): Promise<boolean> {
+  const answer = await send(DEFAULT_DAEMON_SOCKET_PATH, { kind: "letters.seen", agent, messageGuid }, { timeoutMs: SEEN_TIMEOUT_MS })
+  if (!answer.ok) throw new Error(answer.error ?? "the daemon refused the letters.seen command")
+  const recorded = (answer.data as { recorded?: unknown } | undefined)?.recorded === true
+  emitNervesEvent({ level: "debug", component: "senses", event: "senses.bluebubbles_letter_seen_checked", message: "told the daemon a message was read", meta: { messageGuid, recorded } })
+  return recorded
+}
+
 export async function askDaemonToAnswerLetter(agent: string, messageGuid: string, send: typeof sendDaemonCommand = sendDaemonCommand, now: () => number = Date.now): Promise<boolean> {
   const answer = await send(DEFAULT_DAEMON_SOCKET_PATH, { kind: "letters.answer", agent, messageGuid, deadlineAt: now() + ANSWER_DEADLINE_MS }, { timeoutMs: ANSWER_TIMEOUT_MS })
   if (!answer.ok) throw new Error(answer.error ?? "the daemon refused the letters.answer command")

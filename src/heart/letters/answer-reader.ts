@@ -28,6 +28,8 @@ export interface ServerMessage {
   dateCreated?: number
   dateEdited?: number
   dateRetracted?: number
+  /** When the other side read it, for a message this side sent. */
+  dateRead?: number
   threadOriginatorGuid?: string
 }
 

@@ -103,6 +103,9 @@ describe("the daemon's letters.answer command", () => {
     const daemon = new OuroDaemon(daemonOptions(bundlesRoot) as ConstructorParameters<typeof OuroDaemon>[0])
     await expect(daemon.handleCommand({ kind: "letters.answer", agent: "slugger", messageGuid: "m-1" }))
       .resolves.toEqual({ ok: true, data: { recorded: false, reason: "untrusted-server-url" } })
+    // A read receipt goes the same way, and an agent with no trusted server records nothing.
+    await expect(daemon.handleCommand({ kind: "letters.seen", agent: "slugger", messageGuid: "sent-1" }))
+      .resolves.toEqual({ ok: true, data: { recorded: false, reason: "untrusted-server-url" } })
   })
 
   it("tells the agent through its private runtime once an answer is recorded", async () => {

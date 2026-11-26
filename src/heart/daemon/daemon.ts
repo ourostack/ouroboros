@@ -554,6 +554,7 @@ export type DaemonCommand =
   | { kind: "mcp.call"; agent?: string; server: string; tool: string; args?: string }
   | LettersCommand
   | import("../letters/answer-command").LettersAnswerCommand
+  | import("../letters/seen-command").LettersSeenCommand
   | { kind: "hatch.start" }
   | { kind: "agent.senseTurn"; agent: string; friendId: string; channel: string; sessionKey: string; message: string; runtimeMcp?: RuntimeMcpServers }
   | import("../../senses/shepherd/feedback-submit").FeedbackCommand
@@ -2986,6 +2987,13 @@ export class OuroDaemon {
         const { answerLettersAnswerCommand } = await import("../letters/answer-command")
         const { letterAnswerSource } = await import("../../senses/bluebubbles/agent-client")
         return answerLettersAnswerCommand(await this.letters(), command, letterAnswerSource(this.bundlesRoot))
+      }
+      case "letters.seen":
+      {
+        // A read receipt, named by the GUID of the message Ouro delivered; the server's copy decides.
+        const { answerLettersSeenCommand } = await import("../letters/seen-command")
+        const { letterAnswerSource } = await import("../../senses/bluebubbles/agent-client")
+        return answerLettersSeenCommand(await this.letters(), command, letterAnswerSource(this.bundlesRoot))
       }
       case "mcp.list": {
         return withTurnExecutionLease(async () => {
