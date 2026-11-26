@@ -5,6 +5,7 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getOuroCliHome } from "../versioning/ouro-version-manager"
 import { writeFileAtomicSync } from "../atomic-file"
+import { isButlerAgent, type ButlerAgentName } from "../butler-agent"
 
 export type ExternalEventTransition = "opened" | "unchanged" | "changed" | "escalated" | "recovered"
 export type ExternalEventExecutionState = "received" | "queued" | "running" | "handled" | "retry_wait" | "dead_letter"
@@ -176,14 +177,14 @@ const privilegedIngress = Symbol("privileged external-event ingress")
 
 interface PrivilegedReplayState extends ExternalEventReplayManifest {
   schemaVersion: 1
-  agent: "sanctuary"
+  agent: ButlerAgentName
   source: typeof PRIVILEGED_EVENT_SOURCE
   updatedAt: string
 }
 
 interface PrivilegedExternalEventEnvelope {
   schemaVersion: 1
-  agent: "sanctuary"
+  agent: ButlerAgentName
   source: typeof PRIVILEGED_EVENT_SOURCE
   eventType: "usenet.protective_action" | "usenet.health_observation"
   incidentKey: string
@@ -1039,7 +1040,7 @@ function parsePrivilegedEnvelope(raw: string, fileName: string, now: string): Pr
   const observationTransitionIsAllowed = value.eventType !== "usenet.health_observation" || /^(?:auth-failed|stalled|recovered|indeterminate):\d{8}T\d{6}Z$/u.test(String(value.transitionId))
   const expectedKeys = ["action", "actionReceipt", "agent", "createdAt", "critical", "eventType", "evidence", "expiresAt", "incidentKey", "nonce", "observationRevision", "protectiveStateDigest", "protectiveStateObservedAt", "protectiveStateVerified", "schemaVersion", "source", "summary", "transitionId"]
   if (Object.keys(value).sort().join("\0") !== expectedKeys.sort().join("\0")
-    || value.schemaVersion !== 1 || value.agent !== "sanctuary" || value.source !== PRIVILEGED_EVENT_SOURCE
+    || value.schemaVersion !== 1 || !isButlerAgent(value.agent) || value.source !== PRIVILEGED_EVENT_SOURCE
     || !eventShapeIsAllowed || !observationTransitionIsAllowed
     || value.critical !== true || !boundedIdentifier(value.incidentKey) || !boundedIdentifier(value.transitionId)
     || !/^[a-f0-9]{64}$/u.test(String(value.observationRevision)) || !/^[a-f0-9]{64}$/u.test(String(value.nonce))
@@ -1169,7 +1170,7 @@ function replayStateFromManifest(manifest: ExternalEventReplayManifest, updatedA
 function isReplayState(value: unknown): value is PrivilegedReplayState {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const state = value as Partial<PrivilegedReplayState>
-  if (state.schemaVersion !== 1 || state.agent !== "sanctuary" || state.source !== PRIVILEGED_EVENT_SOURCE || !canonicalIso(state.updatedAt)) return false
+  if (state.schemaVersion !== 1 || !isButlerAgent(state.agent) || state.source !== PRIVILEGED_EVENT_SOURCE || !canonicalIso(state.updatedAt)) return false
   try { replayBytes(state as PrivilegedReplayState); return true } catch { return false }
 }
 
@@ -1315,7 +1316,7 @@ function commitMutation(recordPath: string, record: ExternalEventRecord, now: st
 export function bindPrivilegedFailsafeArtifact(recordPath: string, input: { artifactId: string; verificationRef: string; recordedAt?: string }): ExternalEventRecord {
   return withRecordLock(recordPath, () => {
     const record = readExternalEventRecord(recordPath)
-    if (record.agent !== "sanctuary" || record.source !== PRIVILEGED_EVENT_SOURCE || !record.privilegedProtectiveAction) {
+    if (!isButlerAgent(record.agent) || record.source !== PRIVILEGED_EVENT_SOURCE || !record.privilegedProtectiveAction) {
       throw new Error("System failsafe requires a privileged Sanctuary event")
     }
     if (!/^[a-f0-9]{64}$/u.test(input.artifactId)) throw new Error("System failsafe artifact id is invalid")

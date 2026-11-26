@@ -33,7 +33,7 @@ function root(name: string): string {
 
 function record(overrides: Partial<ExternalEventRecord> = {}): ExternalEventRecord {
   const eventRoot = root("failsafe-event")
-  const recordPath = path.join(eventRoot, "sanctuary", "sanctuary-usenet", "spend-guard.json")
+  const recordPath = path.join(eventRoot, overrides.agent ?? "sanctuary", "sanctuary-usenet", "spend-guard.json")
   fs.mkdirSync(path.dirname(recordPath), { recursive: true })
   const value = {
     schemaVersion: 2 as const,
@@ -245,6 +245,20 @@ describe("Telegram system failsafe", () => {
     const execute = vi.fn(async () => { throw new Error("not reached") })
     const result = await sweepTelegramSystemFailsafes({ eventRoot, target, verifyProtectiveState: vi.fn(async () => ({ verified: false, reference: "" })), execute: execute as never, recordArtifact: vi.fn(), now: () => "2026-08-29T19:58:01.000Z" })
     expect(result).toEqual({ inspected: 2, sent: 0 })
+  })
+
+  it("acts on the Butler's events under either name, and on no other agent's", async () => {
+    const store = new FileTelegramEffectJournal(root("failsafe-names-journal"))
+    const execute = createTelegramAuthorizedEffectExecutor({ store, api: { request: vi.fn(async () => ({ message_id: 101 })) }, authorize: () => authorization })
+    const common = {
+      target, now: () => "2026-08-29T19:58:01.000Z", execute, recordArtifact: vi.fn(async () => undefined),
+      verifyProtectiveState: vi.fn(async () => ({ verified: true, reference: "sabnzbd-read:queue-paused:sha256:names" })),
+    }
+    const butler = record({ agent: "butler" })
+    await expect(sweepTelegramSystemFailsafes({ ...common, eventRoot: path.dirname(path.dirname(path.dirname(butler.recordPath))) })).resolves.toEqual({ inspected: 1, sent: 1 })
+    const other = record({ agent: "slugger" })
+    await expect(sweepTelegramSystemFailsafes({ ...common, eventRoot: path.dirname(path.dirname(path.dirname(other.recordPath))) })).resolves.toEqual({ inspected: 0, sent: 0 })
+    await expect(reconcileTelegramSystemFailsafe({ ...common, record: other, bindArtifact: vi.fn() })).resolves.toMatchObject({ sent: false, reason: "noncritical" })
   })
 
   it("sweeps eligible persisted events with and without an injected clock", async () => {
