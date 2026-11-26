@@ -57,10 +57,16 @@ export type { SandboxImages } from "./images"
 export const LIBGEN_MIRRORS = ["libgen.li", "libgen.bz", "libgen.gl", "libgen.la", "libgen.vg"]
 export const POCKETBOOK_ADDRESS = "pocketbook@example.invalid"
 const ALIASES = ["calibre-web", "smtp", ...LIBGEN_MIRRORS]
-const HARDENING = [
-  "--log-driver", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "512",
-  "--memory", "2g", "--memory-swap", "2g", "--cpus", "2", "--ulimit", `fsize=${SNAPSHOT_LIMITS.bytes}`,
-]
+/** Every container's limits; `memory` is the agent container's when its guest names one (`guest.memory`), 2g otherwise. */
+function hardening(memory = "2g"): string[] {
+  return [
+    "--log-driver", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "512",
+    "--memory", memory, "--memory-swap", memory, "--cpus", "2", "--ulimit", `fsize=${SNAPSHOT_LIMITS.bytes}`,
+  ]
+}
+const HARDENING = hardening()
+/** A guest's memory goes to `docker run` as one argument, so it is only ever a whole number of megabytes or gigabytes. */
+const GUEST_MEMORY = /^[1-9]\d*[mg]$/
 
 
 export type DockerProcess = { stdin: Writable; stdout: Readable; exited: Promise<number>; stderr(): string }
@@ -144,8 +150,9 @@ export type SandboxInput = {
   /**
    * Another guest than the real Telegram turn: the blind interviews' neutral loop, with the turn file it reads. Its
    * answer may have several user turns; the first is the job, scored as any run, and the rest come back as `followUps`.
+   * `memory` is its container's memory and swap (such as `4g`), for a guest whose own work needs more than 2g.
    */
-  guest?: { entry: InterviewGuestEntry; turn: unknown; image?: string }
+  guest?: { entry: InterviewGuestEntry; turn: unknown; image?: string; memory?: string }
   /** Lets the run share a host with the live Butler; without it, such a host is refused. */
   hostLock?: HostLock
   /**
@@ -271,6 +278,9 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
   const docker = input.docker ?? dockerCli()
   const images: SandboxImages = input.images ?? { agent: SANDBOX_IMAGE, household: HOUSEHOLD_IMAGE }
   const agentImage = agentImageOf(images, input.guest?.image)
+  const memory = input.guest?.memory
+  if (memory !== undefined && !GUEST_MEMORY.test(memory)) throw new Error(`a guest's memory is a whole number of m or g, such as 4g, not ${memory}`)
+  if (memory !== undefined) emitNervesEvent({ component: "eval", event: "eval.sandbox_guest_memory", message: "the guest's container takes its own memory", meta: { memory } })
   const profile = input.profile ?? sanctuaryProfile({ bundleDir: input.bundleDir, seedBundleDir: input.seedBundleDir })
   checkProfile(profile)
   const runId = `${EVAL_RUN_PREFIX}${crypto.randomBytes(4).toString("hex")}`
@@ -347,7 +357,7 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
     const before = snapshotFiles(bundle, [...profile.writable])
     started.push(agentName)
     const agent = docker.start([
-      "run", "-i", "--rm", "--name", agentName, ...runLabels, "--network", runId, "--user", "10001:10001", ...HARDENING,
+      "run", "-i", "--rm", "--name", agentName, ...runLabels, "--network", runId, "--user", "10001:10001", ...hardening(memory),
       "--tmpfs", "/tmp:rw,mode=1777,size=256m", "--tmpfs", "/home/ouro:rw,uid=10001,gid=10001,mode=0700,size=256m", "--env", "HOME=/home/ouro",
       ...bundleMounts(profile, bundle),
       "-v", `${tls}/ca.pem:/etc/ssl/certs/ca-certificates.crt:ro`, "-v", `${turnFile}:/eval/turn.json:ro`,
