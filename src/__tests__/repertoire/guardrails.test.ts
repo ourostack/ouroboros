@@ -1356,7 +1356,8 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
       const root = bundle()
       vi.mocked(fs.existsSync).mockReturnValue(true)
       // The bundle sits in a temp folder, reached from the real home folder.
-      const fill = (text: string) => text.replaceAll("R/", `${root}/`).replaceAll("H/", `${path.relative(os.homedir(), root)}/`)
+      // One pass: the temp folder's random name can end in H or R, which a second pass would read as another placeholder.
+      const fill = (text: string) => text.replace(/[RH]\//g, (mark) => `${mark === "R/" ? root : path.relative(os.homedir(), root)}/`)
       const call = Object.fromEntries(Object.entries(args).map(([key, value]) => [key, fill(value)]))
       expect(guardInvocation("shell", call, peer(root))).toMatchObject({ allowed: false })
     })
