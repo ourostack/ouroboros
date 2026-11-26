@@ -71,6 +71,8 @@ type Behaviour = {
   /** The containers on the host that match the ps filter, as `docker ps --format {{.Names}}` prints them. */
   butler?: string
   failPs?: boolean
+  /** Sees the projected bundle as the agent container would mount it. */
+  onAgentStart?: (bundle: string) => void
 }
 
 /**
@@ -134,6 +136,7 @@ function fakeDocker(behaviour: Behaviour = {}) {
       }
       if (behaviour.agent === "throw") throw new Error("docker is not installed")
       work.bundle = at.get(BUNDLE)!
+      behaviour.onAgentStart?.(work.bundle)
       ends.set(name, exit)
       if (behaviour.agent === "exit") setImmediate(() => exit(1))
       else if (behaviour.agent === "null-result") stdout.write(`${JSON.stringify({ type: "done", outcome: { ok: true, result: null } })}\n`)
@@ -400,6 +403,62 @@ describe("runSandboxed", () => {
     expect(obs.timeline).toHaveLength(2)
     expect(obs.followUps).toEqual([{ finalReply: "6\nfine", outcome: "settled", calls: 1, toolCalls: 1 }])
     expect(obs.gaps).not.toEqual(expect.arrayContaining([...DECLARED_GAPS]))
+  })
+
+  describe("an interview's bundle", () => {
+    const vendorAgent = {
+      version: 2, humanFacing: { provider: "anthropic", model: "claude-opus-5-5" }, agentFacing: { provider: "anthropic", model: "claude-sonnet-5-5" },
+      providerFallback: [{ provider: "minimax", model: "MiniMax-M3" }], senses: { telegram: { enabled: true } },
+    }
+    const vendorReadiness = { version: 1, selectionPolicy: "explicit-same-lane-only", providers: [{ provider: "minimax", model: "MiniMax-M3", vaultItem: "providers/minimax" }] }
+    const reply = { timeline: [], finalReply: "", outcome: "settled", steps: 0, turns: [{ start: 0, finalReply: "", outcome: "settled", calls: 0 }] }
+    const guest = { entry: "h-guest-entry.js" as const, turn: { prefix: [], userText: "x" } }
+    const json = (dir: string, file: string): unknown => JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"))
+
+    beforeEach(() => {
+      fs.writeFileSync(path.join(bundleDir, "agent.json"), JSON.stringify(vendorAgent))
+      fs.writeFileSync(path.join(seedBundleDir, "provider-readiness.json"), JSON.stringify(vendorReadiness))
+    })
+
+    it("names a neutral provider in both files, and every report lists each rewritten file", async () => {
+      const seen: Record<string, unknown> = {}
+      const { docker } = fakeDocker({ runTurn: async () => reply as never, onAgentStart: (bundle) => {
+        seen.agent = json(bundle, "agent.json")
+        seen.readiness = json(bundle, "provider-readiness.json")
+      } })
+      const obs = await runSandboxed(input(docker, { guest }))
+      expect(obs.outcome).toBe("settled")
+      expect(seen.agent).toEqual({
+        version: 2, humanFacing: { provider: "github-copilot", model: "model" }, agentFacing: { provider: "github-copilot", model: "model" }, senses: { telegram: { enabled: true } },
+      })
+      expect(seen.readiness).toEqual({ version: 1, selectionPolicy: "explicit-same-lane-only", providers: [] })
+      expect(obs.gaps).toEqual(expect.arrayContaining([expect.stringMatching(/^agent\.json: .*github-copilot/), expect.stringMatching(/^provider-readiness\.json: /)]))
+    })
+
+    it("leaves the replay eval's bundle as it is projected today", async () => {
+      const seen: Record<string, unknown> = {}
+      const { docker } = fakeDocker({ onAgentStart: (bundle) => {
+        seen.agent = json(bundle, "agent.json")
+        seen.readiness = json(bundle, "provider-readiness.json")
+      } })
+      const obs = await runSandboxed(input(docker))
+      expect(obs.outcome).toBe("settled")
+      expect(seen).toEqual({ agent: vendorAgent, readiness: vendorReadiness })
+      expect(obs.gaps.filter((gap) => /^(agent|provider-readiness)\.json: .*(github-copilot|empty)/.test(gap))).toEqual([])
+    })
+
+    it("refuses a bundle that still names a vendor before any Docker call, naming the file and its count", async () => {
+      fs.mkdirSync(path.join(bundleDir, "psyche"), { recursive: true })
+      fs.writeFileSync(path.join(bundleDir, "psyche", "SOUL.md"), "I am Claude, a helpful butler.")
+      const { docker, calls } = fakeDocker({ runTurn: async () => reply as never })
+      const c = testCase({ bundle: { include: ["agent.json", "books", "psyche"] } })
+      const refusal = runSandboxed({ ...input(docker, { guest }), case: c })
+      await expect(refusal).rejects.toThrow(/psyche\/SOUL\.md \(1\)/)
+      await expect(refusal).rejects.not.toThrow(/helpful butler/)
+      // Not a container, and not even the Butler check.
+      expect(calls).toEqual([])
+      expect(fs.readdirSync(root).filter((entry) => entry.startsWith("eval-sandbox-"))).toEqual([])
+    })
   })
 
   it("reads --images as the agent's and household's tags, then any named agent images as name=tag", () => {

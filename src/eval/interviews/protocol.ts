@@ -68,6 +68,14 @@ export function ratingOf(answer: string): number | null {
 /** Section 3's case-insensitive pattern of brand and model words. */
 export const BRAND_PATTERN = "ouro|ouroboros|codex|openhands|open hands|all-hands|openai|anthropic|claude|gpt|minimax|shadcn|radix|base ui|material[ -]?ui|\\bmui\\b|mendelow|ourostack"
 
+/**
+ * The case-insensitive pattern of vendor and model words an interview's projected bundle must not hold. No arm's
+ * replacement list rewrites these words, so a session that sends one is voided (or names a vendor to the model). The
+ * brand words an arm legitimately carries, such as ouro and the harness's own name in paths, are not in it. The
+ * sandbox scans every text file of an interview's projected bundle for these before any container starts.
+ */
+export const VENDOR_PATTERN = "openai|anthropic|claude|gpt|minimax|gemini|grok|\\bmai-code"
+
 const brandRegex = (): RegExp => new RegExp(BRAND_PATTERN, "gi")
 
 /** Every brand word in `text`, in order; empty when there is none. */
