@@ -18,6 +18,8 @@ describe("escalation wiring", () => {
     await options.escalation!.notifyOwner({ noticeId: "n", text: "t" })
     expect(send).toHaveBeenCalledWith({ noticeId: "n", text: "t" })
     expect(escalationOptionsFor("slugger", send)).toEqual({})
+    // The Butler's name after the rename (M2) wires the same way.
+    expect(escalationOptionsFor("butler", send).escalation?.runningVersion).toBe(RUNNING_HARNESS_VERSION)
   })
 
   it("sends the notice through the Telegram owner path with a timeout", async () => {

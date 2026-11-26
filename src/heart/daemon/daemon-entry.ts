@@ -24,6 +24,7 @@ import { DaemonSenseManager } from "./sense-manager"
 import { listBundleSyncRows, listHomeBundleAgents, readPrivateRuntimeConfig } from "./agent-discovery"
 import { checkAgentHomes } from "./agent-home"
 import { getRepoRoot, getAgentBundlesRoot, loadAgentConfig } from "../identity"
+import { isButlerAgent } from "../butler-agent"
 import { appSessionsRecord } from "./app-sessions-record"
 import { detectRuntimeMode } from "./runtime-mode"
 import { HabitScheduler } from "../habits/habit-scheduler"
@@ -541,7 +542,7 @@ const daemon = new OuroDaemon({
   },
   schedulerFireConsumer: (origin) => consumeSanctuarySchedulerFire(path.join(getAgentBundlesRoot(), "sanctuary.ouro"), origin),
   nativeHabitRunner: async ({ agent, habitName, trigger, occurrenceId, runnerId, schedulerOrigin }) => {
-    if (agent !== "sanctuary" || habitName !== "sanctuary-health") return null
+    if (!isButlerAgent(agent) || habitName !== "sanctuary-health") return null
     const marker = readSanctuaryAcceptanceMarker(agent)
     const schedulerScenario = marker?.label === "unit-16f-cron-fingerprint" ? marker : null
     const agentRoot = path.join(getAgentBundlesRoot(), `${agent}.ouro`)
@@ -581,7 +582,7 @@ const daemon = new OuroDaemon({
     }
     return result
   },
-  nativeHabitMatch: (agent, habitName) => agent === "sanctuary" && habitName === "sanctuary-health",
+  nativeHabitMatch: (agent, habitName) => isButlerAgent(agent) && habitName === "sanctuary-health",
   mode,
   onStopCommandComplete: async () => {
     await stopEntryRuntime()
@@ -911,7 +912,7 @@ void startDaemonAfterContainerCredentialBootstrap({
         habitsDir,
         osCronManager,
         onHabitFire: (habitName, trigger, context) => {
-          if (isRsvpHabitName(habitName) || (agent === "sanctuary" && habitName === "sanctuary-health")) {
+          if (isRsvpHabitName(habitName) || (isButlerAgent(agent) && habitName === "sanctuary-health")) {
             sendDaemonCommand(socketPath, {
               kind: "habit.poke",
               agent,

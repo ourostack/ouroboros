@@ -26,6 +26,7 @@ import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { createBridgeManager } from "./bridges/manager"
 import { getAgentName, getAgentRoot, loadAgentConfig, type AgentSensesConfig, type SenseName } from "./identity"
+import { isButlerAgent } from "./butler-agent"
 import { getCodingSessionManager } from "../repertoire/coding"
 import { listSessionActivity } from "./session-activity"
 import { readPrivateRuntimeRawData, derivePrivateRuntimeStatus, deriveInnerJob, getPrivateRuntimeSessionPath } from "./daemon/thoughts"
@@ -289,7 +290,7 @@ export function readSenseStatusLines(): string[] {
     // Sanctuary's resident is deliberately tokenless: the root authority gateway holds the
     // token, so a token in the resident's config would be the misconfiguration. Mirror the
     // daemon's rule (sense-manager) instead of reporting a working sense as needs_config (D-047).
-    telegram: agentName === "sanctuary"
+    telegram: isButlerAgent(agentName)
       ? runtimeConfig.ok && machineRuntimeConfig.ok && !Object.hasOwn(runtimePayload, "telegramBotToken") && !Object.hasOwn(machinePayload, "telegramBotToken")
       : hasTextField(runtimePayload, "telegramBotToken")
         && hasTextField(runtimePayload, "telegramAuthorizedUserId")

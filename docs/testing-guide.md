@@ -386,7 +386,7 @@ ouro use --agent <agent> --lane <outward|inner> --provider <provider> --model <m
 After reauth succeeds, retry the failed `ouro` command or reconnect the session that
 already errored.
 
-If a repair message says the agent can run a refresh or verify command, that is agent-runnable. If it requires browser login, MFA, provider dashboard access, API token creation, or secret entry, it is human-required; enter secrets in the terminal or provider UI, never in chat.
+If a repair message says the agent can run a refresh or verify command, that is agent-runnable. Only a phone approval (MFA, passkey), a payment or an irreversible call that is the person's is human-required; never ask for secrets in chat.
 
 ### A sense shows `needs_config`
 

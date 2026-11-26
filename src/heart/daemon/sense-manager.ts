@@ -4,6 +4,7 @@ import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { DEFAULT_AGENT_SENSES, hasStaleWorkbenchBundleEntry, normalizeAppSessionsConfig, type AgentSensesConfig, type SenseName } from "../identity"
+import { isButlerAgent } from "../butler-agent"
 import {
   confirmedAbsentRuntimeCredentialItems,
   readMachineRuntimeCredentialConfig,
@@ -276,7 +277,7 @@ function runtimeConfigUnavailableDetail(
 }
 
 function needsMachineRuntimeConfig(agent: string, sense: SenseName): boolean {
-  return sense === "bluebubbles" || sense === "voice" || sense === "a2a" || sense === "shepherd" || (agent === "sanctuary" && sense === "telegram")
+  return sense === "bluebubbles" || sense === "voice" || sense === "a2a" || sense === "shepherd" || (isButlerAgent(agent) && sense === "telegram")
 }
 
 function senseFactsFromRuntimeConfig(
@@ -311,7 +312,7 @@ function senseFactsFromRuntimeConfig(
   const voice = machinePayload.voice as Record<string, unknown> | undefined
   const a2a = machinePayload.a2a as Record<string, unknown> | undefined
 
-  if (senses.telegram.enabled && agent === "sanctuary") {
+  if (senses.telegram.enabled && isButlerAgent(agent)) {
     const ready = runtimeConfig.ok && machineRuntimeConfig.ok
       && !Object.hasOwn(payload, "telegramBotToken") && !Object.hasOwn(machinePayload, "telegramBotToken")
     base.telegram = ready
@@ -509,7 +510,7 @@ function senseRepairHint(agent: string, sense: SenseName): string {
     return `Agent-runnable: run 'ouro connect a2a --agent ${agent}', then restart with 'ouro up'.`
   }
   if (sense === "telegram") {
-    return agent === "sanctuary"
+    return isButlerAgent(agent)
       ? "Agent-runnable: complete or recover the root authority migration; do not restore a resident Telegram token."
       : `Agent-runnable: store Telegram bot/user/chat coordinates with 'ouro connect telegram --agent ${agent}', then restart with 'ouro up'.`
   }
