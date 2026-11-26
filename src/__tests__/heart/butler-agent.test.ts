@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest"
 
-import { butlerContainerPaths, butlerOnDisk, managedButlerAgent } from "../../heart/butler-agent"
+import { butlerContainerPaths, butlerNameFromEntrypoint, butlerOnDisk, managedButlerAgent } from "../../heart/butler-agent"
 
 describe("the Butler's container paths", () => {
   it("derives every path and name from the bundle's name", () => {
     expect(butlerContainerPaths("butler")).toEqual({
       agentRoot: "/home/ouro/AgentBundles/butler.ouro",
+      trustRoot: "/etc/ouro/trust/butler",
       crontabPath: "/home/ouro/.ouro-cli/scheduler/butler.crontab",
       habitNamespace: "habit:butler",
       healthJobId: "butler:sanctuary-health",
@@ -19,6 +20,17 @@ describe("the Butler's container paths", () => {
       healthTaskPath: "/home/ouro/AgentBundles/sanctuary.ouro/habits/sanctuary-health.md",
       healthCronMarker: "# ouro:habit:sanctuary:sanctuary:sanctuary-health",
     })
+  })
+
+  it("reads the Butler's name from an image's entrypoint, and sanctuary from any image that names no Butler", () => {
+    const daemon = ["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js", "--package-managed-agent"]
+    expect(butlerNameFromEntrypoint([...daemon, "butler"])).toBe("butler")
+    expect(butlerNameFromEntrypoint([...daemon, "sanctuary"])).toBe("sanctuary")
+    expect(butlerNameFromEntrypoint([...daemon, "slugger"])).toBe("sanctuary")
+    expect(butlerNameFromEntrypoint(daemon)).toBe("sanctuary")
+    expect(butlerNameFromEntrypoint(["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"])).toBe("sanctuary")
+    expect(butlerNameFromEntrypoint(null)).toBe("sanctuary")
+    expect(butlerContainerPaths("sanctuary").trustRoot).toBe("/etc/ouro/trust/sanctuary")
   })
 
   it("finds the one Butler among the managed agents, and none when there are two", () => {
