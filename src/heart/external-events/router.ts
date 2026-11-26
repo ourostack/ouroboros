@@ -473,48 +473,109 @@ export function readExternalEventRecord(recordPath: string): ExternalEventRecord
   return normaliseButlerRecord(readStoredExternalEventRecord(recordPath), recordPath)
 }
 
-export type ButlerExternalEventAdoption = "none" | "adopted" | "both-present" | "failed"
+/**
+ * The record an external-event Await names. Its key is the record's absolute path when it was filed; once the running
+ * Butler has taken over its other name's event folder, the same record sits under the running name's folder instead.
+ * Only a Butler's Await, keyed under a Butler name's folder, is looked up again.
+ */
+export function externalEventAwaitRecordPath(agentName: string, filedFromKey: string, root = getExternalEventRoot()): string {
+  const resolvedRoot = path.resolve(root)
+  const [folder, ...rest] = path.relative(resolvedRoot, path.resolve(filedFromKey)).split(path.sep)
+  if (!isButlerAgent(agentName) || !isButlerAgent(folder) || folder === agentName || fs.existsSync(filedFromKey)) return filedFromKey
+  return path.join(resolvedRoot, agentName, ...rest)
+}
+
+export type ButlerExternalEventAdoption = "none" | "adopted" | "merged"
+
+/** Why the running Butler could not take over its other name's event folder. The daemon does not start until it is fixed. */
+export class ButlerExternalEventAdoptionError extends Error {
+  override readonly name = "ButlerExternalEventAdoptionError"
+}
+
+interface ButlerEventFolderMerge {
+  moves: Array<{ from: string; to: string }>
+  replay: { from: string; to: string } | null
+  conflicts: string[]
+}
+
+/** What merging `from` into `to` would do, worked out before anything moves, so a conflict leaves both folders as they were. */
+function planButlerEventFolderMerge(from: string, to: string, plan: ButlerEventFolderMerge = { moves: [], replay: null, conflicts: [] }): ButlerEventFolderMerge {
+  for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+    const source = path.join(from, entry.name)
+    const target = path.join(to, entry.name)
+    // A record lock or the replay lock left by the other name's daemon, which is not running: it is removed with the folder.
+    if (entry.isDirectory() && entry.name.endsWith(".lock")) continue
+    if (!fs.existsSync(target)) plan.moves.push({ from: source, to: target })
+    else if (entry.isDirectory() && fs.lstatSync(target).isDirectory()) planButlerEventFolderMerge(source, target, plan)
+    else if (entry.isFile() && entry.name === PRIVILEGED_REPLAY_STATE_FILE) plan.replay = { from: source, to: target }
+    else if (!entry.isFile() || !fs.lstatSync(target).isFile() || !fs.readFileSync(source).equals(fs.readFileSync(target))) plan.conflicts.push(target)
+  }
+  return plan
+}
+
+function readReplayStateForMerge(statePath: string): PrivilegedReplayState {
+  let parsed: unknown
+  try { parsed = JSON.parse(fs.readFileSync(statePath, "utf8")) } catch { parsed = null }
+  if (!isReplayState(parsed)) throw new ButlerExternalEventAdoptionError(`the privileged replay manifest ${statePath} is corrupt, so the two event folders cannot be merged safely`)
+  return parsed
+}
+
+/**
+ * Merge the other name's event folder into the running Butler's: each record the running folder lacks moves over, a record
+ * both have must be byte-identical, and the privileged replay manifests are unioned so no accepted envelope is accepted twice.
+ */
+function mergeButlerEventFolders(from: string, to: string, butler: ButlerAgentName, now: string): number {
+  const plan = planButlerEventFolderMerge(from, to)
+  if (plan.conflicts.length > 0) {
+    throw new ButlerExternalEventAdoptionError(`${plan.conflicts.length} event record(s) differ between ${from} and ${to}: ${plan.conflicts.join(", ")}`)
+  }
+  if (plan.replay) {
+    const merged = mergeReplayManifests(readReplayStateForMerge(plan.replay.to), readReplayStateForMerge(plan.replay.from))
+    atomicWriteJson(plan.replay.to, replayStateFromManifest(merged, now, butler), "Privileged replay manifest")
+    // Gone at once, so a start interrupted after this point does not union (and count) the same manifest again.
+    fs.unlinkSync(plan.replay.from)
+  }
+  for (const move of plan.moves) fs.renameSync(move.from, move.to)
+  fs.rmSync(from, { recursive: true, force: true })
+  return plan.moves.length
+}
 
 /**
  * At daemon start, the running Butler takes over the event folder saved under its other name (from before the rename,
- * or from the release a rollback left). A same-filesystem rename; with both folders present, both stay and it warns.
+ * or from the release a rollback left): a same-filesystem rename, or a merge when both folders exist. Anything it cannot
+ * do safely throws, and the daemon does not start: records left outside the running Butler's folder can't be settled.
  */
-export function prepareButlerExternalEvents(root: string, managedAgents: readonly string[]): ButlerExternalEventAdoption {
+export function prepareButlerExternalEvents(root: string, managedAgents: readonly string[], now: () => string = () => new Date().toISOString()): ButlerExternalEventAdoption {
   const butler = managedButlerAgent(managedAgents)
   runningButler = butler
   if (!butler) return "none"
   const own = path.join(root, butler)
-  const others = BUTLER_AGENT_NAMES.filter((name) => name !== butler).map((name) => path.join(root, name)).filter((dir) => fs.existsSync(dir))
-  if (others.length === 0) return "none"
-  if (fs.existsSync(own)) {
-    emitNervesEvent({
-      level: "warn",
-      component: "daemon",
-      event: "daemon.external_events_adoption_conflict",
-      message: "both Butler names have external-event folders; leaving both in place",
-      meta: { butler, own, others },
-    })
-    return "both-present"
-  }
+  const other = path.join(root, BUTLER_AGENT_NAMES.find((name) => name !== butler)!)
+  if (!fs.existsSync(other)) return "none"
+  const merging = fs.existsSync(own)
+  // How many entries a merge moved over; a plain adoption renames the whole folder.
+  let moved: number | null = null
   try {
-    fs.renameSync(others[0]!, own)
+    if (merging) moved = mergeButlerEventFolders(other, own, butler, now())
+    else fs.renameSync(other, own)
   } catch (error) {
+    const reason = error instanceof Error ? error.message : /* v8 ignore next -- fs throws Error objects @preserve */ String(error)
     emitNervesEvent({
-      level: "warn",
+      level: "error",
       component: "daemon",
       event: "daemon.external_events_adoption_failed",
-      message: "could not move the Butler's other-name external-event folder",
-      meta: { butler, from: others[0], to: own, error: error instanceof Error ? error.message : /* v8 ignore next -- fs throws Error objects @preserve */ String(error) },
+      message: "could not move the Butler's other-name external events to the running Butler",
+      meta: { butler, from: other, to: own, merging, error: reason },
     })
-    return "failed"
+    throw new ButlerExternalEventAdoptionError(`Butler external events need attention: ${merging ? "merging" : "moving"} ${other} into ${own} failed: ${reason}\n  agent-runnable: make ${own} hold one copy of each record (keep the newer of any record that differs), remove ${other}, then restart the daemon`)
   }
   emitNervesEvent({
     component: "daemon",
     event: "daemon.external_events_adopted",
-    message: "moved the Butler's other-name external-event folder to the running Butler",
-    meta: { butler, from: others[0], to: own },
+    message: merging ? "merged the Butler's other-name external-event folder into the running Butler's" : "moved the Butler's other-name external-event folder to the running Butler",
+    meta: { butler, from: other, to: own, merging, moved },
   })
-  return "adopted"
+  return merging ? "merged" : "adopted"
 }
 
 interface ExternalEventRepairEntry {

@@ -34,7 +34,7 @@ import {
   resetAwaitToolDeps,
 } from "../../repertoire/tools-awaiting"
 import { expectedCappedContent, expectedTruncationMarker, expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap"
-import { claimExternalEvent, commitExternalEventDisposition, getExternalEventRoot, readExternalEventRecord, recordExternalEvent } from "../../heart/external-events/router"
+import { claimExternalEvent, commitExternalEventDisposition, externalEventAwaitRecordPath, getExternalEventRoot, prepareButlerExternalEvents, readExternalEventRecord, recordExternalEvent } from "../../heart/external-events/router"
 import { advanceObligation, createObligation, readVerifiedPendingObligations } from "../../arc/obligations"
 
 const fileAwaitDef = awaitingToolDefinitions.find((d) => d.tool.function.name === "await_condition")!
@@ -374,6 +374,62 @@ describe("tools-awaiting", () => {
         if (previousHome === undefined) delete process.env.HOME
         else process.env.HOME = previousHome
       }
+    })
+
+    it.each([["sanctuary", "butler"], ["butler", "sanctuary"]] as const)("resolves an await filed as %s after the running Butler (%s) took over the event folder", async (filedAs, runningAs) => {
+      const previousHome = process.env.HOME
+      process.env.HOME = agentRoot
+      mockGetAgentName.mockReturnValue(filedAs)
+      try {
+        const root = getExternalEventRoot()
+        const first = recordExternalEvent({ agent: filedAs, source: "guard", eventType: "health.observed", eventId: "books", observationRevision: "rev-1" }, { root })
+        const claimed = claimExternalEvent(first.recordPath, { owner: "lease-1", expectedVersion: first.version, expectedGeneration: 1 })
+        commitExternalEventDisposition(first.recordPath, {
+          owner: "lease-1", expectedVersion: claimed.version, expectedGeneration: 1,
+          disposition: {
+            classifiedRevision: "rev-1", classification: "snoozed", stewardPolicy: { kind: "none" }, decision: "silent",
+            reason: "Check again later.", nextWake: { kind: "at", at: "2026-08-30T12:00:00.000Z" }, careId: null, awaitId: "books-recheck", actionRefs: [], verificationRefs: [],
+          },
+        })
+        await fileAwaitDef.handler({ name: "books-recheck", condition: "The recheck time has arrived", cadence: "5m", wake_at: "2026-08-30T12:00:00.000Z" }, {
+          context: { friend: { id: "owner" } },
+          currentExternalEvent: claimed,
+        } as any)
+        expect(fs.readFileSync(path.join(agentRoot, "awaiting", "books-recheck.md"), "utf8")).toContain(`filed_from_key: ${first.recordPath}`)
+
+        // The release under the other name starts and takes over the folder; the Await still names the old path.
+        expect(prepareButlerExternalEvents(root, [runningAs])).toBe("adopted")
+        mockGetAgentName.mockReturnValue(runningAs)
+        const moved = path.join(root, runningAs, "guard", "books.json")
+        expect(externalEventAwaitRecordPath(runningAs, first.recordPath, root)).toBe(moved)
+        expect(hasActiveExternalEventAwait(runningAs, { recordPath: first.recordPath, awaitName: "books-recheck", wakeAt: "2026-08-30T12:00:00.000Z" }, root)).toBe(true)
+
+        const result = parse(await resolveAwaitDef.handler({ name: "books-recheck", verdict: "yes", observation: "recheck time reached" }, {
+          currentSession: { friendId: "owner", channel: "external-event", key: first.recordPath, sessionPath: "/private/session.json" },
+        } as any) as string)
+        expect(result.advancedExternalEvents).toEqual([moved])
+        expect(readExternalEventRecord(moved)).toMatchObject({ agent: runningAs, executionState: "queued", generation: 2, disposition: null })
+      } finally {
+        prepareButlerExternalEvents("/nonexistent", [])
+        if (previousHome === undefined) delete process.env.HOME
+        else process.env.HOME = previousHome
+      }
+    })
+
+    it("looks an event Await's record up under the other name only between Butler names", () => {
+      const root = path.join(agentRoot, "external-events")
+      const sanctuaryKey = path.join(root, "sanctuary", "guard", "books.json")
+      // Not a Butler, the same name, a key outside the Butler folders, or a record still where it was: the key is used as is.
+      expect(externalEventAwaitRecordPath("slugger", sanctuaryKey, root)).toBe(sanctuaryKey)
+      expect(externalEventAwaitRecordPath("sanctuary", sanctuaryKey, root)).toBe(sanctuaryKey)
+      expect(externalEventAwaitRecordPath("butler", path.join(root, "slugger", "guard", "books.json"), root)).toBe(path.join(root, "slugger", "guard", "books.json"))
+      expect(externalEventAwaitRecordPath("butler", path.join(agentRoot, "elsewhere.json"), root)).toBe(path.join(agentRoot, "elsewhere.json"))
+      fs.mkdirSync(path.dirname(sanctuaryKey), { recursive: true })
+      fs.writeFileSync(sanctuaryKey, "{}")
+      expect(externalEventAwaitRecordPath("butler", sanctuaryKey, root)).toBe(sanctuaryKey)
+      fs.rmSync(sanctuaryKey)
+      expect(externalEventAwaitRecordPath("butler", sanctuaryKey, root)).toBe(path.join(root, "butler", "guard", "books.json"))
+      expect(externalEventAwaitRecordPath("sanctuary", path.join(root, "butler", "guard", "books.json"), root)).toBe(sanctuaryKey)
     })
 
     it("verdict=no records observation, does not archive", async () => {

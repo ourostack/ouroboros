@@ -10,6 +10,7 @@ vi.mock("../../../nerves/runtime", async (importOriginal) => {
 })
 
 import {
+  ButlerExternalEventAdoptionError,
   advanceExternalEventsFromAwait,
   claimExternalEvent,
   listExternalEventStatus,
@@ -95,17 +96,58 @@ describe("the running Butler adopts events saved under its other name", () => {
     expect(updated).toMatchObject({ agent: "butler", duplicateCount: 1, recordPath: path.join(root, "butler", "sanctuary-health", "evt-1.json") })
   })
 
-  it("with both folders present, leaves both and warns without crashing", () => {
+  it.each([["butler", "sanctuary"], ["sanctuary", "butler"]] as const)("running as %s with both folders present, merges %s's folder into its own", (running, other) => {
+    const root = eventRoot()
+    const record = (agent: string, eventId: string, source = "sanctuary-health") => recordExternalEvent({ agent, source, eventType: "health.observed", eventId }, { root, now: () => "2026-11-26T00:00:00.000Z" })
+    record(other, "evt-1")
+    record(running, "evt-2")
+    // The same record in both folders, byte for byte: one copy is kept.
+    const shared = record(other, "evt-3")
+    fs.copyFileSync(shared.recordPath, path.join(root, running, "sanctuary-health", "evt-3.json"))
+    // A source only the other folder has moves over whole; a lock its daemon left is dropped.
+    record(other, "evt-4", "app-store-connect")
+    fs.mkdirSync(path.join(root, other, "sanctuary-health", "evt-1.json.lock"))
+
+    expect(prepareButlerExternalEvents(root, [running], () => "2026-11-26T01:00:00.000Z")).toBe("merged")
+    expect(fs.existsSync(path.join(root, other))).toBe(false)
+    expect(fs.readdirSync(path.join(root, running, "sanctuary-health")).sort()).toEqual(["evt-1.json", "evt-2.json", "evt-3.json"])
+    expect(listExternalEventStatus(root).map((row) => [row.agent, row.eventId]).sort()).toEqual([[running, "evt-1"], [running, "evt-2"], [running, "evt-3"], [running, "evt-4"]])
+    expect(nerves.events).toContainEqual(expect.objectContaining({ event: "daemon.external_events_adopted", meta: expect.objectContaining({ butler: running, merging: true, moved: 2 }) }))
+  })
+
+  it("refuses to merge a record that differs between the two folders, and leaves both as they were", () => {
     const root = eventRoot()
     sanctuaryRecord(root)
-    recordExternalEvent({ agent: "butler", source: "sanctuary-health", eventType: "health.observed", eventId: "evt-2" }, { root })
+    recordExternalEvent({ agent: "butler", source: "sanctuary-health", eventType: "health.observed", eventId: "evt-1", summary: "a different observation" }, { root })
+    sanctuaryRecord(root, "evt-2")
 
-    expect(prepareButlerExternalEvents(root, ["butler"])).toBe("both-present")
-    expect(fs.existsSync(path.join(root, "sanctuary"))).toBe(true)
-    expect(fs.existsSync(path.join(root, "butler"))).toBe(true)
-    expect(nerves.events).toContainEqual(expect.objectContaining({ event: "daemon.external_events_adoption_conflict", level: "warn" }))
-    // Records left under the other name still belong to the running Butler.
-    expect(listExternalEventStatus(root).map((row) => row.agent)).toEqual(["butler", "butler"])
+    expect(() => prepareButlerExternalEvents(root, ["butler"])).toThrow(ButlerExternalEventAdoptionError)
+    expect(() => prepareButlerExternalEvents(root, ["butler"])).toThrow(/merging .*sanctuary into .*butler failed: 1 event record\(s\) differ .*evt-1\.json[\s\S]*agent-runnable: /u)
+    expect(fs.existsSync(path.join(root, "sanctuary", "sanctuary-health", "evt-2.json"))).toBe(true)
+    expect(fs.existsSync(path.join(root, "butler", "sanctuary-health", "evt-2.json"))).toBe(false)
+    expect(nerves.events).toContainEqual(expect.objectContaining({ event: "daemon.external_events_adoption_failed", level: "error", meta: expect.objectContaining({ butler: "butler", merging: true, error: expect.stringContaining("differ") }) }))
+  })
+
+  it("refuses to merge where one folder has a link or a folder and the other a file", () => {
+    const root = eventRoot()
+    const saved = sanctuaryRecord(root)
+    recordExternalEvent({ agent: "butler", source: "sanctuary-health", eventType: "health.observed", eventId: "evt-2" }, { root })
+    fs.symlinkSync(saved.recordPath, path.join(root, "sanctuary", "sanctuary-health", "evt-2.json"))
+    fs.writeFileSync(path.join(root, "butler", "app-store-connect"), "not a folder")
+    fs.mkdirSync(path.join(root, "sanctuary", "app-store-connect"))
+    fs.mkdirSync(path.join(root, "butler", "sanctuary-health", "evt-1.json"))
+
+    expect(() => prepareButlerExternalEvents(root, ["butler"])).toThrow(/3 event record\(s\) differ/u)
+  })
+
+  it("refuses to merge a corrupt privileged replay manifest", () => {
+    const root = eventRoot()
+    for (const agent of ["sanctuary", "butler"]) {
+      fs.mkdirSync(path.join(root, agent, "sanctuary-usenet"), { recursive: true })
+      fs.writeFileSync(path.join(root, agent, "sanctuary-usenet", ".privileged-replay-manifest.json"), agent === "butler" ? "{not json" : "{}")
+    }
+    expect(() => prepareButlerExternalEvents(root, ["butler"])).toThrow(/privileged replay manifest .*butler.* is corrupt/u)
+    expect(fs.existsSync(path.join(root, "sanctuary", "sanctuary-usenet", ".privileged-replay-manifest.json"))).toBe(true)
   })
 
   it("does nothing with no Butler, or with nothing under the other name", () => {
@@ -118,14 +160,14 @@ describe("the running Butler adopts events saved under its other name", () => {
     expect(readExternalEventRecord(path.join(root, "sanctuary", "sanctuary-health", "evt-1.json")).agent).toBe("sanctuary")
   })
 
-  it("warns and carries on when the folder cannot be moved", () => {
+  it("fails, with an error event, when the folder cannot be moved", () => {
     const root = eventRoot()
     sanctuaryRecord(root)
     fs.chmodSync(root, 0o555)
     try {
-      expect(prepareButlerExternalEvents(root, ["butler"])).toBe("failed")
+      expect(() => prepareButlerExternalEvents(root, ["butler"])).toThrow(/moving .*sanctuary into .*butler failed/u)
     } finally { fs.chmodSync(root, 0o755) }
-    expect(nerves.events).toContainEqual(expect.objectContaining({ event: "daemon.external_events_adoption_failed", level: "warn" }))
+    expect(nerves.events).toContainEqual(expect.objectContaining({ event: "daemon.external_events_adoption_failed", level: "error", meta: expect.objectContaining({ merging: false, error: expect.any(String) }) }))
     expect(fs.existsSync(path.join(root, "sanctuary"))).toBe(true)
   })
 

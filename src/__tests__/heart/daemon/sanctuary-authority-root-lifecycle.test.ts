@@ -3,7 +3,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { SANCTUARY_KEEPER_BOOT_LINES, SanctuaryAuthorityRootLifecycle, predecessorExpectsPsycheMount, predecessorHasBundleSync, recordSanctuaryRootLifecycleFailure, runSanctuaryAuthorityRootCli, sanctuaryRootLifecycleFailureText } from "../../../heart/daemon/sanctuary-authority-root-lifecycle"
+import { BUTLER_RENAME_PREDECESSOR_MARKERS, SANCTUARY_KEEPER_BOOT_LINES, SanctuaryAuthorityRootLifecycle, predecessorExpectsPsycheMount, predecessorHasBundleSync, recordSanctuaryRootLifecycleFailure, runSanctuaryAuthorityRootCli, sanctuaryRootLifecycleFailureText } from "../../../heart/daemon/sanctuary-authority-root-lifecycle"
 import { withSessionTurnLease } from "../../../mind/session-transaction"
 import { createLogger, type LogEvent } from "../../../nerves"
 import { setRuntimeLogger } from "../../../nerves/runtime"
@@ -1462,7 +1462,9 @@ describe("in-place authority upgrade", () => {
       epoch: readEpoch(f),
     })
     const lifecycleFor = () => new SanctuaryAuthorityRootLifecycle(JSON.parse(fs.readFileSync(f.p(`${rootPath}/activation.json`), "utf8")), f.rootOptions)
-    return { ...f, resident, bundleOps, nextRequest, manifest, snapshot, lifecycleFor, setPending: (value: boolean) => { pendingMigration = value } }
+    // The installed package can take a rollback across a change of the Butler's name (it has #1983 and M2 step 4b).
+    const renameReady = (markers = BUTLER_RENAME_PREDECESSOR_MARKERS) => { for (const [file, marker] of markers) f.write(`${rootPath}/package/${file}`, `/* ${marker} */`) }
+    return { ...f, resident, bundleOps, nextRequest, manifest, snapshot, lifecycleFor, renameReady, setPending: (value: boolean) => { pendingMigration = value } }
   }
   function readEpoch(f: { p: (name: string) => string }) {
     const epoch = JSON.parse(fs.readFileSync(f.p(`${rootPath}/epochs/fixture-epoch/epoch.json`), "utf8"))
@@ -1759,6 +1761,39 @@ describe("in-place authority upgrade", () => {
     })
   })
 
+  it.each([["sanctuary", "butler"], ["butler", "sanctuary"]] as const)("tells the migrate the target image's Butler name, %s to %s", async (running, target) => {
+    const f = await upgradeFixture()
+    f.renameReady()
+    if (running === "butler") butlerImages.add(digest("new-image"))
+    if (target === "butler") butlerImages.add(digest("next-image"))
+    await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, holdCommit: true })
+    const migrate = host.exec.mock.calls.map(([, args]) => args as string[]).find((args) => args.includes("--operation") && args[args.indexOf("--operation") + 1] === "migrate")!
+    expect(migrate.slice(migrate.indexOf("--operation"))).toEqual(["--operation", "migrate", "--rollback-image-id", digest("new-image"), "--target-image-id", digest("next-image"), "--butler-name", target])
+  })
+
+  it.each([["sanctuary", "butler"], ["butler", "sanctuary"]] as const)("refuses to rename the Butler from %s to %s while the installed release can't take the rollback", async (running, target) => {
+    const f = await upgradeFixture()
+    if (running === "butler") butlerImages.add(digest("new-image"))
+    if (target === "butler") butlerImages.add(digest("next-image"))
+    // Only one of the two capabilities: an M2 step 4a release.
+    f.renameReady([BUTLER_RENAME_PREDECESSOR_MARKERS[0]])
+    const before = f.snapshot()
+    await expect(f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })).rejects.toThrow(`would rename the Butler from ${running} to ${target}, but the installed release cannot take a rollback across that rename. Ship a release from after M2 step 4b`)
+    expect(fs.existsSync(f.p(`${rootPath}/upgrade.json`))).toBe(false)
+    expect(f.snapshot()).toEqual(before)
+    expect(f.bundleOps).toEqual([])
+
+    f.renameReady()
+    await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+    expect(f.bundleOps).toEqual(["migrate", "commit"])
+  })
+
+  it("upgrades without the rename markers while the name stays the same", async () => {
+    const f = await upgradeFixture()
+    await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+    expect(f.bundleOps).toEqual(["migrate", "commit"])
+  })
+
   it("binds the bundle, psyche and trust with --mount, so a missing host folder fails the create instead of appearing empty", async () => {
     const f = await upgradeFixture()
     f.resident.reference = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.978"
@@ -1773,6 +1808,7 @@ describe("in-place authority upgrade", () => {
 
   it("mounts the host's sanctuary.ouro folder at the butler paths for an image named butler, and back at the sanctuary paths on rollback", async () => {
     const f = await upgradeFixture()
+    f.renameReady()
     butlerImages.add(digest("next-image"))
     f.resident.reference = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.978"
     await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, holdCommit: true })
@@ -1781,6 +1817,8 @@ describe("in-place authority upgrade", () => {
     expect(upgraded).toContain("/mnt/user/appdata/ouro-butler/trust/sanctuary:/etc/ouro/trust/butler:ro")
     expect(upgraded.some((mount) => mount.includes("AgentBundles/sanctuary.ouro") || mount.endsWith("/etc/ouro/trust/sanctuary:ro"))).toBe(false)
     expect(fs.existsSync(f.p("/mnt/user/appdata/ouro-butler/agent/butler.ouro"))).toBe(false)
+    // The fixture's package manifest does not list the marker files, so they go before the rollback re-verifies the predecessor.
+    for (const [file] of BUTLER_RENAME_PREDECESSOR_MARKERS) fs.rmSync(f.p(`${rootPath}/upgrade-previous/package/${file}`))
     await expect(f.lifecycleFor().rollbackUpgrade()).resolves.toBe(true)
     const rolledBack = createMounts().at(-1)!
     expect(rolledBack).toContain(`${bundle}:/home/ouro/AgentBundles/sanctuary.ouro:rw`)
@@ -1790,6 +1828,7 @@ describe("in-place authority upgrade", () => {
 
   it("finds a host bundle folder named butler.ouro on disk, and keeps sanctuary.ouro when both are there", async () => {
     const f = await upgradeFixture()
+    f.renameReady()
     const butlerBundle = "/mnt/user/appdata/ouro-butler/agent/butler.ouro"
     fs.renameSync(f.p(bundle), f.p(butlerBundle))
     butlerImages.add(digest("next-image"))
@@ -2014,7 +2053,7 @@ describe("in-place authority upgrade", () => {
     expect(upgrade).toHaveBeenLastCalledWith({ targetImageId: digest("x"), imageReference: nextReference, holdCommit: true })
     await runSanctuaryAuthorityRootCli(["upgrade-rollback"], write)
     expect(rollback).toHaveBeenCalledOnce()
-    expect(write.mock.calls).toEqual([[`{"upgraded":"${nextReference}"}\n`], [`{"upgraded":"${nextReference}"}\n`], [`{"upgraded":"${nextReference}","held":true}\n`], ['{"rolledBack":true}\n']])
+    expect(write.mock.calls).toEqual([[`{"upgraded":"${nextReference}"}\n`], [`{"upgraded":"${nextReference}"}\n`], [`{"upgraded":"${nextReference}","held":true,"rollbackUndoes":"a rollback puts agent.json, state/attachments/recent.json, state/replay-client/provision.json, skills/*.md and house/HOUSE.md back as they were before the migrate, so edits made to them during the hold are lost"}\n`], ['{"rolledBack":true}\n']])
     expect(sessions.withSessionTurnLease).toHaveBeenLastCalledWith("/boot/config/custom/ouro-butler/docker-man-template-transaction.json", expect.any(Function), { timeoutMs: 1_800_000, confinementRoot: "/boot/config/custom/ouro-butler" })
   })
 })
