@@ -305,7 +305,7 @@ async function shipHolding(opts, deps, timing, lock) {
     }, FALLBACK_COMMIT_WALK, unreadable)
     if (unreadable.length > 0) deps.log(`  WARN package.json could not be read at ${unreadable.join(", ")}${sha ? `; chose ${sha} without them, so check it is the release merge` : ""}`)
   }
-  if (!sha) throw new ShipError(`no commit on main names ${version} in its subject (looked at the latest 100); is the release merged?`)
+  if (!sha) throw new ShipError(`no commit on main names ${version} in its subject (looked at the latest 100), and neither npm's gitHead nor the v${version} tag exists yet. A release that was just published shows up there only after npm lists it and the verify-npm job tags it, so wait for that job and run this again; if the release never merged, merge it first.`)
   let mergedAt = commitDate(commits, sha)
   if (mergedAt === undefined) {
     const r = await deps.gh(["api", `repos/${REPO}/commits/${sha}`])
