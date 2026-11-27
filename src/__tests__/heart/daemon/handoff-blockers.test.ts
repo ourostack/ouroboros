@@ -122,6 +122,16 @@ describe("judgeRestartAfterUpFailure", () => {
       .toEqual({ ok: true, detail: "came up on v2" })
   })
 
+  it("accepts a newer release that came up in place of the expected one", () => {
+    expect(judgeRestartAfterUpFailure({
+      ...base,
+      expectedVersion: "0.1.0-alpha.1710",
+      seenVersion: "0.1.0-alpha.1711",
+      before: snap([blueBubblesDown]),
+      after: snap([]),
+    })).toEqual({ ok: true, detail: "came up on 0.1.0-alpha.1711" })
+  })
+
   it("rejects any up failure other than the final health refusal: a migration, provider step or timeout", () => {
     const failure = "ouro-launcher.js up exited 1: provider checks failed"
     expect(judgeRestartAfterUpFailure({ ...base, upFailure: failure, upRefusedOnHandoffHealth: false, before: snap([]), after: snap([]) }))

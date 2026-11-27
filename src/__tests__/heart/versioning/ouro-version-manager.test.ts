@@ -352,6 +352,23 @@ describe("ouro-version-manager", () => {
     })
   })
 
+  describe("cliVersionAtLeast", () => {
+    it("accepts the same release or a newer one", async () => {
+      const { cliVersionAtLeast } = await import("../../../heart/versioning/ouro-version-manager")
+      expect(cliVersionAtLeast("0.1.0-alpha.1710", "0.1.0-alpha.1710")).toBe(true)
+      expect(cliVersionAtLeast("0.1.0-alpha.1711", "0.1.0-alpha.1710")).toBe(true)
+      expect(cliVersionAtLeast("0.1.0-alpha.1704", "0.1.0-alpha.1710")).toBe(false)
+    })
+
+    it("never takes a version it cannot order for a newer one", async () => {
+      const { cliVersionAtLeast } = await import("../../../heart/versioning/ouro-version-manager")
+      // A daemon that reports no version shows "unknown", which sorts after any number as text.
+      expect(cliVersionAtLeast("unknown", "0.1.0-alpha.1710")).toBe(false)
+      expect(cliVersionAtLeast("0.1.0-alpha.1711", "unknown")).toBe(false)
+      expect(cliVersionAtLeast("v2", "v2")).toBe(true)
+    })
+  })
+
   describe("compareCliVersions", () => {
     it("orders alpha-suffixed versions numerically", async () => {
       const { compareCliVersions } = await import("../../../heart/versioning/ouro-version-manager")
