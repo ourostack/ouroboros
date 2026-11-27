@@ -649,6 +649,7 @@ describe("handleInboundTurn", () => {
         expect(heldNoticesIncludedIn(held, `Notes mention ${refs.join(" ")} inline.`)).toBe(false)
         expect(heldNoticesIncludedIn(held, `Held notices: ${refs.join(", ")}\nand then more text`)).toBe(false)
         expect(heldNoticesIncludedIn(held, "")).toBe(false)
+        expect(heldNoticesIncludedIn(held, "Held notices: none")).toBe(false)
         expect(heldNoticesIncludedIn([], "anything")).toBe(true)
       })
 
