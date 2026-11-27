@@ -8,6 +8,8 @@ name: ax-xray
 
 on:
   pull_request:
+  # The merge queue's build: `xray` and `actions` are required checks, so the queue waits for them here.
+  merge_group:
   push:
     branches:
       - main
@@ -59,6 +61,8 @@ jobs:
       # ax/census.baseline.json, when this pull request adds to the baseline, or when it drops a walker source. It
       # compares with the base commit the checked-out merge ref was built on, not the base branch's tip: the tip can
       # have moved since, and a baseline that shrank there would read as grown here (#1590). There is no override.
+      # A merge queue build, like a push, has no base ref and checks against the baseline alone: the pull request's
+      # own run already compared its baseline with its base.
       - name: Ouro AX census
         env:
           BASE_REF: ${{ github.base_ref }}
