@@ -5,7 +5,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { machineOwnerUsername, type FriendRecord } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { addAnsweredGuid, answerProblem, deliveryFloor, noteAnswerRefused, parseAnswer, readAnsweredGuids, type ServerMessage } from "./answer-reader"
+import { addAnsweredGuid, answerProblem, deliveryFloor, noteAnswerRefused, parseAnswer, readAnsweredGuids, replySeenProblem, seenFloor, type ServerMessage } from "./answer-reader"
 import { checkLetterInput, checkWithdrawReason, newLetterId, type Letter, type LetterEvent, type LetterKind } from "./letter"
 import { listBundleFriends, ownerFriendIds, readAnsweringHandles } from "./answering"
 import { answerReturnText, queueAnswerReturn, returnDue, returnSession, type LetterSession } from "./return-to-session"
@@ -84,8 +84,8 @@ export interface LettersCommand {
 
 export type LetterResult = Record<string, unknown> & { outcome: string }
 
-/** What recordSeen did with one read receipt. */
-export type SeenOutcome = { recorded: true; code: string } | { recorded: false; reason: string }
+/** What recordSeen or recordSeenByReply did with one message: the codes of the letters it marked seen. */
+export type SeenOutcome = { recorded: true; codes: string[] } | { recorded: false; reason: string }
 
 /** What recordAnswer did with one message. */
 export type AnswerOutcome =
@@ -400,8 +400,39 @@ export class LettersWriter {
       if (problem) return { recorded: false, reason: problem }
       this.addEvent(letters, entry.letter.id, { t: "seen", at: new Date(message.dateRead!).toISOString(), via: "chat" })
       emitNervesEvent({ component: "daemon", event: "letters.letter_seen", message: "the person read a letter", meta: { code: entry.letter.code } })
-      return { recorded: true, code: entry.letter.code }
+      return { recorded: true, codes: [entry.letter.code] }
     })
+  }
+
+  /**
+   * Records seen, at the message's send time, each waiting letter the person wrote after in the chat it landed in,
+   * from the server's own copy of their message. It is the seen for a person whose read receipts are off. `sentAt`
+   * reads the server's time for a letter's sent message, as for an answer.
+   */
+  async recordSeenByReply(agent: string, message: ServerMessage, sentAt?: (messageGuid: string) => Promise<number | undefined>): Promise<SeenOutcome> {
+    const letters = this.open(agent, false)
+    // Every check but the floor runs first, from the index alone, and the floors are fetched outside the queue, so a
+    // slow server never holds up an answer to the same message that is waiting behind this.
+    const candidates = letters.index.list({}).filter((entry) => replySeenProblem(entry, message, Number.NEGATIVE_INFINITY) === null)
+    const floors = new Map<string, number | null>()
+    for (const entry of candidates) floors.set(entry.letter.id, await seenFloor(entry, sentAt))
+    return this.serial(letters, async (): Promise<SeenOutcome> => {
+      const codes: string[] = []
+      for (const candidate of candidates) {
+        // Read again inside the queue, since the letter may have been answered or seen meanwhile.
+        const entry = letters.index.get(candidate.letter.id)!
+        if (replySeenProblem(entry, message, floors.get(entry.letter.id)!) !== null) continue
+        this.addEvent(letters, entry.letter.id, { t: "seen", at: new Date(message.dateCreated!).toISOString(), via: "chat" })
+        emitNervesEvent({ component: "daemon", event: "letters.letter_seen_by_reply", message: "the person wrote in the chat after a letter landed there", meta: { code: entry.letter.code } })
+        codes.push(entry.letter.code)
+      }
+      return codes.length > 0 ? { recorded: true, codes } : { recorded: false, reason: "no-letter" }
+    })
+  }
+
+  /** Whether any waiting letter is delivered and not yet seen, read from the index alone, so most chat needs no fetch. */
+  hasUnseenDelivery(agent: string): boolean {
+    return this.open(agent, false).index.list({}).some((entry) => entry.events.some((event) => event.t === "delivered") && !entry.events.some((event) => event.t === "seen"))
   }
 
   /**
