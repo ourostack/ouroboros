@@ -116,6 +116,32 @@ describe("a letter the person wrote after, with their read receipts off", () => 
     expect(writer.hasUnseenDelivery("slugger")).toBe(true)
   })
 
+  it("dates the landing by the daemon's delivered time, with no slack, when the server's send time can't be had", async () => {
+    const { writer } = await delivered()
+    // A plain message carries no code, so one sent a minute before the letter landed shows nothing about it.
+    expect(await writer.recordSeenByReply("slugger", reply({ dateCreated: NOW - 60_000 }))).toEqual({ recorded: false, reason: "no-letter" })
+    expect(await writer.recordSeenByReply("slugger", reply({ dateCreated: NOW - 60_000 }), async () => { throw new Error("server down") })).toEqual({ recorded: false, reason: "no-letter" })
+    expect(await writer.recordSeenByReply("slugger", reply(), async () => { throw new Error("server down") })).toEqual({ recorded: true, codes: ["L1"] })
+  })
+
+  it("marks every letter that landed in the chat before the message, in one go", async () => {
+    const { writer } = await delivered()
+    await writer.run("slugger", "mailbox_deliver", { letter: "L2" })
+    expect(await writer.recordSeenByReply("slugger", reply())).toEqual({ recorded: true, codes: ["L1", "L2"] })
+  })
+
+  it("leaves a letter past its expiry, or one the message's sender wasn't asked", async () => {
+    const { writer } = await delivered()
+    await writer.run("slugger", "mailbox_send", { kind: "know", subject: "Expires soon", expiresAt: new Date(NOW + 30_000).toISOString() })
+    await writer.run("slugger", "mailbox_deliver", { letter: "L3" })
+    // L1 is seen; L3 expired before the message was sent, so it isn't.
+    expect(await writer.recordSeenByReply("slugger", reply())).toEqual({ recorded: true, codes: ["L1"] })
+    expect((await writer.run("slugger", "mailbox_read", { letter: "L3" })).events).not.toContain("seen on chat")
+    // Someone else writing in their own chat shows nothing about letters sent to this person.
+    const fresh = await delivered()
+    expect(await fresh.writer.recordSeenByReply("slugger", reply({ sender: "+15550000000", chatGuids: ["iMessage;-;+15550000000"] }))).toEqual({ recorded: false, reason: "no-letter" })
+  })
+
   it("leaves a letter already seen by its read receipt, or no longer waiting", async () => {
     const { writer } = await delivered()
     await writer.recordSeen("slugger", read())
@@ -133,6 +159,10 @@ describe("replySeenProblem", () => {
     const entry = (over: Record<string, unknown> = {}) => ({ state: "waiting", events: [], letter: { answeringHandle: ARI }, ...over }) as never
     const message: ServerMessage = { guid: "in-1", text: "", isFromMe: false, sender: ARI, service: "iMessage", chatGuids: [CHAT], dateCreated: NOW }
     expect(replySeenProblem(entry({ state: "answered" }), message, 0)).toBe("not-waiting")
+    expect(replySeenProblem(entry({ letter: { answeringHandle: ARI, expiresAt: new Date(NOW).toISOString() } }), message, 0)).toBe("not-waiting")
+    expect(replySeenProblem(entry({ letter: { answeringHandle: ARI, expiresAt: new Date(NOW + 1).toISOString() } }), message, 0)).toBeNull()
+    // A message with no send time can't be shown to come before the expiry.
+    expect(replySeenProblem(entry({ letter: { answeringHandle: ARI, expiresAt: new Date(NOW + 1).toISOString() } }), { ...message, dateCreated: undefined }, 0)).toBe("not-waiting")
     expect(replySeenProblem(entry({ events: [{ t: "seen" }] }), message, 0)).toBe("already-seen")
     expect(replySeenProblem(entry({ letter: {} }), message, 0)).toBe("no-answering-handle")
     expect(replySeenProblem(entry(), message, null)).toBe("not-delivered")

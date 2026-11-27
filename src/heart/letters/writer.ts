@@ -5,7 +5,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { machineOwnerUsername, type FriendRecord } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { addAnsweredGuid, answerProblem, deliveryFloor, noteAnswerRefused, parseAnswer, readAnsweredGuids, replySeenProblem, type ServerMessage } from "./answer-reader"
+import { addAnsweredGuid, answerProblem, deliveryFloor, noteAnswerRefused, parseAnswer, readAnsweredGuids, replySeenProblem, seenFloor, type ServerMessage } from "./answer-reader"
 import { checkLetterInput, checkWithdrawReason, newLetterId, type Letter, type LetterEvent, type LetterKind } from "./letter"
 import { listBundleFriends, ownerFriendIds, readAnsweringHandles } from "./answering"
 import { answerReturnText, queueAnswerReturn, returnDue, returnSession, type LetterSession } from "./return-to-session"
@@ -409,13 +409,19 @@ export class LettersWriter {
    * from the server's own copy of their message. It is the seen for a person whose read receipts are off. `sentAt`
    * reads the server's time for a letter's sent message, as for an answer.
    */
-  recordSeenByReply(agent: string, message: ServerMessage, sentAt?: (messageGuid: string) => Promise<number | undefined>): Promise<SeenOutcome> {
+  async recordSeenByReply(agent: string, message: ServerMessage, sentAt?: (messageGuid: string) => Promise<number | undefined>): Promise<SeenOutcome> {
     const letters = this.open(agent, false)
+    // Every check but the floor runs first, from the index alone, and the floors are fetched outside the queue, so a
+    // slow server never holds up an answer to the same message that is waiting behind this.
+    const candidates = letters.index.list({}).filter((entry) => replySeenProblem(entry, message, Number.NEGATIVE_INFINITY) === null)
+    const floors = new Map<string, number | null>()
+    for (const entry of candidates) floors.set(entry.letter.id, await seenFloor(entry, sentAt))
     return this.serial(letters, async (): Promise<SeenOutcome> => {
       const codes: string[] = []
-      for (const entry of letters.index.list({})) {
-        if (!entry.events.some((event) => event.t === "delivered") || entry.events.some((event) => event.t === "seen")) continue
-        if (replySeenProblem(entry, message, await deliveryFloor(entry, sentAt)) !== null) continue
+      for (const candidate of candidates) {
+        // Read again inside the queue, since the letter may have been answered or seen meanwhile.
+        const entry = letters.index.get(candidate.letter.id)!
+        if (replySeenProblem(entry, message, floors.get(entry.letter.id)!) !== null) continue
         this.addEvent(letters, entry.letter.id, { t: "seen", at: new Date(message.dateCreated!).toISOString(), via: "chat" })
         emitNervesEvent({ component: "daemon", event: "letters.letter_seen_by_reply", message: "the person wrote in the chat after a letter landed there", meta: { code: entry.letter.code } })
         codes.push(entry.letter.code)

@@ -1304,8 +1304,9 @@ describe("BlueBubbles sense runtime", () => {
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload, { letterSeen })
     expect(letterSeen).toHaveBeenCalledWith(expect.any(String), dmTopLevelPayload.data.guid)
     expect(mocks.runAgent).toHaveBeenCalledTimes(1)
-    // A group chat is no letter's chat.
+    // A group chat is no letter's chat, and this side's own message is no sign the person read anything.
     await bluebubbles.handleBlueBubblesEvent(groupThreadPayload, { letterSeen })
+    await bluebubbles.handleBlueBubblesEvent({ ...dmTopLevelPayload, data: { ...dmTopLevelPayload.data, guid: "seen-by-reply-own", isFromMe: true } }, { letterSeen })
     expect(letterSeen).toHaveBeenCalledTimes(1)
     // A daemon that can't be told only loses the "seen"; the message is still a turn.
     const failing = vi.fn(async () => { throw new Error("daemon down") })

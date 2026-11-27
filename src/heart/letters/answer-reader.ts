@@ -136,13 +136,29 @@ export function answerProblem(entry: IndexedLetter, message: ServerMessage, answ
 }
 
 /**
+ * The time a message must come after to show the person has seen a letter: the server's own send time for it, or
+ * else the daemon's delivered time with no slack, since a plain message carries no code to tie it to the letter.
+ * Null when the letter isn't delivered.
+ */
+export async function seenFloor(entry: IndexedLetter, sentAt?: (messageGuid: string) => Promise<number | undefined>): Promise<number | null> {
+  const delivered = entry.events.find((event) => event.t === "delivered")
+  if (!delivered) return null
+  if (delivered.messageId && sentAt) {
+    const serverTime = await sentAt(delivered.messageId).catch(() => undefined)
+    if (serverTime !== undefined) return serverTime
+  }
+  return Date.parse(delivered.at)
+}
+
+/**
  * Why a message the person sent doesn't show they have seen this letter, or null when it does: an iMessage from the
  * letter's answering handle, in their one-to-one chat, sent after the letter landed there. Their read receipts may be
- * off, but a person who writes in the chat after the letter arrived has had it on screen. `floor` is deliveryFloor.
+ * off, but a person who writes in the chat after the letter arrived has had it on screen. `floor` is seenFloor.
  */
 export function replySeenProblem(entry: IndexedLetter, message: ServerMessage, floor: number | null): string | null {
   const letter = entry.letter
-  if (entry.state !== "waiting") return "not-waiting"
+  const sentAfterExpiry = letter.expiresAt !== undefined && (message.dateCreated ?? Number.POSITIVE_INFINITY) >= Date.parse(letter.expiresAt)
+  if (entry.state !== "waiting" || sentAfterExpiry) return "not-waiting"
   if (entry.events.some((event) => event.t === "seen")) return "already-seen"
   if (!letter.answeringHandle) return "no-answering-handle"
   if (message.isFromMe !== false) return "from-me"
