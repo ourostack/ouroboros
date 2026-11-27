@@ -15,6 +15,9 @@ function missingAgent(path: string): CliErrorCard {
 const ROOT_LIFECYCLE = "node dist/heart/daemon/sanctuary-authority-root-lifecycle.js"
 const REDACTION = "node dist/heart/session-redaction-repair-cli-main.js"
 const PROBE = "node dist/senses/sanctuary-health-acceptance-probe-entry.js"
+const AX_FLOWS = "node dist/ouro-ax/flows.js"
+const AX_SURFACES = "node dist/ouro-ax/surfaces.js"
+const AX_XRAY = "node dist/ouro-ax/xray.js"
 
 /** A root lifecycle step run as someone other than root. */
 function rootOnly(step: string): CliErrorCard {
@@ -74,6 +77,24 @@ function probeUsage(step: string): CliErrorCard {
     code: "usage",
     means: `${PROBE} ${step} needs --label, --scenario, --owner-image and --owner-container in that order${step === "finalize" ? ", then the two -after digests" : ""}.`,
     fix: `Pass the coordinates the acceptance runner recorded for this scenario to ${step}.`,
+  }
+}
+
+/** A vendored Ouro AX kit program given words or flags it doesn't take, or that couldn't do its job. */
+function kitError(program: string): CliErrorCard {
+  return {
+    code: "error",
+    means: `${program} stopped with exit 2 because it got a command, argument or flag it doesn't take, or with exit 1 because a check threw or, under --conformance, a must claim doesn't hold.`,
+    fix: "Read the one error line, which names the fix, or run it with --help for its usage.",
+  }
+}
+
+/** The surfaces checker's one failure line, which carries no code of its own. */
+function surfacesFailed(program: string): CliErrorCard {
+  return {
+    code: "error",
+    means: `${program} stopped with exit 2 because it got a command or flag it doesn't take, or with exit 1 because a file it was given is missing, isn't valid JSON or isn't writable.`,
+    fix: "Read the surfaces: line on stderr, which names the fix, and rerun with what it asks for.",
   }
 }
 
@@ -144,6 +165,17 @@ export const ENTRY_POINT_COMMANDS: readonly CliCommandDeclaration[] = [
   { name: "node dist/nerves/review/cli-main.js", effect: "private", readOnly: true, summary: "Filter an agent's recent nerves events.", ax: { id: "cli:node dist/nerves/review/cli-main.js", group: "diagnostics", effect: "read", when: "Investigate what a running agent did lately: tail its nerves log, filtered by component, event, level or age.", errors: [
     { code: "bad-duration", means: "The nerves review's --since isn't a duration it reads.", fix: "Give --since as a number and unit, such as 5m, 2h or 1d." },
   ] } },
+  { name: AX_FLOWS, effect: "private", summary: "Run Ouro AX agent flows against a mock.", ax: { id: `cli:${AX_FLOWS}`, group: "diagnostics", effect: "write", when: "Walk an agent through a suite's flows on a mock, as CI does for the harness, writing the findings and a report.", errors: [
+    { code: "no-suite", means: "The flows run found no suite module at the path it was given (exit 2).", fix: "Name the suite module's path, such as flows/suite.ts." },
+    { code: "bad-suite", means: "The suite module doesn't default-export defineSuite({ tool, flows, cli, start, guard }) (exit 2).", fix: "Make the module end with export default defineSuite({ tool, flows, cli, start, guard })." },
+    { code: "bad-value", means: "A flows run flag got a value it doesn't take, such as --slack 0 or an --xray file that isn't an X-ray report (exit 2).", fix: "Use the value the error line names, such as --slack 2 or --xray report.json." },
+    { code: "run-stopped", means: "The flows run threw before it finished, so no report was written (exit 1).", fix: "Read what it threw on the error line, fix that, and run it again." },
+    { code: "checks-failed", means: "A flow failed in a way the suite's known list doesn't name, or a known defect now passes (exit 1).", fix: "Read the failure lines and the findings file; fix the door, or update the known list when a defect is fixed." },
+  ] } },
+  { name: AX_SURFACES, effect: "private", summary: "Check an interface's surfaces manifest.", ax: { id: `cli:${AX_SURFACES}`, group: "diagnostics", effect: "write", when: "Extract a manifest of an interface's surfaces from source, or check one against its baseline.", errors: [surfacesFailed(AX_SURFACES)] } },
+  { name: `${AX_SURFACES} extract`, effect: "private", summary: "Write a surfaces manifest from source.", ax: { id: `cli:${AX_SURFACES} extract`, group: "diagnostics", effect: "write", when: "Read files or folders and write the surfaces they declare as a manifest, to --out or stdout.", errors: [surfacesFailed(`${AX_SURFACES} extract`)] } },
+  { name: `${AX_SURFACES} check`, effect: "private", summary: "Check a surfaces manifest against its baseline.", ax: { id: `cli:${AX_SURFACES} check`, group: "diagnostics", effect: "write", when: "Check a manifest; it exits 3 on a finding its --baseline doesn't list. --init writes the first baseline and --update shrinks it.", errors: [surfacesFailed(`${AX_SURFACES} check`)] } },
+  { name: AX_XRAY, effect: "private", summary: "Call an interface's agent doors as an agent would.", ax: { id: `cli:${AX_XRAY}`, group: "diagnostics", effect: "write", when: "Call an interface's CLI or MCP doors on a mock, as CI's AX X-ray does for ouro, and report which Ouro AX promises hold.", errors: [kitError(AX_XRAY)] } },
   { name: "node dist/senses/a2a-entry.js", effect: "private", summary: "Run an agent's A2A sense.", ax: { id: "cli:node dist/senses/a2a-entry.js", group: "entry-points", effect: "write", when: "The daemon starts it so other agents can reach this one over A2A; --port and --base-url set where it listens.", errors: [missingAgent("dist/senses/a2a-entry.js")] } },
   { name: "node dist/senses/app-sessions-entry.js", effect: "private", summary: "Run an agent's app-sessions sense.", ax: { id: "cli:node dist/senses/app-sessions-entry.js", group: "entry-points", effect: "write", when: "The daemon starts it to watch the coding app's sessions and send the owner a notice when one waits on a prompt.", errors: [missingAgent("dist/senses/app-sessions-entry.js")] } },
   { name: "node dist/senses/bluebubbles/entry.js", effect: "private", summary: "Run an agent's iMessage sense.", ax: { id: "cli:node dist/senses/bluebubbles/entry.js", group: "entry-points", effect: "write", when: "The daemon starts it on the iMessage host to carry messages between the BlueBubbles server and the agent.", errors: [missingAgent("dist/senses/bluebubbles/entry.js")] } },
