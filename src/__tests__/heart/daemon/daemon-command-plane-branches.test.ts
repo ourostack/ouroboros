@@ -260,7 +260,7 @@ describe("daemon command plane branches", () => {
     }
   })
 
-  it("delegates default external-event readiness to the Sanctuary runtime owner", async () => {
+  it("asks the product for default external-event readiness", async () => {
     const socketPath = tmpSocketPath("daemon-default-external-event-readiness")
     const readiness = vi.spyOn(sanctuaryRuntime, "ensureSanctuarySourceRuntimeReady").mockResolvedValueOnce(undefined)
     const { daemon } = make(socketPath, undefined, { useDefaultExternalEventSourceReadiness: true })
@@ -268,6 +268,10 @@ describe("daemon command plane branches", () => {
     await (daemon as any).externalEventSourceReadiness("sanctuary", "sanctuary-health")
 
     expect(readiness).toHaveBeenCalledWith("sanctuary", "sanctuary-health")
+    // A source the product doesn't declare, or an agent no product runs, needs nothing to be ready.
+    await (daemon as any).externalEventSourceReadiness("sanctuary", "other-monitor")
+    await (daemon as any).externalEventSourceReadiness("slugger", "sanctuary-health")
+    expect(readiness).toHaveBeenCalledOnce()
   })
 
   function registeredSnapshot(name = "slugger") {
@@ -1604,11 +1608,12 @@ describe("daemon command plane branches", () => {
   })
 
   it("waits for source runtime readiness before startup reconciliation acquires ownership", async () => {
+    // The Butler's product declares sanctuary-health, so its events wait for that source to be ready.
     const socketPath = tmpSocketPath("daemon-external-event-readiness")
     const ledgerPath = path.join(os.tmpdir(), `external-event-readiness-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
     const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-readiness-root-"))
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-readiness-bundles-"))
-    const received = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "delayed", observationRevision: "rev-1" }, { root: externalEventRoot })
+    const received = recordExternalEvent({ agent: "butler", source: "sanctuary-health", eventType: "health.observed", eventId: "delayed", observationRevision: "rev-1" }, { root: externalEventRoot })
     const readiness = createDeferred<void>()
     const externalEventSourceReadiness = vi.fn(() => readiness.promise)
     const { daemon, processManager } = make(socketPath, bundlesRoot, {
@@ -1616,11 +1621,11 @@ describe("daemon command plane branches", () => {
       externalEventRoot,
       externalEventSourceReadiness,
     })
-    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot("butler")])
 
     try {
       const start = daemon.start()
-      await vi.waitFor(() => expect(externalEventSourceReadiness).toHaveBeenCalledWith("slugger", "sanctuary-health"))
+      await vi.waitFor(() => expect(externalEventSourceReadiness).toHaveBeenCalledWith("butler", "sanctuary-health"))
       expect(readExternalEventRecord(received.recordPath)).toEqual(received)
       expect(processManager.startAgent).not.toHaveBeenCalled()
       expect(processManager.sendToAgent).not.toHaveBeenCalled()
@@ -1667,12 +1672,13 @@ describe("daemon command plane branches", () => {
   })
 
   it("keeps reconciliation records immutable when source readiness fails closed", async () => {
+    // The Butler's product declares sanctuary-health, so its events wait for that source to be ready.
     const socketPath = tmpSocketPath("daemon-external-event-readiness-failure")
     const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-readiness-failure-root-"))
-    const received = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "blocked", observationRevision: "rev-1" }, { root: externalEventRoot })
+    const received = recordExternalEvent({ agent: "butler", source: "sanctuary-health", eventType: "health.observed", eventId: "blocked", observationRevision: "rev-1" }, { root: externalEventRoot })
     const externalEventSourceReadiness = vi.fn(async () => { throw new Error("[human-required] attach machine runtime") })
     const { daemon, processManager } = make(socketPath, undefined, { externalEventRoot, externalEventSourceReadiness })
-    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot("butler")])
 
     try {
       await expect(daemon.start()).resolves.toBeUndefined()
@@ -1690,12 +1696,13 @@ describe("daemon command plane branches", () => {
   })
 
   it("gates only the unready source while reconciling other dispatchable events", async () => {
+    // The Butler's product declares sanctuary-health, so its events wait for that source to be ready.
     const socketPath = tmpSocketPath("daemon-external-event-source-scoped-readiness")
     const ledgerPath = path.join(os.tmpdir(), `external-event-source-scoped-readiness-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
     const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-source-scoped-readiness-root-"))
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-source-scoped-readiness-bundles-"))
-    const blocked = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "blocked" }, { root: externalEventRoot })
-    const ready = recordExternalEvent({ agent: "slugger", source: "other-monitor", eventType: "health.observed", eventId: "ready" }, { root: externalEventRoot })
+    const blocked = recordExternalEvent({ agent: "butler", source: "sanctuary-health", eventType: "health.observed", eventId: "blocked" }, { root: externalEventRoot })
+    const ready = recordExternalEvent({ agent: "butler", source: "other-monitor", eventType: "health.observed", eventId: "ready" }, { root: externalEventRoot })
     const externalEventSourceReadiness = vi.fn(async (_agent: string, source: string) => {
       if (source === "sanctuary-health") throw "source runtime unavailable"
     })
@@ -1704,15 +1711,15 @@ describe("daemon command plane branches", () => {
       externalEventRoot,
       externalEventSourceReadiness,
     })
-    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot("butler")])
 
     try {
       await daemon.start()
       expect(readExternalEventRecord(blocked.recordPath)).toEqual(blocked)
       expect(readExternalEventRecord(ready.recordPath)).toMatchObject({ executionState: "running", attemptCount: 1 })
       expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
-      expect(externalEventSourceReadiness).toHaveBeenCalledWith("slugger", "sanctuary-health")
-      expect(externalEventSourceReadiness).toHaveBeenCalledWith("slugger", "other-monitor")
+      expect(externalEventSourceReadiness).toHaveBeenCalledWith("butler", "sanctuary-health")
+      expect(externalEventSourceReadiness).toHaveBeenCalledWith("butler", "other-monitor")
       expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         event: "daemon.external_event_readiness_blocked",
         meta: expect.objectContaining({ error: "source runtime unavailable" }),

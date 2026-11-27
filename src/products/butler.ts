@@ -14,6 +14,12 @@ import type { OuroProduct, ProductHabitRunInput } from "../heart/product/types"
 import { readOrCreateTelegramIdentityKey } from "../senses/telegram-identity-key"
 import type { DaemonResponse } from "../heart/daemon/daemon"
 
+async function sanctuarySourceReady(agent: string, source: string): Promise<void> {
+  // Loaded here, not with the product: it imports Sanctuary's tool registry.
+  const { ensureSanctuarySourceRuntimeReady } = await import("../senses/sanctuary-runtime")
+  await ensureSanctuarySourceRuntimeReady(agent, source)
+}
+
 /** The acceptance run that proves a cron fire reaches the health sweep (Unit 16f), when one is running. */
 function cronFingerprintScenario(agent: string): SanctuaryAcceptanceMarker | null {
   const marker = readSanctuaryAcceptanceMarker(agent)
@@ -80,6 +86,11 @@ export const product: OuroProduct = {
       preflight: () => { requireSanctuaryPackageManagementDecision(decision) },
       prepareManagedBundle: () => { prepareSanctuaryPackageManagedBundle(decision) },
     }
+  },
+  // J5: events from the house check and the Usenet watch wake the Butler only once its machine credentials are complete.
+  eventSources: {
+    "sanctuary-health": { ready: (agent) => sanctuarySourceReady(agent, "sanctuary-health") },
+    "sanctuary-usenet": { ready: (agent) => sanctuarySourceReady(agent, "sanctuary-usenet") },
   },
   // J5: the house check runs in the daemon, and only Supercronic may fire it on its cron schedule.
   habits: {

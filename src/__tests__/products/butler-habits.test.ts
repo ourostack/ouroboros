@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   marker: null as null | { schemaVersion: "sanctuary-acceptance-marker-v1"; label: string; scenarioHandleDigest: string; startedAt: string },
   readCursor: vi.fn(() => ({ sweepCount: 1, deliveryCount: 0 })),
   recordReceipt: vi.fn(),
+  sourceReady: vi.fn(async () => undefined),
   runHabit: vi.fn(async (agent: string, _options: unknown) => ({ ok: true, message: `health:${agent}`, data: { incidentCount: 0, submitted: 0, wakesRequested: 0 } })),
 }))
 
@@ -16,6 +17,7 @@ vi.mock("../../heart/daemon/sanctuary-scheduler-liveness", () => ({
   recordSanctuarySchedulerLivenessReceipt: mocks.recordReceipt,
 }))
 vi.mock("../../senses/sanctuary-health-runner", () => ({ runSanctuaryHealthHabit: mocks.runHabit }))
+vi.mock("../../senses/sanctuary-runtime", () => ({ ensureSanctuarySourceRuntimeReady: mocks.sourceReady }))
 vi.mock("../../senses/telegram-identity-key", () => ({ readOrCreateTelegramIdentityKey: () => "k".repeat(43) }))
 
 import { product } from "../../products/butler"
@@ -83,5 +85,16 @@ describe("the Butler's sanctuary-health habit", () => {
     mocks.readCursor.mockReturnValueOnce(null as never)
     await expect(health.run(input())).rejects.toThrow(unavailable)
     expect(mocks.recordReceipt).not.toHaveBeenCalled()
+  })
+})
+
+describe("the Butler's event sources", () => {
+  it("holds house-check and Usenet events until the Butler's machine credentials are complete", async () => {
+    expect(Object.keys(product.eventSources!)).toEqual(["sanctuary-health", "sanctuary-usenet"])
+    await product.eventSources!["sanctuary-health"]!.ready("butler")
+    await product.eventSources!["sanctuary-usenet"]!.ready("butler")
+    expect(mocks.sourceReady.mock.calls).toEqual([["butler", "sanctuary-health"], ["butler", "sanctuary-usenet"]])
+    mocks.sourceReady.mockRejectedValueOnce(new Error("[agent-runnable] unlock the vault"))
+    await expect(product.eventSources!["sanctuary-health"]!.ready("butler")).rejects.toThrow("[agent-runnable] unlock the vault")
   })
 })

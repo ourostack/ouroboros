@@ -58,6 +58,7 @@ import { readContainerRuntimePolicy } from "./container-runtime"
 import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
 import { completeHabitRun } from "../habits/habit-session"
 import { attestedHabit, type SchedulerFireCommand, type SchedulerOrigin } from "./scheduler-attestation"
+import { productEventSource } from "../product/active"
 import { withTurnExecutionLease } from "../turn-execution-lease"
 import type { LettersCommand, LettersWriter } from "../letters/writer"
 import { FrontendSessionService, lazyFrontendAuthority } from "../frontend-session-service"
@@ -1001,8 +1002,7 @@ export class OuroDaemon {
     this.socketAnswering = options.socketAnswering ?? checkDaemonSocketAlive
     this.selfUpdateLauncher = options.selfUpdateLauncher !== undefined ? options.selfUpdateLauncher : defaultSelfUpdateLauncher()
     this.externalEventSourceReadiness = options.externalEventSourceReadiness ?? (async (agent, source) => {
-      const { ensureSanctuarySourceRuntimeReady } = await import("../../senses/sanctuary-runtime")
-      await ensureSanctuarySourceRuntimeReady(agent, source)
+      await productEventSource(agent, source)?.ready(agent)
     })
   }
 
@@ -2231,7 +2231,7 @@ export class OuroDaemon {
           && externalEventRecoveryFailure(candidate) !== null
           && candidate.recoveryGrant?.generation !== candidate.generation
         const dispatchable = candidate.executionState === "received" || candidate.executionState === "queued" || retryDue || leaseExpired || recoverableDeadLetter
-        if (dispatchable && (candidate.source === "sanctuary-health" || candidate.source === "sanctuary-usenet")) readinessKeys.add(`${candidate.agent}\0${candidate.source}`)
+        if (dispatchable && productEventSource(candidate.agent, candidate.source)) readinessKeys.add(`${candidate.agent}\0${candidate.source}`)
       }
       const blockedReadinessKeys = new Set<string>()
       for (const key of readinessKeys) {

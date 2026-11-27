@@ -2,7 +2,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { loadImageProduct, loadProduct, PRODUCT_SEAM_VERSION, productAgentAmong, productFor, productHabit } from "../../../heart/product/active"
+import { loadImageProduct, loadProduct, PRODUCT_SEAM_VERSION, productAgentAmong, productEventSource, productFor, productHabit } from "../../../heart/product/active"
 import { product as butlerProduct } from "../../../products/butler"
 
 const PATH = "/opt/example/dist/product.js"
@@ -119,4 +119,14 @@ describe("the product seam", () => {
     expect(butlerProduct.habits!["sanctuary-health"]!.requiresSchedulerAttestation).toBe(true)
   })
 
+  it("answers an event source only for the product's agent and the product's own source names", () => {
+    const watch = { ready: async () => undefined }
+    loadProduct(PATH, () => ({ product: { ...product, eventSources: { watch } } }))
+    expect(productEventSource("helper", "watch")).toBe(watch)
+    expect(productEventSource("slugger", "watch")).toBeNull()
+    expect(productEventSource("helper", "other")).toBeNull()
+    expect(productEventSource("helper", "toString")).toBeNull()
+    loadProduct(PATH, () => ({ product }))
+    expect(productEventSource("helper", "watch")).toBeNull()
+  })
 })

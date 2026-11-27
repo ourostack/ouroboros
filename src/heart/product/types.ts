@@ -28,6 +28,16 @@ export interface OuroProduct {
    * habits for this product's agent runs `run`, and the daemon records the run as it records any habit's.
    */
   habits?: Readonly<Record<string, ProductHabit>>
+  /**
+   * External-event sources whose events need the product's runtime ready before they wake the agent (J5), by source name.
+   * The daemon checks `ready` before it claims a source's events, and the agent's process again before it runs one; a throw
+   * holds the events, unclaimed, with the error's message as the repair line.
+   */
+  eventSources?: Readonly<Record<string, ProductEventSource>>
+}
+
+export interface ProductEventSource {
+  ready(agentName: string): Promise<void>
 }
 
 export interface ProductHabit {

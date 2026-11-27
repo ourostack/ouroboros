@@ -865,6 +865,9 @@ describe("agent entrypoint", () => {
 
     try {
       await import("../../heart/agent-entry")
+      // The image names the Butler's product, which declares sanctuary-health's readiness (loaded in this module graph).
+      const { product } = await import("../../products/butler")
+      ;(await import("../../heart/product/active")).loadProduct("/opt/ouro/dist/products/butler.js", () => ({ product }))
       await vi.waitFor(() => expect(startPrivateRuntimeWorker).toHaveBeenCalledOnce())
       // Separate "the entry has not finished installing its worker handler" from "the dispatch was dropped":
       // a timeout here means the import chain stalled; a later timeout means the readiness call never ran.

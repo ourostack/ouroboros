@@ -1,6 +1,6 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 import { readContainerRuntimePolicy } from "../daemon/container-runtime"
-import type { OuroProduct, ProductHabit } from "./types"
+import type { OuroProduct, ProductEventSource, ProductHabit } from "./types"
 
 /** The seam version this harness runs. A product built for another stops the start. */
 export const PRODUCT_SEAM_VERSION = 1
@@ -89,4 +89,10 @@ export function productAgentAmong(agents: readonly string[]): string | null {
 export function productHabit(agentName: string, habitName: string): ProductHabit | null {
   const habits = productFor(agentName)?.habits
   return habits && Object.hasOwn(habits, habitName) ? habits[habitName]! : null
+}
+
+/** The event source the product declares for this agent under this name, or null. Source names come from event records, so only the product's own entries count. */
+export function productEventSource(agentName: string, source: string): ProductEventSource | null {
+  const sources = productFor(agentName)?.eventSources
+  return sources && Object.hasOwn(sources, source) ? sources[source]! : null
 }
