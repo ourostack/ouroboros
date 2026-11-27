@@ -241,7 +241,8 @@ export function selectToolsForChannel(
       throw new ToolSelectionError(`the product selected a tool that isn't registered: ${definition.tool.function.name}`)
     }
   }
-  ordinary.push(...added)
+  // A product adds to a turn's menu but never widens one core scoped to nothing: a scoped turn without a known profile gets none.
+  if (!sanctuary || knownSanctuaryProfile) ordinary.push(...added)
   const inner = capabilities?.channel === "inner"
   const habit = context?.habitSession
   if (inner) {
@@ -268,7 +269,7 @@ export function selectToolsForChannel(
     && (!relationship || relationship.advertisedToolNames.includes(tool.function.name))
     && (!context?.allowedEngineTools || context.allowedEngineTools.includes(tool.function.name)))
   return Object.freeze({
-    ordinary: Object.freeze(ordinary.map((definition) => definition.authorize ? definition : Object.freeze({
+    ordinary: Object.freeze(ordinary.map((definition) => definition.authorize && definition.authorizesRelationship ? definition : Object.freeze({
       ...definition,
       tool: freezeToolValue(structuredClone(definition.tool)),
       ...(definition.riskProfile && typeof definition.riskProfile !== "function"
@@ -516,7 +517,7 @@ export async function preflightToolCall(name: string, args: Record<string, strin
       return { kind: "rejected_before_handler", text: routineActionDenied(ctx.routineActionSelection.reason) }
     }
     const relationship = ctx?.relationshipAuthorization
-    const decision = def?.authorize ? undefined : await relationship?.authorizeTool(name, args)
+    const decision = def?.authorize && def.authorizesRelationship ? undefined : await relationship?.authorizeTool(name, args)
     if (decision && (!decision.allowed || !relationship!.advertisedToolNames.includes(name)
       || (decision.profileId !== undefined && decision.profileId !== relationship!.profileId))) {
       const reason = decision.allowed ? "current relationship selection changed" : decision.reason
@@ -528,11 +529,12 @@ export async function preflightToolCall(name: string, args: Record<string, strin
     }
 
     const currentSelection = ctx?.selectCurrentTools?.()
-      ?? (def?.authorize ? selection
+      ?? (def?.authorize && def.authorizesRelationship ? selection
         : relationship?.profileId?.startsWith("sanctuary-") || (relationship && productTools(ctx?.agentName)?.relationshipScoped)
         ? selectToolsForChannel(undefined, undefined, undefined, undefined, undefined, undefined, ctx)
         : undefined)
-    const current = currentSelection ? findDefinition(name, currentSelection) : def?.mcpBinding ? def : findDefinition(name)
+    const current = currentSelection ? findDefinition(name, currentSelection) : def?.mcpBinding ? def
+      : findDefinition(name) ?? productToolDefinitions().find((definition) => definition.tool.function.name === name)
     const currentSchema = current?.tool ?? currentSelection?.engine.find((tool) => tool.function.name === name)
       ?? (!currentSelection ? selection?.engine.find((tool) => tool.function.name === name) : undefined)
     if (!currentSchema || !isDeepStrictEqual(schema, currentSchema)

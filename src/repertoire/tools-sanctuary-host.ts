@@ -166,6 +166,8 @@ export const rootHostToolDefinition: ToolDefinition = freezeToolValue({
   handler: () => { throw new Error(withCode("Sanctuary host execution requires the root approval continuation; resident execution is forbidden", "resident-execution-forbidden")) },
   // Only a definition selectRootHostTool made for this turn's binding is admitted; the registered one always refuses.
   authorize: (ctx, args) => authorizeRootHostToolInvocation(ctx, rootHostToolDefinition, args),
+  // authorizeRootHostContext asks the relationship and checks its receipt itself, bound to the selected copy.
+  authorizesRelationship: true,
 })
 
 export function validateRootHostToolArguments(args: Record<string, unknown>, targetHost: string): Omit<HostProposalRequestV1, "ownerObservation"> {

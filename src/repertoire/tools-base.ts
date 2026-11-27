@@ -352,12 +352,16 @@ export interface ToolDefinition {
   mcpBinding?: McpToolBinding;
   /**
    * The tool's own admission check. The dispatcher calls it after the arguments pass the advertised schema and before
-   * anything else decides the call, and a throw rejects the call before the handler, with the error's message. A tool
-   * with `authorize` answers for its relationship itself: the dispatcher doesn't also ask the turn's relationship, checks
-   * the call against the turn's own selection instead of a fresh one, and a selection keeps the very definition it was
-   * given (not a copy), so an authorization can be bound to it.
+   * relationship authorization and the handler, and a throw rejects the call before the handler, with the error's message.
    */
   authorize?(ctx: ToolContext | undefined, args: Record<string, unknown>): Promise<void>;
+  /**
+   * Set only on a tool whose `authorize` also authorizes the turn's relationship itself (the root-host tool, whose
+   * authorization records the relationship's receipt and binds to the selected definition). The dispatcher then doesn't
+   * ask the relationship again, checks the call against the turn's own selection instead of a fresh one, and a selection
+   * keeps the very definition it was given (not a frozen copy). It needs `authorize`; without it nothing changes.
+   */
+  authorizesRelationship?: true;
 }
 
 export interface ToolSelection {

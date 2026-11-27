@@ -33,6 +33,18 @@ function validProduct(value: unknown, modulePath: string): OuroProduct {
     throw invalid(modulePath, "its agents are not a list of agent names")
   }
   if (new Set(agents).size !== agents.length) throw invalid(modulePath, "its agents list a name twice")
+  const tools = (product as { tools?: { definitions?: unknown } }).tools
+  if (tools !== undefined) {
+    const definitions = tools?.definitions
+    if (!Array.isArray(definitions)) throw invalid(modulePath, "its tools have no list of definitions")
+    for (const definition of definitions as Array<{ tool?: { function?: { name?: unknown } }; ax?: { id?: unknown } } | null>) {
+      const name = definition?.tool?.function?.name
+      if (typeof name !== "string" || name.length === 0) throw invalid(modulePath, "one of its tools has no name")
+      if (definition!.ax?.id !== `tool:${name}`) throw invalid(modulePath, `its tool ${name} has no Ouro AX card`)
+    }
+    const names = (definitions as Array<{ tool: { function: { name: string } } }>).map((definition) => definition.tool.function.name)
+    if (new Set(names).size !== names.length) throw invalid(modulePath, "its tools list a name twice")
+  }
   return product as OuroProduct
 }
 

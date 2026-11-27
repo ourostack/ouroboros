@@ -43,6 +43,13 @@ describe("the product seam", () => {
       [{ product: { ...product, agents: [] } }, /agents are not a list/u],
       [{ product: { ...product, agents: "helper" } }, /agents are not a list/u],
       [{ product: { ...product, agents: ["helper", 7] } }, /agents are not a list/u],
+      [{ product: { ...product, tools: null } }, /tools have no list of definitions/u],
+      [{ product: { ...product, tools: {} } }, /tools have no list of definitions/u],
+      [{ product: { ...product, tools: { definitions: [null] } } }, /one of its tools has no name/u],
+      [{ product: { ...product, tools: { definitions: [{ tool: { function: { name: "" } } }] } } }, /one of its tools has no name/u],
+      [{ product: { ...product, tools: { definitions: [{ tool: { function: { name: "probe" } } }] } } }, /its tool probe has no Ouro AX card/u],
+      [{ product: { ...product, tools: { definitions: [{ tool: { function: { name: "probe" } }, ax: { id: "tool:other" } }] } } }, /its tool probe has no Ouro AX card/u],
+      [{ product: { ...product, tools: { definitions: [0, 1].map(() => ({ tool: { function: { name: "probe" } }, ax: { id: "tool:probe" } })) } } }, /its tools list a name twice/u],
       [{ product: { ...product, agents: ["helper", "helper"] } }, /list a name twice/u],
     ]
     for (const [exported, problem] of cases) {
@@ -161,7 +168,7 @@ describe("the product seam", () => {
   })
 
   it("registers the product's tools for the whole process, and adds them only to its own agent's turns", () => {
-    const definition = { tool: { type: "function", function: { name: "helper_tool" } } } as unknown as ToolDefinition
+    const definition = { tool: { type: "function", function: { name: "helper_tool" } }, ax: { id: "tool:helper_tool" } } as unknown as ToolDefinition
     const select = vi.fn((_input: ProductToolSelectionInput): readonly ToolDefinition[] => [definition])
     const tools = { definitions: [definition], relationshipScoped: true, select }
     const input = { channel: "inner", relationshipScoped: false, providerCapabilities: undefined, context: {}, registered: () => undefined }

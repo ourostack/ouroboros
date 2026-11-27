@@ -84,21 +84,43 @@ describe("a product's tools", () => {
 })
 
 describe("a tool's own authorize", () => {
-  it("rejects the call before the handler, and the dispatcher doesn't also ask the relationship", async () => {
+  function relationshipCall(definition: ToolDefinition) {
+    const authorizeTool = vi.fn(async () => ({ allowed: true as const, receiptId: "r", profileVersion: 1 }))
+    const ctx = { signin: async () => undefined, agentName: "helper", agentRoot: "/bundles/helper.ouro",
+      relationshipAuthorization: { profileId: "owner", authorizedContextScopes: [], advertisedToolNames: [definition.tool.function.name], authorizeTool } } as unknown as ToolContext
+    ctx.toolSelection = select("inner", ctx)
+    return { ctx, authorizeTool }
+  }
+
+  it("rejects the call before the relationship is asked and before the handler", async () => {
     const authorize = vi.fn(async () => { throw new Error("not this turn (code: probe-denied)") })
     const { definition, handler } = probe("guarded_probe", authorize)
     useProduct({ definitions: [definition], select: () => [definition] })
-    const authorizeTool = vi.fn(async () => ({ allowed: true as const, receiptId: "r", profileVersion: 1 }))
-    const ctx = { signin: async () => undefined, agentName: "helper", agentRoot: "/bundles/helper.ouro",
-      relationshipAuthorization: { profileId: "owner", authorizedContextScopes: [], advertisedToolNames: ["guarded_probe"], authorizeTool } } as unknown as ToolContext
-    ctx.toolSelection = select("inner", ctx)
-    // The selection keeps the definition itself, so an authorization can be bound to it.
-    expect(ctx.toolSelection.ordinary).toContain(definition)
+    const { ctx, authorizeTool } = relationshipCall(definition)
     const outcome = await executeTool("guarded_probe", { value: "x" }, ctx)
     expect(outcome).toEqual({ kind: "rejected_before_handler", text: "rejected: not this turn (code: probe-denied)", error: expect.any(Error) })
     expect(authorize).toHaveBeenCalledWith(ctx, { value: "x" })
     expect(handler).not.toHaveBeenCalled()
     expect(authorizeTool).not.toHaveBeenCalled()
+  })
+
+  it("leaves relationship authorization and a frozen copy in the selection to core, unless the tool authorizes the relationship itself", async () => {
+    const authorize = vi.fn(async () => undefined)
+    const plain = probe("guarded_probe", authorize)
+    useProduct({ definitions: [plain.definition], select: () => [plain.definition] })
+    const first = relationshipCall(plain.definition)
+    expect(first.ctx.toolSelection!.ordinary).not.toContain(plain.definition)
+    expect(await executeTool("guarded_probe", { value: "x" }, first.ctx)).toEqual({ kind: "handler_succeeded", text: "guarded_probe ran" })
+    expect(first.authorizeTool).toHaveBeenCalledOnce()
+
+    const owning = probe("owning_probe", authorize)
+    owning.definition.authorizesRelationship = true
+    useProduct({ definitions: [owning.definition], select: () => [owning.definition] })
+    const second = relationshipCall(owning.definition)
+    // The selection keeps the definition itself, so an authorization can be bound to it.
+    expect(second.ctx.toolSelection!.ordinary).toContain(owning.definition)
+    expect(await executeTool("owning_probe", { value: "x" }, second.ctx)).toEqual({ kind: "handler_succeeded", text: "owning_probe ran" })
+    expect(second.authorizeTool).not.toHaveBeenCalled()
   })
 
   it("is asked only after the arguments match the schema", async () => {
@@ -112,5 +134,14 @@ describe("a tool's own authorize", () => {
     expect(await executeTool("guarded_probe", { value: "x" }, ctx)).toEqual({ kind: "handler_succeeded", text: "guarded_probe ran" })
     expect(authorize).toHaveBeenCalledOnce()
     expect(handler).toHaveBeenCalledOnce()
+  })
+})
+
+describe("a product's additions to a scoped turn", () => {
+  it("are dropped when core scoped the turn to nothing", () => {
+    const { definition } = probe("helper_probe")
+    useProduct({ definitions: [definition], relationshipScoped: true, select: () => [definition] })
+    expect(select("telegram").ordinary).toEqual([])
+    expect(names(select("inner"))).toContain("helper_probe")
   })
 })
