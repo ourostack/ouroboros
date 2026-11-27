@@ -1147,7 +1147,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       authorizedChatId,
       subject,
       identityKey,
-      toolContext: toolContext ?? {},
+      // Set above whenever this sense runs the Sanctuary runtime, which is the only time an approval runtime is built.
+      toolContext: toolContext as ProductTurnContext,
       ...(options.resolveRelationshipAuthorization ? {
         resolveOwnerRelationship: (binding) => options.resolveRelationshipAuthorization!({
           friendId: binding.friendId, requestId: binding.requestId, sessionEventId: binding.sessionEventId, sessionKey: binding.sessionKey,
