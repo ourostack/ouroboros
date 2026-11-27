@@ -13,7 +13,7 @@ import type { ApprovalSuspensionResult, ChannelCallbacks, RunAgentOutcome } from
 import { shieldDelegatedBanner } from "../a2a/delegated-command"
 import { runAgent } from "../heart/core"
 import { getAgentRoot, setAgentName } from "../heart/identity"
-import { sanitizeKey } from "../heart/config"
+import { getSenseSessionPath } from "../heart/session-path"
 import { selectEffectiveSessionEvents, stampIngressRelations, stampIngressTime, type SessionEvent, type SessionIngressRelations } from "../heart/session-events"
 import { loadSession } from "../mind/context"
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
@@ -492,9 +492,8 @@ function currentTurnEventView(
   return { coordinates, ...(terminal ? { terminal } : {}) }
 }
 
-export function getSenseSessionPath(agentName: string, friendId: string, channel: Channel, sessionKey: string, agentRootOverride?: string): string {
-  return path.join(agentRootOverride ?? getAgentRoot(agentName), "state", "sessions", friendId, channel, `${sanitizeKey(sessionKey)}.json`)
-}
+// Lives in heart/session-path, so code that only needs the path needn't load the whole turn pipeline.
+export { getSenseSessionPath }
 
 /**
  * Run a single agent turn through the inbound pipeline.

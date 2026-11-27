@@ -25,6 +25,7 @@ import {
   type RuntimeCredentialConfig,
 } from "./runtime-credentials"
 import { emitNervesEvent } from "../nerves/runtime"
+import { sanitizeKey } from "./session-path"
 
 export interface AzureProviderConfig {
   apiKey?: string
@@ -504,9 +505,7 @@ export function getLogsDir(): string {
 }
 
 
-export function sanitizeKey(key: string): string {
-  return key.replace(/[/:]/g, "_")
-}
+export { sanitizeKey }
 
 export function canonicalizeTelegramSessionKey(key: string): string {
   if (key.startsWith("telegram:")) return key

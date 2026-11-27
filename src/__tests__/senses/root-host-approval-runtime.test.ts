@@ -19,6 +19,10 @@ import * as core from "../../heart/core"
 import * as mcpManager from "../../repertoire/mcp-manager"
 import * as tools from "../../repertoire/tools"
 import { RootHostAuthorizationError } from "../../repertoire/tools-sanctuary-host"
+import { useButlerProduct } from "../test-helpers/butler-product"
+
+// These turns are the Butler's, whose tools come from its product, so the product is loaded as on its image.
+useButlerProduct()
 
 vi.mock("node:fs", async (importOriginal) => ({ ...await importOriginal<typeof fs>() }))
 
