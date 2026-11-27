@@ -227,6 +227,16 @@ describe("runTelegramTurn", () => {
       providerRuntime: scriptedRuntime([], []),
     })).rejects.toThrow("must be the sanctuary bundle")
   })
+
+  it("takes the fake house as an argument, so its agent decides where the bundle must be", async () => {
+    await expect(runTelegramTurn({
+      agentRoot,
+      prefix: [],
+      userText: "hello",
+      providerRuntime: scriptedRuntime([], []),
+      house: { agentName: "other-house", ownerProfileId: "other-owner", toolContext: {} },
+    })).rejects.toThrow(`agentRoot must be the other-house bundle at ${path.join(home, "AgentBundles", "other-house.ouro")}`)
+  })
 })
 
 describe("withSystemLine", () => {
