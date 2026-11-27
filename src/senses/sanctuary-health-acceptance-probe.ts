@@ -6,7 +6,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 
 import { getAgentBundlesRoot, getAgentRoot } from "../heart/identity"
-import { butlerOnDisk, type ButlerAgentName } from "../heart/butler-agent"
+import { butlerContainerPaths, butlerOnDisk, type ButlerAgentName } from "../heart/butler-agent"
 import { readSanctuaryHouse, type SanctuaryHouse } from "./sanctuary-house"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
@@ -30,8 +30,6 @@ export function acceptanceTargetEndpoint(house: Pick<SanctuaryHouse, "publicEndp
   if (!target) throw new Error("Sanctuary health acceptance probe needs a public endpoint in house/house.json")
   return target.url
 }
-const CRON_MARKER = "# ouro:habit:sanctuary:sanctuary:sanctuary-health"
-const CRON_COMMAND = "*/15 * * * * /usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron"
 const PROCESS_ENTRY = "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe-entry.js"
 const LABELS = ["unit-16f-cron-fingerprint", "unit-16g-health-transition", "unit-16h-acceptance-delivery-probe"] as const
 
@@ -410,10 +408,12 @@ export function exactLocalDailyBoundary(reference: Date): Date {
   return result
 }
 
-function canonicalCron(raw: string): boolean {
+/** Whether the crontab registers the health habit for this Butler, under the name its marker and command carry. */
+function canonicalCron(raw: string, butler: ButlerAgentName): boolean {
+  const { healthCronMarker, healthCommand } = butlerContainerPaths(butler)
   const lines = raw.split(/\r?\n/u)
-  const marker = lines.indexOf(CRON_MARKER)
-  return marker >= 0 && lines[marker + 1] === CRON_COMMAND
+  const marker = lines.indexOf(healthCronMarker)
+  return marker >= 0 && lines[marker + 1] === `*/15 * * * * ${healthCommand}`
 }
 
 async function closeServer(server: Server): Promise<void> {
@@ -588,10 +588,11 @@ export async function runSanctuaryHealthAcceptanceProbe(
   const beforeStateDigest = snapshotDigest(snapshot)
   atomicPrivateFile(snapshotPath, `${JSON.stringify(snapshot)}\n`)
   atomicPrivateFile(checkpointPath, `${JSON.stringify({ schemaVersion: 1, ownerImageDigest: input.ownerImageDigest, ownerContainerDigest: input.ownerContainerDigest })}\n`)
-  const cronPath = path.join(dependencies.runtimeRoot, "scheduler", "sanctuary.crontab")
+  const butler = dependencies.butler ?? probeButler()
+  const cronPath = path.join(dependencies.runtimeRoot, "scheduler", `${butler}.crontab`)
   const cronBefore = fs.readFileSync(cronPath, "utf8")
   const cronFingerprintBefore = digestBytes(cronBefore)
-  const cronRegisteredBefore = canonicalCron(cronBefore)
+  const cronRegisteredBefore = canonicalCron(cronBefore, butler)
   const effectiveNow = input.label === "unit-16h-acceptance-delivery-probe" ? exactLocalDailyBoundary(dependencies.now()) : dependencies.now()
   let fixture: Awaited<ReturnType<typeof createSanctuaryHealthAcceptanceLoopbackFixture>> | undefined
   let expectedIncidentDigest = ""
@@ -636,7 +637,7 @@ export async function runSanctuaryHealthAcceptanceProbe(
           toolContext: dependencies.toolContext, house: dependencies.house, statePath, fetch: fetchImpl, now: () => now, lease, endpointDebounce: false,
           acceptanceEventMeta: () => ({ scenarioHandleDigest: input.scenarioHandleDigest }),
         })
-        await runSanctuaryHealthHabit(dependencies.butler ?? probeButler(), {
+        await runSanctuaryHealthHabit(butler, {
           ...dependencies.runnerOptions,
           createSweep: () => sweep,
           acceptanceMetrics: {
@@ -667,7 +668,7 @@ export async function runSanctuaryHealthAcceptanceProbe(
     })
     const cronAfter = fs.readFileSync(cronPath, "utf8")
     const cronFingerprintAfter = digestBytes(cronAfter)
-    const cronRegisteredAfter = canonicalCron(cronAfter)
+    const cronRegisteredAfter = canonicalCron(cronAfter, butler)
     const observedFixtureSequence = fixture?.observed ?? []
     removeProbeWorkspace(workspace)
     const receipt: SanctuaryHealthAcceptanceProbeReceipt = {

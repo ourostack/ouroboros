@@ -48,7 +48,7 @@ function initialState() {
   }
 }
 
-function setup(label: SanctuaryHealthAcceptanceProbeInput["label"]) {
+function setup(label: SanctuaryHealthAcceptanceProbeInput["label"], butler: "butler" | "sanctuary" = "sanctuary") {
   const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), `sanctuary-${label}-`))
   const runtimeRoot = path.join(agentRoot, "runtime")
   const statePath = path.join(agentRoot, "state", "health", "sanctuary-health.json")
@@ -56,9 +56,9 @@ function setup(label: SanctuaryHealthAcceptanceProbeInput["label"]) {
   fs.mkdirSync(path.join(runtimeRoot, "scheduler"), { recursive: true })
   const before = `${JSON.stringify(initialState())}\n`
   fs.writeFileSync(statePath, before, { mode: 0o600 })
-  fs.writeFileSync(path.join(runtimeRoot, "scheduler", "sanctuary.crontab"), [
-    "# ouro:habit:sanctuary:sanctuary:sanctuary-health",
-    "*/15 * * * * /usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron",
+  fs.writeFileSync(path.join(runtimeRoot, "scheduler", `${butler}.crontab`), [
+    `# ouro:habit:${butler}:${butler}:sanctuary-health`,
+    `*/15 * * * * /usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke ${butler} --habit sanctuary-health --trigger cron`,
     "",
   ].join("\n"))
   let messageId = 100
@@ -772,7 +772,7 @@ describe("packaged Sanctuary health acceptance probe", () => {
   })
 
   it.each(["butler", "sanctuary"] as const)("runs the health habit as the Butler %s whose bundle is on disk", async (butler) => {
-    const fixture = setup("unit-16g-health-transition")
+    const fixture = setup("unit-16g-health-transition", butler)
     const original = healthRunner.runSanctuaryHealthHabit
     const names: string[] = []
     const spy = vi.spyOn(healthRunner, "runSanctuaryHealthHabit").mockImplementation(async (agentName, options) => {
@@ -783,6 +783,8 @@ describe("packaged Sanctuary health acceptance probe", () => {
       await runSanctuaryHealthAcceptanceProbe(fixture.input, { ...fixture.deps, butler })
       expect(names.length).toBeGreaterThan(0)
       expect(new Set(names)).toEqual(new Set([butler]))
+      // The probe reads that Butler's own crontab, so a butler image never looks for sanctuary.crontab.
+      expect(fs.existsSync(path.join(fixture.deps.runtimeRoot, "scheduler", "sanctuary.crontab"))).toBe(butler === "sanctuary")
     } finally {
       spy.mockRestore()
       fs.rmSync(fixture.agentRoot, { recursive: true, force: true })

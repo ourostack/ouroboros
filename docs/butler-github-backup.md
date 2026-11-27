@@ -44,15 +44,17 @@ You need a GitHub account, and shell access to the server that runs the Butler.
 4. **Point the bundle at the repository.** Run git inside the container as the Butler, so the files keep the Butler as owner. On a fresh install the bundle has no repository yet, so make one first (skip the `init` line if `.git` already exists):
 
    ```sh
-   docker exec -u 10001 ouro-butler git -C /home/ouro/AgentBundles/sanctuary.ouro init -q -b main
-   docker exec -u 10001 ouro-butler git -C /home/ouro/AgentBundles/sanctuary.ouro remote add origin git@github.com:<you>/butler.ouro.git
+   docker exec -u 10001 ouro-butler git -C /home/ouro/AgentBundles/butler.ouro init -q -b main
+   docker exec -u 10001 ouro-butler git -C /home/ouro/AgentBundles/butler.ouro remote add origin git@github.com:<you>/butler.ouro.git
    ```
 
    Sync talks only to `git@github.com`, and only to the one repository the remote names.
+
+   These commands use the Butler's name, `butler`, which every release from the rename on runs as. If the container runs an older release (its `docker inspect ouro-butler --format '{{json .Config.Entrypoint}}'` ends in `"sanctuary"`), use `sanctuary` instead, here and below. The folder on the host keeps its name, `agent/sanctuary.ouro`, either way.
 5. **Look at what would go up**, before sync is on. This lists every file sync would commit: what is tracked now and what is new, less the exclude list:
 
    ```sh
-   docker exec -u 10001 ouro-butler git -C /home/ouro/AgentBundles/sanctuary.ouro ls-files --cached --others --exclude-standard
+   docker exec -u 10001 ouro-butler git -C /home/ouro/AgentBundles/butler.ouro ls-files --cached --others --exclude-standard
    ```
 
    Make sure nothing private is in it. If something is, stop here: add it to the bundle's `.gitignore`, or move it out of the bundle, and list again.
@@ -66,10 +68,10 @@ You need a GitHub account, and shell access to the server that runs the Butler.
 8. **Say yes to the first push.** Ask the Butler to push its bundle. It shows you its review of what would go up (the folders that hold private details, and whether the repository is private) and asks you to confirm; when you say yes, it pushes. Then check that sync works:
 
    ```sh
-   docker exec -u 10001 ouro-butler node /opt/ouro/dist/heart/daemon/ouro-entry.js sync --agent sanctuary
+   docker exec -u 10001 ouro-butler node /opt/ouro/dist/heart/daemon/ouro-entry.js sync --agent butler
    ```
 
-   It prints `synced sanctuary: up to date with origin/main`, and the repository on GitHub has the bundle. From now on, each turn's changes follow on their own. Until you say yes, this command fails with "origin is empty, so the first push waits for the owner's yes".
+   It prints `synced butler: up to date with origin/main`, and the repository on GitHub has the bundle. From now on, each turn's changes follow on their own. Until you say yes, this command fails with "origin is empty, so the first push waits for the owner's yes".
 
 ## Edit the Butler from your computer
 

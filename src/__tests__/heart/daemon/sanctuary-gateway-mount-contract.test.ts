@@ -44,7 +44,9 @@ describe("versioned Sanctuary gateway deployment mounts", () => {
     expect(create).toContain("--mount type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly")
     expect(create).not.toContain("/sanctuary.ouro/psyche")
     expect(workflow).not.toContain("sanctuary.ouro/psyche")
-    expect(create).toContain("--mount type=bind,src=/mnt/user/appdata/ouro-butler/trust/sanctuary,dst=/etc/ouro/trust/sanctuary,readonly")
+    // The packaged image runs the Butler as butler: the host folders keep their names, the container targets follow the image.
+    expect(create).toContain("--mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/butler.ouro")
+    expect(create).toContain("--mount type=bind,src=/mnt/user/appdata/ouro-butler/trust/sanctuary,dst=/etc/ouro/trust/butler,readonly")
     const preparation = workflow.slice(workflow.indexOf("for AUDIT_SOURCE in"), workflow.indexOf('AUDIT_ICON='))
     expect(preparation.match(/\/run\/ouro-authority/gu)).toHaveLength(3)
     for (const mode of ["--inspect", "--persistent-template", "--template"]) {

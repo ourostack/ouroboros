@@ -30,12 +30,13 @@ import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryGrou
 import { SANCTUARY_MCP_PROVIDED_TOOLS, SANCTUARY_OWNER_ADDITIONS, ponderTool, resolveToolDefinition, restTool, selectToolsForChannel, settleCheckBackTool, settleTool, speakTool, toolSelectionSchemas, type ToolContext } from "../../repertoire/tools"
 import { authorizeRelationshipAccess, loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
 import { getProviderRuntime, runAgent, type ProviderRuntime, type ToolCallBoundaryReceipt } from "../core"
+import { butlerContainerPaths } from "../butler-agent"
 import { getAgentRoot } from "../identity"
 import { readApprovalsByScenarioHandleDigest, type ApprovalAcceptanceProjection } from "../approval-store"
 import { readProviderCredentialRecord } from "../provider-credentials"
 import { pingProvider, type PingResult } from "../provider-ping"
 import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES, SANCTUARY_UNIT_16_EVIDENCE_LABELS, type SanctuaryUnit16EvidenceLabel } from "./sanctuary-acceptance-harness"
-import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
+import { acceptanceButler, readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
 import { createSanctuaryScenarioCapture, finalizeSanctuaryScenarioCapture, type SanctuaryContainmentProfileBoundary, type SanctuaryHealthProbeReceipt, type SanctuaryInteractiveDriverReceipt, type SanctuaryPostbootIntegritySnapshot, type SanctuaryReadOnlyDenialReceipt, type SanctuaryScenarioFacts } from "./sanctuary-acceptance-scenarios"
 import { verifySanctuarySchedulerLivenessReceiptMac } from "./sanctuary-scheduler-liveness"
 import {
@@ -124,9 +125,9 @@ const NETWORK_TIMEOUT_MS = 10_000
 const KEY_DIRECTORY = "/boot/config/plugins/dynamix.my.servers/keys"
 const SELECTED_KEY_RECORD = "/run/ouro-acceptance/unraid-key.json"
 const CALLBACK_PLAYBACK_JOURNAL = "state/approvals/sanctuary-callback-playback.sqlite"
-const TELEGRAM_IDENTITY_KEY = "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/identity.key"
-const TELEGRAM_AUDIT = `/home/ouro/AgentBundles/sanctuary.ouro/${TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH}`
-const TELEGRAM_AUDIT_HEAD = `/home/ouro/AgentBundles/sanctuary.ouro/${TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH}`
+const telegramIdentityKeyPath = (): string => `${butlerContainerPaths(acceptanceButler()).agentRoot}/state/senses/telegram/identity.key`
+const telegramAuditPath = (): string => `${butlerContainerPaths(acceptanceButler()).agentRoot}/${TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH}`
+const telegramAuditHeadPath = (): string => `${butlerContainerPaths(acceptanceButler()).agentRoot}/${TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH}`
 const IMAGE_DIGEST_FILE = "/run/ouro-acceptance/image-digest"
 const CONTAINER_DIGEST_FILE = "/run/ouro-acceptance/container-digest"
 const PROCESS_BINDING_DIGEST_FILE = "/run/ouro-acceptance/process-binding-digest"
@@ -137,7 +138,9 @@ const CLOSED_INVENTORY_FILE = "/run/ouro-acceptance/closed-inventory.json"
 const HOST_BROKER_SOCKET = "/run/ouro-host-acceptance/adapter.sock"
 const MAX_BROKER_RESPONSE = 256 * 1024
 const TARGET_SERVER_ID = "sanctuary-unraid"
+// The host broker's target and the vault's machine id. Both keep the name `sanctuary` through the rename.
 const TARGET_ID = "sanctuary"
+const MACHINE_ID = "sanctuary"
 const SHA256 = /^[0-9a-f]{64}$/u
 const APPROVAL_EVIDENCE_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
   "unit-15c-1-no-callback-terminalization", "unit-16i-delayed-approval", "unit-16j-denial",
@@ -291,7 +294,7 @@ export function createSanctuaryAcceptanceAdapterDependencies(
     refreshMachine: refreshMachineRuntimeCredentialConfig,
     mergeMachine: mergeMachineRuntimeCredentialConfig,
     callbackProbe: executeSanctuaryAcceptanceCallbackProbe,
-    callbackPlaybackSnapshot: (coordinateDigest) => callbackPlaybackSnapshot(getAgentRoot(TARGET_ID), coordinateDigest),
+    callbackPlaybackSnapshot: (coordinateDigest) => callbackPlaybackSnapshot(getAgentRoot(acceptanceButler()), coordinateDigest),
     interactiveRuntime: executeSanctuaryInteractiveRuntimeOperation,
     hostRequest: options.hostRequest ?? ((payload) => defaultHostRequest(payload, hostBrokerSocket, adapterTimeoutMs)),
     telegramCredentials: acceptanceTelegramIdentity,
@@ -300,7 +303,7 @@ export function createSanctuaryAcceptanceAdapterDependencies(
     providerRuntime: getProviderRuntime,
   }
   const healthDriver = createSanctuaryHealthAcceptanceScenarioDriver(dependencies.hostRequest!)
-  const scenarioAgentRoot = options.scenarioCapture?.agentRoot ?? getAgentRoot(TARGET_ID)
+  const scenarioAgentRoot = options.scenarioCapture?.agentRoot ?? getAgentRoot(acceptanceButler())
   const interactiveDriver = createSanctuaryInteractiveAcceptanceScenarioDriver({
     agentRoot: scenarioAgentRoot,
     hostRequest: dependencies.hostRequest!,
@@ -320,7 +323,7 @@ export function createSanctuaryAcceptanceAdapterDependencies(
     gateStatusPath: options.scenarioCapture?.gateStatusPath,
   }) as (payload: JsonObject) => Promise<unknown>
   dependencies.finalizeScenarios = createSanctuaryAcceptanceScenarioFinalizer({
-    readActiveScenario: () => readSanctuaryAcceptanceMarker(TARGET_ID, scenarioAgentRoot),
+    readActiveScenario: () => readSanctuaryAcceptanceMarker(acceptanceButler(), scenarioAgentRoot),
     recoverHealthScenario: healthDriver.recover,
     finalizeInteractiveScenario: (label, scenarioHandleDigest) => {
       interactiveDriver.complete(label, scenarioHandleDigest)
@@ -750,6 +753,7 @@ function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16Evide
     const manifestJob = object(manifest[0], "Sanctuary scheduler manifest job")
     const origin = object(scheduler.schedulerOrigin, "Sanctuary scheduler origin")
     const manifestKeys = ["agent", "command", "id", "lastRun", "schedule", "taskId", "taskPath"].sort()
+    const butler = butlerContainerPaths(acceptanceButler())
     if (!identityKey || !verifySanctuarySchedulerLivenessReceiptMac(identityKey, scheduler)
       || JSON.stringify(Object.keys(scheduler).sort()) !== JSON.stringify(schedulerKeys)
       || scheduler.schemaVersion !== "sanctuary-scheduler-liveness-receipt-v1" || scheduler.label !== label || scheduler.scenarioHandleDigest !== scenarioHandleDigest
@@ -764,13 +768,13 @@ function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16Evide
       || typeof sweep.recordDigest !== "string" || !SHA256.test(sweep.recordDigest) || sweep.opened !== 0 || sweep.recovered !== 0 || sweep.digestDue !== false || sweep.deliveryId !== null
       || JSON.stringify(Object.keys(supervisor).sort()) !== JSON.stringify(supervisorKeys) || supervisor.schemaVersion !== "supercronic-supervisor-snapshot-v1"
       || !Number.isSafeInteger(supervisor.daemonPid) || Number(supervisor.daemonPid) !== 1 || supervisor.childCount !== 1 || !Number.isSafeInteger(supervisor.childPid) || Number(supervisor.childPid) <= 1 || supervisor.healthy !== true
-      || supervisor.binaryPath !== "/usr/local/bin/supercronic" || supervisor.crontabPath !== "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"
-      || JSON.stringify(supervisor.args) !== JSON.stringify(["-split-logs", "-inotify", "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"])
-      || supervisor.namespace !== "habit:sanctuary" || manifestJob.id !== "sanctuary:sanctuary-health" || manifestJob.agent !== "sanctuary"
+      || supervisor.binaryPath !== "/usr/local/bin/supercronic" || supervisor.crontabPath !== butler.crontabPath
+      || JSON.stringify(supervisor.args) !== JSON.stringify(["-split-logs", "-inotify", butler.crontabPath])
+      || supervisor.namespace !== butler.habitNamespace || manifestJob.id !== butler.healthJobId || manifestJob.agent !== acceptanceButler()
       || JSON.stringify(Object.keys(manifestJob).sort()) !== JSON.stringify(manifestKeys)
       || manifestJob.taskId !== "sanctuary-health" || manifestJob.schedule !== "*/15 * * * *" || sweep.recordDigest !== phases[0]?.sweepReceiptDigest
-      || manifestJob.taskPath !== "/home/ouro/AgentBundles/sanctuary.ouro/habits/sanctuary-health.md"
-      || manifestJob.command !== "/usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron"
+      || manifestJob.taskPath !== butler.healthTaskPath
+      || manifestJob.command !== butler.healthCommand
       || JSON.stringify(Object.keys(origin).sort()) !== JSON.stringify(["invocationPid", "invocationStartTime", "occurrenceId", "parentPid", "parentStartTime", "proofMac", "scenarioHandleDigest", "schedulerRunId", "slot"].sort())
       || origin.parentPid !== supervisor.childPid || typeof origin.slot !== "string" || scheduler.occurrenceId !== `cron:${origin.slot}` || origin.occurrenceId !== scheduler.occurrenceId
       || origin.scenarioHandleDigest !== scenarioHandleDigest
@@ -811,10 +815,9 @@ function millisecondsAfterLocalNine(timestamp: number): number | null {
 
 function canonicalSanctuaryHealthCronRegistered(raw: string): boolean {
   const lines = raw.split(/\r?\n/u)
-  const marker = "# ouro:habit:sanctuary:sanctuary:sanctuary-health"
-  const command = "*/15 * * * * /usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron"
-  const index = lines.indexOf(marker)
-  return index >= 0 && lines[index + 1] === command
+  const { healthCronMarker, healthCommand } = butlerContainerPaths(acceptanceButler())
+  const index = lines.indexOf(healthCronMarker)
+  return index >= 0 && lines[index + 1] === `*/15 * * * * ${healthCommand}`
 }
 
 function readBoundedIdentitySurfaces(agentRoot: string): string[] {
@@ -922,7 +925,7 @@ function parseTelegramTurnReceipts(raw: string, scenarioHandleDigest: string, id
 }
 
 async function readIndependentSanctuaryGrounding(toolName: SanctuaryGroundingToolName): Promise<{ toolName: SanctuaryGroundingToolName; groundingDigest: string; sourceIdentityDigest: string; observedAt: string; facts: Record<string, unknown> }> {
-  const sanctuary = createSanctuaryToolContext(TARGET_ID).sanctuary!
+  const sanctuary = createSanctuaryToolContext(acceptanceButler()).sanctuary!
   const result = toolName === "unraid_get_system" ? await sanctuary.getSystem() : await sanctuary.getStorage()
   const facts = projectSanctuaryGrounding(toolName, result)!
   const sourceIdentityDigest = (result as { data?: { sourceIdentityDigest?: unknown } }).data?.sourceIdentityDigest
@@ -939,7 +942,7 @@ function containmentToolContext(agentRoot: string, profileId: SanctuaryContainme
   const profile = loadRelationshipCapabilityRegistry(agentRoot).profiles[profileId]
   if (!profile) throw new Error("Sanctuary containment profile is missing")
   return {
-    signin: async () => undefined, agentName: TARGET_ID, agentRoot,
+    signin: async () => undefined, agentName: acceptanceButler(), agentRoot,
     relationshipAuthorization: {
       profileId, authorizedContextScopes: profile.contextScopes, advertisedToolNames: profile.toolNames,
       // This request-bound subject audits the profile contract; it is not a persisted Friend or grant.
@@ -974,7 +977,7 @@ export async function runSanctuaryProductionBoundaryProbe(input: {
     appendToolOutput: (callId, output) => { if (callId === "sanctuary-valid-system") controlOutputs.push(output) }, resetTurnState: () => undefined, ping: async () => undefined, classifyError: () => "unknown",
   }
   const receipts: ToolCallBoundaryReceipt[] = []
-  const sanctuary = createSanctuaryToolContext(TARGET_ID).sanctuary
+  const sanctuary = createSanctuaryToolContext(acceptanceButler()).sanctuary
   const context = containmentToolContext(input.agentRoot, input.profileId)
   const relationship = context.relationshipAuthorization!
   const poisonedContext = { ...context, sanctuary, relationshipAuthorization: {
@@ -1149,7 +1152,7 @@ async function captureReadOnlyDenialBoundary(agentRoot: string, deps: SanctuaryA
   if (![targetSnapshot.containerIdDigest, targetSnapshot.imageDigest, targetSnapshot.startedAtDigest].every((value) => typeof value === "string" && SHA256.test(value))
     || typeof targetSnapshot.running !== "boolean" || typeof targetSnapshot.status !== "string"
     || !Number.isSafeInteger(targetSnapshot.restartCount) || Number(targetSnapshot.restartCount) < 0) throw new Error("denial target snapshot is invalid")
-  const auditPath = TELEGRAM_AUDIT
+  const auditPath = telegramAuditPath()
   const providerPath = pathFor(agentRoot, "state/acceptance/telegram-turns.ndjson")
   const toolPath = pathFor(agentRoot, "state/acceptance/restart-attempts.ndjson")
   const approvalDatabase = pathFor(agentRoot, "state/approvals/approvals.sqlite")
@@ -1158,7 +1161,7 @@ async function captureReadOnlyDenialBoundary(agentRoot: string, deps: SanctuaryA
     targetSnapshotDigest: createHash("sha256").update(JSON.stringify(targetSnapshot)).digest("hex"),
     targetRestartCount: Number(targetSnapshot.restartCount),
     targetContainerIdDigest: String(targetSnapshot.containerIdDigest),
-    auditCursorDigest: digestOptionalFiles([auditPath, TELEGRAM_AUDIT_HEAD]),
+    auditCursorDigest: digestOptionalFiles([auditPath, telegramAuditHeadPath()]),
     providerUsageCursorDigest: digestOptionalFiles([providerPath]),
     sessionCursorDigest: createHash("sha256").update(JSON.stringify(readBoundedIdentitySurfaces(agentRoot))).digest("hex"),
     toolActionCursorDigest: digestOptionalFiles([toolPath, approvalDatabase, `${approvalDatabase}-wal`, `${approvalDatabase}-shm`]),
@@ -1171,7 +1174,7 @@ async function executeSanctuaryReadOnlyDenialProbe(
   agentRoot: string,
   deps: SanctuaryAcceptanceAdapterDependencies,
 ): Promise<SanctuaryReadOnlyDenialReceipt> {
-  const runtime = readMachineRuntimeCredentialConfig(TARGET_ID)
+  const runtime = readMachineRuntimeCredentialConfig(acceptanceButler())
   if (!runtime.ok) throw new Error("read-only denial probe requires an unlocked machine runtime credential")
   const endpoint = exactLoopbackGraphqlEndpoint(runtime.config.unraidGraphqlUrl)
   const readKey = text(runtime.config.unraidReadApiKey, "read-only Unraid credential")
@@ -1211,19 +1214,19 @@ export async function readDefaultSanctuaryScenarioFacts(
   label: (typeof SANCTUARY_UNIT_16_EVIDENCE_LABELS)[number],
   scenarioHandleDigest: string,
   deps: SanctuaryAcceptanceAdapterDependencies,
-  configuredAgentRoot = getAgentRoot(TARGET_ID),
+  configuredAgentRoot = getAgentRoot(acceptanceButler()),
   options: { skipContainerSnapshot?: boolean; containerSnapshot?: JsonObject } = {},
 ): Promise<SanctuaryScenarioFacts> {
   if (options.skipContainerSnapshot === true && options.containerSnapshot !== undefined) throw new Error("container snapshot options are mutually exclusive")
   const agentRoot = configuredAgentRoot
   const identityRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/senses/telegram/identity.key"))
-  const auditRaw = optionalFixedFile(deps, TELEGRAM_AUDIT)
-  const auditHeadRaw = optionalFixedFile(deps, TELEGRAM_AUDIT_HEAD)
+  const auditRaw = optionalFixedFile(deps, telegramAuditPath())
+  const auditHeadRaw = optionalFixedFile(deps, telegramAuditHeadPath())
   const gatewayCursor = await readGatewayCursor(deps)
   const checkpointsRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/approvals/checkpoints.json"))
   const restartAttemptsRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/acceptance/restart-attempts.ndjson")) ?? ""
   const telegramTurnsRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/acceptance/telegram-turns.ndjson")) ?? ""
-  const cronRaw = optionalFixedFile(deps, "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab")
+  const cronRaw = optionalFixedFile(deps, butlerContainerPaths(acceptanceButler()).crontabPath)
   const healthRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/health/sanctuary-health.json"))
   const healthProbeRaw = optionalFixedFile(deps, pathFor(agentRoot, `state/acceptance/health-probe-receipts/${scenarioHandleDigest}.json`))
   const interactiveDriverRaw = optionalFixedFile(deps, pathFor(agentRoot, `state/acceptance/interactive-driver-receipts/${scenarioHandleDigest}.json`))
@@ -1434,7 +1437,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     }
   }
   const health = parseHealthAcceptanceState(healthRaw)
-  const activeMarker = readSanctuaryAcceptanceMarker(TARGET_ID, agentRoot)
+  const activeMarker = readSanctuaryAcceptanceMarker(acceptanceButler(), agentRoot)
   const postbootIntegrity = buildPostbootIntegritySnapshot({ telegramNextUpdateId, checkpointsRaw, restartAttempts: parseRestartAttempts(restartAttemptsRaw, null), cronRaw, health, auditLedgerEntries, activeScenarioHandleDigest: activeMarker?.scenarioHandleDigest ?? null })
   const prebootIntegrity = rebootCheckpoint && typeof rebootCheckpoint.prebootIntegrity === "object" && !Array.isArray(rebootCheckpoint.prebootIntegrity)
     ? rebootCheckpoint.prebootIntegrity as unknown as SanctuaryPostbootIntegritySnapshot : undefined
@@ -1455,7 +1458,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     if (minimaxReadiness && outwardConfig.provider === "minimax" && innerConfig.provider === "minimax") {
       const readCredential = deps.readProviderCredential ?? readProviderCredentialRecord
       const checkProvider = deps.providerPing ?? pingProvider
-      const minimaxRecord = await readCredential(TARGET_ID, "minimax", { refreshIfMissing: false })
+      const minimaxRecord = await readCredential(acceptanceButler(), "minimax", { refreshIfMissing: false })
       const outwardModel = text(outwardConfig.model, "outward model")
       const innerModel = text(innerConfig.model, "inner model")
       const minimaxConfig = minimaxRecord.ok ? { ...minimaxRecord.record.credentials, ...minimaxRecord.record.config } as unknown as Parameters<typeof pingProvider>[1] : null
@@ -1515,7 +1518,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     const boundaryFor = async (profileId: SanctuaryContainmentProfileBoundary["profileId"]): Promise<SanctuaryContainmentProfileBoundary> => {
       const profile = relationshipRegistry.profiles[profileId]!
       const inner = profileId === "sanctuary-event"
-      const runtime = await dependency(deps.providerRuntime, "current provider runtime")(inner ? "agent" : "human", { agentName: TARGET_ID, agentRoot })
+      const runtime = await dependency(deps.providerRuntime, "current provider runtime")(inner ? "agent" : "human", { agentName: acceptanceButler(), agentRoot })
       const context = containmentToolContext(agentRoot, profileId)
       const select = (toolContext: ToolContext) => selectToolsForChannel(getChannelCapabilities(inner ? "inner" : "telegram"), undefined, undefined, runtime.capabilities, undefined, undefined, toolContext)
       const selection = select(context)
@@ -1574,7 +1577,7 @@ export async function readDefaultSanctuaryScenarioFacts(
       writeScopeDigest: createHash("sha256").update(JSON.stringify(writeRecord ? flattenedPermissions(writeRecord) : [])).digest("hex"),
       keyRoleAssignmentCount: inventory.reduce((count, record) => count + record.roles.length, 0),
       profileBoundaries,
-      auditPathDigest: createHash("sha256").update(TELEGRAM_AUDIT).digest("hex"),
+      auditPathDigest: createHash("sha256").update(telegramAuditPath()).digest("hex"),
       auditLedgerDigest: createHash("sha256").update(JSON.stringify(auditLedgerEntries)).digest("hex"),
       auditRecordCount: auditLedgerEntries.length,
       auditLifecyclePairCount: lifecyclePairs,
@@ -1674,10 +1677,10 @@ export async function readDefaultSanctuaryScenarioFacts(
 }
 
 async function postbootIntegritySnapshot(deps: SanctuaryAcceptanceAdapterDependencies): Promise<SanctuaryPostbootIntegritySnapshot> {
-  const agentRoot = getAgentRoot(TARGET_ID)
+  const agentRoot = getAgentRoot(acceptanceButler())
   const identityRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/senses/telegram/identity.key"))
-  const auditRaw = optionalFixedFile(deps, TELEGRAM_AUDIT)
-  const auditHeadRaw = optionalFixedFile(deps, TELEGRAM_AUDIT_HEAD)
+  const auditRaw = optionalFixedFile(deps, telegramAuditPath())
+  const auditHeadRaw = optionalFixedFile(deps, telegramAuditHeadPath())
   if ((auditRaw === null) !== (auditHeadRaw === null)) throw new Error("Telegram audit ledger/head presence mismatch")
   if (auditRaw !== null && (!identityRaw || !/^[A-Za-z0-9_-]{43}\n?$/u.test(identityRaw))) throw new Error("Telegram audit ledger identity key is unavailable")
   const auditLedgerEntries = auditRaw === null ? [] : verifyTelegramAuditLedger({
@@ -1688,9 +1691,9 @@ async function postbootIntegritySnapshot(deps: SanctuaryAcceptanceAdapterDepende
   const restartAttemptsRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/acceptance/restart-attempts.ndjson")) ?? ""
   return buildPostbootIntegritySnapshot({
     telegramNextUpdateId: (await readGatewayCursor(deps)).nextUpdateId, checkpointsRaw: optionalFixedFile(deps, pathFor(agentRoot, "state/approvals/checkpoints.json")),
-    restartAttempts: parseRestartAttempts(restartAttemptsRaw, null), cronRaw: optionalFixedFile(deps, "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"),
+    restartAttempts: parseRestartAttempts(restartAttemptsRaw, null), cronRaw: optionalFixedFile(deps, butlerContainerPaths(acceptanceButler()).crontabPath),
     health: parseHealthAcceptanceState(optionalFixedFile(deps, pathFor(agentRoot, "state/health/sanctuary-health.json"))), auditLedgerEntries,
-    activeScenarioHandleDigest: readSanctuaryAcceptanceMarker(TARGET_ID)?.scenarioHandleDigest ?? null,
+    activeScenarioHandleDigest: readSanctuaryAcceptanceMarker(acceptanceButler())?.scenarioHandleDigest ?? null,
   })
 }
 
@@ -1858,7 +1861,7 @@ async function cursorSnapshot(payload: JsonObject, deps: SanctuaryAcceptanceAdap
   exactKeys(payload, ["allowGenesis", "operation", "schema"], "Telegram cursor snapshot request")
   if (payload.schema !== "telegram-cursor-v1" || typeof payload.allowGenesis !== "boolean") throw new Error("Telegram cursor snapshot request is invalid")
   const cursor = await readGatewayCursor(deps)
-  const identityKey = fixedFile(deps, TELEGRAM_IDENTITY_KEY).trim()
+  const identityKey = fixedFile(deps, telegramIdentityKeyPath()).trim()
   if (!/^[A-Za-z0-9_-]{43}$/u.test(identityKey) || Buffer.from(identityKey, "base64url").length !== 32) {
     throw new Error("Telegram identity key is invalid")
   }
@@ -1866,9 +1869,9 @@ async function cursorSnapshot(payload: JsonObject, deps: SanctuaryAcceptanceAdap
   let verificationFailure: Error | undefined
   let observedAuditState = false
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const headBefore = optionalFixedFile(deps, TELEGRAM_AUDIT_HEAD)
-    const auditRaw = optionalFixedFile(deps, TELEGRAM_AUDIT)
-    const headAfter = optionalFixedFile(deps, TELEGRAM_AUDIT_HEAD)
+    const headBefore = optionalFixedFile(deps, telegramAuditHeadPath())
+    const auditRaw = optionalFixedFile(deps, telegramAuditPath())
+    const headAfter = optionalFixedFile(deps, telegramAuditHeadPath())
     if (headBefore === null && auditRaw === null && headAfter === null) {
       if (payload.allowGenesis !== true) throw new Error("Telegram audit genesis is not authorized for this snapshot")
       if (!observedAuditState) {
@@ -2043,7 +2046,7 @@ async function interactiveRuntimeReady(payload: JsonObject): Promise<unknown> {
   if (payload.label !== "unit-16m-restart-continuation" || typeof payload.scenarioHandleDigest !== "string" || !SHA256.test(payload.scenarioHandleDigest)) {
     throw new Error("interactive readiness coordinates are invalid")
   }
-  const agentRoot = getAgentRoot(TARGET_ID)
+  const agentRoot = getAgentRoot(acceptanceButler())
   const socketPath = path.join(agentRoot, "state", "acceptance", "telegram-control.sock")
   try {
     const response = object(await defaultHostRequest(payload, socketPath, 2_000), "interactive readiness response")
@@ -2102,7 +2105,7 @@ async function createKey(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDe
   const key = text(raw.key, "created Unraid key credential")
   if (created.name !== name || JSON.stringify(flattenedPermissions(created)) !== JSON.stringify(permissions)
     || created.roles.length !== 0) throw new Error("created Unraid key scope mismatch")
-  const stored = await dependency(deps.mergeMachine, "machine vault writer")(TARGET_ID, TARGET_ID, {
+  const stored = await dependency(deps.mergeMachine, "machine vault writer")(acceptanceButler(), MACHINE_ID, {
     [field]: key,
     sanctuaryAcceptanceKeyHandles: { [id]: key },
   })
@@ -2117,7 +2120,7 @@ async function storeKey(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDep
   if (field !== "unraidReadApiKey" && field !== "unraidWriteApiKey") throw new Error("vaultField is invalid")
   const handle = text(payload.key, "Unraid key handle")
   if (handle !== `unraid-key:${id}:${field}`) throw new Error("Unraid key handle is invalid")
-  const stored = await runtimeConfig(deps.refreshMachine, "Sanctuary machine runtime config", TARGET_ID, TARGET_ID)
+  const stored = await runtimeConfig(deps.refreshMachine, "Sanctuary machine runtime config", acceptanceButler(), MACHINE_ID)
   const handles = object(stored.sanctuaryAcceptanceKeyHandles, "vault-backed acceptance key handles")
   if (text(handles[id], "vault-backed Unraid credential") !== text(stored[field], "vault-backed Unraid credential")) {
     throw new Error("Unraid key handle does not bind to the active vault field")
@@ -2135,7 +2138,7 @@ async function probeKey(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDep
   requireTargetServer(payload)
   const id = keyId(payload.id)
   const handle = text(payload.key, "Unraid key handle")
-  const config = await runtimeConfig(deps.refreshMachine, "Sanctuary machine runtime config", TARGET_ID, TARGET_ID)
+  const config = await runtimeConfig(deps.refreshMachine, "Sanctuary machine runtime config", acceptanceButler(), MACHINE_ID)
   const handleMatch = /^unraid-key:([A-Za-z0-9._:-]+):(unraidReadApiKey|unraidWriteApiKey)$/u.exec(handle)
   if (!handleMatch || handleMatch[1] !== id) throw new Error("Unraid key handle is invalid")
   const handles = object(config.sanctuaryAcceptanceKeyHandles, "vault-backed acceptance key handles")
@@ -2161,7 +2164,7 @@ async function readOldKey(payload: JsonObject, deps: SanctuaryAcceptanceAdapterD
   }), "old Unraid key record")
   const record = { ...normalizeKey(raw), key: text(raw.key, "old Unraid key credential") }
   if (record.id !== id) throw new Error("old Unraid key ID does not match the host record")
-  const stored = await dependency(deps.mergeMachine, "machine vault writer")(TARGET_ID, TARGET_ID, { sanctuaryAcceptanceKeyHandles: { [id]: record.key } })
+  const stored = await dependency(deps.mergeMachine, "machine vault writer")(acceptanceButler(), MACHINE_ID, { sanctuaryAcceptanceKeyHandles: { [id]: record.key } })
   if (!stored.ok) throw new Error("old Unraid key recovery storage failed")
   return { key: `unraid-key:${id}:legacy` }
 }
@@ -2187,7 +2190,7 @@ async function probeRevokedKey(payload: JsonObject, deps: SanctuaryAcceptanceAda
   if (response.valid !== false || response.id !== id || (response.status !== 401 && response.status !== 403)) {
     throw new Error("revoked Unraid key still authenticates")
   }
-  const cleared = await dependency(deps.mergeMachine, "machine vault writer")(TARGET_ID, TARGET_ID, { sanctuaryAcceptanceKeyHandles: { [id]: "" } })
+  const cleared = await dependency(deps.mergeMachine, "machine vault writer")(acceptanceButler(), MACHINE_ID, { sanctuaryAcceptanceKeyHandles: { [id]: "" } })
   if (!cleared.ok) throw new Error("revoked Unraid key recovery cleanup failed")
   return { valid: false, status: response.status, id }
 }
@@ -2383,7 +2386,7 @@ export async function executeSanctuaryAcceptanceVaultProbe(
   const id = keyId(keyIdValue)
   const capability = text(capabilityValue, "capability")
   if (capability !== "read-only" && capability !== "bounded-write") throw new Error("capability is invalid")
-  const refreshed = await deps.refresh("sanctuary", "sanctuary")
+  const refreshed = await deps.refresh(acceptanceButler(), MACHINE_ID)
   if (!refreshed.ok) throw new Error("Sanctuary machine runtime credentials are unavailable")
   const endpoint = exactLoopbackGraphqlEndpoint(refreshed.config.unraidGraphqlUrl)
   const field = capability === "read-only" ? "unraidReadApiKey" : "unraidWriteApiKey"
@@ -2466,7 +2469,7 @@ function createAcceptanceProbeEffects(input: { agentRoot: string; api: TelegramB
       ? { allowed: true, receiptId: `configured-owner:${input.subject}`, expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), transport: { chatId: input.chatId } }
       : { allowed: false, reason: "effect target is not the configured owner relationship" },
   })
-  const sessionPath = getSenseSessionPath(TARGET_ID, target.friendId, "telegram", target.sessionKey, input.agentRoot)
+  const sessionPath = getSenseSessionPath(acceptanceButler(), target.friendId, "telegram", target.sessionKey, input.agentRoot)
   const port = createTelegramApprovalEffectPort({
     target,
     chatId: input.chatId,
@@ -2485,7 +2488,7 @@ export async function executeSanctuaryInteractiveRuntimeOperation(
   supplied?: Partial<SanctuaryInteractiveRuntimeDependencies>,
 ): Promise<unknown> {
   exactKeys(rawPayload, ["operation", "label", "scenarioHandleDigest"], "interactive runtime payload")
-  const agentRoot = supplied?.agentRoot ?? getAgentRoot(TARGET_ID)
+  const agentRoot = supplied?.agentRoot ?? getAgentRoot(acceptanceButler())
   if (!supplied) return defaultHostRequest(rawPayload, path.join(agentRoot, "state", "acceptance", "telegram-control.sock"), ADAPTER_TIMEOUT_MS)
   const deps: SanctuaryInteractiveEngineDependencies = {
     agentRoot,
@@ -2508,13 +2511,13 @@ export async function executeSanctuaryAcceptanceCallbackProbe(
     createRuntime: createTelegramApprovalRuntime,
     toolContext: createSanctuaryToolContext,
     effects: createAcceptanceProbeEffects,
-    recordCallbackPlayback: (coordinateDigest) => recordCallbackPlayback(getAgentRoot(TARGET_ID), coordinateDigest),
+    recordCallbackPlayback: (coordinateDigest) => recordCallbackPlayback(getAgentRoot(acceptanceButler()), coordinateDigest),
   },
 ): Promise<{ settled: boolean; claimed: boolean; mutated: boolean }> {
   const update = callbackUpdate(rawUpdate) as unknown as TelegramUpdate
   const gateway = deps.gateway()
   const credentials = gateway.credentials
-  const identityKey = deps.identityKey(getAgentRoot(TARGET_ID))
+  const identityKey = deps.identityKey(getAgentRoot(acceptanceButler()))
   const subject = opaqueTelegramSubject(
     identityKey,
     credentials.botId,
@@ -2522,7 +2525,7 @@ export async function executeSanctuaryAcceptanceCallbackProbe(
     credentials.authorizedChatId,
   )
   const api = gateway.authorityTransport.api
-  const effectBoundary = deps.effects?.({ agentRoot: getAgentRoot(TARGET_ID), api, subject, chatId: credentials.authorizedChatId })
+  const effectBoundary = deps.effects?.({ agentRoot: getAgentRoot(acceptanceButler()), api, subject, chatId: credentials.authorizedChatId })
   const unavailableEffects: TelegramApprovalEffectPort = {
     sendText: async () => { throw new Error("Telegram acceptance probe effect boundary is unavailable") },
     sendCard: async () => { throw new Error("Telegram acceptance probe effect boundary is unavailable") },
@@ -2530,13 +2533,13 @@ export async function executeSanctuaryAcceptanceCallbackProbe(
     acknowledge: async () => { throw new Error("Telegram acceptance probe effect boundary is unavailable") },
   }
   const runtime = deps.createRuntime({
-    agentName: TARGET_ID,
+    agentName: acceptanceButler(),
     api,
     authorizedUserId: credentials.authorizedUserId,
     authorizedChatId: credentials.authorizedChatId,
     subject,
     identityKey,
-    toolContext: deps.toolContext(TARGET_ID),
+    toolContext: deps.toolContext(acceptanceButler()),
     effects: effectBoundary?.port ?? unavailableEffects,
   })
   try {

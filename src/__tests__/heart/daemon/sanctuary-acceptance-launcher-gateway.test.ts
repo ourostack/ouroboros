@@ -51,6 +51,7 @@ HEALTH_FACT=$ROOT/health
 CONTAINER_INSPECT_FACT=$ROOT/inspect
 ACCEPTANCE_PIN_ROOT=$ROOT/acceptance
 IMAGE_ID=sha256:${"a".repeat(64)}
+CONTAINER_BUNDLE=/home/ouro/AgentBundles/butler.ouro
 exec 3</dev/null
 ${extract(kind === "materialize" ? "materialize_config" : "run_harness")}
 ${kind === "materialize" ? `materialize_config "$ROOT/output" "${phase}"` : "run_harness"}
@@ -61,6 +62,9 @@ ${kind === "materialize" ? `materialize_config "$ROOT/output" "${phase}"` : "run
         expect(args.filter((arg) => arg === "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly")).toHaveLength(1)
         expect(args).toContain("10001:10001")
         expect(args).toContain("--read-only")
+        // Every bundle mount lands where the image's Butler name says, never under the other name.
+        expect(args.some((arg) => arg.includes("dst=/home/ouro/AgentBundles/butler.ouro"))).toBe(true)
+        expect(args.some((arg) => arg.includes("AgentBundles/sanctuary.ouro"))).toBe(false)
         traces.push({ kind, command, phase, args, trace: result.stderr })
       }
       fs.writeFileSync("coverage/s6-acceptance-finish-shell-trace.json", `${JSON.stringify(traces, null, 2)}\n`)

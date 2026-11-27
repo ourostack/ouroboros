@@ -113,6 +113,11 @@ test "$IMAGE_DIGEST" != "$IMAGE_ID" || exit 2
 test "${#IMAGE_DIGEST}" -eq 64 || exit 2
 case "$IMAGE_DIGEST" in *[!0-9a-f]*) exit 2 ;; esac
 test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker image inspect --format '{{.Id}}' "$IMAGE_ID")" = "$IMAGE_ID" || exit 1
+# The host bundle keeps its folder name; inside the container it sits under the Butler name the image runs, its ENTRYPOINT's
+# `--package-managed-agent <name>` (butler from M2 on, sanctuary before it), as src/heart/butler-agent.ts butlerNameFromEntrypoint reads it.
+BUTLER_NAME=$(/usr/bin/timeout -s KILL 20 /usr/bin/docker image inspect --format '{{json .Config.Entrypoint}}' "$IMAGE_ID" | sed -n 's/.*"--package-managed-agent","\([^"]*\)".*/\1/p') || exit 1
+case "$BUTLER_NAME" in butler | sanctuary) ;; *) BUTLER_NAME=sanctuary ;; esac
+CONTAINER_BUNDLE=/home/ouro/AgentBundles/$BUTLER_NAME.ouro
 test -d "$CONFIG_ROOT" && test ! -L "$CONFIG_ROOT" || exit 1
 test -d "$EVIDENCE_ROOT" && test ! -L "$EVIDENCE_ROOT" || exit 1
 test "$(stat -c '%u:%g %a' "$CONFIG_ROOT")" = "10001:10001 700" || exit 1
@@ -305,7 +310,7 @@ materialize_config() {
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence,readonly" \
       --mount "type=bind,src=$EXTRA_MOUNT,dst=/run/ouro-acceptance/closed-inventory.json,readonly" \
       --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
-      --mount "type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly" \
+      --mount "type=bind,src=$BUNDLE_ROOT,dst=$CONTAINER_BUNDLE,readonly" \
       --entrypoint /opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh \
       "$IMAGE_ID" materialize-config "$COMMAND" >"$OUTPUT"
   elif test -n "$SNAPSHOT_PHASE"; then
@@ -314,7 +319,7 @@ materialize_config() {
       --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" \
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence,readonly" \
       --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
-      --mount "type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly" \
+      --mount "type=bind,src=$BUNDLE_ROOT,dst=$CONTAINER_BUNDLE,readonly" \
       --entrypoint /opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh \
       "$IMAGE_ID" materialize-config "$COMMAND" "$SNAPSHOT_PHASE" >"$OUTPUT"
   else
@@ -323,7 +328,7 @@ materialize_config() {
       --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" \
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence,readonly" \
       --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
-      --mount "type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly" \
+      --mount "type=bind,src=$BUNDLE_ROOT,dst=$CONTAINER_BUNDLE,readonly" \
       --entrypoint /opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh \
       "$IMAGE_ID" materialize-config "$COMMAND" >"$OUTPUT"
   fi
@@ -384,7 +389,7 @@ assert_acceptance_state_inode() {
   ACCEPTANCE_PIN_INODE=$(stat -Lc '%d:%i' "$ACCEPTANCE_PIN_ROOT") || return 1
   test "$(stat -Lc '%d:%i' "$ACCEPTANCE_STATE_ROOT")" = "$ACCEPTANCE_PIN_INODE" || return 1
   test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Name}} {{.Image}}' "$TARGET_CONTAINER_ID")" = "/$PRODUCTION_CONTAINER $IMAGE_ID" || return 1
-  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker exec "$TARGET_CONTAINER_ID" stat -Lc '%d:%i' /home/ouro/AgentBundles/sanctuary.ouro/state/acceptance)" = "$ACCEPTANCE_PIN_INODE" || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker exec "$TARGET_CONTAINER_ID" stat -Lc '%d:%i' "$CONTAINER_BUNDLE/state/acceptance")" = "$ACCEPTANCE_PIN_INODE" || return 1
 }
 
 if test "$COMMAND" = evidence-snapshot || test "$COMMAND" = reboot-request || test "$COMMAND" = reboot-resume; then
@@ -435,7 +440,7 @@ run_harness() {
       --mount "type=bind,src=$CONFIG_PATH,dst=/run/ouro-acceptance/config.json,readonly" \
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence" \
       --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
-      --mount "type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro$BUNDLE_SUFFIX" \
+      --mount "type=bind,src=$BUNDLE_ROOT,dst=$CONTAINER_BUNDLE$BUNDLE_SUFFIX" \
       --mount "type=bind,src=$SOCKET_ROOT,dst=/run/ouro-host-acceptance,readonly" \
       --mount "type=bind,src=$IMAGE_FACT,dst=/run/ouro-acceptance/image-digest,readonly" \
       --mount "type=bind,src=$CONTAINER_FACT,dst=/run/ouro-acceptance/container-digest,readonly" \
@@ -452,7 +457,7 @@ run_harness() {
       --mount "type=bind,src=$CONFIG_PATH,dst=/run/ouro-acceptance/config.json,readonly" \
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence" \
       --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
-      --mount "type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro$BUNDLE_SUFFIX" \
+      --mount "type=bind,src=$BUNDLE_ROOT,dst=$CONTAINER_BUNDLE$BUNDLE_SUFFIX" \
       --mount "type=bind,src=$IMAGE_FACT,dst=/run/ouro-acceptance/image-digest,readonly" \
       --mount "type=bind,src=$CONTAINER_FACT,dst=/run/ouro-acceptance/container-digest,readonly" \
       --mount "type=bind,src=$HEALTH_FACT,dst=/run/ouro-acceptance/postboot-health.json,readonly" \
@@ -468,8 +473,8 @@ run_harness() {
       --mount "type=bind,src=$CONFIG_PATH,dst=/run/ouro-acceptance/config.json,readonly" \
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence" \
       --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
-      --mount "type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly" \
-      --mount "type=bind,src=$ACCEPTANCE_PIN_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance" \
+      --mount "type=bind,src=$BUNDLE_ROOT,dst=$CONTAINER_BUNDLE,readonly" \
+      --mount "type=bind,src=$ACCEPTANCE_PIN_ROOT,dst=$CONTAINER_BUNDLE/state/acceptance" \
       --mount "type=bind,src=$SOCKET_ROOT,dst=/run/ouro-host-acceptance,readonly" \
       --mount "type=bind,src=$IMAGE_FACT,dst=/run/ouro-acceptance/image-digest,readonly" \
       --mount "type=bind,src=$CONTAINER_FACT,dst=/run/ouro-acceptance/container-digest,readonly" \
@@ -480,14 +485,14 @@ run_harness() {
       --entrypoint /opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh \
       "$IMAGE_ID" "$COMMAND" --config /run/ouro-acceptance/config.json
   elif test "$BROKER" = yes; then
-    if test "$COMMAND" = reboot-request || test "$COMMAND" = reboot-resume; then ACCEPTANCE_MOUNT="--mount type=bind,src=$ACCEPTANCE_PIN_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance"; else ACCEPTANCE_MOUNT=; fi
+    if test "$COMMAND" = reboot-request || test "$COMMAND" = reboot-resume; then ACCEPTANCE_MOUNT="--mount type=bind,src=$ACCEPTANCE_PIN_ROOT,dst=$CONTAINER_BUNDLE/state/acceptance"; else ACCEPTANCE_MOUNT=; fi
     /usr/bin/timeout -s KILL "$TIME_LIMIT" /usr/bin/docker run --rm --pull=never --network "$NETWORK" \
       --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges \
       --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" \
       --mount "type=bind,src=$CONFIG_PATH,dst=/run/ouro-acceptance/config.json,readonly" \
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence" \
       --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
-      --mount "type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro$BUNDLE_SUFFIX" \
+      --mount "type=bind,src=$BUNDLE_ROOT,dst=$CONTAINER_BUNDLE$BUNDLE_SUFFIX" \
       $ACCEPTANCE_MOUNT \
       --mount "type=bind,src=$SOCKET_ROOT,dst=/run/ouro-host-acceptance,readonly" \
       --mount "type=bind,src=$IMAGE_FACT,dst=/run/ouro-acceptance/image-digest,readonly" \
@@ -505,7 +510,7 @@ run_harness() {
       --mount "type=bind,src=$CONFIG_PATH,dst=/run/ouro-acceptance/config.json,readonly" \
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence" \
       --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
-      --mount "type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro$BUNDLE_SUFFIX" \
+      --mount "type=bind,src=$BUNDLE_ROOT,dst=$CONTAINER_BUNDLE$BUNDLE_SUFFIX" \
       --mount "type=bind,src=$IMAGE_FACT,dst=/run/ouro-acceptance/image-digest,readonly" \
       --mount "type=bind,src=$CONTAINER_FACT,dst=/run/ouro-acceptance/container-digest,readonly" \
       --mount "type=bind,src=$HEALTH_FACT,dst=/run/ouro-acceptance/postboot-health.json,readonly" \

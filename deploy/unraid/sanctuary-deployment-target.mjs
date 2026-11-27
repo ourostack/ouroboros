@@ -17,7 +17,8 @@ const PROFILES = Object.freeze({
 const DOCUMENTED_UNIX_CONTROLS = [
   "/tmp/ouroboros-daemon.sock",
   "/tmp/ouroboros-daemon.sock.frontend",
-  "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-control.sock",
+  // The bundle sits under the Butler name the image runs: `butler` from M2 on, `sanctuary` before it and after a rollback.
+  ...["butler", "sanctuary"].map((name) => `/home/ouro/AgentBundles/${name}.ouro/state/acceptance/telegram-control.sock`),
 ]
 const DOCUMENTED_LOOPBACK_TCP_CONTROLS = new Set([6876])
 const TERMINAL_CONTAINMENT_MAX_SAMPLES = 8
