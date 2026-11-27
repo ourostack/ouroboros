@@ -89,4 +89,15 @@ describe("the product seam", () => {
     expect(butlerProduct.agents).toEqual(["butler", "sanctuary"])
     expect(productFor("sanctuary")).toBe(butlerProduct)
   })
+
+  it("has the Butler prepare its packaged bundle only when the daemon is told to manage one", () => {
+    const input = { mode: "production" as const, managedAgents: ["butler"], repoRoot: "/opt/ouro", bundlesRoot: "/bundles", runtimePackageVersion: "1.0.0" }
+    const plain = butlerProduct.startup!({ ...input, argv: ["node", "daemon-entry.js"] })
+    expect(() => plain.preflight()).not.toThrow()
+    expect(() => plain.prepareManagedBundle()).not.toThrow()
+    // Told to manage a bundle that isn't there: the start stops.
+    const missing = butlerProduct.startup!({ ...input, bundlesRoot: path.join(os.tmpdir(), "no-such-bundles"), argv: ["node", "daemon-entry.js", "--package-managed-agent", "butler"] })
+    expect(() => missing.preflight()).toThrow(/human-required/u)
+    expect(() => missing.prepareManagedBundle()).toThrow(/human-required/u)
+  })
 })

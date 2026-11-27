@@ -1,6 +1,8 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 import { writeDaemonTombstone } from "./daemon-tombstone"
 import { ButlerExternalEventAdoptionError } from "../external-events/router"
+import { productAgentAmong, productFor } from "../product/active"
+import type { ProductStartup, ProductStartupInput } from "../product/types"
 
 const REDACTED_BOOTSTRAP_STARTUP_ERROR = "container credential bootstrap rejected; recoverable claim retained for reconciliation"
 const SANCTUARY_BUNDLE_RECOVERY_GUIDANCE = {
@@ -138,4 +140,25 @@ export async function startDaemonAfterContainerCredentialBootstrap(
   }
   await input.startDaemon()
   return true
+}
+
+/**
+ * The startup of the product that runs this daemon's one managed agent, or null when there is none. A production daemon
+ * told to manage a packaged bundle (`--package-managed-agent`) with no product to prepare it refuses to start, since
+ * the bundle would boot unprepared.
+ */
+export function productStartupFor(input: ProductStartupInput): ProductStartup | null {
+  const agent = productAgentAmong(input.managedAgents)
+  const startup = agent === null ? undefined : productFor(agent)?.startup?.(input)
+  if (startup) return startup
+  if (input.mode !== "production" || !input.argv.includes("--package-managed-agent")) return null
+  emitNervesEvent({
+    level: "error",
+    component: "daemon",
+    event: "daemon.product_startup_missing",
+    message: "a package-managed bundle has no product to prepare it",
+    meta: { managedAgents: [...input.managedAgents], agent },
+  })
+  const failure = createSanctuaryBundlePreparationFailure("roll_back_or_install_verified_release")
+  return { preflight: () => { throw failure }, prepareManagedBundle: () => { throw failure } }
 }

@@ -422,10 +422,9 @@ describe("daemon entrypoint", () => {
     await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1))
 
     expect(daemonCtor).toHaveBeenCalledTimes(1)
-    expect(sanctuaryPackageManagementMocks.resolve).toHaveBeenCalledTimes(1)
-    expect(sanctuaryPackageManagementMocks.resolve.mock.invocationCallOrder[0]).toBeLessThan(processManagerCtor.mock.invocationCallOrder[0]!)
-    expect(sanctuaryPackageManagementMocks.prepare).toHaveBeenCalledTimes(1)
-    expect(sanctuaryPackageManagementMocks.prepare.mock.invocationCallOrder[0]).toBeLessThan(start.mock.invocationCallOrder[0]!)
+    // No product runs slugger, so nothing prepares a packaged bundle.
+    expect(sanctuaryPackageManagementMocks.resolve).not.toHaveBeenCalled()
+    expect(sanctuaryPackageManagementMocks.prepare).not.toHaveBeenCalled()
     expect(processManagerCtor).toHaveBeenCalledTimes(1)
 
     return {
@@ -516,6 +515,17 @@ describe("daemon entrypoint", () => {
       nerves.setRuntimeLogger(null)
       vi.doUnmock("../../../heart/external-events/router")
     }
+  })
+
+  it("has the Butler's product prepare its packaged bundle before the daemon starts", async () => {
+    await importDaemonEntryWithHabitDispatch({ socketPath: "/tmp/ouro-butler-startup.sock", agent: "butler" })
+
+    expect(sanctuaryPackageManagementMocks.resolve).toHaveBeenCalledTimes(1)
+    expect(sanctuaryPackageManagementMocks.resolve).toHaveBeenCalledWith(expect.objectContaining({ managedAgents: ["butler"], argv: ["node", "daemon-entry.js", "--socket", "/tmp/ouro-butler-startup.sock"] }))
+    // preflight runs at entry and again after credential bootstrap, with prepare between them
+    expect(sanctuaryPackageManagementMocks.require).toHaveBeenCalledTimes(2)
+    expect(sanctuaryPackageManagementMocks.prepare).toHaveBeenCalledTimes(1)
+    expect(sanctuaryPackageManagementMocks.require.mock.invocationCallOrder[1]).toBeLessThan(sanctuaryPackageManagementMocks.prepare.mock.invocationCallOrder[0]!)
   })
 
   async function importDaemonEntryWithPulseDispatch(options: {
@@ -1072,8 +1082,7 @@ describe("daemon entrypoint", () => {
     await import("../../../heart/daemon/daemon-entry")
 
     await vi.waitFor(() => expect(checkAgentConfigWithProviderHealth).toHaveBeenCalledWith("slugger", expect.any(String), { pingProvider: expect.any(Function) }))
-    expect(sanctuaryPackageManagementMocks.prepare).toHaveBeenCalledTimes(1)
-    expect(sanctuaryPackageManagementMocks.prepare.mock.invocationCallOrder[0]).toBeLessThan(checkAgentConfigWithProviderHealth.mock.invocationCallOrder[0]!)
+    expect(sanctuaryPackageManagementMocks.prepare).not.toHaveBeenCalled()
     expect(start).not.toHaveBeenCalled()
     expect(refreshContextLossSentinel).not.toHaveBeenCalled()
 

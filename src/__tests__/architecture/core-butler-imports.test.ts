@@ -42,7 +42,6 @@ const ALLOWED: Record<string, readonly string[]> = {
   ],
   "heart/daemon/daemon-entry": [
     "heart/daemon/sanctuary-acceptance-marker",
-    "heart/daemon/sanctuary-package-management",
     "heart/daemon/sanctuary-scheduler-liveness",
     "heart/daemon/sanctuary-scheduler-origin",
     "senses/sanctuary-health-runner",
