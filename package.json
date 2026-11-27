@@ -7,6 +7,9 @@
     "node": ">=22"
   },
   "main": "dist/heart/daemon/ouro-entry.js",
+  "imports": {
+    "#ouro-ax/*": "./src/ouro-ax/*"
+  },
   "bin": {
     "cli": "dist/heart/daemon/ouro-bot-entry.js",
     "ouro": "dist/heart/daemon/ouro-entry.js",
