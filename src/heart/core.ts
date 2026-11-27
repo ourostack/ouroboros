@@ -1646,7 +1646,7 @@ async function runCountedTurn(
   const toolChoiceRequired = options?.hardDisableTools ? false : options?.toolChoiceRequired ?? true;
   const traceId = options?.traceId;
   const turnStartedAt = Date.now();
-  // Built at the first batch, once the turn's menu is known; null where nobody is waiting on a reply.
+  // Null where nobody is waiting on a reply.
   let keepInTouch: KeepInTouch | null = null;
   let keepInTouchBuilt = false;
   emitNervesEvent({
@@ -3062,12 +3062,13 @@ async function runCountedTurn(
           continue;
         }
 
-        if (!keepInTouchBuilt) {
+        // Built at the first batch that offers speak: a step narrowed to other tools (a forced retry) waits for a later one.
+        if (!keepInTouchBuilt && activeToolNames.has("speak")) {
           keepInTouchBuilt = true
           const turnContext = augmentedToolContext
           keepInTouch = createKeepInTouch({
             channel,
-            speakOffered: activeToolNames.has("speak"),
+            speakOffered: true,
             answersAPerson: !isPrivateRuntimeChannel && !turnContext.noSend && !habitSession && !turnContext.autonomousTurnKind
               && !options?.isReactionSignal && !turnContext.context?.isGroupChat,
             startedAt: turnStartedAt,
@@ -3274,6 +3275,8 @@ async function runCountedTurn(
               continue;
             }
             callbacks.onToolDispatch?.("speak");
+            // A sense that can't stream holds the model's narration unsent (settle clears it); keep it out of the speak.
+            if (channel && !getChannelCapabilities(channel).supportsStreaming) callbacks.onClearText?.();
             callbacks.onTextChunk(speakMessage);
             let speakDeliveryError: Error | null = null;
             try {

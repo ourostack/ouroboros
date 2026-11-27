@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const mockEmitNervesEvent = vi.hoisted(() => vi.fn())
-vi.mock("../../nerves/runtime", () => ({ emitNervesEvent: (...args: unknown[]) => mockEmitNervesEvent(...args) }))
+vi.mock("../../nerves/runtime", async () => {
+  const actual = await vi.importActual<typeof import("../../nerves/runtime")>("../../nerves/runtime")
+  return { ...actual, emitNervesEvent: (...args: Parameters<typeof actual.emitNervesEvent>) => { mockEmitNervesEvent(...args); return actual.emitNervesEvent(...args) } }
+})
 
 import { createKeepInTouch, KEEP_IN_TOUCH_MAX_HOLDS, KEEP_IN_TOUCH_TIMING, offersMidTurnSpeech } from "../../heart/keep-in-touch"
 

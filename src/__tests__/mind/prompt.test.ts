@@ -1699,7 +1699,7 @@ describe("buildSystem", () => {
     expect(result).toContain("## speaking mid-turn")
     expect(result).toContain("`speak` sends words to my friend")
     expect(result).toContain("never per tool call")
-    expect(result).toContain("if they've had nothing from me for 5 seconds, or for 45 seconds since my last word, the engine holds my next work call until i speak")
+    expect(result).toContain("in a one-to-one chat, if they've had nothing from me for 5 seconds, or for 45 seconds since my last word, the engine holds my next work call until i speak")
   })
 
   it("iMessage learns to ack first, with the engine's 15-second bound", async () => {
@@ -1707,7 +1707,7 @@ describe("buildSystem", () => {
     const result = speakSopsSection("bluebubbles")
     expect(result).toContain("my first batch opens with a speak, then my first work call")
     expect(result).toContain("shows i got the ask")
-    expect(result).toContain("if they've had nothing from me for 15 seconds, or for 5 minutes since my last word, the engine holds my next work call until i speak (code: speak-first)")
+    expect(result).toContain("in a one-to-one chat, if they've had nothing from me for 15 seconds, or for 5 minutes since my last word, the engine holds my next work call until i speak (code: speak-first)")
   })
 
   it("the CLI learns the habit without an engine bound, since its terminal shows each tool", async () => {

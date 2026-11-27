@@ -195,6 +195,7 @@ describe("nobody is left on read (keep in touch)", () => {
     let lastVisibleAt = start
     const callbacks = makeCallbacks({
       onTextChunk: vi.fn((text: string) => { pending += text }),
+      onClearText: vi.fn(() => { pending = "" }),
       flushNow: vi.fn(options.flushNow ?? (async () => {
         visible.push({ at: Date.now() - start, text: pending })
         lastVisibleAt = Date.now()
@@ -271,6 +272,30 @@ describe("nobody is left on read (keep in touch)", () => {
     expect(work).toHaveLength(1)
     expect(mockCreate).toHaveBeenCalledTimes(2)
     expect(visible).toEqual([])
+  })
+
+  it("sends only the speak's words on iMessage, never the model's unsent narration from a held batch", async () => {
+    mockCreate.mockImplementationOnce(() => { advance(20_000); return makeStream([makeChunk("Let me check your inbox."), makeChunk(undefined, [call("read_1", "read_file", { path: "/tmp/a" })])]) })
+    mockCreate.mockImplementationOnce(() => { advance(5_000); return batch(call("speak_2", "speak", { message: ACK }), call("read_2", "read_file", { path: "/tmp/b" })) })
+    mockCreate.mockImplementationOnce(() => { advance(5_000); return batch(call("settle_3", "settle", { answer: "Done.", intent: "complete" })) })
+    const { visible, callbacks, run } = harness()
+
+    await run()
+
+    expect(visible[0]).toEqual({ at: 25_000, text: ACK })
+    expect(callbacks.onClearText).toHaveBeenCalled()
+  })
+
+  it("leaves streamed text alone on channels that stream it live", async () => {
+    mockCreate.mockImplementationOnce(() => batch(call("speak_1", "speak", { message: ACK })))
+    mockCreate.mockImplementationOnce(() => batch(call("settle_2", "settle", { answer: "Done.", intent: "complete" })))
+    const { callbacks, run } = harness()
+
+    await run("teams")
+
+    // Only the settle's own stream clears text here, after the speak went out.
+    const speakAt = vi.mocked(callbacks.onTextChunk).mock.invocationCallOrder[0]!
+    for (const at of vi.mocked(callbacks.onClearText!).mock.invocationCallOrder) expect(at).toBeGreaterThan(speakAt)
   })
 
   it("stays out of group chats, where staying quiet can be the right reply", async () => {

@@ -1303,7 +1303,7 @@ function keepInTouchLine(channel: string): string[] {
   const timing = KEEP_IN_TOUCH_TIMING[channel]
   if (!timing) return []
   const update = timing.updateEveryMs >= 60_000 ? `${timing.updateEveryMs / 60_000} minutes` : `${timing.updateEveryMs / 1000} seconds`
-  return [`- if they've had nothing from me for ${timing.ackAfterMs / 1000} seconds, or for ${update} since my last word, the engine holds my next work call until i speak (code: speak-first).`]
+  return [`- in a one-to-one chat, if they've had nothing from me for ${timing.ackAfterMs / 1000} seconds, or for ${update} since my last word, the engine holds my next work call until i speak (code: speak-first).`]
 }
 
 export function speakSopsSection(channel: string): string {
