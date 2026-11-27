@@ -9,6 +9,7 @@ import { hasManagedAgentProcess, hasManagedSupercronicProcess, hasManagedTelegra
 import { inspectSanctuaryPackageManagedBundle } from "./sanctuary-bundle-migration"
 import { resolveSanctuaryPackageManagementActivation } from "./sanctuary-package-management"
 import { failureCodeLine } from "./cli-commands/failure-code"
+import { butlerOnDisk, isButlerAgent } from "../butler-agent"
 
 function fail(reason: string): never {
   emitNervesEvent({ level: "error", component: "daemon", event: "daemon.container_healthcheck_error", message: "container healthcheck failed", meta: { reason } })
@@ -20,7 +21,8 @@ export function runContainerHealthcheck(options: { argv?: string[]; now?: () => 
   const argv = options.argv ?? process.argv
   const now = options.now ?? Date.now
   const index = argv.indexOf("--agent")
-  const agent = index >= 0 ? argv[index + 1] : undefined
+  const given = index >= 0 ? argv[index + 1] : undefined
+  const agent = isButlerAgent(given) ? butlerOnDisk(getAgentBundlesRoot(), fs.existsSync) ?? undefined : given
   if (!agent) fail("missing agent")
   const packageManagement = resolveSanctuaryPackageManagementActivation({ mode: "production", argv, managedAgents: [agent], repoRoot: getRepoRoot(), bundlesRoot: getAgentBundlesRoot(), runtimePackageVersion: getPackageVersion() })
   if (packageManagement.kind !== "active") fail("invalid package-managed Sanctuary activation")

@@ -25,7 +25,7 @@ const boundary = vi.hoisted(() => ({
   machineRuntime: { ok: false, reason: "missing", itemPath: "vault:missing", error: "missing" } as Record<string, unknown>,
 }))
 
-vi.mock("../../../heart/identity", () => ({ getAgentRoot: () => boundary.agentRoot }))
+vi.mock("../../../heart/identity", () => ({ getAgentRoot: () => boundary.agentRoot, getAgentBundlesRoot: () => "/nonexistent/AgentBundles" }))
 
 vi.mock("../../../heart/runtime-credentials", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../heart/runtime-credentials")>(),

@@ -1002,7 +1002,7 @@ prepare_canonical_sanctuary_roots "$IMAGE_ID"`
       expect(copyCall).toContain("--user 10001:10001")
       expect(copyCall).toContain(`--entrypoint /bin/sh ${image} -ceu`)
       expect(calls).toContain("/opt/ouro/deploy/unraid/sanctuary.ouro/.")
-      expect(calls).toContain("/home/ouro/AgentBundles/sanctuary.ouro/")
+      expect(calls).toContain("/home/ouro/AgentBundles/butler.ouro/")
       expect(fs.statSync(path.join(testRoot, "appdata", "agent", "sanctuary.ouro", "agent.json")).mode & 0o777).toBe(0o600)
       expect(fs.statSync(path.join(testRoot, "appdata", "agent", "sanctuary.ouro", "psyche")).mode & 0o777).toBe(0o700)
       const machine = JSON.parse(fs.readFileSync(path.join(testRoot, "appdata", "runtime", ".ouro-cli", "machine.json"), "utf8")) as { machineId: string }
@@ -1030,9 +1030,9 @@ docker() {
   case "$*" in
     "image inspect "*) return 0 ;;
     "container inspect "*) return 1 ;;
-    *"ouro-entry.js vault status --agent sanctuary --store plaintext-file")
+    *"ouro-entry.js vault status --agent butler --store plaintext-file")
       if [ "$SCENARIO" = status-failure ]; then return 23; fi
-      if command grep -q 'ouro-entry.js vault \(create\|unlock\) --agent sanctuary --store plaintext-file' "$CALL_LOG"; then
+      if command grep -q 'ouro-entry.js vault \(create\|unlock\) --agent butler --store plaintext-file' "$CALL_LOG"; then
         command printf 'vault locator: agent.json\nlocal unlock: available\n'
       elif [ "$SCENARIO" = absent ]; then command printf 'vault locator: not configured in agent.json\nlocal unlock: not checked\n'
       elif [ "$SCENARIO" = available ] || [ "$SCENARIO" = resume ] || [ "$SCENARIO" = import-failure ]; then command printf 'vault locator: agent.json\nlocal unlock: available\n'
@@ -1041,7 +1041,7 @@ docker() {
       if [ "$SCENARIO" = import-failure ]; then command mv "$CANONICAL_SOURCE" "$CANONICAL_SOURCE.consuming"; return 23; fi
       if [ "$SCENARIO" = resume ]; then return 91; fi
       command rm -f "$CANONICAL_SOURCE" "$CANONICAL_SOURCE.consuming" ;;
-    *"ouro-entry.js vault create --agent sanctuary --store plaintext-file"|*"ouro-entry.js vault unlock --agent sanctuary --store plaintext-file"|*"ouro-entry.js check --agent sanctuary --lane outward"*) return 0 ;;
+    *"ouro-entry.js vault create --agent butler --store plaintext-file"|*"ouro-entry.js vault unlock --agent butler --store plaintext-file"|*"ouro-entry.js check --agent butler --lane outward"*) return 0 ;;
     *) return 23 ;;
   esac
 }
@@ -1082,7 +1082,7 @@ fi`
           expect(calls).not.toContain("run --rm -it")
           const importCall = calls.indexOf("loadContainerCredentialBootstrap")
           expect(importCall).toBeGreaterThan(-1)
-          expect(calls).not.toContain("ouro-entry.js check --agent sanctuary")
+          expect(calls).not.toContain("ouro-entry.js check --agent butler")
           expect(fs.existsSync(legacySource)).toBe(true)
           expect(fs.readFileSync(legacySource)).toEqual(legacyBytes)
           expect(fs.existsSync(canonicalSource)).toBe(false)
@@ -1090,7 +1090,7 @@ fi`
           const marker = path.join(canonicalRuntimeRoot, "legacy-credentials-imported.json")
           expect(fs.existsSync(marker)).toBe(true)
           expect(fs.readFileSync(legacySource)).toEqual(legacyBytes)
-          expect(calls).not.toContain("ouro-entry.js check --agent sanctuary")
+          expect(calls).not.toContain("ouro-entry.js check --agent butler")
           const resumeLog = path.join(testRoot, "resume.log")
           const resumed = runConditionalHelper(script, "resume", {
             CALL_LOG: resumeLog,
@@ -1106,15 +1106,15 @@ fi`
         }
         const action = scenario === "absent" ? "create" : "unlock"
         const opposite = scenario === "absent" ? "unlock" : "create"
-        const actionCall = calls.split("\n").find((line) => line.includes(`ouro-entry.js vault ${action} --agent sanctuary --store plaintext-file`))
+        const actionCall = calls.split("\n").find((line) => line.includes(`ouro-entry.js vault ${action} --agent butler --store plaintext-file`))
         expect(actionCall).toContain("run --rm -it --pull=never --network host")
         expect(actionCall).toContain("--user 10001:10001")
         expect(actionCall).toContain(`type=bind,src=${canonicalRuntimeRoot},dst=/home/ouro/.ouro-cli`)
-        expect(actionCall).toContain("type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro")
+        expect(actionCall).toContain("type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/butler.ouro")
         expect(actionCall).toContain(`--entrypoint node ${image} /opt/ouro/dist/heart/daemon/ouro-entry.js`)
-        expect(calls).not.toContain(`ouro-entry.js vault ${opposite} --agent sanctuary`)
-        expect(calls.lastIndexOf("ouro-entry.js vault status --agent sanctuary --store plaintext-file")).toBeGreaterThan(calls.indexOf(`ouro-entry.js vault ${action} --agent sanctuary --store plaintext-file`))
-        expect(calls).not.toContain("ouro-entry.js check --agent sanctuary")
+        expect(calls).not.toContain(`ouro-entry.js vault ${opposite} --agent butler`)
+        expect(calls.lastIndexOf("ouro-entry.js vault status --agent butler --store plaintext-file")).toBeGreaterThan(calls.indexOf(`ouro-entry.js vault ${action} --agent butler --store plaintext-file`))
+        expect(calls).not.toContain("ouro-entry.js check --agent butler")
       }
       const callLog = path.join(testRoot, "failure.log")
       const failure = runConditionalHelper(script, "status-failure", {
@@ -1144,7 +1144,7 @@ fi`
       expect(importFailure.status).toBe(23)
       expect(fs.existsSync(legacySource)).toBe(true)
       expect(fs.existsSync(`${canonicalSource}.consuming`)).toBe(true)
-      expect(fs.readFileSync(importFailureLog, "utf8")).not.toContain("ouro-entry.js check --agent sanctuary --lane outward")
+      expect(fs.readFileSync(importFailureLog, "utf8")).not.toContain("ouro-entry.js check --agent butler --lane outward")
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
@@ -1172,21 +1172,21 @@ fi`
     expect(bootstrap).toContain("targetMachineId: process.argv[2]")
     expect(bootstrap).toContain('test "$BOOTSTRAP_SOURCE_MACHINE_ID" = sanctuary-unraid')
     expect(bootstrap).toContain('test "$BOOTSTRAP_TARGET_MACHINE_ID" = sanctuary')
-    expect(bootstrap).not.toContain("ouro-entry.js check --agent sanctuary")
+    expect(bootstrap).not.toContain("ouro-entry.js check --agent butler")
   })
 
   it("requires fresh live checks for both configured provider lanes", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const helper = extractRunbookFunction(runbook, "verify_sanctuary_provider_readiness")
-    expect(helper).toContain("ouro-entry.js check --agent sanctuary --lane outward")
-    expect(helper).toContain("ouro-entry.js check --agent sanctuary --lane inner")
+    expect(helper).toContain("ouro-entry.js check --agent butler --lane outward")
+    expect(helper).toContain("ouro-entry.js check --agent butler --lane inner")
     expect(helper).toContain("umask 077")
     expect(helper).toContain('validate_sanctuary_roots "$READINESS_RUNTIME_ROOT" "$READINESS_AGENT_ROOT"')
     expect(helper).toContain("refreshProviderCredentialPool")
     expect(helper).not.toContain("pingProvider")
     expect(helper.match(/provider: "minimax", model: "MiniMax-M3"/gu)).toHaveLength(1)
     expect(helper).not.toContain('provider: "openai-compatible-gemini", model: "gemini-3.6-flash"')
-    expect(helper).not.toContain("ouro-entry.js auth verify --agent sanctuary")
+    expect(helper).not.toContain("ouro-entry.js auth verify --agent butler")
   })
 
   it("keeps explicit provider authentication separate from bootstrap and readiness", () => {
@@ -1225,9 +1225,9 @@ authenticate_sanctuary_provider "$IMAGE_ID" "$PROVIDER"`
         expect(call).toContain("run --rm -it --pull=never --network host")
         expect(call).toContain("--user 10001:10001")
         expect(call).toContain("type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli")
-        expect(call).toContain("type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro")
+        expect(call).toContain("type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/butler.ouro")
         expect(call).toContain(`--entrypoint node ${image}`)
-        expect(call).toContain(`auth --agent sanctuary --provider ${provider}`)
+        expect(call).toContain(`auth --agent butler --provider ${provider}`)
         expect(call).not.toMatch(/api[-_]?key|secret|token=/iu)
       }
     } finally {
@@ -1245,8 +1245,8 @@ authenticate_sanctuary_provider "$IMAGE_ID" "$PROVIDER"`
     expect(readiness).toContain('selectionPolicy: "explicit-same-lane-only"')
     expect(readiness).toContain("policy.selectionPolicy !== expectedPolicy.selectionPolicy")
     expect(readiness).toContain("revision")
-    expect(readiness).toContain("ouro-entry.js check --agent sanctuary --lane outward")
-    expect(readiness).toContain("ouro-entry.js check --agent sanctuary --lane inner")
+    expect(readiness).toContain("ouro-entry.js check --agent butler --lane outward")
+    expect(readiness).toContain("ouro-entry.js check --agent butler --lane inner")
     expect(readiness).not.toContain("ouro-entry.js auth verify")
     expect(readiness).not.toMatch(/AUTH_VERIFY|verify output/iu)
   })
@@ -1262,7 +1262,7 @@ authenticate_sanctuary_provider "$IMAGE_ID" "$PROVIDER"`
     const credentialsPath = path.join(testRoot, "credentials.json")
     const credentialModule = path.join(testRoot, "provider-credentials.cjs")
     const validator = match![1]!
-      .replace('const root = "/home/ouro/AgentBundles/sanctuary.ouro";', `const root = ${JSON.stringify(testRoot)};`)
+      .replace('const root = "/home/ouro/AgentBundles/butler.ouro";', `const root = ${JSON.stringify(testRoot)};`)
       .replace('require("/opt/ouro/dist/heart/provider-credentials.js")', `require(${JSON.stringify(credentialModule)})`)
     const exactAgent = {
       humanFacing: { provider: "minimax", model: "MiniMax-M3" },
@@ -1786,7 +1786,11 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
     expect(launcher).toContain("type=bind,src=$CONFIG_PATH,dst=/run/ouro-acceptance/config.json,readonly")
     expect(launcher).toContain("type=bind,src=$EVIDENCE_ROOT,dst=/evidence")
     expect(launcher).toContain("type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly")
-    expect(launcher).toContain("type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly")
+    expect(launcher).toContain("type=bind,src=$BUNDLE_ROOT,dst=$CONTAINER_BUNDLE,readonly")
+    // The bundle's container path follows the Butler name the exact image runs, so a rollback image still mounts it as sanctuary.
+    expect(launcher).toContain(`docker image inspect --format '{{json .Config.Entrypoint}}' "$IMAGE_ID"`)
+    expect(launcher).toContain("case \"$BUTLER_NAME\" in butler | sanctuary) ;; *) BUTLER_NAME=sanctuary ;; esac")
+    expect(launcher).not.toContain("AgentBundles/sanctuary.ouro")
     for (const materialization of [materializeInventory, materializeSnapshot, materializeDefault]) {
       expect(materialization).toContain(runtimeReadonly)
       expect(materialization).not.toContain(runtimeWritable)
@@ -1797,7 +1801,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
     expect(telegramBootstrap).toContain("--user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges")
     expect(telegramBootstrap).toContain(runtimeReadonly)
     expect(telegramBootstrap).not.toContain(runtimeWritable)
-    expect(telegramBootstrap).toContain('--mount "type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro$BUNDLE_SUFFIX"')
+    expect(telegramBootstrap).toContain('--mount "type=bind,src=$BUNDLE_ROOT,dst=$CONTAINER_BUNDLE$BUNDLE_SUFFIX"')
     expect(telegramBootstrap).not.toContain("3<&0")
     expect(telegramBootstrap).not.toContain("<&3")
     expect(callbackInject).toContain("3<&0")
@@ -1884,7 +1888,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
     expect(launcher).toContain('/usr/bin/docker exec "$TARGET_CONTAINER_ID" stat -Lc')
     expect(launcher.indexOf('/bin/umount "$ACCEPTANCE_STATE_ROOT"')).toBeLessThan(launcher.indexOf('/bin/umount "$ACCEPTANCE_PIN_ROOT"'))
     expect(launcher).toContain('test "$ACCEPTANCE_ALIAS_MOUNTED" = no')
-    expect(launcher).toContain('src=$ACCEPTANCE_PIN_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance')
+    expect(launcher).toContain('src=$ACCEPTANCE_PIN_ROOT,dst=$CONTAINER_BUNDLE/state/acceptance')
     expect(launcher.match(/src=\$ACCEPTANCE_PIN_ROOT,dst=/gu)).toHaveLength(2)
     expect(launcher).not.toContain('src=$ACCEPTANCE_STATE_ROOT,dst=/home/ouro/AgentBundles')
     expect(launcher).toContain('install -m 0600 -o 10001 -g 10001')
@@ -2000,7 +2004,7 @@ await_post_audit_health`
     expect(verify).toContain("KEY_TARGET=$(resolve_sanctuary_unraid_key")
     expect(verify).toContain('type=bind,src="$KEY_PATH",dst=/run/ouro-acceptance/unraid-key.json,readonly')
     expect(verify).toContain("dst=/home/ouro/.ouro-cli,readonly")
-    expect(verify).toContain("dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly")
+    expect(verify).toContain("dst=/home/ouro/AgentBundles/butler.ouro,readonly")
     expect(verify).not.toContain("src=/boot/config/plugins/dynamix.my.servers/keys,dst=")
     expect(verify).not.toContain("/var/run/docker.sock")
   })
@@ -3065,7 +3069,7 @@ ${call}`
     expect(runbook).toContain('machineRuntimeConfig: { sabnzbdApiKey: match[1] }')
     expect(runbook).toContain('verify_sanctuary_sab_readiness "$IMAGE_ID"')
     expect(runbook).toContain("PRECUTOVER_READINESS_STATUS=$?")
-    expect(runbook).toContain('ouro vault config set --agent sanctuary --key sabnzbdApiKey --scope machine')
+    expect(runbook).toContain('ouro vault config set --agent butler --key sabnzbdApiKey --scope machine')
     expect(runbook).toContain("container-credentials.json.consuming")
     expect(runbook).toContain("byte-for-byte identical")
     expect(runbook).toContain("redundant unclaimed source")
@@ -3115,7 +3119,7 @@ ${call}`
     expect(normalUpdateRunbook).not.toContain('docker create --name ouro-butler-staging')
     const createContainer = extractRunbookFunction(runbook, "create_sanctuary_container")
     expect(createContainer).toContain('--mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \\')
-    expect(createContainer).toContain('--mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \\')
+    expect(createContainer).toContain('--mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/butler.ouro" \\')
     expect(createContainer).toContain('--mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \\')
     expect(updateRunbook.indexOf("bootstrap-spool.sh --mount")).toBeLessThan(updateRunbook.indexOf("disable_butler_autostart"))
     expect(backupRunbook).toContain("--exclude='/state/acceptance/telegram-control.sock'")

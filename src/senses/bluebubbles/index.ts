@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as http from "node:http"
 import * as path from "node:path"
-import { createHash, randomUUID } from "node:crypto"
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto"
 import OpenAI from "openai"
 import { runAgent, type ChannelCallbacks, createSummarize } from "../../heart/core"
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig, sessionPath } from "../../heart/config"
@@ -48,7 +48,10 @@ import {
   type BlueBubblesNormalizedMessage,
 } from "./model"
 import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesRepliedMessage } from "./client"
+import { letterChatRefusal, tellAgentReplyRefused } from "./letter-guard"
 import { renderChatInteraction, resolveChatInteractionTarget } from "../../heart/chat-interaction"
+import { looksLikeAnswer } from "../../heart/letters/answer-command"
+import { askDaemonToAnswerLetter, tellDaemonLetterSeen } from "./letter-answer-ingress"
 import { reactInBlueBubbles } from "./reactions"
 import { MAX_IMESSAGE_FILE_BYTES, sendFileInBlueBubbles } from "./send-file"
 import { readChatFile, type ChatFile } from "../chat-file"
@@ -469,7 +472,7 @@ export interface BlueBubblesHandleResult {
   /** Legacy field name: true only when this inbound reached an accepted terminal transport. */
   notifiedAgent: boolean
   kind?: BlueBubblesNormalizedEvent["kind"]
-  reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored" | "autonomy_budget_blocked" | "semantic_claim_timeout" | "superseded" | "turn_timeout" | "delivery_admission_timeout" | "delivery_failed" | "no_visible_reply" | "shutdown"
+  reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored" | "autonomy_budget_blocked" | "semantic_claim_timeout" | "superseded" | "turn_timeout" | "delivery_admission_timeout" | "delivery_failed" | "letter_guard" | "no_visible_reply" | "letter_answered" | "shutdown"
   /** True when the friend saw part of this turn before it ended, so a replay could repeat it. */
   spokeBeforeEnd?: boolean
 }
@@ -550,6 +553,13 @@ interface RuntimeDeps {
   verifyHostAccount: (options?: { recentConfirmationGraceMs?: number }) => Promise<void>
   /** Waits between checks for a send that timed out; a seam so tests don't wait. */
   waitMs: (ms: number) => Promise<void>
+  /**
+   * Asks the daemon whether a message answers one of the agent's letters. Only the GUID goes: the daemon reads the
+   * message from the server itself, so nothing this process saw in the webhook decides the answer.
+   */
+  answerLetter: (agent: string, messageGuid: string) => Promise<boolean>
+  /** A read receipt for a message this side sent; the daemon records `seen` if it delivered a letter. */
+  letterSeen: (agent: string, messageGuid: string) => Promise<boolean>
 }
 
 export interface BlueBubblesReplyTargetController {
@@ -578,8 +588,8 @@ export interface ProactiveBlueBubblesSessionSendParams {
 
 export interface ProactiveBlueBubblesSessionSendResult {
   delivered: boolean
-  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "group_blocked" | "internal_content_blocked" | "blocked_meta_content" | "host_account_refused" | "image_unsendable"
-  /** For image_unsendable: why the image could not go, so nothing was sent. */
+  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "group_blocked" | "internal_content_blocked" | "blocked_meta_content" | "host_account_refused" | "image_unsendable" | "letter_guard"
+  /** For image_unsendable and letter_guard: why nothing was sent, in words the agent can act on. */
   detail?: string
   /** On send_error, present when the server got the send and did not refuse it, so it may have gone out. */
   delivery?: { state: "unknown" }
@@ -606,6 +616,8 @@ const defaultDeps: RuntimeDeps = {
   },
   recordProcessed: recordProcessedBlueBubblesMessage,
   withSessionTurnLease,
+  answerLetter: (agent, messageGuid) => askDaemonToAnswerLetter(agent, messageGuid),
+  letterSeen: (agent, messageGuid) => tellDaemonLetterSeen(agent, messageGuid),
   // Incoming events recheck every time, like sends, so a server that takes over
   // the same URL under another account is refused immediately.
   verifyHostAccount: (options) => verifyBlueBubblesServerAccount({
@@ -1555,6 +1567,9 @@ export function createBlueBubblesCallbacks(
         return
       }
       if (!await canRunOutbound()) return
+      // Checked before the speak is reserved or counted as seen, since a refused speak never leaves.
+      const letterRefusal = letterChatRefusal({ what: "message", chat, text: trimmed }, getAgentRoot)
+      if (letterRefusal) throw new BlueBubblesSendError({ message: letterRefusal, httpStatus: null, errorCode: "letter_guard", transportInvoked: false })
       const replyToMessageGuid = replyTarget.getReplyToMessageGuid()
       const speakRecord = reserveMidTurnSpeak(trimmed, replyToMessageGuid)
       /* v8 ignore next 4 -- see reserveMidTurnSpeak: a fresh key is never already reserved @preserve */
@@ -1858,9 +1873,11 @@ function writeSemanticCaptureFailure(res: http.ServerResponse): void {
   res.end('{"ok":false,"error":"semantic_capture_failed"}')
 }
 
+/** The webhook takes a post only with the server's password; one without it is refused, not let through. */
 function isWebhookPasswordValid(url: URL, expectedPassword: string): boolean {
-  const provided = url.searchParams.get("password")
-  return !provided || provided === expectedPassword
+  const provided = Buffer.from(url.searchParams.get("password") ?? "", "utf8")
+  const expected = Buffer.from(expectedPassword, "utf8")
+  return expected.length > 0 && provided.length === expected.length && timingSafeEqual(provided, expected)
 }
 
 function normalizeHandleForSelfMatch(handle: string): string {
@@ -2213,6 +2230,20 @@ async function handleBlueBubblesNormalizedEvent(
         return { handled: true, notifiedAgent: false, kind: event.kind, reason: "from_me" }
       }
       options.lifecycleSignal?.throwIfAborted()
+
+      // A message in answer form ("L7 2") from a one-to-one chat may answer a letter. The daemon decides from the
+      // server's copy; a recorded answer is the harness's, so it doesn't become a chat turn, and the daemon tells
+      // the agent. Anything else, or a daemon that can't be asked, runs the turn as usual.
+      if (event.eventType === "new-message" && !event.chat.isGroup && event.fromMe !== true && looksLikeAnswer(event.text)) {
+        try {
+          if (await resolvedDeps.answerLetter(agentName, event.messageGuid)) {
+            emitNervesEvent({ component: "senses", event: "senses.bluebubbles_letter_answered", message: "a message answered a letter, so it is not a chat turn", meta: { messageGuid: event.messageGuid } })
+            return { handled: true, notifiedAgent: false, kind: event.kind, reason: "letter_answered" }
+          }
+        } catch (error) {
+          emitNervesEvent({ level: "warn", component: "senses", event: "senses.bluebubbles_letter_answer_unchecked", message: "couldn't ask the daemon whether a message answers a letter; it is a chat turn", meta: { messageGuid: event.messageGuid, reason: (error as Error).message } })
+        }
+      }
 
       // ── Adapter setup: friend, session, content, callbacks ────────
       const store = resolvedDeps.createFriendStore()
@@ -2664,11 +2695,12 @@ async function handleBlueBubblesNormalizedEvent(
               signin: async () => undefined,
               ...safeToolContext,
               ...mcpOwner,
+              turnOrigin: "sense-ingress",
               summarize,
               chatActions: chatActionsForTurn({
                 setReplyTarget: (selection: ReplyTargetSelection) => replyTarget.setSelection(selection),
                 react: (emoji: string, messageId: string) => reactInBlueBubbles(client, event.chat, emoji, messageId),
-                sendFile: (filePath: string, caption: string) => sendFileInBlueBubbles(client, event.chat, filePath, caption),
+                sendFile: (filePath: string, caption: string) => sendFileInBlueBubbles(client, event.chat, filePath, caption, getAgentRoot),
               }, event.messageGuid),
             },
           })
@@ -2703,6 +2735,7 @@ async function handleBlueBubblesNormalizedEvent(
           toolContext: {
             signin: async () => undefined,
             ...mcpOwner,
+            turnOrigin: "sense-ingress",
             currentIngressEvidence: options.currentIngressEvidence,
           },
           ...(options.isReactionSignal ? { isReactionSignal: true } : {}),
@@ -2781,6 +2814,12 @@ async function handleBlueBubblesNormalizedEvent(
           // Aborted before the transport ran: the deadline, supersession or
           // shutdown handler already decided this turn's result.
           if (controller.signal.aborted && !finalTransportInvoked) throw error
+          if (error instanceof BlueBubblesSendError && error.errorCode === "letter_guard") {
+            // The reply named a letter code in the person's letters chat. Nothing left, and a retry would be refused
+            // the same way, so the turn ends here and the agent hears why, to say it again by the letter's subject.
+            tellAgentReplyRefused(resolvedDeps.getAgentName(), getAgentRoot(), event.messageGuid, error.message)
+            return { handled: true, notifiedAgent: false, kind: event.kind, reason: "letter_guard" }
+          }
           emitNervesEvent({
             level: "warn",
             component: "senses",
@@ -3485,6 +3524,14 @@ async function handleCapturedBlueBubblesSemanticEvent(
       })
       if (captured.normalized.chat.isGroup) {
         recordDiscoveredOwnHandle(captured.normalized.sender.externalId)
+      }
+      // The person read a message this side sent in a one-to-one chat; if it delivered a letter, the daemon records
+      // that they've seen it, from the server's copy. Nothing waits on it, and a failure only loses the "seen".
+      if (captured.capture.event.kind === "read" && !captured.normalized.chat.isGroup) {
+        const messageGuid = captured.normalized.messageGuid
+        resolvedDeps.letterSeen(agentName, messageGuid).catch((error: Error) => {
+          emitNervesEvent({ level: "warn", component: "senses", event: "senses.bluebubbles_letter_seen_unchecked", message: "couldn't tell the daemon a message was read", meta: { messageGuid, reason: error.message } })
+        })
       }
       const result: BlueBubblesHandleResult = {
         handled: true,
@@ -4618,6 +4665,8 @@ export function createBlueBubblesWebhookHandler(
     }
 
     if (!isWebhookPasswordValid(url, runtimeConfig.password)) {
+      // Seen in the logs, so a webhook registered without the password (or a stray post) shows up.
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.bluebubbles_webhook_unauthorized", message: "bluebubbles webhook post refused: wrong or missing password", meta: { hasPassword: url.searchParams.has("password") } })
       writeJson(res, 401, { error: "Unauthorized" })
       return
     }
@@ -5046,6 +5095,10 @@ export async function sendProactiveBlueBubblesMessageToSession(
     image = read
   }
 
+  // The text is checked before the image goes, so a refused caption never leaves half a message.
+  const letterRefusal = letterChatRefusal({ what: "message", chat, text: params.text }, getAgentRoot)
+  if (letterRefusal) return { delivered: false, reason: "letter_guard", detail: letterRefusal }
+
   const sentAt = Date.now()
   let imageSent = false
   try {
@@ -5278,6 +5331,13 @@ export async function drainAndSendPendingBlueBubbles(
         meta: { friendId, handle },
       })
     } catch (error) {
+      if (error instanceof BlueBubblesSendError && error.errorCode === "letter_guard") {
+        // Refused before anything left: sending it again is refused again, so it goes, and the agent hears why.
+        result.skipped++
+        try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+        tellAgentReplyRefused(resolvedDeps.getAgentName(), getAgentRoot(), path.basename(filePath), error.message)
+        continue
+      }
       result.failed++
       emitNervesEvent({
         level: "error",
@@ -5470,7 +5530,9 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
   }
   server.on?.("close", shutdown)
   runningBlueBubblesApps.set(server, shutdown)
-  server.listen(channelConfig.port, () => {
+  // Loopback only: the reconciler registers the webhook at http://127.0.0.1 (webhook-registration.ts), so nothing
+  // off this Mac has a reason to reach it.
+  server.listen(channelConfig.port, "127.0.0.1", () => {
     const blueBubblesConfig = getBlueBubblesConfig()
     webhookReconciler = createBlueBubblesWebhookReconciler({
       serverUrl: blueBubblesConfig.serverUrl,

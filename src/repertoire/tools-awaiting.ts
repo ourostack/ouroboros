@@ -21,7 +21,7 @@ import { getPrivateRuntimePendingDir, queuePendingMessageOnce } from "../mind/pe
 import type { PendingMessage } from "../mind/pending"
 import type { ToolContext, ToolDefinition } from "./tools-base"
 import type { CrossChatDeliveryDeps, CrossChatDeliveryRequest, CrossChatDirectDeliveryResult } from "../heart/cross-chat-delivery"
-import { advanceExternalEventFromAwait, getExternalEventRoot, readExternalEventRecord } from "../heart/external-events/router"
+import { advanceExternalEventFromAwait, externalEventAwaitRecordPath, getExternalEventRoot, readExternalEventRecord } from "../heart/external-events/router"
 import { advanceObligation, createObligation, fulfillObligation, readVerifiedObligations, readVerifiedPendingObligations } from "../arc/obligations"
 import { parseCadenceToMs } from "../heart/daemon/cadence"
 
@@ -552,9 +552,11 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
 
   const advancedEvents = existing.filed_from === "external-event" && existing.filed_from_key && existing.wake_at
     ? (() => {
-        if (!hasActiveExternalEventAwait(agentName, { recordPath: existing.filed_from_key!, awaitName: name, wakeAt: existing.wake_at! })) throw new Error("External event await authority changed before resolution")
-        const record = readExternalEventRecord(existing.filed_from_key!)
-        if (record.agent !== agentName || record.recordPath !== existing.filed_from_key || record.executionState !== "handled"
+        // Filed before the running Butler took over its other name's event folder, the record now sits under the running name.
+        const recordPath = externalEventAwaitRecordPath(agentName, existing.filed_from_key!)
+        if (!hasActiveExternalEventAwait(agentName, { recordPath, awaitName: name, wakeAt: existing.wake_at! })) throw new Error("External event await authority changed before resolution")
+        const record = readExternalEventRecord(recordPath)
+        if (record.agent !== agentName || record.recordPath !== recordPath || record.executionState !== "handled"
           || record.disposition?.awaitId !== name || record.disposition.nextWake.kind !== "at" || record.disposition.nextWake.at !== existing.wake_at) {
           throw new Error("External event await authority changed before resolution")
         }
@@ -743,14 +745,15 @@ export function hasActiveExternalEventAwait(agentName: string, input: { recordPa
 export function inspectExternalEventAwait(agentName: string, input: { recordPath: string; awaitName: string; wakeAt: string }, root = getExternalEventRoot()): AwaitBindingInspection {
   const relative = path.relative(path.resolve(root), path.resolve(input.recordPath))
   if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("External event await record is outside the event root")
+  const recordPath = externalEventAwaitRecordPath(agentName, input.recordPath, root)
   let record: ReturnType<typeof readExternalEventRecord>
   try {
-    record = readExternalEventRecord(input.recordPath)
+    record = readExternalEventRecord(recordPath)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { active: false, reason: "external event disposition is missing" }
     throw error
   }
-  const active = record.agent === agentName && record.recordPath === input.recordPath && record.executionState === "handled"
+  const active = record.agent === agentName && record.recordPath === recordPath && record.executionState === "handled"
     && record.disposition?.awaitId === input.awaitName && record.disposition.nextWake.kind === "at" && record.disposition.nextWake.at === input.wakeAt
   return active ? { active: true } : { active: false, reason: "external event disposition is no longer active" }
 }

@@ -22,7 +22,7 @@ export function overrideTrustRootForTests(root: string | undefined): void {
   trustRoot = root ?? OPERATOR_TRUST_ROOT
 }
 
-/** The agent a bundle root belongs to: `~/AgentBundles/sanctuary.ouro` is `sanctuary`. */
+/** The agent a bundle root belongs to: `~/AgentBundles/butler.ouro` is `butler`, so its grants are read from `/etc/ouro/trust/butler`. */
 export function agentNameFromRoot(agentRoot: string): string {
   return path.basename(agentRoot).replace(/\.ouro$/u, "")
 }

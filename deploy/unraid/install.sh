@@ -30,7 +30,9 @@ STAGE=$APPDATA/installer
 AUTHORITY=/mnt/user/appdata/ouro-authority
 EVENTS=/boot/config/custom/ouro-events
 CONTAINER=ouro-butler
-AGENT=sanctuary
+# The machine id keeps the name sanctuary. The agent name is the one the image runs, read once it is pulled (step 3).
+MACHINE_ID=sanctuary
+AGENT=
 TTY=/dev/tty
 VERSION=""
 VAULT_SERVER=""
@@ -150,20 +152,25 @@ ok "Telegram knows the bot @$BOT_USERNAME"
 say "3. Butler image and files"
 docker pull "$IMAGE" >/dev/null || die "could not pull $IMAGE"
 ok "pulled $IMAGE"
+# The Butler name the image runs: its ENTRYPOINT's --package-managed-agent (butler from M2 on, sanctuary before it), as
+# src/heart/butler-agent.ts butlerNameFromEntrypoint reads it. The host folder keeps its name; only the mount target follows.
+AGENT=$(docker image inspect --format '{{json .Config.Entrypoint}}' "$IMAGE" | sed -n 's/.*"--package-managed-agent","\([^"]*\)".*/\1/p') \
+  || die "could not read the Butler's name from $IMAGE"
+case "$AGENT" in butler | sanctuary) ;; *) AGENT=sanctuary ;; esac
 install -d -m 0700 -o 10001 -g 10001 "$APPDATA" "$APPDATA/runtime" "$APPDATA/agent" "$RUNTIME" "$BUNDLE"
 install -d -m 0700 -o 0 -g 0 "$AUTHORITY" "$STAGE"
 if test ! -f "$RUNTIME/machine.json"; then
   NOW=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
-  printf '{\n  "schemaVersion": 1,\n  "machineId": "%s",\n  "createdAt": "%s",\n  "updatedAt": "%s",\n  "hostnameAliases": []\n}\n' "$AGENT" "$NOW" "$NOW" | write_butler_file "$RUNTIME/machine.json"
+  printf '{\n  "schemaVersion": 1,\n  "machineId": "%s",\n  "createdAt": "%s",\n  "updatedAt": "%s",\n  "hostnameAliases": []\n}\n' "$MACHINE_ID" "$NOW" "$NOW" | write_butler_file "$RUNTIME/machine.json"
 fi
 if test ! -f "$BUNDLE/agent.json"; then
   test -z "$(find "$BUNDLE" -mindepth 1 -print -quit)" || die "$BUNDLE has files but no agent.json; move it aside and run the installer again"
   docker run --rm --pull=never --network=none --user 10001:10001 \
     --mount "type=bind,src=$BUNDLE,dst=/home/ouro/AgentBundles/$AGENT.ouro" \
     --entrypoint /bin/sh "$IMAGE" -ceu '
-      cp -R /opt/ouro/deploy/unraid/sanctuary.ouro/. /home/ouro/AgentBundles/sanctuary.ouro/
-      find /home/ouro/AgentBundles/sanctuary.ouro -type d -exec chmod 0700 {} +
-      find /home/ouro/AgentBundles/sanctuary.ouro -type f -exec chmod 0600 {} +'
+      cp -R /opt/ouro/deploy/unraid/sanctuary.ouro/. "$1/"
+      find "$1" -type d -exec chmod 0700 {} +
+      find "$1" -type f -exec chmod 0600 {} +' seed "/home/ouro/AgentBundles/$AGENT.ouro"
 fi
 ok "Butler files seeded in $BUNDLE"
 install -d -m 0700 -o 10001 -g 10001 "$BUNDLE/house"

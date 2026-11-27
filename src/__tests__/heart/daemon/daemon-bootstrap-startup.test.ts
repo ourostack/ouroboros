@@ -13,11 +13,13 @@ vi.mock("../../../heart/daemon/daemon-tombstone", () => ({
 import {
   createProviderReadinessPreparationFailure,
   createSanctuaryBundlePreparationFailure,
+  failFastButlerExternalEventsStartup,
   failFastContainerCredentialBootstrapStartup,
   failFastSanctuaryBundlePreparationStartup,
   providerReadinessAgents,
   startDaemonAfterContainerCredentialBootstrap,
 } from "../../../heart/daemon/daemon-bootstrap-startup"
+import { ButlerExternalEventAdoptionError } from "../../../heart/external-events/router"
 
 describe("daemon container credential bootstrap startup boundary", () => {
   it("scopes Workbench daemon readiness to its selected safe agent", () => {
@@ -270,6 +272,21 @@ describe("daemon container credential bootstrap startup boundary", () => {
     expect(startupMocks.writeTombstone).toHaveBeenLastCalledWith("startupFailurePublic", expect.objectContaining({ message: "Sanctuary installation needs attention\n  human-required: resume the reviewed Butler update recovery procedure" }))
     expect(JSON.stringify(startupMocks.writeTombstone.mock.calls)).not.toContain("secret raw path")
     expect(redactedExit).toHaveBeenCalledWith(1)
+  })
+
+  it("stops the start when the Butler's external events can't be adopted, with the adoption's own guidance", () => {
+    startupMocks.writeTombstone.mockClear()
+    startupMocks.emit.mockClear()
+    const exit = vi.fn()
+    const guidance = "Butler external events need attention: merging /e/sanctuary into /e/butler failed: differ\n  agent-runnable: fix it"
+    failFastButlerExternalEventsStartup({ failure: new ButlerExternalEventAdoptionError(guidance), exit })
+    expect(startupMocks.writeTombstone).toHaveBeenLastCalledWith("startupFailurePublic", expect.objectContaining({ message: guidance }))
+    expect(startupMocks.emit).toHaveBeenLastCalledWith(expect.objectContaining({ level: "error", event: "daemon.entry_error", meta: { error: guidance } }))
+    expect(exit).toHaveBeenCalledWith(1)
+
+    failFastButlerExternalEventsStartup({ failure: new Error("raw detail"), exit })
+    expect(startupMocks.writeTombstone).toHaveBeenLastCalledWith("startupFailurePublic", expect.objectContaining({ message: expect.stringMatching(/^Butler external events need attention\n  agent-runnable: /u) }))
+    expect(JSON.stringify(startupMocks.writeTombstone.mock.calls)).not.toContain("raw detail")
   })
 
   it("still exits nonzero when tombstone or event reporting fails", () => {

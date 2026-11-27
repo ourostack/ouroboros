@@ -128,9 +128,12 @@ describe("running an action", () => {
     await runMailboxAction("mailbox_list", {}, slugger)
     await runMailboxAction("mailbox_wait", { letter: "L1", timeout: 100 }, slugger)
     await runMailboxAction("mailbox_wait", { letter: "L1" }, slugger)
+    // A deliver waits out the daemon's chat send, which answers within its own deadline.
+    await runMailboxAction("mailbox_deliver", { letter: "L1" }, slugger)
     expect(socket.calls.map((call) => [call[0], call[2]])).toEqual([
       ["/tmp/test-daemon.sock", { timeoutMs: 30_000 }],
       ["/tmp/test-daemon.sock", { timeoutMs: 130_000 }],
+      ["/tmp/test-daemon.sock", { timeoutMs: 90_000 }],
       ["/tmp/test-daemon.sock", { timeoutMs: 90_000 }],
     ])
   })
@@ -351,6 +354,17 @@ describe("each door's projection", () => {
     const list = mailboxToolDefinitions()[1]!
     await list.handler({}, { agentName: "butler", daemonSocketPath: "/tmp/turn.sock" } as never)
     expect(socket.calls[0]!.slice(0, 2)).toEqual(["/tmp/turn.sock", { kind: "letters.action", agent: "butler", action: "mailbox_list", input: {} }])
+  })
+
+  it("files an in-turn letter with the turn's session, so its answer returns there", async () => {
+    const [send, list] = [mailboxToolDefinitions().find((tool) => tool.tool.function.name === "mailbox_send")!, mailboxToolDefinitions()[1]!]
+    const currentSession = { friendId: "friend-bo", channel: "teams", key: "thread-1", sessionPath: "/x" }
+    await send.handler({ kind: "know", subject: "Heads up" } as never, { agentName: "butler", currentSession } as never)
+    await list.handler({}, { agentName: "butler", currentSession } as never)
+    expect(socket.calls.map((call) => call[1])).toEqual([
+      { kind: "letters.action", agent: "butler", action: "mailbox_send", input: { kind: "know", subject: "Heads up" }, session: { friendId: "friend-bo", channel: "teams", key: "thread-1" } },
+      { kind: "letters.action", agent: "butler", action: "mailbox_list", input: {} },
+    ])
   })
 
   it("holds an in-turn wait for a few seconds at most, since turns run one at a time", async () => {

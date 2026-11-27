@@ -210,6 +210,36 @@ async function evaluatePolicy(
       reason: "verified daemon await check",
     }
   }
+  if (
+    request.triggerSource === "letter-filed"
+    && hasNonEmptyOriginRef(originRefs, "letter")
+    && hasOriginRef(originRefs, "daemon-command", "letters.file")
+  ) {
+    return {
+      result: "allow",
+      reason: "a letter was filed for the agent's person",
+    }
+  }
+  if (
+    request.triggerSource === "letter-expired"
+    && hasNonEmptyOriginRef(originRefs, "letter")
+    && hasOriginRef(originRefs, "scheduler", "letters-expiry")
+  ) {
+    return {
+      result: "allow",
+      reason: "a letter expired with no answer",
+    }
+  }
+  if (
+    request.triggerSource === "letter-answered"
+    && hasNonEmptyOriginRef(originRefs, "letter")
+    && hasOriginRef(originRefs, "daemon-command", "letters.answer")
+  ) {
+    return {
+      result: "allow",
+      reason: "the agent's person answered a letter",
+    }
+  }
   if (isVerifiedHabitWake(request.triggerSource, originRefs)) {
     return {
       result: "allow",

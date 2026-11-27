@@ -648,6 +648,21 @@ describe("send_message tool", () => {
     expect(fs.writeFileSync).not.toHaveBeenCalled()
   })
 
+  it("tells the agent why the letters chat refused its text", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+    mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: false, reason: "letter_guard", detail: "This message names a letter code. Refer to the letter by its subject instead." })
+
+    const result = await tool.handler({
+      friendId: "group-uuid",
+      channel: "bluebubbles",
+      key: "chat:any;+;project-group-123",
+      content: "about L7",
+    }, makeTrustedBlueBubblesTurnContext())
+
+    expect(result).toContain("Refer to the letter by its subject instead.")
+  })
+
   it("reports a failed result when bluebubbles live send errors", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
@@ -787,17 +802,17 @@ describe("send_message tool", () => {
     expect(fs.writeFileSync).not.toHaveBeenCalled()
   })
 
-  it("tells the sender a held verification chore was not sent, on teams and bluebubbles", async () => {
+  it("tells the sender a held untested claim was not sent, on teams and bluebubbles", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
-    const chore = "Could you open #5312 on your phone and tell me if the pictures show?"
+    const chore = "The proof images were re-attached; whether they show in the app hasn't been tested yet."
     mockSendProactiveTeamsMessageToSession.mockResolvedValue({ delivered: false, reason: "internal_content_blocked" })
     const teamsResult = await tool.handler({ friendId: "friend-uuid-4", channel: "teams", key: "target-thread", content: chore }, makeTrustedTeamsTurnContext())
-    expect(teamsResult).toContain("held back, not sent (not_theirs_to_do)")
+    expect(teamsResult).toContain("held back, not sent (untested_delivery_claim)")
 
     mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: false, reason: "internal_content_blocked" })
     const bbResult = await tool.handler({ friendId: "group-uuid", channel: "bluebubbles", key: "chat:any;+;project-group-123", content: chore }, makeTrustedBlueBubblesTurnContext())
-    expect(bbResult).toContain("held back, not sent (not_theirs_to_do)")
+    expect(bbResult).toContain("held back, not sent (untested_delivery_claim)")
     expect(fs.writeFileSync).not.toHaveBeenCalled()
   })
 

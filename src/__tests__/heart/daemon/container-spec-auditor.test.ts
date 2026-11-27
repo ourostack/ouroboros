@@ -260,6 +260,8 @@ describe("Sanctuary pre-activation container auditor", () => {
     ["wrong technical name", (spec: any) => { spec.Name = "/Ouro Butler" }],
     ["missing package activation", (spec: any) => { spec.Args = ["/opt/ouro/dist/heart/daemon/daemon-entry.js"]; spec.Config.Entrypoint = ["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"] }],
     ["duplicate package activation", (spec: any) => { spec.Args.push("--package-managed-agent", "sanctuary"); spec.Config.Entrypoint.push("--package-managed-agent", "sanctuary") }],
+    ["another agent's package activation", (spec: any) => { spec.Args[2] = "slugger"; spec.Config.Entrypoint[3] = "slugger" }],
+    ["entrypoint and arguments naming different Butlers", (spec: any) => { spec.Args[2] = "butler" }],
     ["wrong version reference", (spec: any) => { spec.Config.Image = "ghcr.io/ourostack/ouroboros-butler:latest" }],
     ["missing DockerMan label", (spec: any) => { delete spec.Config.Labels["net.unraid.docker.managed"] }],
     ["wrong icon label", (spec: any) => { spec.Config.Labels["net.unraid.docker.icon"] = "https://example.invalid/icon.png" }],
@@ -268,6 +270,16 @@ describe("Sanctuary pre-activation container auditor", () => {
     const spec = validInspect()
     mutate(spec)
     expect(auditSanctuaryContainerSpec(spec, { expectedImage: "sha256:" + "a".repeat(64), expectedImageReference, expectedIcon, expectedEnvironment }).ok).toBe(false)
+  })
+
+  it("accepts the image's package activation under the Butler's new name, with the bundle mounted under that name", () => {
+    const spec = validInspect()
+    spec.Args[2] = "butler"
+    spec.Config.Entrypoint[3] = "butler"
+    const options = { expectedImage: "sha256:" + "a".repeat(64), expectedImageReference, expectedIcon, expectedEnvironment }
+    expect(auditSanctuaryContainerSpec(spec, options).violations).toEqual(["effective mounts do not match the selected Sanctuary mount contract"])
+    spec.Mounts[1]!.Destination = "/home/ouro/AgentBundles/butler.ouro"
+    expect(auditSanctuaryContainerSpec(spec, options)).toEqual({ ok: true, violations: [] })
   })
 
   it("runs the packaged file-based auditor without echoing the inspect payload", () => {
@@ -753,6 +765,40 @@ describe("canonical-gateway psyche mount shapes", () => {
 
   it("rejects a template with a read-write psyche Config", () => {
     for (const result of auditTemplates(gatewayTemplate([psycheConfig("rw")]))) expect(result.violations).toContain("template Config entries must equal the canonical path binds")
+  })
+
+  describe("under the Butler's new name", () => {
+    // The host folders stay; only the container side of the bundle, psyche and trust mounts says butler.
+    const renamed = (spec: ReturnType<typeof validInspect>, name = "butler") => {
+      spec.Args[2] = name
+      spec.Config.Entrypoint[3] = name
+      for (const mount of spec.Mounts) mount.Destination = mount.Destination.replace("/AgentBundles/sanctuary.ouro", "/AgentBundles/butler.ouro").replace("/etc/ouro/trust/sanctuary", "/etc/ouro/trust/butler")
+      return spec
+    }
+    it.each([false, true])("accepts a butler resident with its bundle, psyche and trust all under butler (psyche mount: %s)", (psycheMount) => {
+      expect(audit(renamed(validInspect(true, { psycheMount })))).toEqual({ ok: true, violations: [] })
+    })
+    it("rejects butler mounts on a container whose arguments say sanctuary, and sanctuary mounts on one that says butler", () => {
+      expect(audit(renamed(validInspect(true), "sanctuary")).violations).toContain("effective mounts do not match the selected Sanctuary mount contract")
+      const spec = validInspect(true)
+      spec.Args[2] = "butler"
+      spec.Config.Entrypoint[3] = "butler"
+      expect(audit(spec).violations).toContain("effective mounts do not match the selected Sanctuary mount contract")
+    })
+    it.each([psycheTarget, trustTarget])("rejects a mix of names: only %s left under sanctuary", (target) => {
+      const spec = renamed(validInspect(true, { psycheMount: true }))
+      spec.Mounts.find((mount) => mount.Destination === target.replace("/AgentBundles/sanctuary.ouro", "/AgentBundles/butler.ouro").replace("/etc/ouro/trust/sanctuary", "/etc/ouro/trust/butler"))!.Destination = target
+      expect(audit(spec).violations).toContain("effective mounts do not match the selected Sanctuary mount contract")
+    })
+    const butlerTemplate = (extra: string[]) => gatewayTemplate(extra).replaceAll('Target="/home/ouro/AgentBundles/sanctuary.ouro', 'Target="/home/ouro/AgentBundles/butler.ouro').replace('Target="/etc/ouro/trust/sanctuary"', 'Target="/etc/ouro/trust/butler"')
+    it("accepts a template with every Target under butler and the host folders unchanged", () => {
+      for (const extra of [[], [psycheConfig("ro")]]) for (const result of auditTemplates(butlerTemplate(extra))) expect(result).toEqual({ ok: true, violations: [] })
+    })
+    it("rejects a template that mixes the names across bundle, psyche and trust", () => {
+      const trustLeft = butlerTemplate([]).replace('Target="/etc/ouro/trust/butler"', 'Target="/etc/ouro/trust/sanctuary"')
+      const psycheLeft = butlerTemplate([]).replace("</Container>", `${psycheConfig("ro")}\n</Container>`)
+      for (const template of [trustLeft, psycheLeft]) for (const result of auditTemplates(template)) expect(result.violations).toContain("template Config entries must equal the canonical path binds")
+    })
   })
 
   it.each([[[]], [[psycheConfig("ro")]]])("still rejects a template missing the trust Config (%j)", (extra) => {

@@ -55,13 +55,13 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const ROOT = "/mnt/user/appdata/ouro-authority"
-const BUNDLE = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"
+// The host folder that holds the Butler's bundle. The live host's bundle stays sanctuary.ouro through the rename; only
+// where it is mounted inside the container follows the Butler name the image runs (butlerNameFromEntrypoint).
+const AGENT_DIR = "/mnt/user/appdata/ouro-butler/agent"
 const RUNTIME = "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli"
 const CONTAINER = "ouro-butler"
 const TEMPLATE = "/boot/config/plugins/dockerMan/templates-user/my-ouro-butler.xml"
-const PSYCHE_TARGET = "/home/ouro/AgentBundles/sanctuary.ouro/psyche"
 const JOURNAL = "/boot/config/custom/ouro-butler/docker-man-template-transaction.json"
-const POLICY = `${BUNDLE}/state/policy/steward.json`
 const PRIMITIVES = ["/usr/local/bin/node", "/bin/sh", "/usr/bin/prlimit", "/usr/bin/setsid"]
 const REQUIRED_PROGRAMS = [
   "dist/heart/daemon/sanctuary-telegram-authority-entry.js",
@@ -90,6 +90,61 @@ const UPGRADE_STEPS = ["stop", "switch", "resident", "migrate", "start"]
 const sh = (file, args, opts = {}) => execFileSync(file, args, { encoding: "utf8", maxBuffer: 64 << 20, ...opts })
 const docker = (args, opts = {}) => sh("/usr/bin/docker", args, opts)
 const image = (version) => `ghcr.io/ourostack/ouroboros-butler:${version}`
+
+// ---- the Butler's name --------------------------------------------------------
+// The Butler's names, as src/heart/butler-agent.ts has them. This script is staged on its own, so it carries the rule itself.
+export const BUTLER_NAMES = ["butler", "sanctuary"]
+/** The Butler an image runs, from its ENTRYPOINT: the argument after --package-managed-agent when it is a Butler name, otherwise sanctuary. */
+export function butlerNameFromEntrypoint(entrypoint) {
+  if (!Array.isArray(entrypoint)) return "sanctuary"
+  const flag = entrypoint.indexOf("--package-managed-agent")
+  return flag >= 0 && BUTLER_NAMES.includes(entrypoint[flag + 1]) ? entrypoint[flag + 1] : "sanctuary"
+}
+/** The host bundle folder, by the name it has on disk, worked out at each use; sanctuary.ouro when neither or both are there. It never moves. */
+export function hostBundle(exists = existsSync) {
+  const present = BUTLER_NAMES.filter((name) => exists(`${AGENT_DIR}/${name}.ouro`))
+  return `${AGENT_DIR}/${present.length === 1 ? present[0] : "sanctuary"}.ouro`
+}
+const policyFile = () => `${hostBundle()}/state/policy/steward.json`
+/** Where a Butler of this name finds its bundle, its psyche and the operator trust inside its container. */
+export const containerBundle = (name) => `/home/ouro/AgentBundles/${name}.ouro`
+export const psycheTarget = (name) => `${containerBundle(name)}/psyche`
+export const trustTarget = (name) => `/etc/ouro/trust/${name}`
+/** The Butler name an image (a reference or an id) runs, read from its own config. */
+function imageButlerName(reference) {
+  return butlerNameFromEntrypoint(JSON.parse(docker(["image", "inspect", "--format", "{{json .Config.Entrypoint}}", reference], { stdio: ["ignore", "pipe", "pipe"] })))
+}
+/** The Butler name the running resident's image runs. */
+function liveButlerName() {
+  return imageButlerName(docker(["inspect", CONTAINER, "--format", "{{.Image}}"], { stdio: ["ignore", "pipe", "pipe"] }).trim())
+}
+
+// ---- a rename's predecessor ----------------------------------------------------
+// What the running release must hold before an upgrade may change the Butler's name, as the root lifecycle has it
+// (BUTLER_RENAME_PREDECESSOR_MARKERS): a rollback lands on that release, so it has to rewrite the bundle's container
+// paths for a named Butler (#1983), and its daemon has to merge the other name's events and find an event Await's record
+// under either name (M2 step 4b). Read as files, so a release is judged by what it can do, not by its version number.
+export const BUTLER_RENAME_PREDECESSOR_MARKERS = [
+  ["deploy/unraid/migrate-sanctuary-bundle.mjs", "--butler-name"],
+  ["dist/heart/external-events/router.js", "externalEventAwaitRecordPath"],
+]
+/** Null when an upgrade from Butler name `running` to `target` may go ahead; otherwise why not. `read(file)` is the running release's file, or null. */
+export function renamePredecessorProblem(running, target, read) {
+  if (running === target) return null
+  const missing = BUTLER_RENAME_PREDECESSOR_MARKERS.filter(([file, marker]) => !(read(file) ?? "").includes(marker)).map(([file]) => file)
+  if (missing.length === 0) return null
+  return `this upgrade renames the Butler from ${running} to ${target}, but the running release cannot take a rollback across that rename (its ${missing.join(" and ")} predate it). Ship a release from after M2 step 4b ("Butler: what the rename needs first") with the name unchanged first, then the release that renames it`
+}
+/** The running release's file: from the installed package, or from the running image when no authority is installed yet. */
+function runningReleaseFile(runningImage, file) {
+  try {
+    return existsSync(`${ROOT}/active.json`) ? readFileSync(`${ROOT}/package/${file}`, "utf8")
+      : docker(["run", "--rm", "--entrypoint", "/bin/cat", runningImage, `/opt/ouro/${file}`], { stdio: ["ignore", "pipe", "ignore"] })
+  } catch { return null }
+}
+function renamePredecessorIssue(version, runningImage) {
+  return renamePredecessorProblem(imageButlerName(runningImage), imageButlerName(image(version)), (file) => runningReleaseFile(runningImage, file))
+}
 
 // Unraid's cgroup2-unraid daemon watches /sys/fs/cgroup via inotify and rmdir's any
 // cgroup that reports `populated 0`. The authority install creates its cgroup empty and
@@ -180,8 +235,9 @@ function preflight(version, { fresh = false } = {}) {
   {
     const friendRecords = {}
     try {
-      for (const file of readdirSync(`${BUNDLE}/friends`).filter((name) => name.endsWith(".json"))) {
-        try { friendRecords[file.replace(/\.json$/u, "")] = JSON.parse(readFileSync(`${BUNDLE}/friends/${file}`, "utf8")) } catch { /* unreadable record: not a grant source */ }
+      const friends = `${hostBundle()}/friends`
+      for (const file of readdirSync(friends).filter((name) => name.endsWith(".json"))) {
+        try { friendRecords[file.replace(/\.json$/u, "")] = JSON.parse(readFileSync(`${friends}/${file}`, "utf8")) } catch { /* unreadable record: not a grant source */ }
       }
     } catch { /* no friends folder yet */ }
     let trustedGrants = {}
@@ -192,9 +248,29 @@ function preflight(version, { fresh = false } = {}) {
 
   say("escalation holders the upgrade would drop")
   {
-    const dropped = escalationGrantProblems()
+    // The grant command is run against the Butler that is running now, under its name.
+    let name = "sanctuary"
+    try { if (runningImage) name = imageButlerName(runningImage) } catch { /* reported with the default name */ }
+    const dropped = escalationGrantProblems(name)
     dropped.length === 0 ? ok("every escalation holder in the bundle is already in the trusted file") : dropped.forEach((line) => bad(line))
   }
+
+  say("a rollback can undo a change of the Butler's name")
+  if (id && runningImage) {
+    try {
+      const issue = renamePredecessorIssue(version, runningImage)
+      issue ? bad(issue) : ok("the name stays the same, or the running release can take a rollback across the rename")
+    } catch (e) { bad(`could not check the Butler's name: ${String(e.message).split("\n")[0]}`) }
+  } else if (!fresh) bad("skipped (no image or no running Butler)")
+  else ok("not needed: a fresh install has nothing to roll back to")
+
+  say("no credential handoff left for another Butler name")
+  if (id) {
+    try {
+      const issue = credentialHandoffIssue(imageButlerName(image(version)))
+      issue ? bad(issue) : ok("no container-credentials handoff names another agent")
+    } catch (e) { bad(`could not check the credential handoff: ${String(e.message).split("\n")[0]}`) }
+  } else bad("skipped (no image)")
 
   say("required programs in the target image")
   try {
@@ -232,7 +308,16 @@ function preflight(version, { fresh = false } = {}) {
   } catch { bad("could not read disk free space") }
 
   say("preservation baselines readable")
-  existsSync(POLICY) ? ok(`steward policy present (${sha12(POLICY)})`) : fresh ? ok("no steward policy yet (fresh install)") : bad(`steward policy missing at ${POLICY}`)
+  const policy = policyFile()
+  existsSync(policy) ? ok(`steward policy present (${sha12(policy)})`) : fresh ? ok("no steward policy yet (fresh install)") : bad(`steward policy missing at ${policy}`)
+
+  say("the DockerMan template can follow this image's Butler name")
+  if (id) {
+    try {
+      const problem = templatePinProblem(version)
+      problem ? bad(problem) : ok(`the DockerMan template can pin ${image(version)}`)
+    } catch (e) { bad(`could not check the DockerMan template: ${String(e.message).split("\n")[0]}`) }
+  } else bad("skipped (no image)")
   try { ok(jellyfinState() ? "jellyfin inspectable for the unchanged-check" : "no jellyfin container; it must stay absent") }
   catch { bad("docker could not list or inspect the jellyfin container") }
 
@@ -255,20 +340,21 @@ function targetHasVaultFix(version) {
 const CLI = "/opt/ouro/dist/heart/daemon/sanctuary-authority-root-lifecycle.js"
 // The fenced vault read, replicating the target version's own #vault fencing.
 function fencedVaultRead(version, hasFix) {
+  const bundleMount = `type=bind,src=${hostBundle()},dst=${containerBundle(imageButlerName(image(version)))},readonly`
   const base = ["run", "--rm", "-i", "--pull=never", "--network", "host", "--user", "0:0", "--read-only",
     "--cap-drop=ALL", "--security-opt=no-new-privileges"]
   const args = hasFix
     ? [...base, "--cap-add=DAC_OVERRIDE", "--entrypoint", "/bin/sh",
        "--mount", `type=bind,src=${RUNTIME},dst=/home/ouro/.ouro-cli,readonly`,
        "--mount", `type=bind,src=${RUNTIME}/bitwarden,dst=/home/ouro/.bw-src,readonly`,
-       "--mount", `type=bind,src=${BUNDLE},dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly`,
+       "--mount", bundleMount,
        "--tmpfs", "/home/ouro/.ouro-cli/bitwarden:rw,nosuid,nodev,noexec,mode=0700",
        "--tmpfs", "/home/ouro/.config:rw,nosuid,nodev,noexec,mode=0700",
        "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,mode=0700",
        image(version), "-c", `cp -r /home/ouro/.bw-src/. /home/ouro/.ouro-cli/bitwarden/ && exec /usr/local/bin/node ${CLI} vault presence`]
     : [...base, "--entrypoint", "/usr/local/bin/node",
        "--mount", `type=bind,src=${RUNTIME},dst=/home/ouro/.ouro-cli,readonly`,
-       "--mount", `type=bind,src=${BUNDLE},dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly`,
+       "--mount", bundleMount,
        "--tmpfs", "/home/ouro/.ouro-cli/bitwarden:rw,nosuid,nodev,noexec,mode=0700",
        "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,mode=0700",
        image(version), CLI, "vault", "presence"]
@@ -306,7 +392,7 @@ function containerExists(name) { return docker(["container", "ls", "--all", "--q
 function jellyfinState() {
   return containerExists("jellyfin") ? docker(["inspect", "jellyfin", "--format", "{{.Id}}|{{.Image}}|{{.RestartCount}}|{{.State.StartedAt}}"]).trim() : null
 }
-function policyState() { return existsSync(POLICY) ? sha12(POLICY) : null }
+function policyState() { const policy = policyFile(); return existsSync(policy) ? sha12(policy) : null }
 function installedRequest() { try { return JSON.parse(readFileSync(`${ROOT}/request.json`, "utf8")) } catch { return null } }
 
 // ---- prepare (idempotent staging; running Butler untouched) ---------------
@@ -474,9 +560,10 @@ function enableResidentAutostart() {
 // stopped; start-resident starts it. #target asserts: target image, user 10001:10001, no
 // token env, exactly one read-only /run/ouro-authority mount, no docker.sock/${ROOT} mounts.
 // Operator-set grants (delegated commands, escalation) live outside the bundle, in a root-owned host directory mounted
-// read-only at /etc/ouro/trust/sanctuary. The bundle's recursive chown cannot reach it, and the resident cannot write it.
+// read-only at /etc/ouro/trust/<the image's Butler name>. The bundle's recursive chown cannot reach it, and the resident cannot write it.
+// The host directory keeps its name whatever the Butler is called.
 export const TRUST_HOST_DIR = "/mnt/user/appdata/ouro-butler/trust/sanctuary"
-export const TRUST_MOUNT = `${TRUST_HOST_DIR}:/etc/ouro/trust/sanctuary:ro`
+export const trustMount = (name) => `type=bind,src=${TRUST_HOST_DIR},dst=${trustTarget(name)},readonly`
 // The bundle sync deploy key: root places it on the host, and the Butler reads it through a read-only mount. The key can
 // push to the owner's repo, so nothing inside the Butler can write the mount.
 export const SYNC_HOST_DIR = "/mnt/user/appdata/ouro-butler/sync"
@@ -504,8 +591,8 @@ function ensureTrustHostDir() {
 }
 
 /** What is wrong with the resident's trust mount, from `docker inspect` Mounts, or null when it is the read-only host directory. */
-export function trustMountIssue(mounts) {
-  const mount = (Array.isArray(mounts) ? mounts : []).find((entry) => entry?.Destination === "/etc/ouro/trust/sanctuary")
+export function trustMountIssue(mounts, name = "sanctuary") {
+  const mount = (Array.isArray(mounts) ? mounts : []).find((entry) => entry?.Destination === trustTarget(name))
   if (!mount) return "the operator trust directory is not mounted in the resident, so no grant would be honoured"
   if (mount.Source !== TRUST_HOST_DIR) return `the operator trust directory is mounted from ${mount.Source}, not the root-owned host directory`
   return mount.RW === false ? null : "the operator trust directory is mounted read-write in the resident"
@@ -522,16 +609,33 @@ export function legacyDelegationGrantWarnings(friendRecords, trustedGrants) {
  * Escalation holders the old harness honoured (the bundle's state/a2a/escalation-grants.json) that the trusted file does not list. The
  * upgrade never copies a grant out of the bundle, so each of these loses the escalation grant until the operator re-grants it.
  */
-export function legacyEscalationGrantProblems(legacyGrants, trustedGrants) {
+export function legacyEscalationGrantProblems(legacyGrants, trustedGrants, name = "sanctuary") {
   return Object.entries(legacyGrants ?? {})
     .filter(([id]) => !(id in (trustedGrants ?? {})))
-    .map(([id, grant]) => `escalation holder ${id} is in the bundle's state/a2a/escalation-grants.json but not in ${TRUST_HOST_DIR}/escalation-grants.json, so the upgrade would drop it; grant it as root first with \`ouro a2a escalation grant --agent sanctuary --friend ${id} --did ${typeof grant?.did === "string" ? grant.did : "<did:key>"}\` (the one-off container form is in deploy/unraid/README.txt)`)
+    .map(([id, grant]) => `escalation holder ${id} is in the bundle's state/a2a/escalation-grants.json but not in ${TRUST_HOST_DIR}/escalation-grants.json, so the upgrade would drop it; grant it as root first with \`ouro a2a escalation grant --agent ${name} --friend ${id} --did ${typeof grant?.did === "string" ? grant.did : "<did:key>"}\` (the one-off container form is in deploy/unraid/README.txt)`)
 }
 
 /** Reads the legacy bundle file and the trusted file from the host and returns the holders the upgrade would drop. */
-function escalationGrantProblems() {
+function escalationGrantProblems(name) {
   const read = (file) => { try { return JSON.parse(readFileSync(file, "utf8")).grants ?? {} } catch { return {} } }
-  return legacyEscalationGrantProblems(read(`${BUNDLE}/state/a2a/escalation-grants.json`), read(`${TRUST_HOST_DIR}/escalation-grants.json`))
+  return legacyEscalationGrantProblems(read(`${hostBundle()}/state/a2a/escalation-grants.json`), read(`${TRUST_HOST_DIR}/escalation-grants.json`), name)
+}
+
+/**
+ * What is wrong with a leftover container-credentials handoff (the file, or its `.consuming` claim) for a Butler of this
+ * name: one naming any other agent makes the daemon refuse to start (container-credential-bootstrap.ts). Null when there is
+ * none or every one names this Butler. `read` returns a file's text, or null when it is absent.
+ */
+export function credentialHandoffIssue(name, read = (file) => (existsSync(file) ? readFileSync(file, "utf8") : null)) {
+  for (const file of [`${RUNTIME}/container-credentials.json`, `${RUNTIME}/container-credentials.json.consuming`]) {
+    const text = read(file)
+    if (text === null) continue
+    let agents
+    try { agents = JSON.parse(text).credentials.map((message) => message?.agentName) } catch { return `${file} cannot be read as a credential handoff; quarantine it before the upgrade` }
+    const other = agents.find((agent) => agent !== name)
+    if (other !== undefined) return `${file} names ${JSON.stringify(other)}, not ${name}, so the new Butler would refuse to start; quarantine it before the upgrade`
+  }
+  return null
 }
 
 function recreateResident(version) {
@@ -539,16 +643,20 @@ function recreateResident(version) {
   disableResidentAutostart()
   ensureTrustHostDir()
   const icon = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
+  // The image names where the bundle and trust are mounted; the host folders stay. --mount refuses a missing source,
+  // where -v would have Docker create an empty folder in its place. Read the name before the resident goes, so a failed
+  // inspect leaves it standing.
+  const name = imageButlerName(image(version))
   docker(["rm", "-f", CONTAINER], { stdio: "ignore" })
   docker(["create", "--name", CONTAINER, "--network", "host", "--restart", "unless-stopped", "--user", "10001:10001",
     "-l", "net.unraid.docker.managed=dockerman",
     "-l", `net.unraid.docker.icon=${icon}`,
     "-l", "org.opencontainers.image.source=https://github.com/ourostack/ouroboros",
     "-v", "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli:/home/ouro/.ouro-cli:rw",
-    "-v", "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw",
+    "--mount", `type=bind,src=${hostBundle()},dst=${containerBundle(name)}`,
     "-v", "/boot/config/custom/ouro-events/spool:/run/ouro-events:ro",
     "-v", "/run/ouro-authority:/run/ouro-authority:ro",
-    "-v", TRUST_MOUNT,
+    "--mount", trustMount(name),
     "-v", SYNC_MOUNT,
     image(version)])
   const ref = docker(["inspect", CONTAINER, "--format", "{{.Config.Image}}"]).trim()
@@ -578,7 +686,7 @@ export function trustedStateChild(bundle, name, { lstat = lstatSync, realpath = 
   if (!resolved || resolved !== expected) return refuse("it resolves outside the bundle's own state directory")
   return dir
 }
-export function restoreReplayRoot(bundle = BUNDLE, { lstat = lstatSync, realpath = realpathSync, chmod = chmodSync, rm = rmSync, run = sh, log = warn } = {}) {
+export function restoreReplayRoot(bundle = hostBundle(), { lstat = lstatSync, realpath = realpathSync, chmod = chmodSync, rm = rmSync, run = sh, log = warn } = {}) {
   const dir = trustedStateChild(bundle, "replay", { lstat, realpath, log })
   if (!dir) return
   run("/bin/chown", ["-h", "0:0", dir])
@@ -600,7 +708,7 @@ export function restorePsycheModes(dir, { lstat = lstatSync, readdir = readdirSy
   walk(dir)
 }
 function restorePsycheRoot() {
-  const dir = `${BUNDLE}/psyche`
+  const dir = `${hostBundle()}/psyche`
   if (existsSync(dir)) restorePsycheModes(dir)
 }
 
@@ -730,8 +838,8 @@ export function reportPsycheSurvival(id, dir, planted, log = console.log, option
  * What is wrong with the resident's psyche mount, from `docker inspect` Mounts, or null for a supported shape: no separate psyche
  * mount (current releases), or a read-only one (alpha.978 and earlier, which a rollback recreates).
  */
-export function psycheMountIssue(mounts) {
-  const mount = (Array.isArray(mounts) ? mounts : []).find((entry) => entry?.Destination === PSYCHE_TARGET)
+export function psycheMountIssue(mounts, name = "sanctuary") {
+  const mount = (Array.isArray(mounts) ? mounts : []).find((entry) => entry?.Destination === psycheTarget(name))
   return !mount || mount.RW === false ? null : "psyche is mounted read-write as a separate mount in the resident"
 }
 
@@ -740,19 +848,21 @@ function migrateBundle(version, rollbackImage) {
   const pkgBundle = `${ROOT}/incoming-package/deploy/unraid/sanctuary.ouro`
   const migrate = `${ROOT}/incoming-package/deploy/unraid/migrate-sanctuary-bundle.mjs`
   if (!existsSync(`${pkgBundle}/provider-readiness.json`)) fail(`packaged bundle template missing provider-readiness.json at ${pkgBundle}`)
+  const bundle = hostBundle()
   if (rollbackImage === null) {
     // A fresh install has no earlier image to roll back to: write the packaged files with no rollback record.
-    sh("/usr/local/bin/node", [migrate, "--package-root", pkgBundle, "--agent-root", BUNDLE, "--operation", "seed"])
+    sh("/usr/local/bin/node", [migrate, "--package-root", pkgBundle, "--agent-root", bundle, "--operation", "seed"])
     ok("bundle seeded from the package (fresh install)")
   } else {
-    sh("/usr/local/bin/node", [migrate, "--package-root", pkgBundle, "--agent-root", BUNDLE, "--operation", "migrate",
-      "--rollback-image-id", rollbackImage, "--target-image-id", imageId(version)])
+    // The host folder keeps its name, so the migrate is told the Butler the target image runs: the bundle's own files name its container path.
+    sh("/usr/local/bin/node", [migrate, "--package-root", pkgBundle, "--agent-root", bundle, "--operation", "migrate",
+      "--rollback-image-id", rollbackImage, "--target-image-id", imageId(version), "--butler-name", imageButlerName(image(version))])
     ok("bundle migrated (rollback retained)")
-    sh("/usr/local/bin/node", [migrate, "--package-root", pkgBundle, "--agent-root", BUNDLE, "--operation", "commit"])
+    sh("/usr/local/bin/node", [migrate, "--package-root", pkgBundle, "--agent-root", bundle, "--operation", "commit"])
   }
   // migrate/commit ran as root; the resident owns its bundle as uid 10001, so restore ownership
-  sh("/bin/chown", ["-R", "10001:10001", BUNDLE])
-  restoreReplayRoot()
+  sh("/bin/chown", ["-R", "10001:10001", bundle])
+  restoreReplayRoot(bundle)
   restorePsycheRoot()
   ok("bundle committed (ownership restored to resident)")
 }
@@ -950,6 +1060,8 @@ function install(version) {
   if (fresh && containerExists(CONTAINER)) fail(`an ${CONTAINER} container already exists; a fresh install needs a host without one`)
   const rollbackImage = fresh ? null : docker(["inspect", CONTAINER, "--format", "{{.Image}}"]).trim()
   if (!targetImage || targetImage === rollbackImage) fail("target/rollback image identity invalid")
+  const renameIssue = rollbackImage ? renamePredecessorIssue(version, rollbackImage) : null
+  if (renameIssue) fail(`${renameIssue}; nothing was changed`)
   const jellyfinBefore = jellyfinState()
   const policyBefore = fresh ? policyState() : policyState() ?? fail(`steward policy missing`)
   ok(`target ${targetImage.slice(0,19)}… rollback ${rollbackImage ? `${rollbackImage.slice(0,19)}…` : "none (fresh install)"} policy ${policyBefore ?? "none yet"}`)
@@ -1051,20 +1163,26 @@ function autoRollback(rollbackImage, version) {
 // `bw edit` fails ("The client copy of this cipher is out of date"). The store's
 // own sync-on-login skips when its freshness marker is <60s old, so we sync
 // directly (unlock -> sync) and let the write proceed against a reconciled cache.
-function forceBwSync(name) {
-  const script = [
+export function forceBwSyncScript(butler) {
+  return [
     'const cp=require("node:child_process"),fs=require("node:fs");',
-    'const {readVaultUnlockSecret}=require("/opt/ouro/dist/repertoire/vault-unlock.js");',
-    'const cfg=JSON.parse(fs.readFileSync("/home/ouro/AgentBundles/sanctuary.ouro/agent.json","utf8")).vault||{};',
+    'const {readVaultUnlockSecret,bitwardenAppDataDir}=require("/opt/ouro/dist/repertoire/vault-unlock.js");',
+    `const NAME=${JSON.stringify(butler)};`,
+    `const cfg=JSON.parse(fs.readFileSync(${JSON.stringify(`${containerBundle(butler)}/agent.json`)},"utf8")).vault||{};`,
     'const email=cfg.email, url=cfg.serverUrl;',
-    'const base="/home/ouro/.ouro-cli/bitwarden";',
-    'const APP=base+"/"+fs.readdirSync(base).find(d=>/^[0-9a-f]{16,}$/.test(d));',
-    'const u=readVaultUnlockSecret({agentName:"sanctuary",email,serverUrl:url});',
+    // The bw folder is keyed by the agent's name, so the other name's folder may be there too: take this Butler's.
+    // Hash the folder from the vault config the daemon resolves (normalised URL, legacy hosts mapped), or it misses.
+    'const {resolveVaultConfig}=require("/opt/ouro/dist/heart/identity.js");',
+    'const APP=bitwardenAppDataDir(NAME,resolveVaultConfig(NAME,cfg),"/home/ouro");',
+    'const u=readVaultUnlockSecret({agentName:NAME,email,serverUrl:url});',
     'const env={...process.env,BITWARDENCLI_APPDATA_DIR:APP,OURO_BW_MASTER_PASSWORD:u.secret};',
     'const sess=cp.execFileSync("bw",["unlock","--passwordenv","OURO_BW_MASTER_PASSWORD","--raw"],{env,encoding:"utf8"}).trim();',
     'cp.execFileSync("bw",["sync"],{env:{...env,BW_SESSION:sess},encoding:"utf8"});',
     'process.stdout.write("bw-synced");',
   ].join("")
+}
+function forceBwSync(name, butler) {
+  const script = forceBwSyncScript(butler)
   try { docker(["exec", "-u", "0:0", name, "node", "-e", script], { stdio: ["ignore", "pipe", "pipe"] }); ok("forced bw sync before token restore") }
   catch (e) { console.log(`   forceBwSync: ${String(e.message).split("\n")[0]} (continuing; restore may still succeed)`) }
 }
@@ -1074,9 +1192,10 @@ function rematerialiseToken(version) {
   const incoming = `${ROOT}/incoming-token`
   const fromIncoming = existsSync(incoming) && statSync(incoming).size > 0
   const name = `ouro-vault-fix-${process.pid}`
+  const butler = imageButlerName(image(version))
   docker(["rm", "-f", name], { stdio: "ignore" })
   docker(["run", "-d", "--name", name, "--network", "host", "--user", "0:0",
-    "-v", `${RUNTIME}:/home/ouro/.ouro-cli`, "-v", `${BUNDLE}:/home/ouro/AgentBundles/sanctuary.ouro`,
+    "-v", `${RUNTIME}:/home/ouro/.ouro-cli`, "--mount", `type=bind,src=${hostBundle()},dst=${containerBundle(butler)}`,
     "--entrypoint", "sleep", image(version), "infinity"])
   try {
     sh("/bin/sleep", ["3"])
@@ -1090,7 +1209,7 @@ function rematerialiseToken(version) {
       const rc = resident.credentials[0].runtimeConfig
       const restore = JSON.stringify({ token: tok, botId: tok.split(":")[0],
         ownerUserId: String(rc.telegramAuthorizedUserId), ownerChatId: String(rc.telegramAuthorizedChatId) })
-      forceBwSync(name)
+      forceBwSync(name, butler)
       docker(["exec", "-i", "-u", "0:0", name, "node", CLI, "vault", "restore"], { input: restore, stdio: ["pipe", "pipe", "pipe"] })
       // Fail loudly if the restored token is not actually live at Telegram, rather
       // than leaving a "healthy" container polling a revoked token (a deaf bot).
@@ -1128,7 +1247,7 @@ function buildFinalProof(version, out) {
     readFileSync("/var/lib/docker/unraid-autostart", "utf8").split("\n").some((l) => l.split(" ")[0] === "ouro-butler")
   const text = (tag2) => (readFileSync(TEMPLATE, "utf8").match(new RegExp(`<${tag2}>([^<]*)</${tag2}>`)) || [])[1]
   const bundle = JSON.parse(sh("/usr/local/bin/node", [`${ROOT}/incoming-package/deploy/unraid/migrate-sanctuary-bundle.mjs`,
-    "--package-root", `${ROOT}/package`, "--agent-root", BUNDLE, "--operation", "status"]))
+    "--package-root", `${ROOT}/package`, "--agent-root", hostBundle(), "--operation", "status"]))
   const jf = JSON.parse(docker(["container", "inspect", "jellyfin", "--format",
     '{"containerId":{{json .Id}},"imageId":{{json .Image}},"state":{{json .State.Status}},"restartCount":{{json .RestartCount}}}']))
   const proof = {
@@ -1187,16 +1306,18 @@ function resumeSupervision() {
 }
 
 /**
- * The template text without its psyche `<Config>` (Target exactly PSYCHE_TARGET), so a DockerMan Apply cannot put the old read-only
+ * The template text without its psyche `<Config>` (Target exactly the psyche under either Butler name), so a DockerMan Apply cannot put the old read-only
  * psyche mount back. The element is removed with the whitespace that starts its line and the newline that ends it; every other byte
  * is kept. `parse` is docker-man-template-xml.cjs's parseDockerManTemplateXml: a template it cannot read, or one without exactly one
  * such Config, comes back unchanged, as does one where the textual match does not remove exactly that element.
  */
 export function withoutPsycheConfig(text, parse) {
-  const psycheConfigs = (document) => document?.children.filter((child) => child.name === "Config" && child.attributes.Target === PSYCHE_TARGET).length
+  const targets = BUTLER_NAMES.map(psycheTarget)
+  const psycheConfigs = (document) => document?.children.filter((child) => child.name === "Config" && targets.includes(child.attributes.Target)).length
   const before = parse(text)
   if (psycheConfigs(before) !== 1) return text
-  const next = text.replace(new RegExp(`[ \\t]*<Config\\b[^<>]*\\sTarget="${PSYCHE_TARGET.replace(/[.]/gu, "\\.")}"[^<>]*(?:/>|>[^<]*</Config>)[ \\t]*\\r?\\n?`, "u"), "")
+  const target = before.children.find((child) => child.name === "Config" && targets.includes(child.attributes.Target)).attributes.Target
+  const next = text.replace(new RegExp(`[ \\t]*<Config\\b[^<>]*\\sTarget="${target.replace(/[.]/gu, "\\.")}"[^<>]*(?:/>|>[^<]*</Config>)[ \\t]*\\r?\\n?`, "u"), "")
   const after = parse(next)
   return after && psycheConfigs(after) === 0 && after.children.length === before.children.length - 1 ? next : text
 }
@@ -1218,21 +1339,107 @@ export function withSyncConfig(text, parse) {
   return after && syncConfigs(after) === 1 && after.children.length === before.children.length + 1 ? next : text
 }
 
-// Keep Unraid's DockerMan template (what the UI's Apply/Update uses) on the live image, without the old psyche mount.
-// Runs after the commit, so the parser comes from the installed package (this script is staged on its own, without siblings).
+// Keep Unraid's DockerMan template (what the UI's Apply/Update uses) on the live image, without the old psyche mount, and
+// mounting the bundle and trust where that image's Butler expects them. Runs after the commit, so the parser comes from the
+// installed package (this script is staged on its own, without siblings). The upgrade checks it can pin before it changes
+// anything (templatePinProblem), so a template it cannot move to a new Butler name stops the upgrade instead of the pin.
 function pinTemplate(version) {
-  if (!existsSync(TEMPLATE)) { console.log("  note: no DockerMan template to update"); return }
-  const text = readFileSync(TEMPLATE, "utf8")
-  let next = text.replace(/<Repository>ghcr\.io\/ourostack\/ouroboros-butler:[^<]+<\/Repository>/u, `<Repository>${image(version)}</Repository>`)
-  if (!next.includes(`<Repository>${image(version)}</Repository>`)) { console.log("  WARN: DockerMan template Repository not recognised; left unchanged"); return }
+  const pin = templatePin(version)
+  if (pin.absent) { console.log("  note: no DockerMan template to update"); return }
+  if (pin.problem) fail(`${pin.problem}; a DockerMan Apply would mount the bundle and trust where ${image(version)} does not look for them, so fix the template by hand first`)
+  for (const warning of pin.warnings) console.log(`  WARN: ${warning}`)
+  if (pin.text !== pin.original) { writeFileSync(`${TEMPLATE}.prev`, pin.original); writeFileSync(TEMPLATE, pin.text) }
+  if (!pin.skipped) ok(`DockerMan template pins ${image(version)}`)
+}
+
+/** The installed template, pinned for this version and the Butler name its image runs, without writing it. */
+function templatePin(version) {
+  if (!existsSync(TEMPLATE)) return { absent: true }
+  const original = readFileSync(TEMPLATE, "utf8")
+  let parse = null
+  let parserError = null
   try {
-    const { parseDockerManTemplateXml } = createRequire(import.meta.url)(`${ROOT}/package/deploy/unraid/docker-man-template-xml.cjs`)
-    next = withSyncConfig(withoutPsycheConfig(next, parseDockerManTemplateXml), parseDockerManTemplateXml)
-  } catch (error) { console.log(`  WARN: could not load the DockerMan template parser (${error.message}); psyche Config left in place, sync key Config not added`) }
-  if (next.includes(`Target="${PSYCHE_TARGET}"`)) console.log("  WARN: DockerMan template still has a psyche Config; remove it before the next DockerMan Apply")
-  if (!next.includes(`Target="${SYNC_TARGET}"`)) console.log(`  WARN: DockerMan template has no ${SYNC_TARGET} Config; add it before the next DockerMan Apply`)
-  if (next !== text) { writeFileSync(`${TEMPLATE}.prev`, text); writeFileSync(TEMPLATE, next) }
-  ok(`DockerMan template pins ${image(version)}`)
+    // Load the parser fresh each time: preflight reads the predecessor package's copy, and the pin after the switch must
+    // read the new one at the same path, which require's cache would otherwise hand back.
+    const load = createRequire(import.meta.url)
+    const parserPath = `${ROOT}/package/deploy/unraid/docker-man-template-xml.cjs`
+    delete load.cache[load.resolve(parserPath)]
+    parse = load(parserPath).parseDockerManTemplateXml
+  } catch (error) { parserError = error.message }
+  return { original, ...pinTemplateText(original, image(version), imageButlerName(image(version)), parse, parserError) }
+}
+
+/** Why the installed template cannot be pinned for this version, or null (also when there is no template). */
+function templatePinProblem(version) { return templatePin(version).problem ?? null }
+
+/**
+ * Whether the template must have its bundle and trust Targets moved to this Butler name: it lacks either one under the name,
+ * and the name is butler or the template already says butler somewhere. A sanctuary image never moves a sanctuary template,
+ * so every sanctuary pin does exactly what it did before the rename.
+ */
+export function templateNeedsButlerName(text, name) {
+  const has = (target) => text.includes(`Target="${target}"`)
+  if (has(containerBundle(name)) && has(trustTarget(name))) return false
+  return name !== "sanctuary" || has(containerBundle("butler")) || has(trustTarget("butler"))
+}
+
+/**
+ * The template with its bundle Config's Target and its trust Config's Target moved to this Butler name. Their Defaults and
+ * values, the host folders, stay. A template with no trust Config keeps none: the resident's trust mount comes from the root
+ * lifecycle, which names it from the image, and the live install's template has never had one. `{ problem }` when the parser
+ * cannot read it, it lacks exactly one bundle Config, it has more than one trust Config, a Target appears more than once in the
+ * text, or the result does not parse with exactly those moved.
+ */
+export function withButlerTargets(text, name, parse) {
+  const configs = (document, targets) => document.children.filter((child) => child.name === "Config" && targets.includes(child.attributes.Target))
+  const before = parse(text)
+  if (!before) return { problem: "the DockerMan template cannot be parsed" }
+  const bundles = configs(before, BUTLER_NAMES.map(containerBundle))
+  const trusts = configs(before, BUTLER_NAMES.map(trustTarget))
+  if (bundles.length !== 1 || trusts.length > 1) return { problem: "the DockerMan template does not have exactly one bundle Config and at most one trust Config" }
+  let next = text
+  const moves = [[bundles[0], containerBundle(name)], ...trusts.map((trust) => [trust, trustTarget(name)])]
+  for (const [config, target] of moves) {
+    const from = `Target="${config.attributes.Target}"`
+    if (config.attributes.Target === target) continue
+    if (next.split(from).length !== 2) return { problem: `the DockerMan template has ${from} more than once` }
+    next = next.replace(from, `Target="${target}"`)
+  }
+  const after = parse(next)
+  if (!after || after.children.length !== before.children.length || configs(after, [containerBundle(name)]).length !== 1 || configs(after, [trustTarget(name)]).length !== trusts.length) {
+    return { problem: "moving the DockerMan template's bundle and trust Targets did not leave exactly those moved" }
+  }
+  return { text: next }
+}
+
+/**
+ * The template text pinned to `reference` for the Butler `name`: the Repository, no psyche Config, the sync key Config, and
+ * the bundle and trust Targets under `name`. `parse` is null when the parser could not be loaded (`parserError` says why).
+ * `{ problem }` when the Targets must move to a new name and cannot; otherwise `{ text, warnings, skipped }`, where the parts
+ * a sanctuary pin has always only warned about stay warnings.
+ */
+export function pinTemplateText(text, reference, name, parse, parserError) {
+  const needsName = templateNeedsButlerName(text, name)
+  const repository = `<Repository>${reference}</Repository>`
+  let next = text.replace(/<Repository>ghcr\.io\/ourostack\/ouroboros-butler:[^<]+<\/Repository>/u, repository)
+  if (!next.includes(repository)) {
+    return needsName ? { problem: "the DockerMan template's Repository is not recognised" } : { text, warnings: ["DockerMan template Repository not recognised; left unchanged"], skipped: true }
+  }
+  const warnings = []
+  if (!parse) {
+    if (needsName) return { problem: `the DockerMan template parser could not be loaded (${parserError})` }
+    warnings.push(`could not load the DockerMan template parser (${parserError}); psyche Config left in place, sync key Config not added`)
+  } else {
+    next = withSyncConfig(withoutPsycheConfig(next, parse), parse)
+    if (needsName) {
+      const moved = withButlerTargets(next, name, parse)
+      if (moved.problem) return { problem: moved.problem }
+      next = moved.text
+    }
+  }
+  if (BUTLER_NAMES.some((butler) => next.includes(`Target="${psycheTarget(butler)}"`))) warnings.push("DockerMan template still has a psyche Config; remove it before the next DockerMan Apply")
+  if (!next.includes(`Target="${SYNC_TARGET}"`)) warnings.push(`DockerMan template has no ${SYNC_TARGET} Config; add it before the next DockerMan Apply`)
+  return { text: next, warnings, skipped: false }
 }
 
 // Every release pulls a ~1 GB Butler image, and Unraid's docker.img filled to 88% with
@@ -1355,6 +1562,9 @@ async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
   const current = JSON.parse(readFileSync(`${ROOT}/request.json`, "utf8"))
   if (existsSync(UPGRADE_JOURNAL)) console.log("  note: resuming the pending in-place upgrade with its staged package")
   else {
+    // The root lifecycle refuses this too when the upgrade begins; refusing here leaves nothing staged or paused.
+    const renameIssue = renamePredecessorIssue(version, docker(["inspect", CONTAINER, "--format", "{{.Image}}"]).trim())
+    if (renameIssue) fail(`${renameIssue}; nothing was paused or changed`)
     const manifestBytes = stageIncomingPackage(version)
     const pkgVersion = JSON.parse(readFileSync(`${ROOT}/incoming-package/deploy/unraid/sanctuary.ouro/bundle-meta.json`, "utf8")).runtimeVersion
     if (pkgVersion !== version) fail(`staged package is ${pkgVersion}, not ${version}`)
@@ -1372,10 +1582,13 @@ async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
   if (!telegram.ok) fail(`api.telegram.org is not reachable from this host (${telegram.detail}); the new gateway could not pass its Telegram identity check. Nothing was paused or changed; fix the network and re-run.`)
   if (telegram.skipped) console.log("  note: resuming a pending upgrade; Telegram reachability not re-checked")
   else ok(`api.telegram.org reachable (${telegram.detail})`)
-  const psycheDir = `${BUNDLE}/psyche`
+  const pinProblem = templatePinProblem(version)
+  if (pinProblem) fail(`${pinProblem}, so the DockerMan template could not follow ${image(version)}; nothing was paused or changed`)
+  // The host bundle is found on disk at each use; it never moves, so every check below reads the same psyche.
+  const psycheDir = () => `${hostBundle()}/psyche`
   let planted = null
   if (gated) {
-    try { planted = plantPsycheMarker(psycheDir, { uid: 10001, gid: 10001 }) } catch (e) { fail(`could not plant the psyche marker before the gated upgrade; nothing was paused or changed: ${e.message}`) }
+    try { planted = plantPsycheMarker(psycheDir(), { uid: 10001, gid: 10001 }) } catch (e) { fail(`could not plant the psyche marker before the gated upgrade; nothing was paused or changed: ${e.message}`) }
     ok("psyche marker planted and the four identity files hashed")
   }
   pauseSupervision()
@@ -1413,7 +1626,7 @@ async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
         runGate: () => {
           if (preserved.length) return { ok: false, detail: preserved.join("; ") }
           if (!waitForButler(image(version), 300)) return { ok: false, detail: `the new Butler did not become healthy on ${image(version)}` }
-          const lost = reportPsycheSurvival("psyche-survives-release", psycheDir, planted)
+          const lost = reportPsycheSurvival("psyche-survives-release", psycheDir(), planted)
           if (lost) return { ok: false, detail: `the psyche did not survive the release: ${lost}` }
           const result = runReplayGate(plant)
           if (!result.ok) return result
@@ -1437,14 +1650,14 @@ async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
         },
         confirmRollback: () => {
           if (!waitForButler(priorImage, 300)) fail(`rolled back, but ${priorImage} is not running healthy; inspect \`docker logs ${CONTAINER}\``)
-          reportPsycheSurvival("psyche-survives-rollback", psycheDir, planted)
+          reportPsycheSurvival("psyche-survives-rollback", psycheDir(), planted)
           return priorImage
         },
         pin: () => pinTemplate(version),
         prune: () => pruneButlerImages(),
       })
     } finally {
-      const left = removePsycheMarker(psycheDir, planted.token)
+      const left = removePsycheMarker(psycheDir(), planted.token)
       if (left) warn(`the psyche marker was left in place: ${left}`)
     }
     if (!outcome.passed) process.exit(1)
@@ -1462,19 +1675,22 @@ function verify(withGate = false) {
   ok(`butler: ${st}`)
   const auth = docker(["logs", CONTAINER, "--since", "2m"], { stdio: ["ignore","pipe","pipe"] }).split("\n").filter((l) => l.includes("401")).length
   auth === 0 ? ok("no Telegram auth failures in the last 2m") : bad(`${auth} 401s in the last 2m`)
-  existsSync(POLICY) ? ok(`steward policy ${sha12(POLICY)}`) : installedRequest()?.predecessorContract === "none" ? ok("no steward policy yet") : bad("steward policy missing")
+  const policy = policyFile()
+  existsSync(policy) ? ok(`steward policy ${sha12(policy)}`) : installedRequest()?.predecessorContract === "none" ? ok("no steward policy yet") : bad("steward policy missing")
+  // The paths inside the resident follow the Butler name its image runs.
+  const name = liveButlerName()
   const psycheMount = JSON.parse(docker(["inspect", CONTAINER, "--format", "{{json .Mounts}}"]) || "[]")
-  psycheMountIssue(psycheMount) === null ? ok("psyche mount is in a supported shape") : bad(psycheMountIssue(psycheMount))
-  existsSync(TEMPLATE) && readFileSync(TEMPLATE, "utf8").includes(`Target="${PSYCHE_TARGET}"`)
+  psycheMountIssue(psycheMount, name) === null ? ok("psyche mount is in a supported shape") : bad(psycheMountIssue(psycheMount, name))
+  existsSync(TEMPLATE) && BUTLER_NAMES.some((butler) => readFileSync(TEMPLATE, "utf8").includes(`Target="${psycheTarget(butler)}"`))
     ? bad("installed DockerMan template still mounts the psyche read-only; a DockerMan Apply would restore it")
     : ok("installed DockerMan template has no separate psyche mount")
   const trustMount = JSON.parse(docker(["inspect", CONTAINER, "--format", "{{json .Mounts}}"]) || "[]")
-  trustMountIssue(trustMount) === null ? ok("the operator trust directory is mounted read-only in the resident") : bad(trustMountIssue(trustMount))
+  trustMountIssue(trustMount, name) === null ? ok("the operator trust directory is mounted read-only in the resident") : bad(trustMountIssue(trustMount, name))
   const trustIssue = existsSync(TRUST_HOST_DIR) ? trustDirIssue(lstatSync(TRUST_HOST_DIR)) : `${TRUST_HOST_DIR} is missing`
   trustIssue === null ? ok("the host trust directory is root-owned and closed to group and other writes") : bad(trustIssue)
-  const droppedHolders = escalationGrantProblems()
+  const droppedHolders = escalationGrantProblems(name)
   droppedHolders.length === 0 ? ok("every escalation holder is in the trusted file") : droppedHolders.forEach((line) => bad(line))
-  const psycheDir = `${BUNDLE}/psyche`
+  const psycheDir = `${hostBundle()}/psyche`
   if (existsSync(psycheDir)) {
     const psycheIssues = psycheProblems(psycheDir)
     psycheIssues.length === 0 ? ok("psyche files are resident-owned and writable") : bad(`psyche files must be owned by the resident (uid 10001), not writable by group or others, and not symlinks: ${psycheIssues.slice(0, 3).join("; ")}`)

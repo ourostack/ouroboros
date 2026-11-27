@@ -8,7 +8,7 @@ import type { BridgeRecord } from "./bridges/store"
 import type { InnerJob } from "./daemon/thoughts"
 import { isOpenObligation, isOpenObligationStatus, type Obligation, type ObligationStatus } from "../arc/obligations"
 import { describeSessionActivityTiming, selectFreshestFriendFacingActivity, type SessionActivityRecord } from "./session-activity"
-import { formatTargetSessionCandidates, type TargetSessionCandidate } from "./target-resolution"
+import { describeChannelReach, formatTargetSessionCandidates, type TargetSessionCandidate } from "./target-resolution"
 import { sanitizeKey } from "./config"
 import type { BackgroundOperationRecord } from "./background-operations"
 import { labelPriorWorkSurface } from "./orientation-frame"
@@ -879,14 +879,13 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame, options?: ActiveWo
   const lines = ["## what i'm holding"]
   lines.push("this is my top-level live world-state right now. private-runtime work, coding lanes, other sessions, and return obligations all belong inside this picture.")
   lines.push("if older checkpoints elsewhere in the transcript disagree with this picture, this picture wins.")
-  const friendContactTiming = describeSessionActivityTiming(
-    selectFreshestFriendFacingActivity(frame.friendActivity?.allOtherLiveSessions ?? []),
-    { prefix: "freshest friend-facing contact" },
-  )
+  const freshestContact = selectFreshestFriendFacingActivity(frame.friendActivity?.allOtherLiveSessions ?? [])
+  const friendContactTiming = describeSessionActivityTiming(freshestContact, { prefix: "freshest friend-facing contact" })
   if (friendContactTiming) {
+    const reach = describeChannelReach(freshestContact!.channel)
     lines.push("")
     lines.push("## contact timing")
-    lines.push(`- ${friendContactTiming}`)
+    lines.push(`- ${friendContactTiming}${reach ? `; reach there: ${reach}` : ""}`)
   }
   const primaryObligation = findPrimaryOpenObligation(frame)
   const currentSessionObligation = findCurrentSessionOpenObligation(frame)

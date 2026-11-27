@@ -5,7 +5,8 @@ import { createServer, type Server } from "node:http"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import { getAgentRoot } from "../heart/identity"
+import { getAgentBundlesRoot, getAgentRoot } from "../heart/identity"
+import { butlerContainerPaths, butlerOnDisk, type ButlerAgentName } from "../heart/butler-agent"
 import { readSanctuaryHouse, type SanctuaryHouse } from "./sanctuary-house"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
@@ -29,8 +30,6 @@ export function acceptanceTargetEndpoint(house: Pick<SanctuaryHouse, "publicEndp
   if (!target) throw new Error("Sanctuary health acceptance probe needs a public endpoint in house/house.json")
   return target.url
 }
-const CRON_MARKER = "# ouro:habit:sanctuary:sanctuary:sanctuary-health"
-const CRON_COMMAND = "*/15 * * * * /usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron"
 const PROCESS_ENTRY = "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe-entry.js"
 const LABELS = ["unit-16f-cron-fingerprint", "unit-16g-health-transition", "unit-16h-acceptance-delivery-probe"] as const
 
@@ -90,6 +89,8 @@ export interface SanctuaryHealthAcceptanceProbeReceipt {
 }
 
 export interface SanctuaryHealthAcceptanceProbeDependencies {
+  /** The Butler the probe runs as; by default the one whose bundle is on disk (see `probeButler`). */
+  butler?: ButlerAgentName
   agentRoot: string
   runtimeRoot: string
   toolContext: ReturnType<typeof createSanctuaryToolContext>
@@ -105,6 +106,14 @@ export interface SanctuaryHealthAcceptanceProbeDependencies {
   }
   createLoopbackServer?: typeof createServer
   house: Pick<SanctuaryHouse, "publicEndpoints" | "requiredContainers">
+}
+
+/**
+ * The Butler whose bundle is on disk. The probe runs as its own process, where no daemon start has said which name is
+ * running, so it asks the bundles folder; with neither bundle (or both) there it keeps `sanctuary`, the name from before the rename.
+ */
+export function probeButler(bundlesRoot = getAgentBundlesRoot(), exists: (bundlePath: string) => boolean = fs.existsSync): ButlerAgentName {
+  return butlerOnDisk(bundlesRoot, exists) ?? "sanctuary"
 }
 
 interface HealthSnapshot { exists: boolean; bytes: string }
@@ -227,7 +236,7 @@ export function createSanctuaryHealthAcceptanceProbeProcessDependencies(options:
 } = {}, host: SanctuaryHealthAcceptanceProbeProcessHost = createSanctuaryHealthAcceptanceProbeProcessHost()): SanctuaryHealthAcceptanceProbeProcessDependencies {
   const kill = options.kill ?? host.kill
   return {
-    agentRoot: options.agentRoot ?? getAgentRoot("sanctuary"),
+    agentRoot: options.agentRoot ?? getAgentRoot(probeButler()),
     listPids: () => (options.listProcEntries?.() ?? host.listProcEntries()).filter((entry) => /^[0-9]+$/u.test(entry)).map(Number),
     processAlive: (pid) => {
       try { kill(pid, 0); return true }
@@ -399,10 +408,12 @@ export function exactLocalDailyBoundary(reference: Date): Date {
   return result
 }
 
-function canonicalCron(raw: string): boolean {
+/** Whether the crontab registers the health habit for this Butler, under the name its marker and command carry. */
+function canonicalCron(raw: string, butler: ButlerAgentName): boolean {
+  const { healthCronMarker, healthCommand } = butlerContainerPaths(butler)
   const lines = raw.split(/\r?\n/u)
-  const marker = lines.indexOf(CRON_MARKER)
-  return marker >= 0 && lines[marker + 1] === CRON_COMMAND
+  const marker = lines.indexOf(healthCronMarker)
+  return marker >= 0 && lines[marker + 1] === `*/15 * * * * ${healthCommand}`
 }
 
 async function closeServer(server: Server): Promise<void> {
@@ -447,8 +458,10 @@ export function createSanctuaryHealthAcceptanceProbeDependencies(
   overrides: Partial<SanctuaryHealthAcceptanceProbeDependencies> = {},
   schedulerWait: { timeoutMs?: number; pollMs?: number } = {},
 ): SanctuaryHealthAcceptanceProbeDependencies {
-  const agentRoot = overrides.agentRoot ?? getAgentRoot("sanctuary")
+  const butler = overrides.butler ?? probeButler()
+  const agentRoot = overrides.agentRoot ?? getAgentRoot(butler)
   const defaults: SanctuaryHealthAcceptanceProbeDependencies = {
+    butler,
     agentRoot,
     runtimeRoot: overrides.runtimeRoot ?? path.join(os.homedir(), ".ouro-cli"),
     ambientFetch: overrides.ambientFetch ?? fetch,
@@ -466,7 +479,7 @@ export function createSanctuaryHealthAcceptanceProbeDependencies(
       }
       throw new Error("Sanctuary scheduler liveness receipt timed out")
     }),
-    toolContext: overrides.toolContext ?? createSanctuaryToolContext("sanctuary"),
+    toolContext: overrides.toolContext ?? createSanctuaryToolContext(butler),
     acceptanceFs: overrides.acceptanceFs,
     createLoopbackServer: overrides.createLoopbackServer,
     house: overrides.house ?? readSanctuaryHouse(agentRoot),
@@ -575,10 +588,11 @@ export async function runSanctuaryHealthAcceptanceProbe(
   const beforeStateDigest = snapshotDigest(snapshot)
   atomicPrivateFile(snapshotPath, `${JSON.stringify(snapshot)}\n`)
   atomicPrivateFile(checkpointPath, `${JSON.stringify({ schemaVersion: 1, ownerImageDigest: input.ownerImageDigest, ownerContainerDigest: input.ownerContainerDigest })}\n`)
-  const cronPath = path.join(dependencies.runtimeRoot, "scheduler", "sanctuary.crontab")
+  const butler = dependencies.butler ?? probeButler()
+  const cronPath = path.join(dependencies.runtimeRoot, "scheduler", `${butler}.crontab`)
   const cronBefore = fs.readFileSync(cronPath, "utf8")
   const cronFingerprintBefore = digestBytes(cronBefore)
-  const cronRegisteredBefore = canonicalCron(cronBefore)
+  const cronRegisteredBefore = canonicalCron(cronBefore, butler)
   const effectiveNow = input.label === "unit-16h-acceptance-delivery-probe" ? exactLocalDailyBoundary(dependencies.now()) : dependencies.now()
   let fixture: Awaited<ReturnType<typeof createSanctuaryHealthAcceptanceLoopbackFixture>> | undefined
   let expectedIncidentDigest = ""
@@ -623,7 +637,7 @@ export async function runSanctuaryHealthAcceptanceProbe(
           toolContext: dependencies.toolContext, house: dependencies.house, statePath, fetch: fetchImpl, now: () => now, lease, endpointDebounce: false,
           acceptanceEventMeta: () => ({ scenarioHandleDigest: input.scenarioHandleDigest }),
         })
-        await runSanctuaryHealthHabit("sanctuary", {
+        await runSanctuaryHealthHabit(butler, {
           ...dependencies.runnerOptions,
           createSweep: () => sweep,
           acceptanceMetrics: {
@@ -654,7 +668,7 @@ export async function runSanctuaryHealthAcceptanceProbe(
     })
     const cronAfter = fs.readFileSync(cronPath, "utf8")
     const cronFingerprintAfter = digestBytes(cronAfter)
-    const cronRegisteredAfter = canonicalCron(cronAfter)
+    const cronRegisteredAfter = canonicalCron(cronAfter, butler)
     const observedFixtureSequence = fixture?.observed ?? []
     removeProbeWorkspace(workspace)
     const receipt: SanctuaryHealthAcceptanceProbeReceipt = {
@@ -711,7 +725,7 @@ export async function runSanctuaryHealthAcceptanceProbe(
 export function finalizeSanctuaryHealthAcceptanceProbe(
   input: SanctuaryHealthAcceptanceProbeInput,
   after: { ownerImageDigest: string; ownerContainerDigest: string },
-  dependencies: Pick<SanctuaryHealthAcceptanceProbeDependencies, "agentRoot"> = { agentRoot: getAgentRoot("sanctuary") },
+  dependencies: Pick<SanctuaryHealthAcceptanceProbeDependencies, "agentRoot"> = { agentRoot: getAgentRoot(probeButler()) },
 ): SanctuaryHealthAcceptanceProbeReceipt {
   canonicalInput(input)
   if (!SHA256.test(after.ownerImageDigest) || !SHA256.test(after.ownerContainerDigest)) throw new Error("Sanctuary health acceptance final owner is invalid")

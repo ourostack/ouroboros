@@ -5,7 +5,7 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getOuroCliHome } from "../versioning/ouro-version-manager"
 import { writeFileAtomicSync } from "../atomic-file"
-import { isButlerAgent, type ButlerAgentName } from "../butler-agent"
+import { BUTLER_AGENT_NAMES, isButlerAgent, managedButlerAgent, type ButlerAgentName } from "../butler-agent"
 
 export type ExternalEventTransition = "opened" | "unchanged" | "changed" | "escalated" | "recovered"
 export type ExternalEventExecutionState = "received" | "queued" | "running" | "handled" | "retry_wait" | "dead_letter"
@@ -436,15 +436,225 @@ function isRecord(value: unknown): value is ExternalEventRecord {
     && validGrant
 }
 
-export function readExternalEventRecord(recordPath: string): ExternalEventRecord {
+// The Butler this daemon runs, set once at daemon start. Records saved under the Butler's other name are its records.
+let runningButler: ButlerAgentName | null = null
+
+/** The agent a record or new event belongs to: a Butler name means the running Butler, or the Butler folder it sits in. */
+function eventAgent(agent: string, folder?: string): string {
+  if (!isButlerAgent(agent)) return agent
+  if (runningButler) return runningButler
+  return folder !== undefined && isButlerAgent(folder) ? folder : agent
+}
+
+/** The record as the daemon sees it: owned by the running Butler, at the path it was read from. */
+function normaliseButlerRecord(record: ExternalEventRecord, recordPath: string): ExternalEventRecord {
+  const agent = eventAgent(record.agent, path.basename(path.dirname(path.dirname(recordPath))))
+  return agent === record.agent && record.recordPath === recordPath ? record : { ...record, agent, recordPath }
+}
+
+/** The record exactly as saved, after checking it sits where its identity says (or in the other Butler name's folder). */
+function readStoredExternalEventRecord(recordPath: string): ExternalEventRecord {
   const parsed: unknown = JSON.parse(fs.readFileSync(recordPath, "utf8"))
   if (!isRecord(parsed)) throw new Error(`External event record is invalid: ${recordPath}`)
   const root = path.dirname(path.dirname(path.dirname(recordPath)))
-  const expectedPath = externalEventRecordPath(root, parsed)
-  if (path.resolve(parsed.recordPath) !== path.resolve(recordPath) || path.resolve(expectedPath) !== path.resolve(recordPath)) {
-    throw new Error(`External event record identity is invalid: ${recordPath}`)
-  }
+  const here = path.resolve(recordPath)
+  const expectedPath = path.resolve(externalEventRecordPath(root, parsed))
+  if (path.resolve(parsed.recordPath) === here && expectedPath === here) return parsed
+  // A Butler record whose folder was adopted under the Butler's other name: it names the folder it was written in, or this one.
+  const folder = path.basename(path.dirname(path.dirname(recordPath)))
+  const adopted = isButlerAgent(parsed.agent) && isButlerAgent(folder)
+    && path.resolve(externalEventRecordPath(root, { ...parsed, agent: folder })) === here
+    && [here, expectedPath].includes(path.resolve(parsed.recordPath))
+  if (!adopted) throw new Error(`External event record identity is invalid: ${recordPath}`)
   return parsed
+}
+
+export function readExternalEventRecord(recordPath: string): ExternalEventRecord {
+  return normaliseButlerRecord(readStoredExternalEventRecord(recordPath), recordPath)
+}
+
+/**
+ * The record an external-event Await names. Its key is the record's absolute path when it was filed; once the running
+ * Butler has taken over its other name's event folder, the same record sits under the running name's folder instead.
+ * Only a Butler's Await, keyed under a Butler name's folder, is looked up again.
+ */
+export function externalEventAwaitRecordPath(agentName: string, filedFromKey: string, root = getExternalEventRoot()): string {
+  const resolvedRoot = path.resolve(root)
+  const [folder, ...rest] = path.relative(resolvedRoot, path.resolve(filedFromKey)).split(path.sep)
+  if (!isButlerAgent(agentName) || !isButlerAgent(folder) || folder === agentName || fs.existsSync(filedFromKey)) return filedFromKey
+  return path.join(resolvedRoot, agentName, ...rest)
+}
+
+export type ButlerExternalEventAdoption = "none" | "adopted" | "merged" | "skipped"
+
+/** Why the running Butler could not take over its other name's event folder. The daemon does not start until it is fixed. */
+export class ButlerExternalEventAdoptionError extends Error {
+  override readonly name = "ButlerExternalEventAdoptionError"
+}
+
+/** Where adoption keeps the other name's copy of a record that differs from the running Butler's. It starts with `.`, so no scan reads it as an agent. */
+export const BUTLER_ADOPTION_CONFLICTS_FOLDER = ".adoption-conflicts"
+/** The external-events folder as the Unraid host sees it, for guidance a person or agent follows from outside the container. */
+const BUTLER_HOST_EXTERNAL_EVENT_ROOT = "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli/daemon/external-events"
+
+/** The running Butler, as the daemon start set it; null outside the daemon, or when it manages no Butler (or both). */
+export function runningButlerAgent(): ButlerAgentName | null {
+  return runningButler
+}
+
+/** The lock folders the event store makes: a record's `<id>.json.lock`, `.capacity.lock`, and `.privileged-replay.lock`. */
+function isEventStoreLock(name: string): boolean {
+  return name.endsWith(".json.lock") || name === ".capacity.lock" || name === ".privileged-replay.lock"
+}
+
+interface ButlerEventFolderMerge {
+  moves: Array<{ from: string; to: string }>
+  replays: Array<{ from: string; to: string }>
+  /** Entries both folders have that differ: the running folder's copy stays, the other's goes to quarantine at `relative`. */
+  conflicts: Array<{ from: string; relative: string }>
+}
+
+/** What merging `from` into `to` would do, worked out before anything moves. */
+function planButlerEventFolderMerge(from: string, to: string, relative = "", plan: ButlerEventFolderMerge = { moves: [], replays: [], conflicts: [] }): ButlerEventFolderMerge {
+  for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+    const source = path.join(from, entry.name)
+    const target = path.join(to, entry.name)
+    const at = path.join(relative, entry.name)
+    // A lock left by the other name's daemon, which is not running: it is removed with the folder.
+    if (entry.isDirectory() && isEventStoreLock(entry.name)) continue
+    let targetStat: fs.Stats | null = null
+    try { targetStat = fs.lstatSync(target) } catch { targetStat = null }
+    if (!targetStat) plan.moves.push({ from: source, to: target })
+    else if (entry.isDirectory() && targetStat.isDirectory()) planButlerEventFolderMerge(source, target, at, plan)
+    else if (entry.isFile() && targetStat.isFile() && entry.name === PRIVILEGED_REPLAY_STATE_FILE) plan.replays.push({ from: source, to: target })
+    // A byte-identical copy is dropped with the folder; anything else both folders have is a conflict.
+    else if (!entry.isFile() || !targetStat.isFile() || !fs.readFileSync(source).equals(fs.readFileSync(target))) plan.conflicts.push({ from: source, relative: at })
+  }
+  return plan
+}
+
+function readReplayStateForMerge(statePath: string): PrivilegedReplayState | null {
+  let parsed: unknown
+  try { parsed = JSON.parse(fs.readFileSync(statePath, "utf8")) } catch { parsed = null }
+  return isReplayState(parsed) ? parsed : null
+}
+
+/** The privileged ingress nonce a record about to be quarantined holds, so the combined manifest still refuses its envelope. */
+function quarantinedNonce(recordPath: string): string | null {
+  let parsed: unknown
+  try { parsed = JSON.parse(fs.readFileSync(recordPath, "utf8")) } catch { return null }
+  const nonce: unknown = Object(parsed).privilegedIngressNonce
+  return typeof nonce === "string" ? nonce : null
+}
+
+interface ButlerEventFolderMergeResult { moved: number; quarantined: number; quarantine: string }
+
+/**
+ * Merge the other name's event folder into the running Butler's. The privileged replay manifests are combined first, so no
+ * accepted envelope is accepted twice. Each record the running folder lacks moves over. A record both have that differs keeps
+ * the running folder's copy, and the other's moves to `quarantine`: never deleted, and never a reason not to start.
+ */
+function mergeButlerEventFolders(from: string, to: string, quarantine: string, butler: ButlerAgentName, now: string): ButlerEventFolderMergeResult {
+  const plan = planButlerEventFolderMerge(from, to)
+  const privilegedSource = path.join(from, PRIVILEGED_EVENT_SOURCE)
+  const nonces = plan.conflicts.filter((conflict) => path.dirname(conflict.from) === privilegedSource).map((conflict) => quarantinedNonce(conflict.from)).filter((nonce): nonce is string => nonce !== null)
+  for (const replay of plan.replays) {
+    const running = readReplayStateForMerge(replay.to)
+    const other = readReplayStateForMerge(replay.from)
+    if (!running || !other) {
+      // A manifest that cannot be read is not combined: the other's copy is kept in quarantine with the records that differ.
+      plan.conflicts.push({ from: replay.from, relative: path.relative(from, replay.from) })
+      continue
+    }
+    let merged = mergeReplayManifests(running, other)
+    for (const nonce of nonces) merged = replayAdd(merged, nonce)
+    atomicWriteJson(replay.to, replayStateFromManifest(merged, now, butler), "Privileged replay manifest")
+    // Gone at once, so a start interrupted after this point does not combine (and count) the same manifest again.
+    fs.unlinkSync(replay.from)
+  }
+  for (const conflict of plan.conflicts) {
+    const destination = path.join(quarantine, conflict.relative)
+    fs.mkdirSync(path.dirname(destination), { recursive: true })
+    fs.renameSync(conflict.from, destination)
+  }
+  for (const move of plan.moves) fs.renameSync(move.from, move.to)
+  removeMergedEventFolder(from)
+  return { moved: plan.moves.length, quarantined: plan.conflicts.length, quarantine }
+}
+
+/** What is left of a merged folder: byte-identical copies the running folder holds, and the store's stale locks. */
+function removeMergedEventFolder(dir: string): void {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const child = path.join(dir, entry.name)
+    if (entry.isDirectory()) removeMergedEventFolder(child)
+    else fs.unlinkSync(child)
+  }
+  fs.rmdirSync(dir)
+}
+
+/**
+ * At daemon start, the running Butler takes over the event folder saved under its other name (from before the rename,
+ * or from the release a rollback left): a same-filesystem rename, or a merge when both folders exist. Records that
+ * differ are quarantined, not lost. Only a rename that fails stops the start: records left outside the running
+ * Butler's folder can't be settled. A symlinked other folder is left alone, with a warning.
+ */
+export function prepareButlerExternalEvents(root: string, managedAgents: readonly string[], now: () => string = () => new Date().toISOString()): ButlerExternalEventAdoption {
+  const butler = managedButlerAgent(managedAgents)
+  runningButler = butler
+  if (!butler) return "none"
+  const otherName = BUTLER_AGENT_NAMES.find((name) => name !== butler)!
+  const own = path.join(root, butler)
+  const other = path.join(root, otherName)
+  let otherStat: fs.Stats
+  try { otherStat = fs.lstatSync(other) } catch { return "none" }
+  if (otherStat.isSymbolicLink() || !otherStat.isDirectory()) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.external_events_adoption_skipped",
+      message: "left the Butler's other-name external-events entry alone: it is not a plain folder",
+      meta: { butler, from: other, to: own, symlink: otherStat.isSymbolicLink() },
+    })
+    return "skipped"
+  }
+  const merging = fs.existsSync(own)
+  const at = now()
+  const quarantine = path.join(root, BUTLER_ADOPTION_CONFLICTS_FOLDER, otherName, at)
+  let result: ButlerEventFolderMergeResult = { moved: 0, quarantined: 0, quarantine }
+  try {
+    if (merging) result = mergeButlerEventFolders(other, own, quarantine, butler, at)
+    else fs.renameSync(other, own)
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : /* v8 ignore next -- fs throws Error objects @preserve */ String(error)
+    emitNervesEvent({
+      level: "error",
+      component: "daemon",
+      event: "daemon.external_events_adoption_failed",
+      message: "could not move the Butler's other-name external events to the running Butler",
+      meta: { butler, from: other, to: own, quarantine, merging, error: reason },
+    })
+    throw new ButlerExternalEventAdoptionError([
+      `Butler external events need attention: ${merging ? "merging" : "moving"} ${other} into ${own} failed: ${reason}`,
+      `  agent-runnable: move what is left in ${other} into ${own}, putting any record ${own} already has into ${quarantine} instead, then restart the daemon`,
+      `  on the Unraid host these are ${BUTLER_HOST_EXTERNAL_EVENT_ROOT}/${otherName}, ${BUTLER_HOST_EXTERNAL_EVENT_ROOT}/${butler} and ${BUTLER_HOST_EXTERNAL_EVENT_ROOT}/${path.relative(root, quarantine)}`,
+    ].join("\n"))
+  }
+  if (result.quarantined > 0) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.external_events_adoption_quarantined",
+      message: "kept the running Butler's copy of records both event folders had, and quarantined the other name's copy",
+      meta: { butler, from: other, to: own, quarantined: result.quarantined, quarantine },
+    })
+  }
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.external_events_adopted",
+    message: merging ? "merged the Butler's other-name external-event folder into the running Butler's" : "moved the Butler's other-name external-event folder to the running Butler",
+    meta: { butler, from: other, to: own, merging, moved: merging ? result.moved : null, quarantined: result.quarantined },
+  })
+  return merging ? "merged" : "adopted"
 }
 
 interface ExternalEventRepairEntry {
@@ -542,9 +752,17 @@ function parseRepairManifest(manifestPath: string): ExternalEventRepairManifest 
   return value as ExternalEventRepairManifest
 }
 
+/** The folder a reviewed repair's record is in: its own agent's, or the other Butler name's once the daemon adopted it. */
+function repairFolderAgent(root: string, entry: ExternalEventRepairEntry): string {
+  if (!isButlerAgent(entry.agent)) return entry.agent
+  const names = [entry.agent, ...BUTLER_AGENT_NAMES.filter((name) => name !== entry.agent)]
+  return names.find((agent) => fs.existsSync(externalEventRecordPath(root, { ...entry, agent }))) ?? entry.agent
+}
+
 function assertRepairRecordPath(root: string, entry: ExternalEventRepairEntry): string {
   const resolvedRoot = path.resolve(root)
-  const recordPath = externalEventRecordPath(resolvedRoot, entry)
+  const folderAgent = repairFolderAgent(resolvedRoot, entry)
+  const recordPath = externalEventRecordPath(resolvedRoot, { ...entry, agent: folderAgent })
   const relative = path.relative(resolvedRoot, path.resolve(recordPath))
   /* v8 ignore next -- defense in depth: safePathSegment cannot emit traversal @preserve */
   if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error(`External event repair path escapes its root for ${repairIdentity(entry)}`)
@@ -555,8 +773,8 @@ function assertRepairRecordPath(root: string, entry: ExternalEventRepairEntry): 
   }
   const expected = [
     [resolvedRoot, "directory"],
-    [path.join(resolvedRoot, safePathSegment(entry.agent)), "directory"],
-    [path.join(resolvedRoot, safePathSegment(entry.agent), safePathSegment(entry.source)), "directory"],
+    [path.join(resolvedRoot, safePathSegment(folderAgent)), "directory"],
+    [path.join(resolvedRoot, safePathSegment(folderAgent), safePathSegment(entry.source)), "directory"],
     [recordPath, "file"],
   ] as const
   for (const [candidate, kind] of expected) {
@@ -597,7 +815,7 @@ export function repairExternalEventsFromManifest(manifestPath: string, options: 
       const recordPath = assertRepairRecordPath(root, entry)
       const raw = fs.readFileSync(recordPath)
       const digest = digestBytes(raw)
-      const record = readExternalEventRecord(recordPath)
+      const record = readStoredExternalEventRecord(recordPath)
       if (digest === entry.postimageSha256) {
         assertRepairPostimage(record, entry, manifest.repairedAt)
         prepared.push({ entry, recordPath, state: "post" })
@@ -630,12 +848,12 @@ export function repairExternalEventsFromManifest(manifestPath: string, options: 
         const raw = fs.readFileSync(item.recordPath)
         const digest = digestBytes(raw)
         if (digest === item.entry.postimageSha256) {
-          assertRepairPostimage(readExternalEventRecord(item.recordPath), item.entry, manifest.repairedAt)
+          assertRepairPostimage(readStoredExternalEventRecord(item.recordPath), item.entry, manifest.repairedAt)
           result.alreadyApplied.push(identity)
           return
         }
         if (digest !== item.entry.preimageSha256) throw new Error("record advanced after prevalidation")
-        const record = readExternalEventRecord(item.recordPath)
+        const record = readStoredExternalEventRecord(item.recordPath)
         atomicWrite(item.recordPath, repairedRecord(record, manifest.repairedAt))
         result.applied.push(identity)
       })
@@ -842,7 +1060,7 @@ function readExisting(recordPath: string): { record: ExternalEventRecord | null;
   if (!fs.existsSync(recordPath)) return { record: null, corruptDuplicateCount: 0 }
   try {
     const parsed: unknown = JSON.parse(fs.readFileSync(recordPath, "utf8"))
-    if (isRecord(parsed)) return { record: parsed, corruptDuplicateCount: 0 }
+    if (isRecord(parsed)) return { record: normaliseButlerRecord(parsed, recordPath), corruptDuplicateCount: 0 }
     const duplicateCount = parsed && typeof parsed === "object" && !Array.isArray(parsed) && typeof (parsed as { duplicateCount?: unknown }).duplicateCount === "number"
       ? Number((parsed as { duplicateCount: number }).duplicateCount) + 1
       : 1
@@ -903,8 +1121,10 @@ function exhaustedRecoverySlot(record: { agent: string; source: string; eventId:
   return createHash("sha256").update(`${record.agent}\0${record.source}\0${record.eventId}`).digest().readUInt32BE(0) % EXHAUSTED_RECOVERY_SLOTS
 }
 
-function recordExternalEventInternal(input: ExternalEventInput, options: RecordExternalEventOptions = {}): ExternalEventRecord {
-  validateExternalEventInput(input)
+function recordExternalEventInternal(given: ExternalEventInput, options: RecordExternalEventOptions = {}): ExternalEventRecord {
+  validateExternalEventInput(given)
+  // An event naming the Butler's other name is the running Butler's, filed in its folder.
+  const input = { ...given, agent: eventAgent(given.agent) }
   const now = options.now?.() ?? new Date().toISOString()
   const root = options.root ?? getExternalEventRoot()
   const recordPath = externalEventRecordPath(root, input)
@@ -1159,12 +1379,12 @@ function acquirePrivilegedReplayLock(sourceDir: string): PrivilegedLockHandle | 
   return null
 }
 
-function replayStatePath(eventRoot: string): string {
-  return path.join(eventRoot, "sanctuary", PRIVILEGED_EVENT_SOURCE, PRIVILEGED_REPLAY_STATE_FILE)
+function replayStatePath(eventRoot: string, agent: ButlerAgentName): string {
+  return path.join(eventRoot, agent, PRIVILEGED_EVENT_SOURCE, PRIVILEGED_REPLAY_STATE_FILE)
 }
 
-function replayStateFromManifest(manifest: ExternalEventReplayManifest, updatedAt: string): PrivilegedReplayState {
-  return { schemaVersion: 1, agent: "sanctuary", source: PRIVILEGED_EVENT_SOURCE, ...manifest, updatedAt }
+function replayStateFromManifest(manifest: ExternalEventReplayManifest, updatedAt: string, agent: ButlerAgentName): PrivilegedReplayState {
+  return { schemaVersion: 1, agent, source: PRIVILEGED_EVENT_SOURCE, ...manifest, updatedAt }
 }
 
 function isReplayState(value: unknown): value is PrivilegedReplayState {
@@ -1174,8 +1394,8 @@ function isReplayState(value: unknown): value is PrivilegedReplayState {
   try { replayBytes(state as PrivilegedReplayState); return true } catch { return false }
 }
 
-function loadReplayState(eventRoot: string, sourceExisted: boolean, now: string): PrivilegedReplayState {
-  const statePath = replayStatePath(eventRoot)
+function loadReplayState(eventRoot: string, agent: ButlerAgentName, sourceExisted: boolean, now: string): PrivilegedReplayState {
+  const statePath = replayStatePath(eventRoot, agent)
   const sourceDir = path.dirname(statePath)
   const stateExists = fs.existsSync(statePath)
   let state: PrivilegedReplayState | null = null
@@ -1203,7 +1423,7 @@ function loadReplayState(eventRoot: string, sourceExisted: boolean, now: string)
     }
   }
   if (!state && sourceExisted && !legacyFound) throw new Error("Privileged replay manifest is missing")
-  const next = replayStateFromManifest(authority, now)
+  const next = replayStateFromManifest(authority, now, agent)
   atomicWriteJson(statePath, next, "Privileged replay manifest")
   for (const migration of migrations) {
     const retentionSummary = migration.record.retentionSummary ? retentionWithoutReplayManifest(migration.record.retentionSummary) : undefined
@@ -1217,13 +1437,15 @@ function loadReplayState(eventRoot: string, sourceExisted: boolean, now: string)
   return next
 }
 
-export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot?: string; now?: () => string }): { accepted: number; rejected: number; replayed: number } {
+/** `agent` is the Butler the daemon runs: its events, and the replay manifest that guards them, live under its name. */
+export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot?: string; agent?: ButlerAgentName; now?: () => string }): { accepted: number; rejected: number; replayed: number } {
   const entries = safeSpoolEntries(options.spoolRoot)
   let accepted = 0
   let rejected = 0
   let replayed = 0
   const eventRoot = options.eventRoot ?? getExternalEventRoot()
-  const sourceDir = path.dirname(replayStatePath(eventRoot))
+  const agent = options.agent ?? "sanctuary"
+  const sourceDir = path.dirname(replayStatePath(eventRoot, agent))
   const sourceExisted = fs.existsSync(sourceDir)
   let rootSafe = false
   try {
@@ -1236,9 +1458,9 @@ export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot
     if (replayLock) try {
       const initialNow = options.now?.() ?? new Date().toISOString()
       let replayState: PrivilegedReplayState
-      try { replayState = loadReplayState(eventRoot, sourceExisted, initialNow) } catch {
+      try { replayState = loadReplayState(eventRoot, agent, sourceExisted, initialNow) } catch {
         rejected = Math.max(1, entries.length)
-        replayState = replayStateFromManifest(emptyReplayManifest(), initialNow)
+        replayState = replayStateFromManifest(emptyReplayManifest(), initialNow, agent)
       }
       if (rejected === 0) for (const entry of entries) {
         replayLock.refresh()
@@ -1268,9 +1490,10 @@ export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot
           verification: { verified: envelope.protectiveStateVerified, digest: envelope.protectiveStateDigest, observedAt: envelope.protectiveStateObservedAt },
         }
         const transition: ExternalEventTransition = envelope.eventType === "usenet.health_observation" && envelope.transitionId.startsWith("recovered:") ? "recovered" : "opened"
-        const quietInitialReceipt = transition === "recovered" && !fs.existsSync(externalEventRecordPath(eventRoot, { agent: envelope.agent, source: envelope.source, eventId: envelope.incidentKey }))
+        const quietInitialReceipt = transition === "recovered" && !fs.existsSync(externalEventRecordPath(eventRoot, { agent, source: envelope.source, eventId: envelope.incidentKey }))
+        // The host's emitter may still name the Butler by its other name; the event is filed under the Butler this daemon runs.
         recordExternalEventInternal({
-          agent: envelope.agent,
+          agent,
           source: envelope.source,
           eventType: envelope.eventType,
           eventId: envelope.incidentKey,
@@ -1281,8 +1504,8 @@ export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot
           observationRevision: envelope.observationRevision,
           transition,
         }, { root: eventRoot, now: () => now, quietInitialReceipt, [privilegedIngress]: { nonce: envelope.nonce, protectiveAction } })
-        replayState = replayStateFromManifest(replayAdd(replayState, envelope.nonce), now)
-        atomicWriteJson(replayStatePath(eventRoot), replayState, "Privileged replay manifest")
+        replayState = replayStateFromManifest(replayAdd(replayState, envelope.nonce), now, agent)
+        atomicWriteJson(replayStatePath(eventRoot, agent), replayState, "Privileged replay manifest")
         accepted += 1
       } catch (error) {
         if (error instanceof Error && error.message === "Privileged external event replayed nonce") replayed += 1

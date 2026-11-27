@@ -53,7 +53,7 @@ import { awaitNameFromPrivateWakeCommand, buildAwaitPrivateWakeCommand } from ".
 import { buildHabitPrivateWakeCommand, habitMessageFromPrivateWakeCommand } from "./habit-private-wake"
 import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../habits/habit-parser"
 import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
-import { buildExternalEventMessage, claimExternalEvent, externalEventRecoveryFailure, getExternalEventRoot, isExactLegacyProviderRecoveryFailure, listExternalEventStatus, ExternalEventScanCache, reconcileExternalEvent, recordExternalEvent, repairExternalEventsFromManifest, reviveExternalEventAfterRecovery, scanPrivilegedEventSpool, settleExternalEventFailureIfOwned, type ExternalEventFailureClass, type ExternalEventLeaseContext, type ExternalEventLeaseMember, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
+import { buildExternalEventMessage, claimExternalEvent, runningButlerAgent, externalEventRecoveryFailure, getExternalEventRoot, isExactLegacyProviderRecoveryFailure, listExternalEventStatus, ExternalEventScanCache, reconcileExternalEvent, recordExternalEvent, repairExternalEventsFromManifest, reviveExternalEventAfterRecovery, scanPrivilegedEventSpool, settleExternalEventFailureIfOwned, type ExternalEventFailureClass, type ExternalEventLeaseContext, type ExternalEventLeaseMember, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
 import { isRsvpHabitName } from "../../rsvp/habit-policy"
 import { readContainerRuntimePolicy } from "./container-runtime"
 import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
@@ -553,6 +553,8 @@ export type DaemonCommand =
   | { kind: "mcp.list"; agent?: string }
   | { kind: "mcp.call"; agent?: string; server: string; tool: string; args?: string }
   | LettersCommand
+  | import("../letters/answer-command").LettersAnswerCommand
+  | import("../letters/seen-command").LettersSeenCommand
   | { kind: "hatch.start" }
   | { kind: "agent.senseTurn"; agent: string; friendId: string; channel: string; sessionKey: string; message: string; runtimeMcp?: RuntimeMcpServers }
   | import("../../senses/shepherd/feedback-submit").FeedbackCommand
@@ -835,7 +837,8 @@ export async function handleAgentSenseTurn(
         sessionKey: command.sessionKey,
         friendId: command.friendId,
         userMessage: command.message,
-        ...(runtime?.socketPath ? { toolContext: { daemonSocketPath: runtime.socketPath } } : {}),
+        // The socket's caller chose friendId and channel, so the turn is marked as a socket turn.
+        toolContext: { turnOrigin: "socket", ...(runtime?.socketPath ? { daemonSocketPath: runtime.socketPath } : {}) },
         // Per-turn, per-agent runtime MCP injection (e.g. Workbench's ouro_workbench).
         // Scoped to THIS turn only — never stored as module state, so a concurrent
         // turn for a different agent cannot inherit these servers.
@@ -890,6 +893,10 @@ function defaultUpdaterAgentWatch(): (() => Promise<unknown>) | null {
 /* v8 ignore stop */
 
 const STATE_RETENTION_FIRST_DELAY_MS = 10 * 60_000
+/** How often the daemon closes letters past their expiresAt. */
+const LETTER_EXPIRY_TICK_MS = 60_000
+/** Matches EXPIRY_GRACE_MS in the letters writer, which daemon.ts doesn't load at start. */
+const LETTER_EXPIRY_GRACE_MS = 10 * 60_000
 const STATE_RETENTION_INTERVAL_MS = 24 * 60 * 60_000
 const UPDATER_AGENT_WATCH_FIRST_DELAY_MS = 5 * 60_000
 const UPDATER_AGENT_WATCH_INTERVAL_MS = 60 * 60_000
@@ -918,13 +925,14 @@ export class OuroDaemon {
   private readonly senseManager: DaemonSenseManagerLike | null
   private readonly bundlesRoot: string
   /** The letters' single writer, made on the first mailbox call. */
-  private lettersWriter: LettersWriter | null = null
+  private lettersWriter: Promise<LettersWriter> | null = null
   private readonly mode: "dev" | "production"
   private server: net.Server | null = null
   private frontendSocketServer: FrontendSocketServer | null = null
   private socketIdentity: SocketIdentity | null = null
   private senseAutostartTimer: ReturnType<typeof setTimeout> | null = null
   private externalEventReconcileTimer: ReturnType<typeof setInterval> | null = null
+  private letterExpiryTimer: ReturnType<typeof setInterval> | null = null
   private stateRetentionTimer: ReturnType<typeof setTimeout> | null = null
   private readonly stateRetention: () => Promise<unknown>
   private updaterAgentWatchTimer: ReturnType<typeof setTimeout> | null = null
@@ -1166,6 +1174,13 @@ export class OuroDaemon {
       void this.reconcileExternalEvents()
     }, 1_000)
     this.externalEventReconcileTimer.unref?.()
+    // The first pass waits out the grace after start, so the senses' catch-up over messages missed while the daemon
+    // was down records any answer sent before a letter expired, before the sweep can close that letter.
+    const expiryFrom = Date.now() + LETTER_EXPIRY_GRACE_MS
+    this.letterExpiryTimer = setInterval(() => {
+      if (Date.now() >= expiryFrom) void this.expireLetters()
+    }, LETTER_EXPIRY_TICK_MS)
+    this.letterExpiryTimer.unref?.()
     this.scheduleStateRetention(STATE_RETENTION_FIRST_DELAY_MS)
     this.scheduleUpdaterAgentWatch(UPDATER_AGENT_WATCH_FIRST_DELAY_MS)
 
@@ -1506,6 +1521,26 @@ export class OuroDaemon {
     }
   }
 
+  /**
+   * One expiry pass, which also retries returning answers to the sessions that asked. It reads no letters code until
+   * some bundle has letters, so a daemon without them loads nothing. Answers how many letters it closed.
+   */
+  async expireLetters(): Promise<number> {
+    try {
+      const any = !!this.lettersWriter || fs.readdirSync(this.bundlesRoot).some((name) => fs.existsSync(path.join(this.bundlesRoot, name, "state", "letters")))
+      if (!any) return 0
+      const writer = await this.letters()
+      const expired = await writer.expireDue()
+      await writer.returnAnswers()
+      return expired
+    } catch (error) {
+      // No bundles folder yet means no letters, not a failure worth a warning every minute.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0
+      emitNervesEvent({ level: "warn", component: "daemon", event: "daemon.letter_expiry_error", message: "the letter expiry pass failed", meta: { error: (error as Error).message } })
+      return 0
+    }
+  }
+
   async stop(): Promise<void> {
     // Must be named `_end` (not `_stop`) to satisfy the nerves audit's
     // start/end pairing rule — see src/nerves/coverage/audit-rules.ts.
@@ -1529,6 +1564,10 @@ export class OuroDaemon {
     if (this.senseAutostartTimer) {
       clearTimeout(this.senseAutostartTimer)
       this.senseAutostartTimer = null
+    }
+    if (this.letterExpiryTimer) {
+      clearInterval(this.letterExpiryTimer)
+      this.letterExpiryTimer = null
     }
     if (this.externalEventReconcileTimer) {
       clearInterval(this.externalEventReconcileTimer)
@@ -1674,6 +1713,27 @@ export class OuroDaemon {
     return this.processManager.listAgentSnapshots().some((snapshot) =>
       snapshot.name === agent && snapshot.channel === "private-runtime",
     )
+  }
+
+  /** The one letters writer, loaded on the first mailbox call so a daemon with no letters pays nothing at start. */
+  private letters(): Promise<LettersWriter> {
+    // The promise is kept, not the writer, so two first calls at once share one writer and its one queue.
+    this.lettersWriter ??= (async () => new (await import("../letters/writer")).LettersWriter({
+      bundlesRoot: this.bundlesRoot,
+      // A letter goes to its person's iMessage chat as the agent, through the agent's own BlueBubbles settings.
+      deliverChat: (await import("../../senses/bluebubbles/agent-client")).letterChatSender(this.bundlesRoot),
+      // Filing tells the agent, in its own private runtime, so it decides when its person sees the letter.
+      onFiled: (await import("../letters/filed-note")).letterFiledTeller(this.bundlesRoot, (wake) => this.handlePrivateRuntimeWake(wake)),
+      // So does a letter that expires with no answer.
+      onExpired: (await import("../letters/expired-note")).letterExpiredTeller(this.bundlesRoot, (wake) => this.handlePrivateRuntimeWake(wake)),
+      // A recorded answer sends the person a receipt in the same chat and tells the agent.
+      onAnswered: (await import("../letters/answered-note")).letterAnsweredTeller(
+        this.bundlesRoot,
+        (await import("../../senses/bluebubbles/agent-client")).letterChatSender(this.bundlesRoot),
+        (wake) => this.handlePrivateRuntimeWake(wake),
+      ),
+    }))()
+    return this.lettersWriter
   }
 
   private buildPrivateRuntimeWakeRequest(
@@ -2157,7 +2217,9 @@ export class OuroDaemon {
     try {
       const now = new Date().toISOString()
       if (fs.existsSync(this.privilegedEventSpoolRoot)) {
-        this.privilegedEventScanner({ spoolRoot: this.privilegedEventSpoolRoot, eventRoot: this.externalEventRootPath() })
+        // The Butler the daemon start adopted the event folders for, so envelopes are filed where it reads them.
+        const butler = runningButlerAgent()
+        this.privilegedEventScanner({ spoolRoot: this.privilegedEventSpoolRoot, eventRoot: this.externalEventRootPath(), ...(butler ? { agent: butler } : {}) })
       }
       const scanned = this.externalEventScanCache.scan(this.externalEventRootPath())
       const readinessKeys = new Set<string>()
@@ -2921,10 +2983,22 @@ export class OuroDaemon {
       }
       case "letters.action":
       {
-        // Loaded on the first mailbox call so a daemon with no letters pays nothing at start.
         const letters = await import("../letters/writer")
-        this.lettersWriter ??= new letters.LettersWriter({ bundlesRoot: this.bundlesRoot })
-        return letters.answerLettersCommand(this.lettersWriter, command)
+        return letters.answerLettersCommand(await this.letters(), command)
+      }
+      case "letters.answer":
+      {
+        // The person's own message, named by GUID; the daemon reads it from the agent's BlueBubbles server itself.
+        const { answerLettersAnswerCommand } = await import("../letters/answer-command")
+        const { letterAnswerSource } = await import("../../senses/bluebubbles/agent-client")
+        return answerLettersAnswerCommand(await this.letters(), command, letterAnswerSource(this.bundlesRoot))
+      }
+      case "letters.seen":
+      {
+        // A read receipt, named by the GUID of the message Ouro delivered; the server's copy decides.
+        const { answerLettersSeenCommand } = await import("../letters/seen-command")
+        const { letterAnswerSource } = await import("../../senses/bluebubbles/agent-client")
+        return answerLettersSeenCommand(await this.letters(), command, letterAnswerSource(this.bundlesRoot))
       }
       case "mcp.list": {
         return withTurnExecutionLease(async () => {

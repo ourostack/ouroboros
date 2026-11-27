@@ -92,6 +92,11 @@ export class LetterStore {
     emitNervesEvent({ component: "daemon", event: "letters.letter_rolled", message: "closed letter rolled", meta: { month } })
   }
 
+  /** Every readable letter not yet rolled into closed/; the chat guard reads it to cover handles frozen on letters. */
+  loadOpen(): StoredLetter[] {
+    return this.letterFiles(this.dir).map((file) => this.parse(file, false)).filter((letter): letter is StoredLetter => letter !== null)
+  }
+
   /** Every readable letter, open and closed, for rebuilding the index when the daemon starts. */
   loadAll(): StoredLetter[] {
     const loaded: StoredLetter[] = []

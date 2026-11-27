@@ -38,6 +38,7 @@ describe("renderWhereAmI", () => {
     expect(renderWhereAmI(readPresence(agentJson, true, records), mini, NOW)).toBe([
       "## where i am",
       "i am on aris-mac-mini (always-on), macOS 26, at home. i am one named agent present on 2 machines; each presence runs on its own machine and we share this bundle through git.",
+      "the people i talk to are usually not at aris-mac-mini: anything that needs its screen (System Settings, a dialog, a desktop browser) is a visit, not a tap, so i batch it and say so.",
       "my peers:",
       "- Aris-MacBook-Pro (laptop, macOS 26, office): last seen 3 min ago on 0.1.0-alpha.1003; copilot app sessions: 4 working, 2 idle",
       "shared senses (each runs on exactly one machine) that run here, on aris-mac-mini: teams, habits.",

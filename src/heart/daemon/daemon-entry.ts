@@ -24,7 +24,7 @@ import { DaemonSenseManager } from "./sense-manager"
 import { listBundleSyncRows, listHomeBundleAgents, readPrivateRuntimeConfig } from "./agent-discovery"
 import { checkAgentHomes } from "./agent-home"
 import { getRepoRoot, getAgentBundlesRoot, loadAgentConfig } from "../identity"
-import { isButlerAgent } from "../butler-agent"
+import { isButlerAgent, managedButlerAgent } from "../butler-agent"
 import { appSessionsRecord } from "./app-sessions-record"
 import { detectRuntimeMode } from "./runtime-mode"
 import { HabitScheduler } from "../habits/habit-scheduler"
@@ -62,6 +62,7 @@ import type { ConfigCheckResult } from "./agent-config-check"
 import { loadContainerCredentialBootstrap } from "./container-credential-bootstrap"
 import {
   createProviderReadinessPreparationFailure,
+  failFastButlerExternalEventsStartup,
   failFastSanctuaryBundlePreparationStartup,
   providerReadinessAgents,
   startDaemonAfterContainerCredentialBootstrap,
@@ -77,6 +78,7 @@ import { abortInFlightSync, syncNow } from "../sync"
 import { PresenceTicker } from "./presence-daemon"
 import { leavePresence, readLocalPresenceSettings } from "./presence"
 import { clearOwnStaleSyncLock } from "../sync-lock"
+import { getExternalEventRoot, prepareButlerExternalEvents } from "../external-events/router"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -108,6 +110,16 @@ const mode = detectRuntimeMode(getRepoRoot())
 const daemonMachine = loadOrCreateMachineIdentity()
 const daemonMachineId = daemonMachine.machineId
 const managedAgents = listHomeBundleAgents({ machineId: daemonMachineId })
+// The Butler under whichever name its bundle has; its container paths follow that name.
+const butlerName = managedButlerAgent(managedAgents) ?? "sanctuary"
+// Its saved external events follow that name too: a folder left under the other name (by the rename or a rollback) moves over.
+// It must: records left under the other name can't be settled, so a failed move or merge stops the start.
+try {
+  prepareButlerExternalEvents(getExternalEventRoot(), managedAgents)
+} catch (failure) {
+  failFastButlerExternalEventsStartup({ failure, exit: (code) => process.exit(code) })
+  throw failure
+}
 const readinessAgents = providerReadinessAgents(
   managedAgents,
   process.env.OURO_DAEMON_REQUIRED_AGENT,
@@ -363,7 +375,7 @@ const containerRuntimePolicy = readContainerRuntimePolicy()
 const supercronicSupervisor = containerRuntimePolicy?.scheduler === "supercronic"
   ? new SupercronicSupervisor({
       binaryPath: "/usr/local/bin/supercronic",
-      crontabPath: path.join(getAgentBundlesRoot(), "..", ".ouro-cli", "scheduler", "sanctuary.crontab"),
+      crontabPath: path.join(getAgentBundlesRoot(), "..", ".ouro-cli", "scheduler", `${butlerName}.crontab`),
       onFatal: (error) => {
         emitNervesEvent({ level: "error", component: "daemon", event: "daemon.supercronic_state", message: "Supercronic restart budget exhausted", meta: { error: error.message } })
         process.exit(1)
@@ -532,15 +544,15 @@ const daemon = new OuroDaemon({
   router,
   schedulerFireVerifier: (command) => {
     if (!supercronicSupervisor) throw new Error("Supercronic scheduler is unavailable")
-    const marker = readSanctuaryAcceptanceMarker("sanctuary")
+    const marker = readSanctuaryAcceptanceMarker(butlerName)
     return verifySanctuarySchedulerFireCommand(command, {
-      childPid: supercronicSupervisor.authenticatedSnapshot("habit:sanctuary").childPid,
-      identityKey: readOrCreateTelegramIdentityKey(path.join(getAgentBundlesRoot(), "sanctuary.ouro")),
+      childPid: supercronicSupervisor.authenticatedSnapshot(`habit:${butlerName}`).childPid,
+      identityKey: readOrCreateTelegramIdentityKey(path.join(getAgentBundlesRoot(), `${butlerName}.ouro`)),
       scenarioHandleDigest: marker?.label === "unit-16f-cron-fingerprint" ? marker.scenarioHandleDigest : null, now: () => new Date(),
       readFile: (target) => fs.readFileSync(target, "utf8"), readLink: (target) => fs.readlinkSync(target),
     })
   },
-  schedulerFireConsumer: (origin) => consumeSanctuarySchedulerFire(path.join(getAgentBundlesRoot(), "sanctuary.ouro"), origin),
+  schedulerFireConsumer: (origin) => consumeSanctuarySchedulerFire(path.join(getAgentBundlesRoot(), `${butlerName}.ouro`), origin),
   nativeHabitRunner: async ({ agent, habitName, trigger, occurrenceId, runnerId, schedulerOrigin }) => {
     if (!isButlerAgent(agent) || habitName !== "sanctuary-health") return null
     const marker = readSanctuaryAcceptanceMarker(agent)
@@ -572,7 +584,7 @@ const daemon = new OuroDaemon({
         occurrenceId,
         runnerId,
         scenario: schedulerScenario,
-        supervisor: supercronicSupervisor.authenticatedSnapshot("habit:sanctuary"),
+        supervisor: supercronicSupervisor.authenticatedSnapshot(`habit:${agent}`),
         before,
         providerInvocationCount,
         privateTurnCount,

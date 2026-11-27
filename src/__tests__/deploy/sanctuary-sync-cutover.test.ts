@@ -125,6 +125,7 @@ case "$*" in
   "inspect --format {{.Config.Image}} ouro-butler") echo ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.990 ;;
   "inspect --format {{.State.Running}} ouro-butler") if grep -q running "${T}/container"; then echo true; else echo false; fi ;;
   "inspect ouro-butler" | "image inspect ${IMAGE}") echo '[{}]' ;;
+  "image inspect --format {{json .Config.Entrypoint}} ${IMAGE}") echo "\${STUB_ENTRYPOINT-[\"node\",\"/opt/ouro/dist/heart/daemon/daemon-entry.js\",\"--package-managed-agent\",\"sanctuary\"]}" ;;
   "stop ouro-butler") echo stopped >"${T}/container"; echo ouro-butler ;;
   "start ouro-butler") echo running >"${T}/container"; echo ouro-butler ;;
   run*"sanctuary git-exclude --print") cat "${T}/exclude.txt"; echo ;;
@@ -136,7 +137,7 @@ case "$*" in
   "exec ouro-butler id -u ouro-sync") echo "\${STUB_SYNC_UID:-10002}" ;;
   "exec ouro-butler pgrep -x git") exit "\${STUB_CONTAINER_PGREP:-1}" ;;
   "exec -u 10001 -e GIT_SSH_COMMAND=sudo -n -u ouro-sync /usr/local/libexec/ouro-sync-ssh -e GIT_SSH_VARIANT=ssh ouro-butler git ls-remote ${BUNDLE_REMOTE} refs/heads/main") echo "\${STUB_LS_REMOTE-0123abcd	refs/heads/main}" ;;
-  "exec -u 10001 ouro-butler timeout 60 node /opt/ouro/dist/heart/daemon/ouro-entry.js sync --agent sanctuary")
+  "exec -u 10001 ouro-butler timeout 60 node /opt/ouro/dist/heart/daemon/ouro-entry.js sync --agent sanctuary" | "exec -u 10001 ouro-butler timeout 60 node /opt/ouro/dist/heart/daemon/ouro-entry.js sync --agent butler")
     if grep -q DROP "${T}/iptables" 2>/dev/null; then
       sleep "\${STUB_STALL_S:-0}"
       echo "\${STUB_STALL_OUTPUT-ssh: connect to host github.com port 22: Operation timed out}" >&2
@@ -176,6 +177,7 @@ function run(mode?: string, extra: NodeJS.ProcessEnv = {}) {
   return { status: result.status, stdout: result.stdout, stderr: result.stderr, out: result.stdout + result.stderr }
 }
 
+const BUTLER_ENTRYPOINT = JSON.stringify(["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js", "--package-managed-agent", "butler"])
 const dockerLog = () => (fs.existsSync(path.join(T, "docker.log")) ? fs.readFileSync(path.join(T, "docker.log"), "utf8").trim().split("\n") : [])
 const beforeFiles = () => fs.readdirSync(backup()).filter((name) => /^cutover-before-.*\.txt$/u.test(name)).sort()
 const readBefore = () => fs.readFileSync(path.join(backup(), beforeFiles().at(-1)!), "utf8")
@@ -258,7 +260,7 @@ describe("sanctuary-sync-cutover.sh", { timeout: 60_000 }, () => {
     const gate = fs.readFileSync(GATE, "utf8")
     const gateCalls = code(gate).filter((line) => /["'`]git["'`]/u.test(line))
     expect(gateCalls).toHaveLength(1)
-    expect(gateCalls[0]).toMatch(/run\("docker", \["exec", "-u", BUTLER_USER, .*CONTAINER, "git", "-c", "core\.hooksPath=\/dev\/null", "-c", "core\.fsmonitor=false", "-C", CONTAINER_BUNDLE/u)
+    expect(gateCalls[0]).toMatch(/run\("docker", \["exec", "-u", BUTLER_USER, .*CONTAINER, "git", "-c", "core\.hooksPath=\/dev\/null", "-c", "core\.fsmonitor=false", "-C", agentRoot/u)
     expect(gate).not.toMatch(/--git-dir|--work-tree/u)
   })
 
@@ -284,6 +286,19 @@ describe("sanctuary-sync-cutover.sh", { timeout: 60_000 }, () => {
   })
 
   describe("dry run", () => {
+    it("times git with the bundle where the live image's Butler looks for it, the host folder kept", () => {
+      expect(run(undefined, { STUB_ENTRYPOINT: BUTLER_ENTRYPOINT }).status).toBe(0)
+      const timing = () => dockerLog().filter((line) => line.includes("--user 10001:10001")).at(-1)!
+      expect(timing()).toContain(`--mount type=bind,src=${bundle()},dst=/home/ouro/AgentBundles/butler.ouro,readonly`)
+      expect(dockerLog()).toContain(`image inspect --format {{json .Config.Entrypoint}} ${IMAGE}`)
+      for (const entrypoint of ["null", JSON.stringify(["node", "x.js", "--package-managed-agent", "slugger"])]) {
+        expect(run(undefined, { STUB_ENTRYPOINT: entrypoint }).status).toBe(0)
+        expect(timing()).toContain(`--mount type=bind,src=${bundle()},dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly`)
+      }
+      const failed = run(undefined, { STUB_FAIL_MATCH: "^image inspect --format" })
+      expect(failed.status).toBe(1)
+      expect(failed.stderr).toContain(`docker could not read the entrypoint of ${IMAGE}`)
+    })
     it("changes nothing, and prints and saves the before-state to a new file each time", () => {
       fs.chmodSync(repoGit(), 0o750)
       const before = snapshot(T, noise)
@@ -419,6 +434,12 @@ describe("sanctuary-sync-cutover.sh", { timeout: 60_000 }, () => {
   })
 
   describe("apply", () => {
+    it("commits the untracking as the live image's Butler", () => {
+      const result = run("--apply", { STUB_ENTRYPOINT: BUTLER_ENTRYPOINT })
+      expect(result.status, result.out).toBe(0)
+      expect(spawnSync("git", [`--git-dir=${bundle()}/.git`, "log", "--format=%s|%an|%ae", "-1", "--grep=stop tracking"], { env, encoding: "utf8" }).stdout.trim())
+        .toBe("sync: stop tracking package-managed and excluded files|butler|butler@ouro.local")
+    })
     it("leaves main tracking origin/main with the backup history, nothing excluded tracked, sync on, the key installed and .git the Butler's", () => {
       const backupHead = bg(["rev-parse", "HEAD"])
       // A change since the last hourly run: the final backup commit carries it.
@@ -976,6 +997,13 @@ kill -9 $PPID
       fs.writeFileSync(path.join(T, "docker.log"), "")
     })
 
+    it("syncs as the live image's Butler", () => {
+      const result = run("--verify-live", { STUB_ENTRYPOINT: BUTLER_ENTRYPOINT })
+      expect(result.status, result.out).toBe(0)
+      const syncs = dockerLog().filter((line) => line.includes(" sync --agent "))
+      expect(syncs).toEqual(Array(2).fill("exec -u 10001 ouro-butler timeout 60 node /opt/ouro/dist/heart/daemon/ouro-entry.js sync --agent butler"))
+    })
+
     it("runs no host git once the Butler owns .git: not in --verify-live, a dry run or an apply run again (C1)", () => {
       stub("git", `printf '%s\\n' "$*" >>"${T}/host-git.log"\nexec "${REAL_GIT}" "$@"`)
       expect(run("--verify-live").status).toBe(0)
@@ -990,6 +1018,8 @@ kill -9 $PPID
       const result = run("--verify-live")
       expect(result.status, result.out).toBe(0)
       expect(dockerLog()).toEqual([
+        "inspect --format {{.Image}} ouro-butler",
+        `image inspect --format {{json .Config.Entrypoint}} ${IMAGE}`,
         `exec -u 10001 -e GIT_SSH_COMMAND=sudo -n -u ouro-sync /usr/local/libexec/ouro-sync-ssh -e GIT_SSH_VARIANT=ssh ouro-butler git ls-remote ${BUNDLE_REMOTE} refs/heads/main`,
         "exec -u 10001 ouro-butler cat /run/ouro-sync/deploy_key",
         "exec -u 10001 ouro-butler test -r /run/ouro-sync/deploy_key",

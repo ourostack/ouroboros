@@ -1,0 +1,3 @@
+- The Butler's Telegram front door runs under either of the Butler's names. This covers the root gateway's transport, the owner's and household's privileges, the Butler tools, the privileged failsafe, and the SABnzbd key it reads to verify a protective pause.
+- The privileged event spool keeps its events and replay manifest under the name of the Butler the daemon runs. An envelope from the host's emitter that still names the Butler by its other name is filed there too, so usenet alerts survive the rename.
+- The vault handoff, root-host approvals and the health sweep's acceptance marker each follow the Butler's bundle name. The vault's machine id stays `sanctuary`.

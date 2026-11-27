@@ -83,7 +83,7 @@ const mocks = vi.hoisted(() => ({
   semanticHandled: new Map<string, any>(),
   semanticClaims: new Map<string, { lease: any; released: Promise<void>; resolve: () => void }>(),
   createServer: vi.fn(),
-  listen: vi.fn((_: number, cb?: () => void) => cb?.()),
+  listen: vi.fn((...args: unknown[]) => (args.find((arg) => typeof arg === "function") as (() => void) | undefined)?.()),
   handleInboundTurn: vi.fn(),
   getChannelCapabilities: vi.fn(),
   getPendingDir: vi.fn(),
@@ -146,7 +146,7 @@ async function waitFor(predicate: () => boolean, attempts = 400): Promise<void> 
 function createClosableServer(): { server: any; close: () => void } {
   let closeHandler: (() => void) | undefined
   const server = {
-    listen: vi.fn((_: number, cb?: () => void) => cb?.()),
+    listen: vi.fn((...args: unknown[]) => (args.find((arg) => typeof arg === "function") as (() => void) | undefined)?.()),
     on: vi.fn((event: string, cb: () => void) => {
       if (event === "close") closeHandler = cb
       return server
@@ -336,11 +336,17 @@ vi.mock("../../../senses/pipeline", () => ({
   handleInboundTurn: (...args: any[]) => mocks.handleInboundTurn(...args),
 }))
 
-vi.mock("../../../mind/pending", () => ({
-  getPendingDir: (...args: any[]) => mocks.getPendingDir(...args),
-  drainPending: (...args: any[]) => mocks.drainPending(...args),
-  drainDeferredReturns: (...args: any[]) => mocks.drainDeferredReturns(...args),
-}))
+vi.mock("../../../mind/pending", async () => {
+  // The agent's own private-runtime notes are real files under each test's agent root.
+  const actual = await vi.importActual<typeof import("../../../mind/pending")>("../../../mind/pending")
+  return {
+    getPendingDir: (...args: any[]) => mocks.getPendingDir(...args),
+    drainPending: (...args: any[]) => mocks.drainPending(...args),
+    drainDeferredReturns: (...args: any[]) => mocks.drainDeferredReturns(...args),
+    getPrivateRuntimePendingDir: actual.getPrivateRuntimePendingDir,
+    queuePendingMessageOnce: actual.queuePendingMessageOnce,
+  }
+})
 
 vi.mock("../../../senses/trust-gate", () => ({
   enforceTrustGate: (...args: any[]) => mocks.enforceTrustGate(...args),
@@ -989,7 +995,7 @@ function resetMocks(): void {
   mocks.listPendingSemanticCaptures.mockReset().mockImplementation(() => (
     [...mocks.semanticCaptures.values()].filter((capture) => !mocks.semanticHandled.has(capture.keyHash))
   ))
-  mocks.listen.mockReset().mockImplementation((_: number, cb?: () => void) => cb?.())
+  mocks.listen.mockReset().mockImplementation((...args: unknown[]) => (args.find((arg) => typeof arg === "function") as (() => void) | undefined)?.())
   mocks.createServer.mockReset().mockImplementation((handler: unknown) => ({
     listen: mocks.listen,
     close: vi.fn(),
@@ -1256,6 +1262,41 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.sendText).not.toHaveBeenCalled()
   })
 
+  describe("a message in answer form", () => {
+    const answerPayload = (text: string, extra: Record<string, unknown> = {}) => ({ ...dmTopLevelPayload, data: { ...dmTopLevelPayload.data, text, ...extra } })
+
+    it("goes to the daemon by GUID alone, and is no chat turn once it answers a letter (2026-11-26)", async () => {
+      const bluebubbles = await import("../../../senses/bluebubbles")
+      const answerLetter = vi.fn(async () => true)
+      const result = await bluebubbles.handleBlueBubblesEvent(answerPayload("L7 2"), { answerLetter })
+      expect(answerLetter).toHaveBeenCalledWith(expect.any(String), dmTopLevelPayload.data.guid)
+      expect(result).toMatchObject({ handled: true, notifiedAgent: false, reason: "letter_answered" })
+      expect(mocks.runAgent).not.toHaveBeenCalled()
+    })
+
+    it("is an ordinary chat turn when it answers nothing or the daemon can't be asked", async () => {
+      const bluebubbles = await import("../../../senses/bluebubbles")
+      await bluebubbles.handleBlueBubblesEvent(answerPayload("L7 2"), { answerLetter: vi.fn(async () => false) })
+      expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+      await bluebubbles.handleBlueBubblesEvent(answerPayload("L7 1", { guid: "other-guid" }), { answerLetter: vi.fn(async () => { throw new Error("daemon down") }) })
+      expect(mocks.runAgent).toHaveBeenCalledTimes(2)
+    })
+
+    it("asks the daemon over its socket by default, which tests never reach, so it stays a chat turn", async () => {
+      const bluebubbles = await import("../../../senses/bluebubbles")
+      await bluebubbles.handleBlueBubblesEvent(answerPayload("L7 2"))
+      expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    })
+
+    it("isn't sent for ordinary text or a group chat", async () => {
+      const bluebubbles = await import("../../../senses/bluebubbles")
+      const answerLetter = vi.fn(async () => true)
+      await bluebubbles.handleBlueBubblesEvent(answerPayload("about L7, I pick 2"), { answerLetter })
+      await bluebubbles.handleBlueBubblesEvent({ ...groupThreadPayload, data: { ...groupThreadPayload.data, text: "L7 2" } }, { answerLetter })
+      expect(answerLetter).not.toHaveBeenCalled()
+    })
+  })
+
   it("routes top-level and threaded DM turns into the same persisted chat trunk", async () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
 
@@ -1340,6 +1381,8 @@ describe("BlueBubbles sense runtime", () => {
       ]),
     )
 
+    // A person's message the sense received: the one origin the mailbox's answer reader trusts.
+    expect(firstRunAgentOptions().toolContext.turnOrigin).toBe("sense-ingress")
     const ingressEvidence = firstRunAgentOptions().toolContext.currentIngressEvidence
     expect(ingressEvidence).toEqual({
       schemaVersion: 1,
@@ -2632,6 +2675,29 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.markChatRead).not.toHaveBeenCalled()
   })
 
+  it("tells the daemon of a read receipt on a message this side sent one-to-one, without waiting on it (2026-11-26)", async () => {
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    // The daemon never answers here, so the handler returning at all shows nothing waits on it.
+    const letterSeen = vi.fn(() => new Promise<boolean>(() => {}))
+    const sent = (guid: string, extra: Record<string, unknown> = {}) => ({ ...readPayload, data: { ...readPayload.data, guid, isFromMe: true, ...extra } })
+    const runtimeDeps = { getAgentName: () => "testagent", recordMutation: mocks.recordMutation, letterSeen } as any
+    expect(await bluebubbles.handleBlueBubblesEvent(sent("SEEN-1"), runtimeDeps)).toEqual(expect.objectContaining({ reason: "from_me", notifiedAgent: false }))
+    expect(letterSeen).toHaveBeenCalledWith("testagent", "SEEN-1")
+    // The person's own message being read, or a group chat, is no letter of ours.
+    await bluebubbles.handleBlueBubblesEvent({ ...readPayload, data: { ...readPayload.data, guid: "SEEN-2" } }, runtimeDeps)
+    await bluebubbles.handleBlueBubblesEvent(sent("SEEN-3", { chats: [{ guid: "iMessage;+;chat-group", style: 43, chatIdentifier: "chat-group", displayName: "Group" }] }), runtimeDeps)
+    expect(letterSeen).toHaveBeenCalledTimes(1)
+    // A daemon that can't be told only loses the "seen".
+    const failing = vi.fn(async () => { throw new Error("daemon down") })
+    expect(await bluebubbles.handleBlueBubblesEvent(sent("SEEN-4"), { ...runtimeDeps, letterSeen: failing })).toEqual(expect.objectContaining({ reason: "from_me" }))
+    expect(failing).toHaveBeenCalledTimes(1)
+    // By default it goes over the daemon socket, which tests never reach.
+    expect(await bluebubbles.handleBlueBubblesEvent(sent("SEEN-5"), { getAgentName: () => "testagent", recordMutation: mocks.recordMutation } as any)).toEqual(expect.objectContaining({ reason: "from_me" }))
+    // A delivery receipt on a sent message is no read.
+    await bluebubbles.handleBlueBubblesEvent({ ...deliveryPayload, data: { ...deliveryPayload.data, guid: "SEEN-6", isFromMe: true } }, runtimeDeps)
+    expect(letterSeen).toHaveBeenCalledTimes(1)
+  })
+
   it("keeps unsend and delivery mutations capture-only", async () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const runtimeDeps = {
@@ -3657,6 +3723,24 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
+  it("refuses a speak into the letters chat before it is reserved or counted as seen (2026-11-26)", async () => {
+    const agentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(agentRoot)
+    const { writeAnsweringHandle } = await import("../../../heart/letters/answering")
+    writeAnsweringHandle(path.join(agentRoot, "state", "letters"), "friend-uuid", "owner@example.test")
+    let refused: unknown
+    mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
+      callbacks.onModelStart()
+      callbacks.onTextChunk("About L7: pick 2")
+      refused = await callbacks.flushNow().catch((error: unknown) => error)
+      return { usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 } }
+    })
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+    expect(refused).toMatchObject({ name: "BlueBubblesSendError", errorCode: "letter_guard" })
+    expect(mocks.sendText).not.toHaveBeenCalledWith(expect.objectContaining({ text: "About L7: pick 2" }))
+  })
+
   it("reuses existing session state and allows callback lifecycle hooks to no-op safely", async () => {
     mocks.loadSession.mockReturnValueOnce({
       messages: [{ role: "system", content: "existing prompt" }],
@@ -3960,16 +4044,13 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const handler = bluebubbles.createBlueBubblesWebhookHandler()
 
-    const unauthorizedReq = createMockRequest(
-      "POST",
-      "/bluebubbles-webhook?password=wrong-token",
-      dmThreadPayload,
-    )
-    const unauthorizedRes = createMockResponse()
-    await handler(unauthorizedReq as any, unauthorizedRes.res as any)
-    await unauthorizedRes.done
-
-    expect(unauthorizedRes.res.statusCode).toBe(401)
+    // A wrong password, an empty one and none at all are each refused.
+    for (const url of ["/bluebubbles-webhook?password=wrong-token", "/bluebubbles-webhook?password=", "/bluebubbles-webhook"]) {
+      const unauthorizedRes = createMockResponse()
+      await handler(createMockRequest("POST", url, dmThreadPayload) as any, unauthorizedRes.res as any)
+      await unauthorizedRes.done
+      expect(unauthorizedRes.res.statusCode).toBe(401)
+    }
     expect(mocks.runAgent).not.toHaveBeenCalled()
 
     const authorizedReq = createMockRequest(
@@ -4337,7 +4418,7 @@ describe("BlueBubbles sense runtime", () => {
     ))
 
     mocks.repairEvent.mockRejectedValueOnce("repair string blew up")
-    const stringBoomReq = createMockRequest("POST", "/bluebubbles-webhook", dmThreadPayload)
+    const stringBoomReq = createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", dmThreadPayload)
     const stringBoomRes = createMockResponse()
     await handler(stringBoomReq as any, stringBoomRes.res as any)
     await stringBoomRes.done
@@ -4972,7 +5053,8 @@ describe("BlueBubbles sense runtime", () => {
     }
 
     expect(mocks.createServer).toHaveBeenCalledTimes(1)
-    expect(closableServer.server.listen).toHaveBeenCalledWith(18790, expect.any(Function))
+    // Only this Mac reaches the webhook: the reconciler registers it at http://127.0.0.1.
+    expect(closableServer.server.listen).toHaveBeenCalledWith(18790, "127.0.0.1", expect.any(Function))
     expect(mocks.createWebhookReconciler).toHaveBeenCalledWith({
       serverUrl: "http://bluebubbles.local",
       password: "secret-token",
@@ -12930,6 +13012,22 @@ describe("BlueBubbles sense runtime", () => {
     }))
   })
 
+  it("ends the turn on a reply the letters chat refused, without a retry, and tells the agent why", async () => {
+    const agentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(agentRoot)
+    const { BlueBubblesSendError } = await import("../../../senses/bluebubbles/client")
+    mocks.sendText.mockRejectedValueOnce(new BlueBubblesSendError({ message: "This message names a letter code.", httpStatus: null, errorCode: "letter_guard", transportInvoked: false }))
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(result).toEqual(expect.objectContaining({ handled: true, notifiedAgent: false, reason: "letter_guard" }))
+    const { getPrivateRuntimePendingDir } = await import("../../../mind/pending")
+    const dir = getPrivateRuntimePendingDir("testagent", agentRoot)
+    const notes = fs.readdirSync(dir).map((file) => JSON.parse(fs.readFileSync(path.join(dir, file), "utf8")))
+    expect(notes).toEqual([expect.objectContaining({ content: "my iMessage reply wasn't sent, so they haven't heard back from me: This message names a letter code." })])
+  })
+
   it("reports a durable-state write failure without hiding the final transport failure", async () => {
     const agentRoot = makeTempDir()
     mocks.getAgentRoot.mockReturnValue(agentRoot)
@@ -13298,11 +13396,11 @@ describe("drainAndSendPendingBlueBubbles", () => {
     }))
   })
 
-  it("holds a pending verification chore and returns it to the agent's private runtime", async () => {
+  it("holds a pending untested claim and returns it to the agent's private runtime", async () => {
     const queue = vi.fn()
     vi.doMock("../../../mind/pending", async (original) => ({ ...await original<typeof import("../../../mind/pending")>(), queuePendingMessage: queue }))
     const friendStore = { get: vi.fn().mockResolvedValue(makeFriend()), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn(), hasAnyFriends: vi.fn(), listAll: vi.fn() }
-    const text = "Could you open #5312 on your phone and tell me if the pictures show?"
+    const text = "The proof images were re-attached; whether they show in the app hasn't been tested yet."
     const file = writePendingFile("friend-uuid-1", "session", { from: "testagent", friendId: "friend-uuid-1", channel: "bluebubbles", key: "session", content: text, timestamp: Date.now() })
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.drainAndSendPendingBlueBubbles({
@@ -13314,6 +13412,24 @@ describe("drainAndSendPendingBlueBubbles", () => {
     expect(mocks.sendText).not.toHaveBeenCalled()
     expect(fs.existsSync(file)).toBe(false)
     expect(queue).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ channel: "inner", content: expect.stringContaining(text) }))
+  })
+
+  it("drops a message the letter guard refuses, rather than retrying it on every drain, and tells the agent (2026-11-26)", async () => {
+    const queue = vi.fn()
+    vi.doMock("../../../mind/pending", async (original) => ({ ...await original<typeof import("../../../mind/pending")>(), queuePendingMessageOnce: queue }))
+    const friendStore = { get: vi.fn().mockResolvedValue(makeFriend()), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn(), hasAnyFriends: vi.fn(), listAll: vi.fn() }
+    const file = writePendingFile("friend-uuid-1", "session", { from: "testagent", friendId: "friend-uuid-1", channel: "bluebubbles", key: "session", content: "About L7: pick 2", timestamp: Date.now() })
+    const { BlueBubblesSendError } = await import("../../../senses/bluebubbles/client")
+    mocks.sendText.mockRejectedValueOnce(new BlueBubblesSendError({ message: "This message names a letter code.", httpStatus: null, errorCode: "letter_guard", transportInvoked: false }))
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.drainAndSendPendingBlueBubbles({
+      createClient: () => ({ sendText: mocks.sendText, editMessage: mocks.editMessage, setTyping: mocks.setTyping, markChatRead: mocks.markChatRead, repairEvent: mocks.repairEvent, getMessageText: mocks.getMessageText }),
+      createFriendStore: () => friendStore as any,
+    }, pendingRoot)
+    vi.doUnmock("../../../mind/pending")
+    expect(result).toMatchObject({ sent: 0, skipped: 1, failed: 0 })
+    expect(fs.existsSync(file)).toBe(false)
+    expect(queue).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ channel: "inner", content: expect.stringContaining("This message names a letter code.") }))
   })
 
   it("deletes the pending file after successful send", async () => {
@@ -14301,6 +14417,22 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       expect(await send(doc, sendAttachment)).toEqual({ delivered: false, reason: "image_unsendable", detail: "notes.txt is not an image" })
       const png = await tmpFile("a.png", Buffer.from([1]))
       expect(await send(png)).toMatchObject({ reason: "image_unsendable", detail: "this iMessage connection can't send files" })
+      expect(sendAttachment).not.toHaveBeenCalled()
+      expect(mocks.sendText).not.toHaveBeenCalled()
+    })
+
+    it("refuses text naming a letter code in the letters chat before the image goes", async () => {
+      const agentRoot = mocks.getAgentRoot()
+      const { writeAnsweringHandle } = await import("../../../heart/letters/answering")
+      writeAnsweringHandle(path.join(agentRoot, "state", "letters"), "friend-uuid-1", "alice@icloud.com")
+      const sendAttachment = vi.fn()
+      const png = await tmpFile("a.png", Buffer.from([1]))
+      const bluebubbles = await import("../../../senses/bluebubbles")
+      const sent = await bluebubbles.sendProactiveBlueBubblesMessageToSession(
+        { friendId: "friend-uuid-1", sessionKey: "chat:any;-;alice@icloud.com", text: "about L7", imagePath: png },
+        { createClient: () => clientWith(sendAttachment) as any, createFriendStore: () => friendStore() as any },
+      )
+      expect(sent).toEqual({ delivered: false, reason: "letter_guard", detail: expect.stringMatching(/^This message names a letter code/) })
       expect(sendAttachment).not.toHaveBeenCalled()
       expect(mocks.sendText).not.toHaveBeenCalled()
     })

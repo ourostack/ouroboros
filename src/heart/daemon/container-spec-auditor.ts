@@ -1,4 +1,5 @@
 import { emitNervesEvent } from "../../nerves/runtime"
+import { BUTLER_AGENT_NAMES, type ButlerAgentName } from "../butler-agent"
 
 interface DockerManTemplateElement {
   name: string
@@ -14,51 +15,58 @@ interface DockerManTemplateDocument {
 
 const { parseDockerManTemplateXml } = require("../../../deploy/unraid/docker-man-template-xml.cjs") as { parseDockerManTemplateXml(input: string | Uint8Array): DockerManTemplateDocument | null }
 
-const EXPECTED_BINDS = [
-  "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli:/home/ouro/.ouro-cli:rw",
-  "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw",
-  "/boot/config/custom/ouro-events/spool:/run/ouro-events:ro",
-  "/run/ouro-authority:/run/ouro-authority:ro",
-  // The psyche folder read-only over the bundle. Releases up to alpha.978 create it, and a rollback to one recreates it,
-  // so canonical-gateway accepts these binds with or without this row (GATEWAY_*_WITHOUT_PSYCHE).
-  "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro",
-  // Operator-set grants, root-owned on the host and read-only inside the Butler (the Butler honours a grant only from here).
-  "/mnt/user/appdata/ouro-butler/trust/sanctuary:/etc/ouro/trust/sanctuary:ro",
-  // The bundle sync deploy key, root-owned on the host and read-only inside the Butler. The key can push to the owner's repo.
-  "/mnt/user/appdata/ouro-butler/sync:/run/ouro-sync:ro",
-] as const
+// The host folders never change with the Butler's name: the bundle stays in sanctuary.ouro on the live host. Only where the
+// bundle, its psyche and the operator trust are mounted inside the container follows the name the image runs.
+function expectedBinds(name: ButlerAgentName): readonly string[] {
+  return [
+    "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli:/home/ouro/.ouro-cli:rw",
+    `/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/${name}.ouro:rw`,
+    "/boot/config/custom/ouro-events/spool:/run/ouro-events:ro",
+    "/run/ouro-authority:/run/ouro-authority:ro",
+    // The psyche folder read-only over the bundle. Releases up to alpha.978 create it, and a rollback to one recreates it,
+    // so canonical-gateway accepts these binds with or without this row (gatewayBinds).
+    `/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche:/home/ouro/AgentBundles/${name}.ouro/psyche:ro`,
+    // Operator-set grants, root-owned on the host and read-only inside the Butler (the Butler honours a grant only from here).
+    `/mnt/user/appdata/ouro-butler/trust/sanctuary:/etc/ouro/trust/${name}:ro`,
+    // The bundle sync deploy key, root-owned on the host and read-only inside the Butler. The key can push to the owner's repo.
+    "/mnt/user/appdata/ouro-butler/sync:/run/ouro-sync:ro",
+  ]
+}
 
-const EXPECTED_MOUNTS = [
-  ["/mnt/user/appdata/ouro-butler/runtime/.ouro-cli", "/home/ouro/.ouro-cli", true, "rprivate"],
-  ["/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", "/home/ouro/AgentBundles/sanctuary.ouro", true, "rprivate"],
-  ["/boot/config/custom/ouro-events/spool", "/run/ouro-events", false, "rprivate"],
-  ["/run/ouro-authority", "/run/ouro-authority", false, "rprivate"],
-  ["/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche", "/home/ouro/AgentBundles/sanctuary.ouro/psyche", false, "rprivate"],
-  ["/mnt/user/appdata/ouro-butler/trust/sanctuary", "/etc/ouro/trust/sanctuary", false, "rprivate"],
-  ["/mnt/user/appdata/ouro-butler/sync", "/run/ouro-sync", false, "rprivate"],
-] as const
+type ExpectedMount = readonly [string, string, boolean, string]
+function expectedMounts(name: ButlerAgentName): readonly ExpectedMount[] {
+  return [
+    ["/mnt/user/appdata/ouro-butler/runtime/.ouro-cli", "/home/ouro/.ouro-cli", true, "rprivate"],
+    ["/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", `/home/ouro/AgentBundles/${name}.ouro`, true, "rprivate"],
+    ["/boot/config/custom/ouro-events/spool", "/run/ouro-events", false, "rprivate"],
+    ["/run/ouro-authority", "/run/ouro-authority", false, "rprivate"],
+    ["/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche", `/home/ouro/AgentBundles/${name}.ouro/psyche`, false, "rprivate"],
+    ["/mnt/user/appdata/ouro-butler/trust/sanctuary", `/etc/ouro/trust/${name}`, false, "rprivate"],
+    ["/mnt/user/appdata/ouro-butler/sync", "/run/ouro-sync", false, "rprivate"],
+  ]
+}
 
-const PSYCHE_TARGET = "/home/ouro/AgentBundles/sanctuary.ouro/psyche"
-/** The current resident shape: the canonical-gateway set without the separate read-only psyche mount. */
-const GATEWAY_BINDS_WITHOUT_PSYCHE = EXPECTED_BINDS.filter((bind) => !bind.includes(`:${PSYCHE_TARGET}:`))
-const GATEWAY_MOUNTS_WITHOUT_PSYCHE = EXPECTED_MOUNTS.filter((mount) => mount[1] !== PSYCHE_TARGET)
+const psycheTarget = (name: ButlerAgentName) => `/home/ouro/AgentBundles/${name}.ouro/psyche`
 const SYNC_TARGET = "/run/ouro-sync"
 /**
- * The canonical-gateway shapes. With sync on, the key mount is required. With sync off (the live Butler until the
- * cutover, and a rollback to a release without the mount) each shape is accepted with or without it.
+ * The canonical-gateway shapes for one Butler name: with and without the separate read-only psyche mount. With sync on,
+ * the key mount is required. With sync off (the live Butler until the cutover, and a rollback to a release without the
+ * mount) each shape is accepted with or without it.
  */
-function gatewayBinds(syncEnabled: boolean): ReadonlyArray<readonly string[]> {
-  const shapes = [EXPECTED_BINDS, GATEWAY_BINDS_WITHOUT_PSYCHE]
+function gatewayBinds(syncEnabled: boolean, name: ButlerAgentName): ReadonlyArray<readonly string[]> {
+  const all = expectedBinds(name)
+  const shapes = [all, all.filter((bind) => !bind.includes(`:${psycheTarget(name)}:`))]
   return syncEnabled ? shapes : [...shapes, ...shapes.map((binds) => binds.filter((bind) => !bind.includes(`:${SYNC_TARGET}:`)))]
 }
-function gatewayMounts(syncEnabled: boolean): ReadonlyArray<ReadonlyArray<readonly [string, string, boolean, string]>> {
-  const shapes = [EXPECTED_MOUNTS, GATEWAY_MOUNTS_WITHOUT_PSYCHE]
+function gatewayMounts(syncEnabled: boolean, name: ButlerAgentName): ReadonlyArray<readonly ExpectedMount[]> {
+  const all = expectedMounts(name)
+  const shapes = [all, all.filter((mount) => mount[1] !== psycheTarget(name))]
   return syncEnabled ? shapes : [...shapes, ...shapes.map((mounts) => mounts.filter((mount) => mount[1] !== SYNC_TARGET))]
 }
-const PRE_GATEWAY_BINDS = EXPECTED_BINDS.slice(0, 3)
-const PRE_GATEWAY_MOUNTS = EXPECTED_MOUNTS.slice(0, 3)
+const preGatewayBinds = (name: ButlerAgentName) => expectedBinds(name).slice(0, 3)
+const preGatewayMounts = (name: ButlerAgentName) => expectedMounts(name).slice(0, 3)
 const LEGACY_ALPHA742_IMAGE = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"
-const LEGACY_ALPHA742_MOUNTS = EXPECTED_MOUNTS.slice(0, 2)
+const LEGACY_ALPHA742_MOUNTS = expectedMounts("sanctuary").slice(0, 2)
 
 const EXPECTED_EXTRA_PARAMS = "--restart=unless-stopped --user=10001:10001"
 const EXPECTED_NAME = "ouro-butler"
@@ -70,8 +78,8 @@ const EXPECTED_TEMPLATE_URLS: ReadonlySet<string> = new Set([
 const EXPECTED_ICON = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
 const EXACT_IMAGE = /^sha256:[a-f0-9]{64}$/u
 const VERSION_REFERENCE = /^ghcr\.io\/ourostack\/ouroboros-butler:[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/u
-const PACKAGE_DAEMON_ARGS = ["/opt/ouro/dist/heart/daemon/daemon-entry.js", "--package-managed-agent", "sanctuary"] as const
-const PACKAGE_ENTRYPOINT = ["node", ...PACKAGE_DAEMON_ARGS] as const
+// The image names the Butler `butler` from M2 on; images from before the rename name it `sanctuary`. Either runs its one bundle.
+const packageDaemonArgs = (name: ButlerAgentName) => ["/opt/ouro/dist/heart/daemon/daemon-entry.js", "--package-managed-agent", name]
 const LEGACY_DAEMON_ARGS = ["/opt/ouro/dist/heart/daemon/daemon-entry.js"] as const
 const LEGACY_ENTRYPOINT = ["node", ...LEGACY_DAEMON_ARGS] as const
 
@@ -137,9 +145,12 @@ export function auditSanctuaryContainerSpec(
     const mountContract = options.mountContract
     if (mountContract !== "canonical-pre-gateway" && mountContract !== "canonical-gateway" && mountContract !== "legacy-alpha742") violations.push("unsupported mount contract")
     if (mountContract === "legacy-alpha742" && options.expectedImage !== LEGACY_ALPHA742_IMAGE) violations.push("legacy mount exception requires the pinned alpha.742 image ID")
-    const acceptedMounts = mountContract === "legacy-alpha742" ? [LEGACY_ALPHA742_MOUNTS] : mountContract === "canonical-pre-gateway" ? [PRE_GATEWAY_MOUNTS] : gatewayMounts(options.syncEnabled === true)
-    const expectedArgs = mountContract !== "legacy-alpha742" ? PACKAGE_DAEMON_ARGS : LEGACY_DAEMON_ARGS
-    const expectedEntrypoint = mountContract !== "legacy-alpha742" ? PACKAGE_ENTRYPOINT : LEGACY_ENTRYPOINT
+    // The Butler name the container runs, from its own arguments: its bundle, psyche and trust must be mounted under that name.
+    const name = BUTLER_AGENT_NAMES.find((candidate) => JSON.stringify(root.Args) === JSON.stringify(packageDaemonArgs(candidate))) ?? "sanctuary"
+    const packageArgs = packageDaemonArgs(name)
+    const acceptedMounts = mountContract === "legacy-alpha742" ? [LEGACY_ALPHA742_MOUNTS] : mountContract === "canonical-pre-gateway" ? [preGatewayMounts(name)] : gatewayMounts(options.syncEnabled === true, name)
+    const expectedArgs = mountContract !== "legacy-alpha742" ? packageArgs : LEGACY_DAEMON_ARGS
+    const expectedEntrypoint = mountContract !== "legacy-alpha742" ? ["node", ...packageArgs] : LEGACY_ENTRYPOINT
     if (root.Image !== options.expectedImage) violations.push("image does not match the reviewed exact local Docker image ID")
     if (root.Path !== "node") violations.push("effective container path must be node")
     if (JSON.stringify(root.Args) !== JSON.stringify(expectedArgs)) violations.push("effective container arguments must be the reviewed direct daemon entry")
@@ -219,7 +230,8 @@ function singleTextChild(document: DockerManTemplateDocument | null, name: strin
 function auditTemplate(input: { templateXml: string | Uint8Array; runtimePolicyText: string; mountContract: SanctuaryContainerAuditOptions["mountContract"]; syncEnabled?: boolean }, expectedRepository: string, repositoryIsValid: boolean, repositoryViolation: string): string[] {
   const violations: string[] = []
   if (input.mountContract !== "canonical-pre-gateway" && input.mountContract !== "canonical-gateway") violations.push("unsupported template mount contract")
-  const acceptedBinds = input.mountContract === "canonical-pre-gateway" ? [PRE_GATEWAY_BINDS] : gatewayBinds(input.syncEnabled === true)
+  // A template names no image arguments, so its binds may use either Butler name, but all under the same one.
+  const acceptedBinds = BUTLER_AGENT_NAMES.flatMap((name) => input.mountContract === "canonical-pre-gateway" ? [preGatewayBinds(name)] : gatewayBinds(input.syncEnabled === true, name))
   const template = parseDockerManTemplateXml(input.templateXml)
   if (!template) violations.push("canonical DockerMan XML structure is invalid")
   let runtimePolicy: unknown

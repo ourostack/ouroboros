@@ -20,6 +20,7 @@ import {
   runSanctuaryHealthAcceptanceProbeCli,
   startSanctuaryHealthAcceptanceProbeCli,
   isSanctuaryHealthAcceptanceProbeMode,
+  probeButler,
   runSanctuaryHealthAcceptanceProbe,
   stopSanctuaryHealthAcceptanceProbeProcess,
   type SanctuaryHealthAcceptanceProbeInput,
@@ -47,7 +48,7 @@ function initialState() {
   }
 }
 
-function setup(label: SanctuaryHealthAcceptanceProbeInput["label"]) {
+function setup(label: SanctuaryHealthAcceptanceProbeInput["label"], butler: "butler" | "sanctuary" = "sanctuary") {
   const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), `sanctuary-${label}-`))
   const runtimeRoot = path.join(agentRoot, "runtime")
   const statePath = path.join(agentRoot, "state", "health", "sanctuary-health.json")
@@ -55,9 +56,9 @@ function setup(label: SanctuaryHealthAcceptanceProbeInput["label"]) {
   fs.mkdirSync(path.join(runtimeRoot, "scheduler"), { recursive: true })
   const before = `${JSON.stringify(initialState())}\n`
   fs.writeFileSync(statePath, before, { mode: 0o600 })
-  fs.writeFileSync(path.join(runtimeRoot, "scheduler", "sanctuary.crontab"), [
-    "# ouro:habit:sanctuary:sanctuary:sanctuary-health",
-    "*/15 * * * * /usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron",
+  fs.writeFileSync(path.join(runtimeRoot, "scheduler", `${butler}.crontab`), [
+    `# ouro:habit:${butler}:${butler}:sanctuary-health`,
+    `*/15 * * * * /usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke ${butler} --habit sanctuary-health --trigger cron`,
     "",
   ].join("\n"))
   let messageId = 100
@@ -363,6 +364,8 @@ describe("packaged Sanctuary health acceptance probe", () => {
       expect(configured.runnerOptions).toBe(runnerOptions)
       expect(configured.acceptanceFs).toBe(acceptanceFs)
       expect(configured.createLoopbackServer).toBe(createLoopbackServer)
+      expect(createSanctuaryHealthAcceptanceProbeDependencies({ ...overrides, butler: "butler" }).butler).toBe("butler")
+      expect(["butler", "sanctuary"]).toContain(createSanctuaryHealthAcceptanceProbeDependencies(overrides).butler)
     } finally { fs.rmSync(fixture.agentRoot, { recursive: true, force: true }) }
   })
 
@@ -766,6 +769,40 @@ describe("packaged Sanctuary health acceptance probe", () => {
       spy.mockRestore()
       fs.rmSync(fixture.agentRoot, { recursive: true, force: true })
     }
+  })
+
+  it.each(["butler", "sanctuary"] as const)("runs the health habit as the Butler %s whose bundle is on disk", async (butler) => {
+    const fixture = setup("unit-16g-health-transition", butler)
+    const original = healthRunner.runSanctuaryHealthHabit
+    const names: string[] = []
+    const spy = vi.spyOn(healthRunner, "runSanctuaryHealthHabit").mockImplementation(async (agentName, options) => {
+      names.push(agentName)
+      return original(agentName, options)
+    })
+    try {
+      await runSanctuaryHealthAcceptanceProbe(fixture.input, { ...fixture.deps, butler })
+      expect(names.length).toBeGreaterThan(0)
+      expect(new Set(names)).toEqual(new Set([butler]))
+      // The probe reads that Butler's own crontab, so a butler image never looks for sanctuary.crontab.
+      expect(fs.existsSync(path.join(fixture.deps.runtimeRoot, "scheduler", "sanctuary.crontab"))).toBe(butler === "sanctuary")
+    } finally {
+      spy.mockRestore()
+      fs.rmSync(fixture.agentRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("finds the probe's Butler from the bundle on disk", () => {
+    const bundles = fs.mkdtempSync(path.join(os.tmpdir(), "probe-butler-"))
+    try {
+      expect(probeButler(bundles)).toBe("sanctuary")
+      fs.mkdirSync(path.join(bundles, "butler.ouro"))
+      expect(probeButler(bundles)).toBe("butler")
+      fs.mkdirSync(path.join(bundles, "sanctuary.ouro"))
+      expect(probeButler(bundles)).toBe("sanctuary")
+      fs.rmdirSync(path.join(bundles, "butler.ouro"))
+      expect(probeButler(bundles)).toBe("sanctuary")
+      expect(["butler", "sanctuary"]).toContain(probeButler())
+    } finally { fs.rmSync(bundles, { recursive: true, force: true }) }
   })
 
   it("closes the loopback fixture when a phase references a missing delivery receipt", async () => {

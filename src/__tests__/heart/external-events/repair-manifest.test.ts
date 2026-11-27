@@ -9,15 +9,15 @@ vi.mock("node:fs", async (importOriginal) => {
   return { ...actual, lstatSync: vi.fn((...args: Parameters<typeof actual.lstatSync>) => actual.lstatSync(...args)) }
 })
 
-import { claimExternalEvent, failExternalEventAttempt, readExternalEventRecord, recordExternalEvent, repairExternalEventsFromManifest, reviveExternalEventAfterRecovery } from "../../../heart/external-events/router"
+import { claimExternalEvent, failExternalEventAttempt, prepareButlerExternalEvents, readExternalEventRecord, recordExternalEvent, repairExternalEventsFromManifest, reviveExternalEventAfterRecovery } from "../../../heart/external-events/router"
 
 const roots: string[] = []
 const sha = (raw: Buffer | string) => createHash("sha256").update(raw).digest("hex")
 function root(): string { const value = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "event-repair-"))); roots.push(value); return value }
 afterEach(() => { vi.mocked(fs.lstatSync).mockClear(); for (const value of roots.splice(0)) fs.rmSync(value, { recursive: true, force: true }) })
 
-function fixture(eventRoot: string, eventId = "evt-1") {
-  const first = recordExternalEvent({ agent: "agent-a", source: "source-a", eventType: "health.observed", eventId }, { root: eventRoot, now: () => "2026-01-01T00:00:00.000Z" })
+function fixture(eventRoot: string, eventId = "evt-1", agent = "agent-a") {
+  const first = recordExternalEvent({ agent, source: "source-a", eventType: "health.observed", eventId }, { root: eventRoot, now: () => "2026-01-01T00:00:00.000Z" })
   const claim = claimExternalEvent(first.recordPath, { owner: "worker", expectedVersion: first.version, expectedGeneration: 1 })
   const dead = failExternalEventAttempt(first.recordPath, { owner: "worker", expectedVersion: claim.version, expectedGeneration: 1, error: "provider unavailable", failureClass: "provider_lane_unavailable", maxAttempts: 1, now: () => "2026-01-01T00:00:01.000Z" })
   const revived = reviveExternalEventAfterRecovery(first.recordPath, { expectedVersion: dead.version, expectedGeneration: 1, evidence: { class: "provider_lane_unavailable", observedAt: "2026-01-01T00:00:02.000Z" }, now: () => "2026-01-01T00:00:02.000Z" })
@@ -47,6 +47,20 @@ function manifestPath(eventRoot: string, entries: Array<{ record: ReturnType<typ
 }
 
 describe("external event repair manifest", () => {
+  it("applies a reviewed manifest naming the Butler's other name to the record the running Butler adopted", () => {
+    const eventRoot = root(); const item = fixture(eventRoot, "evt-1", "sanctuary"); const manifest = manifestPath(eventRoot, [item])
+    try {
+      expect(prepareButlerExternalEvents(eventRoot, ["butler"])).toBe("adopted")
+      const moved = path.join(eventRoot, "butler", "source-a", "evt-1.json")
+      expect(repairExternalEventsFromManifest(manifest, { root: eventRoot })).toMatchObject({ applied: ["sanctuary/source-a/evt-1"], failed: [], pending: [] })
+      expect(readExternalEventRecord(moved)).toMatchObject({ agent: "butler", failureProvenance: { class: "execution_lease_expired" } })
+      expect(repairExternalEventsFromManifest(manifest, { root: eventRoot })).toMatchObject({ applied: [], alreadyApplied: ["sanctuary/source-a/evt-1"], failed: [] })
+      // With the record under neither name, the repair fails closed.
+      fs.rmSync(moved)
+      expect(repairExternalEventsFromManifest(manifest, { root: eventRoot })).toMatchObject({ applied: [], failed: [{ identity: "sanctuary/source-a/evt-1" }] })
+    } finally { prepareButlerExternalEvents(eventRoot, []) }
+  })
+
   it("applies the only allowed transition and reruns idempotently", () => {
     const eventRoot = root(); const item = fixture(eventRoot); const manifest = manifestPath(eventRoot, [item])
     expect(repairExternalEventsFromManifest(manifest, { root: eventRoot })).toMatchObject({ applied: ["agent-a/source-a/evt-1"], alreadyApplied: [], failed: [], pending: [] })

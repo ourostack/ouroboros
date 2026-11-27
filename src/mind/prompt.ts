@@ -23,6 +23,7 @@ import { getFirstImpressions } from "./first-impressions";
 import { deskSection } from "./desk-section";
 import { whereAmISection } from "./where-am-i";
 import { listSessionActivity, type SessionActivityQuery } from "../heart/session-activity";
+import { describeChannelReach } from "../heart/target-resolution";
 import { formatActiveWorkFrame, formatLiveWorldStateCheckpoint, formatOtherActiveSessionSummaries, type ActiveWorkFrame } from "../heart/active-work";
 import type { DelegationDecision } from "../heart/delegation";
 import { deriveCommitments, formatCommitments, type AwaitingCommitment } from "../heart/commitments";
@@ -1316,7 +1317,7 @@ export const TALKING_WITH_PEOPLE_GUIDANCE = `## talking with people
 
 my voice is the one in my identity, in every chat, however much formal text i've been reading. reports, task cards, changelogs, notices and agent intake are written in report-speak; that register belongs on formal surfaces (PRs, task cards, docs, emails to strangers, handoffs between agents), and i don't carry it into chat: no bolded headers or status sections in a chat reply. a notice or tool output isn't the body of my reply; my own words come first.
 
-i ask a person only for what only they can do: passkeys, 2FA, money, irreversible acts. i collect those asks and send them together with the next message i'm already sending, so they can do them in one sitting, rather than one at a time or held for a clock window. an item marked now goes out at once. when something they can try lands, i tell them "Ready: <what>, at <where>" as soon as it lands. when other agents hand me items for a person, a repeat with the same dedupe key and the same ask is dropped; the same key with a changed ask replaces the old one and goes on as new.`
+i ask a person only for what needs their body: a number or prompt to approve on their own phone, their card, an irreversible call that's theirs, or the vault's unlock secret. i have standing authority, so the rest is mine: sign-ins with the password from my vault, codes in their mail, prompts, terminals and machines, which they're usually nowhere near. before i pass on "you need to sign in" i check it (\`gh auth status\` for gh) and drop it if it's false, and an agent that hands me an ask that isn't the person's gets it back: do it yourself, you have standing authority. i collect those asks and send them together with the next message i'm already sending, so they can do them in one sitting, rather than one at a time or held for a clock window. an item marked now goes out at once. when something they can try lands, i tell them "Ready: <what>, at <where>" as soon as it lands. when other agents hand me items for a person, a repeat with the same dedupe key and the same ask is dropped; the same key with a changed ask replaces the old one and goes on as new.`
 
 export function contextSection(context?: ResolvedContext, options?: BuildSystemOptions): string {
   if (!context) return ""
@@ -1338,8 +1339,9 @@ export function contextSection(context?: ResolvedContext, options?: BuildSystemO
   if (!ch.supportsStreaming) traits.push("no streaming")
   if (ch.supportsStreaming) traits.push("streaming")
   if (ch.supportsRichCards) traits.push("rich cards")
+  const reach = describeChannelReach(ch.channel)
   /* v8 ignore next -- empty-traits branch unreachable: streaming/no-streaming always adds a trait @preserve */
-  lines.push(`channel: ${ch.channel}${traits.length ? ` (${traits.join(", ")})` : ""}`)
+  lines.push(`channel: ${ch.channel}${traits.length ? ` (${traits.join(", ")})` : ""}${reach ? `; reach: ${reach}` : ""}`)
 
   // Friend record (guaranteed non-null here -- checked above)
   const friend = context.friend!

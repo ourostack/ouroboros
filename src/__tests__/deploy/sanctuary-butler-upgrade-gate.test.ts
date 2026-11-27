@@ -251,10 +251,13 @@ describe("the replay root restore", () => {
 describe("the operator trust directory", () => {
   const dest = "/etc/ouro/trust/sanctuary"
   it("is mounted read-only by docker create", () => {
-    expect(upgrade.TRUST_MOUNT).toBe("/mnt/user/appdata/ouro-butler/trust/sanctuary:/etc/ouro/trust/sanctuary:ro")
+    expect(upgrade.trustMount("sanctuary")).toBe("type=bind,src=/mnt/user/appdata/ouro-butler/trust/sanctuary,dst=/etc/ouro/trust/sanctuary,readonly")
+    expect(upgrade.trustMount("butler")).toBe("type=bind,src=/mnt/user/appdata/ouro-butler/trust/sanctuary,dst=/etc/ouro/trust/butler,readonly")
     const recreate = source.slice(source.indexOf("function recreateResident("), source.indexOf("export function psycheProblems"))
-    expect(recreate).toContain('"-v", TRUST_MOUNT')
-    expect(recreate.indexOf('"-v", TRUST_MOUNT')).toBeLessThan(recreate.indexOf("image(version)])"))
+    expect(recreate).toContain('"--mount", trustMount(name)')
+    expect(recreate).toContain("const name = imageButlerName(image(version))")
+    expect(recreate).toContain('"--mount", `type=bind,src=${hostBundle()},dst=${containerBundle(name)}`')
+    expect(recreate.indexOf('"--mount", trustMount(name)')).toBeLessThan(recreate.indexOf("image(version)])"))
     expect(recreate.indexOf("ensureTrustHostDir()")).toBeLessThan(recreate.indexOf('docker(["create"'))
   })
   it("reports nothing for a read-only mount and names each problem otherwise", () => {
@@ -262,13 +265,17 @@ describe("the operator trust directory", () => {
     expect(upgrade.trustMountIssue([{ Destination: dest, RW: true, Source: "/mnt/user/appdata/ouro-butler/trust/sanctuary" }])).toBe("the operator trust directory is mounted read-write in the resident")
     expect(upgrade.trustMountIssue([{ Destination: dest, RW: false, Source: "/elsewhere" }])).toBe("the operator trust directory is mounted from /elsewhere, not the root-owned host directory")
     const missing = "the operator trust directory is not mounted in the resident, so no grant would be honoured"
+    const host = "/mnt/user/appdata/ouro-butler/trust/sanctuary"
+    expect(upgrade.trustMountIssue([{ Destination: "/etc/ouro/trust/butler", RW: false, Source: host }], "butler")).toBeNull()
+    expect(upgrade.trustMountIssue([{ Destination: dest, RW: false, Source: host }], "butler")).toBe(missing)
     expect(upgrade.trustMountIssue([])).toBe(missing)
     expect(upgrade.trustMountIssue(null)).toBe(missing)
     expect(upgrade.trustMountIssue([null])).toBe(missing)
   })
   it("is checked by verify", () => {
     const verifyBody = source.slice(source.indexOf("function verify("), source.indexOf("function fail("))
-    expect(verifyBody).toContain("trustMountIssue(trustMount)")
+    expect(verifyBody).toContain("trustMountIssue(trustMount, name)")
+    expect(verifyBody).toContain("const name = liveButlerName()")
   })
   it("accepts only a real root-owned directory closed to group and other writes", () => {
     expect(upgrade.trustDirIssue({ isDirectory: () => true, isSymbolicLink: () => false, uid: 0, mode: 0o40755 })).toBeNull()
@@ -298,13 +305,14 @@ describe("escalation holders the upgrade would drop", () => {
     expect(upgrade.legacyEscalationGrantProblems(legacy, { claude: {}, other: {}, odd: {} })).toEqual([])
     expect(upgrade.legacyEscalationGrantProblems(undefined, undefined)).toEqual([])
     expect(upgrade.legacyEscalationGrantProblems({ x: { did: "did:key:x" } }, undefined)).toHaveLength(1)
+    expect(upgrade.legacyEscalationGrantProblems(legacy, { other: {} }, "butler")[0]).toContain("ouro a2a escalation grant --agent butler --friend claude")
   })
 
   it("fails preflight and verify on a dropped holder", () => {
     const preflight = source.slice(source.indexOf("function preflight("), source.indexOf("function preflight(") + 12000)
-    expect(preflight).toMatch(/escalationGrantProblems\(\)[\s\S]*dropped\.forEach\(\(line\) => bad\(line\)\)/)
+    expect(preflight).toMatch(/escalationGrantProblems\(name\)[\s\S]*dropped\.forEach\(\(line\) => bad\(line\)\)/)
     const verify = source.slice(source.indexOf("function verify("), source.indexOf("function verify(") + 4000)
-    expect(verify).toMatch(/escalationGrantProblems\(\)[\s\S]*droppedHolders\.forEach\(\(line\) => bad\(line\)\)/)
+    expect(verify).toMatch(/escalationGrantProblems\(name\)[\s\S]*droppedHolders\.forEach\(\(line\) => bad\(line\)\)/)
   })
 })
 
@@ -550,10 +558,12 @@ describe("the resident's psyche mount", () => {
   })
   it("reports a separate read-write psyche mount", () => {
     expect(upgrade.psycheMountIssue([{ Destination: dest, RW: true }])).toBe("psyche is mounted read-write as a separate mount in the resident")
+    expect(upgrade.psycheMountIssue([{ Destination: "/home/ouro/AgentBundles/butler.ouro/psyche", RW: true }], "butler")).toBe("psyche is mounted read-write as a separate mount in the resident")
+    expect(upgrade.psycheMountIssue([{ Destination: "/home/ouro/AgentBundles/butler.ouro/psyche", RW: false }], "butler")).toBeNull()
   })
   it("is checked by verify", () => {
     const verifyBody = source.slice(source.indexOf("function verify("), source.indexOf("function fail("))
-    expect(verifyBody).toContain("psycheMountIssue(psycheMount)")
+    expect(verifyBody).toContain("psycheMountIssue(psycheMount, name)")
     expect(verifyBody).toContain('ok("psyche mount is in a supported shape")')
     expect(verifyBody).toContain('"psyche files are resident-owned and writable"')
     expect(verifyBody).not.toContain("resident-owned 0600")
@@ -561,7 +571,7 @@ describe("the resident's psyche mount", () => {
   it("has verify report whether the installed DockerMan template still carries the psyche Config", () => {
     const verifyBody = source.slice(source.indexOf("function verify("), source.indexOf("function fail("))
     const check = verifyBody.slice(verifyBody.indexOf("existsSync(TEMPLATE)"))
-    expect(check).toMatch(/^existsSync\(TEMPLATE\) && readFileSync\(TEMPLATE, "utf8"\)\.includes\(`Target="\$\{PSYCHE_TARGET\}"`\)/u)
+    expect(check).toMatch(/^existsSync\(TEMPLATE\) && BUTLER_NAMES\.some\(\(butler\) => readFileSync\(TEMPLATE, "utf8"\)\.includes\(`Target="\$\{psycheTarget\(butler\)\}"`\)\)/u)
     expect(check).toContain('? bad("installed DockerMan template still mounts the psyche read-only; a DockerMan Apply would restore it")')
     expect(check).toContain(': ok("installed DockerMan template has no separate psyche mount")')
   })
@@ -595,6 +605,10 @@ describe("the installed DockerMan template loses its psyche Config", () => {
   it("leaves a template the parser cannot read unchanged", () => {
     const broken = installed(true).replace("</Container>\n", "")
     expect(upgrade.withoutPsycheConfig(broken, parseDockerManTemplateXml)).toBe(broken)
+  })
+  it("removes a psyche Config under the Butler's new name too", () => {
+    const renamed = installed(true).replaceAll("/home/ouro/AgentBundles/sanctuary.ouro", "/home/ouro/AgentBundles/butler.ouro")
+    expect(upgrade.withoutPsycheConfig(renamed, parseDockerManTemplateXml)).toBe(installed(false).replaceAll("/home/ouro/AgentBundles/sanctuary.ouro", "/home/ouro/AgentBundles/butler.ouro"))
   })
   it("leaves a Config hidden in a comment unchanged", () => {
     const commented = installed(false).replace("</Container>", `<!-- ${psycheLine.trim()} -->\n</Container>`)
@@ -841,19 +855,19 @@ describe("the psyche survives every ship and rollback", () => {
   })
   it("plants only on a gated upgrade, before the pause, checks it in runGate and confirmRollback, and removes it in a finally", () => {
     const body = source.slice(source.indexOf("async function upgrade(version, rehearse"), source.indexOf("// ---- verify"))
-    const plantAt = body.indexOf("plantPsycheMarker(psycheDir, { uid: 10001, gid: 10001 })")
+    const plantAt = body.indexOf("plantPsycheMarker(psycheDir(), { uid: 10001, gid: 10001 })")
     expect(plantAt).toBeGreaterThan(0)
     expect(body.slice(0, plantAt)).toContain("if (gated) {")
     expect(plantAt).toBeLessThan(body.indexOf("pauseSupervision()"))
     const runGate = body.slice(body.indexOf("runGate: () => {"), body.indexOf("commit: () => {"))
-    expect(runGate.indexOf('reportPsycheSurvival("psyche-survives-release", psycheDir, planted)')).toBeGreaterThan(runGate.indexOf("waitForButler(image(version), 300)"))
-    expect(runGate.indexOf('reportPsycheSurvival("psyche-survives-release", psycheDir, planted)')).toBeLessThan(runGate.indexOf("runReplayGate(plant)"))
+    expect(runGate.indexOf('reportPsycheSurvival("psyche-survives-release", psycheDir(), planted)')).toBeGreaterThan(runGate.indexOf("waitForButler(image(version), 300)"))
+    expect(runGate.indexOf('reportPsycheSurvival("psyche-survives-release", psycheDir(), planted)')).toBeLessThan(runGate.indexOf("runReplayGate(plant)"))
     const confirm = body.slice(body.indexOf("confirmRollback: () => {"), body.indexOf("pin: () => pinTemplate(version)"))
-    expect(confirm.indexOf('reportPsycheSurvival("psyche-survives-rollback", psycheDir, planted)')).toBeGreaterThan(confirm.indexOf("waitForButler(priorImage, 300)"))
+    expect(confirm.indexOf('reportPsycheSurvival("psyche-survives-rollback", psycheDir(), planted)')).toBeGreaterThan(confirm.indexOf("waitForButler(priorImage, 300)"))
     const gate = body.slice(body.indexOf("let outcome"))
     expect(gate).toMatch(/^let outcome\n {4}try \{\n {6}outcome = completeGatedUpgrade\(\{/)
-    expect(gate).toContain("} finally {\n      const left = removePsycheMarker(psycheDir, planted.token)\n      if (left) warn(`the psyche marker was left in place: ${left}`)\n    }")
-    expect(gate.indexOf("removePsycheMarker(psycheDir, planted.token)")).toBeLessThan(gate.indexOf("if (!outcome.passed) process.exit(1)"))
+    expect(gate).toContain("} finally {\n      const left = removePsycheMarker(psycheDir(), planted.token)\n      if (left) warn(`the psyche marker was left in place: ${left}`)\n    }")
+    expect(gate.indexOf("removePsycheMarker(psycheDir(), planted.token)")).toBeLessThan(gate.indexOf("if (!outcome.passed) process.exit(1)"))
   })
 })
 
@@ -1063,5 +1077,227 @@ describe("the upgrade and its rollbacks wait for the host lock", () => {
       // The nearest lock check before each rollback comes after the previous rollback (or the helper's own text).
       expect(before.lastIndexOf("rollbackLock()")).toBeGreaterThan(Math.max(before.lastIndexOf('"upgrade-rollback"'), before.indexOf("const rollbackLock")))
     }
+  })
+})
+
+describe("the Butler's name follows the image", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { parseDockerManTemplateXml } = require("../../../deploy/unraid/docker-man-template-xml.cjs")
+  const daemon = ["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js", "--package-managed-agent"]
+
+  it("reads the name from the image's entrypoint by the same rule as butler-agent.ts", async () => {
+    const { butlerNameFromEntrypoint } = await import("../../heart/butler-agent")
+    for (const entrypoint of [[...daemon, "butler"], [...daemon, "sanctuary"], [...daemon, "slugger"], daemon, ["node", "x.js"], null, "butler"]) {
+      expect(upgrade.butlerNameFromEntrypoint(entrypoint), JSON.stringify(entrypoint)).toBe(butlerNameFromEntrypoint(entrypoint))
+    }
+    expect(upgrade.butlerNameFromEntrypoint([...daemon, "butler"])).toBe("butler")
+    expect(upgrade.BUTLER_NAMES).toEqual(["butler", "sanctuary"])
+  })
+
+  it("names the container paths from the Butler name", () => {
+    expect(upgrade.containerBundle("butler")).toBe("/home/ouro/AgentBundles/butler.ouro")
+    expect(upgrade.psycheTarget("sanctuary")).toBe("/home/ouro/AgentBundles/sanctuary.ouro/psyche")
+    expect(upgrade.trustTarget("butler")).toBe("/etc/ouro/trust/butler")
+  })
+
+  it("finds the host bundle on disk at each use, keeping sanctuary.ouro when neither or both are there", () => {
+    const on = (...names: string[]) => (file: string) => names.some((name) => file === `/mnt/user/appdata/ouro-butler/agent/${name}.ouro`)
+    expect(upgrade.hostBundle(on("sanctuary"))).toBe("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro")
+    expect(upgrade.hostBundle(on("butler"))).toBe("/mnt/user/appdata/ouro-butler/agent/butler.ouro")
+    expect(upgrade.hostBundle(on())).toBe("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro")
+    expect(upgrade.hostBundle(on("butler", "sanctuary"))).toBe("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro")
+    expect(typeof upgrade.hostBundle()).toBe("string")
+    expect(source).not.toMatch(/const (BUNDLE|POLICY) =/u)
+  })
+
+  it("mounts the bundle in every one-shot container where the image it runs names it", () => {
+    const fenced = source.slice(source.indexOf("function fencedVaultRead("), source.indexOf("function sha12("))
+    expect(fenced).toContain("const bundleMount = `type=bind,src=${hostBundle()},dst=${containerBundle(imageButlerName(image(version)))},readonly`")
+    expect(fenced.split('"--mount", bundleMount').length).toBe(3)
+    const rematerialise = source.slice(source.indexOf("function rematerialiseToken("), source.indexOf("function waitHealthy("))
+    expect(rematerialise).toContain("const butler = imageButlerName(image(version))")
+    expect(rematerialise).toContain('"--mount", `type=bind,src=${hostBundle()},dst=${containerBundle(butler)}`')
+    expect(rematerialise).toContain("forceBwSync(name, butler)")
+  })
+
+  it("syncs the bw folder of the Butler the image runs, reading its agent.json from that Butler's bundle", () => {
+    const script = upgrade.forceBwSyncScript("butler")
+    expect(script).toContain('const NAME="butler";')
+    expect(script).toContain('fs.readFileSync("/home/ouro/AgentBundles/butler.ouro/agent.json","utf8")')
+    expect(script).toContain('const APP=bitwardenAppDataDir(NAME,resolveVaultConfig(NAME,cfg),"/home/ouro");')
+    expect(script).toContain("readVaultUnlockSecret({agentName:NAME,email,serverUrl:url})")
+    expect(script).not.toContain("readdirSync")
+    expect(upgrade.forceBwSyncScript("sanctuary")).toContain('"/home/ouro/AgentBundles/sanctuary.ouro/agent.json"')
+    expect(() => new Function("require", "process", upgrade.forceBwSyncScript("butler"))).not.toThrow()
+  })
+
+  it("hashes the bw folder from the vault config the daemon resolves, so a legacy or slashed URL finds the same folder", async () => {
+    const identity = await import("../../heart/identity")
+    const vaultUnlock = await import("../../repertoire/vault-unlock")
+    const vault = { email: "butler@ouro.bot", serverUrl: "https://vault.ouroboros.bot/" }
+    let appDir: string | undefined
+    const fakeRequire = (id: string) => {
+      if (id === "node:fs") return { readFileSync: () => JSON.stringify({ vault }) }
+      if (id === "node:child_process") return { execFileSync: (_bin: string, _args: string[], options: { env: Record<string, string> }) => { appDir = options.env.BITWARDENCLI_APPDATA_DIR; return "session" } }
+      if (id.endsWith("/heart/identity.js")) return identity
+      if (id.endsWith("/repertoire/vault-unlock.js")) return { bitwardenAppDataDir: vaultUnlock.bitwardenAppDataDir, readVaultUnlockSecret: () => ({ secret: "unlock" }) }
+      throw new Error(`unexpected require ${id}`)
+    }
+    new Function("require", "process", upgrade.forceBwSyncScript("butler"))(fakeRequire, { env: {}, stdout: { write: () => true } })
+    expect(appDir).toBe(vaultUnlock.bitwardenAppDataDir("butler", identity.resolveVaultConfig("butler", vault), "/home/ouro"))
+    expect(appDir).not.toBe(vaultUnlock.bitwardenAppDataDir("butler", vault, "/home/ouro"))
+  })
+
+  describe("a rename's predecessor", () => {
+    const release = (files: Record<string, string>) => (file: string) => files[file] ?? null
+    const ready = release({ "deploy/unraid/migrate-sanctuary-bundle.mjs": "const BUTLER_NAME_KEY = \"--butler-name\"", "dist/heart/external-events/router.js": "function externalEventAwaitRecordPath(" })
+    it("lets an upgrade through when the name stays the same, whatever the running release holds", () => {
+      expect(upgrade.renamePredecessorProblem("sanctuary", "sanctuary", () => null)).toBeNull()
+      expect(upgrade.renamePredecessorProblem("butler", "butler", () => null)).toBeNull()
+    })
+    it.each([["sanctuary", "butler"], ["butler", "sanctuary"]])("lets a rename from %s to %s through only when the running release can take its rollback", (running, target) => {
+      expect(upgrade.renamePredecessorProblem(running, target, ready)).toBeNull()
+      expect(upgrade.renamePredecessorProblem(running, target, () => null)).toBe(`this upgrade renames the Butler from ${running} to ${target}, but the running release cannot take a rollback across that rename (its deploy/unraid/migrate-sanctuary-bundle.mjs and dist/heart/external-events/router.js predate it). Ship a release from after M2 step 4b ("Butler: what the rename needs first") with the name unchanged first, then the release that renames it`)
+      // An M2 step 4a release: it has --butler-name but not the event Await lookup.
+      expect(upgrade.renamePredecessorProblem(running, target, release({ "deploy/unraid/migrate-sanctuary-bundle.mjs": "--butler-name" }))).toContain("(its dist/heart/external-events/router.js predate it)")
+    })
+    it("names the markers the root lifecycle names, each found in this release's own source", async () => {
+      const lifecycle = await import("../../heart/daemon/sanctuary-authority-root-lifecycle")
+      expect(upgrade.BUTLER_RENAME_PREDECESSOR_MARKERS).toEqual(lifecycle.BUTLER_RENAME_PREDECESSOR_MARKERS)
+      for (const [file, marker] of upgrade.BUTLER_RENAME_PREDECESSOR_MARKERS as Array<[string, string]>) {
+        const sourceFile = file.replace(/^dist\//u, "src/").replace(/\.js$/u, ".ts")
+        expect(fs.readFileSync(path.resolve(__dirname, "../../..", sourceFile), "utf8")).toContain(marker)
+      }
+    })
+    it("is checked by preflight, the upgrade before it stages anything, and the install", () => {
+      const preflight = source.slice(source.indexOf("function preflight("), source.indexOf("// Does the target image's own #vault"))
+      expect(preflight).toContain("renamePredecessorIssue(version, runningImage)")
+      const upgradeBody = source.slice(source.indexOf("async function upgrade("), source.indexOf("// ---- verify"))
+      expect(upgradeBody.indexOf("renamePredecessorIssue(")).toBeLessThan(upgradeBody.indexOf("stageIncomingPackage(version)"))
+      const installBody = source.slice(source.indexOf("function install("), source.indexOf("// Kill any leaked authority host process"))
+      expect(installBody.indexOf("renamePredecessorIssue(version, rollbackImage)")).toBeLessThan(installBody.indexOf("  pauseCgroupReaper()\n  try {"))
+    })
+    it("tells the bundle migrate the target image's Butler name", () => {
+      const body = source.slice(source.indexOf("function migrateBundle("), source.indexOf("// Host supervision for the root-authority gateway"))
+      expect(body).toContain('"--operation", "migrate",\n      "--rollback-image-id", rollbackImage, "--target-image-id", imageId(version), "--butler-name", imageButlerName(image(version))]')
+    })
+  })
+
+  describe("a leftover container-credentials handoff", () => {
+    const runtime = "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli"
+    const handoff = (...agents: unknown[]) => JSON.stringify({ credentials: agents.map((agentName) => ({ agentName })) })
+    it("passes when there is none, or every one names the image's Butler", () => {
+      expect(upgrade.credentialHandoffIssue("butler", () => null)).toBeNull()
+      expect(upgrade.credentialHandoffIssue("sanctuary", (file: string) => (file.endsWith(".consuming") ? handoff("sanctuary") : null))).toBeNull()
+      expect(upgrade.credentialHandoffIssue("butler", () => handoff("butler"))).toBeNull()
+    })
+    it("refuses one naming another agent, in the file or its claim", () => {
+      expect(upgrade.credentialHandoffIssue("butler", (file: string) => (file === `${runtime}/container-credentials.json` ? handoff("sanctuary") : null)))
+        .toBe(`${runtime}/container-credentials.json names "sanctuary", not butler, so the new Butler would refuse to start; quarantine it before the upgrade`)
+      expect(upgrade.credentialHandoffIssue("butler", (file: string) => (file.endsWith(".consuming") ? handoff("butler", "sanctuary") : null))).toContain(".consuming names \"sanctuary\"")
+    })
+    it("refuses one it cannot read", () => {
+      expect(upgrade.credentialHandoffIssue("butler", () => "not json")).toContain("cannot be read as a credential handoff")
+      expect(upgrade.credentialHandoffIssue("butler", () => "{}")).toContain("cannot be read as a credential handoff")
+    })
+    it("is checked by preflight, against the target image's Butler", () => {
+      const body = source.slice(source.indexOf("function preflight("), source.indexOf("// Does the target image's own #vault"))
+      expect(body).toContain("credentialHandoffIssue(imageButlerName(image(version)))")
+      expect(upgrade.credentialHandoffIssue("butler")).toBeNull()
+    })
+  })
+
+  describe("pinning the DockerMan template", () => {
+    const reference = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.2000"
+    const config = (target: string, host: string) => `  <Config Name="${target.includes("trust") ? "Trust" : "Bundle"}" Target="${target}" Default="${host}" Mode="rw" Type="Path">${host}</Config>\n`
+    const sync = '  <Config Name="Bundle sync key (read-only)" Target="/run/ouro-sync" Default="/mnt/user/appdata/ouro-butler/sync" Mode="ro" Type="Path">/mnt/user/appdata/ouro-butler/sync</Config>\n'
+    const template = (name: string, { trust = name, extra = "" }: { trust?: string; extra?: string } = {}) => [
+      '<?xml version="1.0"?>\n<Container version="2">\n  <Name>ouro-butler</Name>\n',
+      "  <Repository>ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.1999</Repository>\n",
+      config(`/home/ouro/AgentBundles/${name}.ouro`, "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"),
+      config(`/etc/ouro/trust/${trust}`, "/mnt/user/appdata/ouro-butler/trust/sanctuary"),
+      extra, sync, "</Container>\n",
+    ].join("")
+    const pinned = (name: string) => template(name).replace("0.1.0-alpha.1999", "0.1.0-alpha.2000")
+
+    it("moves the bundle and trust Targets to butler for a butler image, keeping the host folders", () => {
+      expect(upgrade.pinTemplateText(template("sanctuary"), reference, "butler", parseDockerManTemplateXml)).toEqual({ text: pinned("butler"), warnings: [], skipped: false })
+    })
+    it("leaves a sanctuary template's Targets alone for a sanctuary image", () => {
+      expect(upgrade.pinTemplateText(template("sanctuary"), reference, "sanctuary", parseDockerManTemplateXml)).toEqual({ text: pinned("sanctuary"), warnings: [], skipped: false })
+    })
+    it("moves a butler template back for a sanctuary image, and finishes a half-moved one", () => {
+      expect(upgrade.pinTemplateText(template("butler"), reference, "sanctuary", parseDockerManTemplateXml).text).toBe(pinned("sanctuary"))
+      expect(upgrade.pinTemplateText(template("butler", { trust: "sanctuary" }), reference, "butler", parseDockerManTemplateXml).text).toBe(pinned("butler"))
+    })
+    it("drops a psyche Config under either name before moving the Targets", () => {
+      const psyche = config("/home/ouro/AgentBundles/sanctuary.ouro/psyche", "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche")
+      expect(upgrade.pinTemplateText(template("sanctuary", { extra: psyche }), reference, "butler", parseDockerManTemplateXml).text).toBe(pinned("butler"))
+    })
+    it("fails instead of warning when a butler image's template cannot be moved", () => {
+      const noParser = upgrade.pinTemplateText(template("sanctuary"), reference, "butler", null, "ENOENT")
+      expect(noParser).toEqual({ problem: "the DockerMan template parser could not be loaded (ENOENT)" })
+      expect(upgrade.pinTemplateText(template("sanctuary").replace("ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.1999", "elsewhere/image:1"), reference, "butler", parseDockerManTemplateXml))
+        .toEqual({ problem: "the DockerMan template's Repository is not recognised" })
+      const trustConfig = config("/etc/ouro/trust/sanctuary", "/mnt/user/appdata/ouro-butler/trust/sanctuary")
+      // The live install's template has no trust Config (the root lifecycle mounts it): only the bundle Target moves.
+      const noTrust = template("sanctuary").replace(trustConfig, "")
+      const movedNoTrust = upgrade.pinTemplateText(noTrust, reference, "butler", parseDockerManTemplateXml)
+      expect(movedNoTrust.text).toContain('Target="/home/ouro/AgentBundles/butler.ouro"')
+      expect(movedNoTrust.text).not.toContain('Target="/home/ouro/AgentBundles/sanctuary.ouro"')
+      expect(movedNoTrust.text).not.toContain("/etc/ouro/trust/")
+      // And a rollback moves it back.
+      const backNoTrust = upgrade.pinTemplateText(movedNoTrust.text!, reference, "sanctuary", parseDockerManTemplateXml)
+      expect(backNoTrust.text).toContain('Target="/home/ouro/AgentBundles/sanctuary.ouro"')
+      expect(backNoTrust.text).not.toContain("/etc/ouro/trust/")
+      const twoTrusts = template("sanctuary", { extra: config("/etc/ouro/trust/butler", "/mnt/user/appdata/ouro-butler/trust/sanctuary") })
+      expect(upgrade.pinTemplateText(twoTrusts, reference, "butler", parseDockerManTemplateXml)).toEqual({ problem: "the DockerMan template does not have exactly one bundle Config and at most one trust Config" })
+      const noBundle = template("sanctuary").replace(config("/home/ouro/AgentBundles/sanctuary.ouro", "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"), "")
+      expect(upgrade.pinTemplateText(noBundle, reference, "butler", parseDockerManTemplateXml)).toEqual({ problem: "the DockerMan template does not have exactly one bundle Config and at most one trust Config" })
+    })
+    it("keeps today's warnings for a sanctuary image, whatever the template", () => {
+      expect(upgrade.pinTemplateText(template("sanctuary"), reference, "sanctuary", null, "ENOENT")).toEqual({
+        text: pinned("sanctuary"), skipped: false,
+        warnings: ["could not load the DockerMan template parser (ENOENT); psyche Config left in place, sync key Config not added"],
+      })
+      const odd = template("sanctuary").replace("ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.1999", "elsewhere/image:1")
+      expect(upgrade.pinTemplateText(odd, reference, "sanctuary", parseDockerManTemplateXml)).toEqual({ text: odd, warnings: ["DockerMan template Repository not recognised; left unchanged"], skipped: true })
+      const noTrust = template("sanctuary").replace(config("/etc/ouro/trust/sanctuary", "/mnt/user/appdata/ouro-butler/trust/sanctuary"), "").replace(sync, "")
+      expect(upgrade.pinTemplateText(noTrust, reference, "sanctuary", parseDockerManTemplateXml).warnings).toEqual([])
+      const psyche = config("/home/ouro/AgentBundles/sanctuary.ouro/psyche", "/x")
+      expect(upgrade.pinTemplateText(template("sanctuary", { extra: psyche + psyche }), reference, "sanctuary", parseDockerManTemplateXml).warnings).toEqual(["DockerMan template still has a psyche Config; remove it before the next DockerMan Apply"])
+    })
+    it("adds the sync key Config, or warns when it could not", () => {
+      const bare = template("sanctuary").replace(sync, "")
+      expect(upgrade.pinTemplateText(bare, reference, "butler", parseDockerManTemplateXml).text).toContain('Target="/run/ouro-sync"')
+      expect(upgrade.pinTemplateText(bare, reference, "sanctuary", null, "x").warnings).toContain("DockerMan template has no /run/ouro-sync Config; add it before the next DockerMan Apply")
+    })
+    it("says when a template must move to the image's name", () => {
+      expect(upgrade.templateNeedsButlerName(template("sanctuary"), "sanctuary")).toBe(false)
+      expect(upgrade.templateNeedsButlerName("<Container/>", "sanctuary")).toBe(false)
+      expect(upgrade.templateNeedsButlerName(template("sanctuary"), "butler")).toBe(true)
+      expect(upgrade.templateNeedsButlerName(template("butler"), "butler")).toBe(false)
+      expect(upgrade.templateNeedsButlerName(template("butler"), "sanctuary")).toBe(true)
+      expect(upgrade.templateNeedsButlerName(template("sanctuary", { trust: "butler" }), "sanctuary")).toBe(true)
+    })
+    it("refuses a move it cannot make exactly", () => {
+      expect(upgrade.withButlerTargets("not xml", "butler", parseDockerManTemplateXml)).toEqual({ problem: "the DockerMan template cannot be parsed" })
+      const twice = template("sanctuary").replace("</Container>", '  <Overview>mounts Target="/home/ouro/AgentBundles/sanctuary.ouro"</Overview>\n</Container>')
+      expect(upgrade.withButlerTargets(twice, "butler", parseDockerManTemplateXml)).toEqual({ problem: 'the DockerMan template has Target="/home/ouro/AgentBundles/sanctuary.ouro" more than once' })
+      let calls = 0
+      const rejectsResult = (text: string) => (calls++ === 0 ? parseDockerManTemplateXml(text) : null)
+      expect(upgrade.withButlerTargets(template("sanctuary"), "butler", rejectsResult)).toEqual({ problem: "moving the DockerMan template's bundle and trust Targets did not leave exactly those moved" })
+      expect(upgrade.withButlerTargets(template("butler"), "butler", parseDockerManTemplateXml)).toEqual({ text: template("butler") })
+    })
+    it("is checked before the upgrade changes anything, and fails the pin instead of warning", () => {
+      const body = source.slice(source.indexOf("async function upgrade(version, rehearse"), source.indexOf("// ---- verify"))
+      expect(body.indexOf("const pinProblem = templatePinProblem(version)")).toBeGreaterThan(0)
+      expect(body.indexOf("const pinProblem = templatePinProblem(version)")).toBeLessThan(body.indexOf("pauseSupervision()"))
+      const pin = source.slice(source.indexOf("function pinTemplate("), source.indexOf("// Every release pulls"))
+      expect(pin).toContain("if (pin.problem) fail(")
+      expect(pin).toContain("imageButlerName(image(version))")
+      const preflight = source.slice(source.indexOf("function preflight("), source.indexOf("// Does the target image's own #vault"))
+      expect(preflight).toContain("templatePinProblem(version)")
+    })
   })
 })

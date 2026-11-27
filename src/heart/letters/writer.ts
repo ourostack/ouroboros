@@ -3,9 +3,15 @@
 // under state/letters, and every write to them goes through that agent's one queue, so two sends never race.
 import * as fs from "fs"
 import * as path from "path"
-import { FileFriendStore, isLocalMachineOwnerIdentity, machineOwnerUsername, type FriendRecord } from "@ouro.bot/friends"
+import { machineOwnerUsername, type FriendRecord } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { addAnsweredGuid, answerProblem, deliveryFloor, noteAnswerRefused, parseAnswer, readAnsweredGuids, type ServerMessage } from "./answer-reader"
 import { checkLetterInput, checkWithdrawReason, newLetterId, type Letter, type LetterEvent, type LetterKind } from "./letter"
+import { listBundleFriends, ownerFriendIds, readAnsweringHandles } from "./answering"
+import { answerReturnText, queueAnswerReturn, returnDue, returnSession, type LetterSession } from "./return-to-session"
+import { renderLetter } from "./render"
+
+export { ownerFriendIds }
 import { LetterIndex, type IndexedLetter } from "./letter-index"
 import { LetterStore } from "./store"
 
@@ -27,6 +33,42 @@ export interface WriterDeps {
   ownerUsername?: () => string | null
   /** How long one second of a wait's timeout lasts; tests shorten it. */
   waitUnitMs?: number
+  /** Sends a rendered letter to the person's chat as the agent; missing when this daemon has no chat to send through. */
+  deliverChat?: (request: ChatDelivery) => Promise<ChatReceipt>
+  /** How long a chat send may take before deliver answers; tests shorten it. */
+  deliverDeadlineMs?: number
+  /** Tells the owning agent a new letter was filed; it runs after the filing answers and never fails it. */
+  onFiled?: (agent: string, letter: Letter) => Promise<void>
+  /** Tells the owning agent a letter expired with no answer; it runs after the expired event is written. */
+  onExpired?: (agent: string, letter: Letter) => Promise<void>
+  /** Sends the person a receipt and tells the agent, once an answer is recorded; it never undoes the answer. */
+  onAnswered?: (agent: string, letter: Letter, answer: { option: string; label: string; note?: string; messageGuid: string; at: string }) => Promise<void>
+}
+
+/** How long a `now` letter waits when its sender sets no expiresAt (design §3.4, "Expiry"); other letters never expire. */
+export const NOW_LETTER_EXPIRY_MS = 24 * 60 * 60_000
+/**
+ * How long past its expiresAt a letter stays open before the sweep closes it. An answer the person sent before the
+ * expiry still counts when it is read late (by a webhook that lags, or a catch-up pass after a restart), and that
+ * needs the letter still waiting when it is read.
+ */
+export const EXPIRY_GRACE_MS = 10 * 60_000
+
+/** Under the door's own timeout for a deliver (doors.ts), so the daemon always answers before the door gives up. */
+export const DELIVER_DEADLINE_MS = 25_000
+
+/** One letter to send: the agent it goes out as, the handle whose chat it goes to, and the text Ouro rendered. */
+export interface ChatDelivery {
+  agent: string
+  handle: string
+  text: string
+}
+
+/** Where a delivered letter landed: the channel, its chat's key and the sent message's id. */
+export interface ChatReceipt {
+  channel: string
+  key: string
+  messageId: string
 }
 
 /** The socket command every mailbox door sends the daemon. */
@@ -36,9 +78,19 @@ export interface LettersCommand {
   action: string
   input: Record<string, unknown>
   dryRun?: boolean
+  /** The turn's session a send is filed from, which the answer returns to; the in-turn tools set it. */
+  session?: LetterSession
 }
 
 export type LetterResult = Record<string, unknown> & { outcome: string }
+
+/** What recordSeen did with one read receipt. */
+export type SeenOutcome = { recorded: true; code: string } | { recorded: false; reason: string }
+
+/** What recordAnswer did with one message. */
+export type AnswerOutcome =
+  | { recorded: true; id: string; code: string; subject: string; option: string; label: string; note?: string; already?: true }
+  | { recorded: false; reason: string }
 
 /** Closed letters move to closed/YYYY-MM/ this long after they close (design §3.2); they are never deleted. */
 export const ROLL_AFTER_MS = 90 * 24 * 60 * 60 * 1000
@@ -54,12 +106,10 @@ interface AgentLetters {
   waiters: Map<string, Set<() => void>>
 }
 
-/** The family records in a bundle's friends folder that name this machine's owner, the rule `ouro friend link-code` uses. */
-export async function ownerFriendIds(bundleRoot: string, owner: string | null, list?: (bundleRoot: string) => Promise<FriendRecord[]>): Promise<string[]> {
-  const friends = await (list ?? ((root: string) => new FileFriendStore(path.join(root, "friends")).listAll()))(bundleRoot)
-  return friends
-    .filter((record) => record.trustLevel === "family" && record.externalIds.some((id) => isLocalMachineOwnerIdentity(id.provider, id.externalId, owner)))
-    .map((record) => record.id)
+/** How long ago the person read a waiting letter, such as "2h", which tells an agent not to ask again; null when unread. */
+function seenAgo(entry: IndexedLetter, now: number): string | null {
+  const seen = entry.state === "waiting" ? entry.events.find((event) => event.t === "seen") : undefined
+  return seen ? ageOf(seen.at, now) : null
 }
 
 function ageOf(createdAt: string, now: number): string {
@@ -102,29 +152,62 @@ export class LettersWriter {
   }
 
   /** Runs one action for an agent; a refusal throws LetterRefusal with its card's code. */
-  async run(agent: string, action: string, input: Record<string, unknown>, options: { dryRun?: boolean } = {}): Promise<LetterResult> {
+  async run(agent: string, action: string, input: Record<string, unknown>, options: { dryRun?: boolean; session?: unknown } = {}): Promise<LetterResult> {
     if (typeof input !== "object" || input === null || Array.isArray(input)) throw new LetterRefusal("bad-input", "The action's input must be an object.")
     const letters = this.open(agent, options.dryRun === true)
-    const result = await this.dispatch(letters, action, input, options.dryRun === true)
+    const session = action === "mailbox_send" ? returnSession(options.session, path.join(this.deps.bundlesRoot, `${agent}.ouro`)) : null
+    const result = await this.dispatch(letters, action, input, options.dryRun === true, session)
     emitNervesEvent({ component: "daemon", event: "letters.action_done", message: "letters action done", meta: { action, outcome: result.outcome } })
     return result
   }
 
-  private dispatch(letters: AgentLetters, action: string, input: Record<string, unknown>, dryRun: boolean): Promise<LetterResult> {
+  private dispatch(letters: AgentLetters, action: string, input: Record<string, unknown>, dryRun: boolean, session: LetterSession | null): Promise<LetterResult> {
     switch (action) {
       case "mailbox_send": return this.serial(letters, () => {
         // Each send first rolls the letters closed long enough, so a daemon that runs for months still rolls them; a
         // dry run writes nothing, so it doesn't roll.
         if (!dryRun) this.rollClosed(letters)
-        return this.send(letters, input, dryRun)
+        return this.send(letters, input, dryRun, session)
       })
       case "mailbox_list": return Promise.resolve(this.list(letters, input))
       case "mailbox_read": return Promise.resolve(this.read(letters, input))
       case "mailbox_wait": return this.wait(letters, input)
       case "mailbox_withdraw": return this.serial(letters, () => this.withdraw(letters, input, dryRun))
-      case "mailbox_deliver": return Promise.resolve(this.deliver(letters, input))
+      case "mailbox_deliver": return this.serial(letters, () => this.deliver(letters, input, dryRun))
       default: return Promise.reject(new LetterRefusal("unknown-door", `The mailbox has no action ${action}.`))
     }
+  }
+
+  /**
+   * Closes every waiting letter more than EXPIRY_GRACE_MS past its expiresAt, in each agent's bundle that has letters,
+   * and tells its agent.
+   * The daemon runs it on a timer; it answers how many letters it closed.
+   */
+  async expireDue(): Promise<number> {
+    let closed = 0
+    for (const name of fs.readdirSync(this.deps.bundlesRoot)) {
+      const agent = name.endsWith(".ouro") ? name.slice(0, -".ouro".length) : ""
+      if (!AGENT_NAME.test(agent) || !fs.existsSync(path.join(this.deps.bundlesRoot, name, "state", "letters"))) continue
+      try {
+        const letters = this.open(agent, false)
+        closed += await this.serial(letters, async () => {
+          const now = this.now()
+          const due = letters.index.list({}).filter((entry) => entry.letter.expiresAt && Date.parse(entry.letter.expiresAt) + EXPIRY_GRACE_MS <= now.getTime())
+          for (const entry of due) {
+            this.addEvent(letters, entry.letter.id, { t: "expired", at: now.toISOString() })
+            emitNervesEvent({ component: "daemon", event: "letters.letter_expired", message: "a letter expired with no answer", meta: { code: entry.letter.code } })
+            this.deps.onExpired?.(agent, entry.letter).catch((error: Error) => {
+              emitNervesEvent({ level: "warn", component: "daemon", event: "letters.expired_tell_failed", message: "the agent could not be told a letter expired", meta: { code: entry.letter.code, reason: error.message } })
+            })
+          }
+          return due.length
+        })
+      } catch (error) {
+        // One agent's letters that don't read leave the others' expiry alone.
+        emitNervesEvent({ level: "warn", component: "daemon", event: "letters.expiry_failed", message: "an agent's letters could not be checked for expiry", meta: { agent, reason: (error as Error).message } })
+      }
+    }
+    return closed
   }
 
   /** The agent's letters, read from its bundle the first time; letters closed long enough are rolled then, unless that first call is a dry run, which writes nothing. */
@@ -157,7 +240,7 @@ export class LettersWriter {
   }
 
   /** Runs a write after every write queued before it; a failed write doesn't stop the ones after it. */
-  private serial(letters: AgentLetters, work: () => Promise<LetterResult>): Promise<LetterResult> {
+  private serial<T>(letters: AgentLetters, work: () => Promise<T>): Promise<T> {
     const next = letters.queue.then(work)
     letters.queue = next.catch(() => undefined)
     return next
@@ -185,12 +268,15 @@ export class LettersWriter {
       : `${ids.length} family records name this machine's owner, so Ouro can't tell which one the letter is to.`)
   }
 
-  private async send(letters: AgentLetters, input: Record<string, unknown>, dryRun: boolean): Promise<LetterResult> {
+  private async send(letters: AgentLetters, input: Record<string, unknown>, dryRun: boolean, session: LetterSession | null): Promise<LetterResult> {
     const checked = checkLetterInput(input)
     if (!checked.ok) throw new LetterRefusal("invalid-letter", checked.problem)
     const { lane, ...draft } = checked.letter
-    const from: Letter["from"] = { agent: letters.agent, ...(lane ? { lane } : {}) }
+    const from: Letter["from"] = { agent: letters.agent, ...(session ? { session } : {}), ...(lane ? { lane } : {}) }
     const now = this.now()
+    if (draft.expiresAt && Date.parse(draft.expiresAt) <= now.getTime()) {
+      throw new LetterRefusal("invalid-letter", `expiresAt ${draft.expiresAt} has already passed. Fix: give a time in the future, or leave it out.`)
+    }
     const duplicate = letters.index.findDuplicate({ from, dedupeKey: draft.dedupeKey }, now.getTime())
     if (duplicate) {
       const { letter } = duplicate.entry
@@ -200,7 +286,8 @@ export class LettersWriter {
         return { outcome: "done", id: letter.id, code: letter.code, state: "answered", message: `${letter.code} was answered ${optionText(letter, answer.option)} in the last day, so the answer stands.` }
       }
       this.addEvent(letters, letter.id, { t: "refiled", at: now.toISOString(), by: letters.agent })
-      return { outcome: "done", id: letter.id, code: letter.code, state: "waiting", message: `${letter.code} is already waiting with this dedupeKey, so it was refiled, not filed again.` }
+      const elsewhere = letter.from.session && JSON.stringify(letter.from.session) !== JSON.stringify(session) ? " Its answer returns to the session that first filed it." : ""
+      return { outcome: "done", id: letter.id, code: letter.code, state: "waiting", message: `${letter.code} is already waiting with this dedupeKey, so it was refiled, not filed again.${elsewhere}` }
     }
     const to = await this.person(letters.agent)
     if (dryRun) return { outcome: "preview", id: "", code: "", state: "waiting", message: `Would file a new letter to ${to}.` }
@@ -208,7 +295,13 @@ export class LettersWriter {
     // The counter moves first, so a crash after it can skip a code but never reuse one.
     letters.store.writeNextCode(number + 1)
     letters.index.reserve(number + 1)
-    const letter: Letter = { v: 1, id: (this.deps.newId ?? newLetterId)(now.getTime()), code: `L${number}`, to, from, ...draft, createdAt: now.toISOString() }
+    // The person's answering handle is frozen into the letter now, so a later change leaves this letter alone.
+    const answeringHandle = readAnsweringHandles(letters.store.dir)[to]
+    const expiresAt = draft.expiresAt ?? (draft.urgency === "now" ? new Date(now.getTime() + NOW_LETTER_EXPIRY_MS).toISOString() : undefined)
+    const letter: Letter = {
+      v: 1, id: (this.deps.newId ?? newLetterId)(now.getTime()), code: `L${number}`, ...(answeringHandle ? { answeringHandle } : {}), to, from, ...draft,
+      ...(expiresAt ? { expiresAt } : {}), createdAt: now.toISOString(),
+    }
     try {
       letters.store.create(letter)
     } catch (error) {
@@ -222,7 +315,169 @@ export class LettersWriter {
       throw error
     }
     letters.index.add({ letter, events: [], closed: false })
+    // The agent hears about each new letter once; a dedupe that refiles one says nothing new.
+    this.deps.onFiled?.(letters.agent, letter).catch(() => undefined)
     return { outcome: "needs-human", id: letter.id, code: letter.code, state: "waiting", message: `Filed ${letter.code}, ${letter.subject}. It waits for the person's answer.` }
+  }
+
+  /**
+   * Records the person's answer from the BlueBubbles server's own copy of their message. No door reaches this: only
+   * the daemon calls it, after fetching the message by GUID. A message that isn't an answer, or doesn't answer its
+   * letter, records nothing and says so with the reason, for the log.
+   */
+  /** Whether the agent's bundle is on this machine, checked before anything is fetched for it. */
+  hasAgent(agent: string): boolean {
+    return AGENT_NAME.test(agent) && fs.existsSync(path.join(this.deps.bundlesRoot, `${agent}.ouro`))
+  }
+
+  /**
+   * Records the person's answer from the server's own copy of their message, when it is one. `sentAt` reads the
+   * server's time for the letter's sent message, so the delivery floor is on the server's clock. Past `deadlineAt`
+   * (epoch ms) nothing is recorded, so a caller that gave up waiting never has an answer recorded behind its back.
+   * A message that already answered this letter answers `already`, so a replay of it is no chat turn either.
+   */
+  recordAnswer(
+    agent: string,
+    message: ServerMessage,
+    hostTrust: "shared-apple-id" | "separate",
+    sentAt?: (messageGuid: string) => Promise<number | undefined>,
+    deadlineAt?: number,
+  ): Promise<AnswerOutcome> {
+    const answer = parseAnswer(message.text)
+    if (!answer) return Promise.resolve({ recorded: false, reason: "not-answer-form" })
+    const letters = this.open(agent, false)
+    return this.serial(letters, async (): Promise<AnswerOutcome> => {
+      const entry = letters.index.get(answer.code)
+      const answered = readAnsweredGuids(letters.store.dir)
+      const recorded = entry?.events.findLast((event) => event.t === "answered")
+      if (entry && recorded?.t === "answered" && answered.get(message.guid) === entry.letter.id) {
+        const { letter } = entry
+        const label = letter.options.find((option) => option.id === recorded.option)!.label
+        return { recorded: true, already: true, id: letter.id, code: letter.code, subject: letter.subject, option: recorded.option, label, ...(recorded.note ? { note: recorded.note } : {}) }
+      }
+      const floor = entry ? await deliveryFloor(entry, sentAt) : null
+      const late = deadlineAt !== undefined && this.now().getTime() > deadlineAt
+      const problem = !entry ? "no-such-letter" : late ? "past-deadline" : answerProblem(entry, message, answer, answered, floor)
+      if (problem) {
+        noteAnswerRefused(problem)
+        return { recorded: false, reason: problem }
+      }
+      const { letter } = entry!
+      const at = this.now().toISOString()
+      // The GUID is spent first, so a crash between the two lines can lose this answer but never record it twice.
+      addAnsweredGuid(letters.store.dir, message.guid, letter.id, at)
+      this.addEvent(letters, letter.id, {
+        t: "answered", at, option: answer.option, ...(answer.note ? { note: answer.note } : {}), via: "chat",
+        evidence: { friendId: letter.to, channel: "bluebubbles", chatGuid: message.chatGuids[0], messageGuid: message.guid, dateCreated: new Date(message.dateCreated!).toISOString() },
+        hostTrust,
+      })
+      const label = letter.options.find((option) => option.id === answer.option)!.label
+      emitNervesEvent({ component: "daemon", event: "letters.answer_recorded", message: "a person's answer was recorded", meta: { code: letter.code, hostTrust } })
+      this.deps.onAnswered?.(letters.agent, letter, { option: answer.option, label, ...(answer.note ? { note: answer.note } : {}), messageGuid: message.guid, at }).catch(() => undefined)
+      // Its own step on the queue, so the person's answer is recorded and answered on whatever the return does.
+      void this.serial(letters, () => this.returnAnswer(letters, letter.id)).catch((error: Error) => {
+        emitNervesEvent({ level: "warn", component: "daemon", event: "letters.return_step_failed", message: "an answer's return step failed; the retry pass tries it again", meta: { code: letter.code, reason: error.message } })
+      })
+      return { recorded: true, id: letter.id, code: letter.code, subject: letter.subject, option: answer.option, label, ...(answer.note ? { note: answer.note } : {}) }
+    })
+  }
+
+  /**
+   * Records that the person read a waiting letter, from the server's own copy of the message Ouro delivered it as:
+   * sent by this side, into the chat it was delivered to, with the server's read time. Once per letter.
+   */
+  recordSeen(agent: string, message: ServerMessage): Promise<SeenOutcome> {
+    const letters = this.open(agent, false)
+    return this.serial(letters, async (): Promise<SeenOutcome> => {
+      const found = this.waitingDelivery(letters, message.guid)
+      if (!found) return { recorded: false, reason: "no-letter" }
+      const { entry, delivered } = found
+      let problem: string | null = null
+      if (message.isFromMe !== true) problem = "not-from-me"
+      else if (message.chatGuids.length !== 1 || message.chatGuids[0] !== delivered.key) problem = "wrong-chat"
+      else if (message.dateRead === undefined) problem = "not-read"
+      else if (entry.events.some((event) => event.t === "seen")) problem = "already-seen"
+      if (problem) return { recorded: false, reason: problem }
+      this.addEvent(letters, entry.letter.id, { t: "seen", at: new Date(message.dateRead!).toISOString(), via: "chat" })
+      emitNervesEvent({ component: "daemon", event: "letters.letter_seen", message: "the person read a letter", meta: { code: entry.letter.code } })
+      return { recorded: true, code: entry.letter.code }
+    })
+  }
+
+  /**
+   * Whether a waiting letter was delivered as this message, read from the index alone. The daemon asks it before it
+   * fetches anything from the server, since most read receipts are for ordinary chat messages.
+   */
+  hasWaitingDelivery(agent: string, messageGuid: string): boolean {
+    return this.waitingDelivery(this.open(agent, false), messageGuid) !== null
+  }
+
+  /** The waiting letter delivered as this message, with its delivered event; a send that wasn't confirmed has no GUID. */
+  private waitingDelivery(letters: AgentLetters, messageGuid: string): { entry: IndexedLetter; delivered: { key: string } } | null {
+    if (!messageGuid) return null
+    for (const entry of letters.index.list({})) {
+      const delivered = entry.events.find((event) => event.t === "delivered" && event.messageId === messageGuid)
+      if (delivered) return { entry, delivered: delivered as { key: string } }
+    }
+    return null
+  }
+
+  /**
+   * Returns an answered letter's answer to the session that asked, when that is due, and records the try as a
+   * `returned` event. A failed try is retried by returnAnswers; the answer stands either way.
+   */
+  private async returnAnswer(letters: AgentLetters, id: string): Promise<boolean> {
+    const entry = letters.index.get(id)!
+    const { letter } = entry
+    if (!returnDue(letter, entry.events, this.now().getTime())) return false
+    const answer = entry.events.findLast((event) => event.t === "answered")!
+    const label = letter.options.find((option) => option.id === answer.option)!.label
+    const at = this.now().toISOString()
+    try {
+      const bundle = path.join(this.deps.bundlesRoot, `${letters.agent}.ouro`)
+      const friends = await (this.deps.listFriends ?? listBundleFriends)(bundle).catch(() => [])
+      const person = friends.find((friend) => friend.id === letter.to)?.name || "my person"
+      queueAnswerReturn(letters.agent, bundle, letter.from.session!, answerReturnText(person, letter, { option: answer.option, label, ...(answer.note ? { note: answer.note } : {}) }), letter, answer.at)
+      this.addEvent(letters, id, { t: "returned", at, to: "session", ok: true })
+    } catch (error) {
+      const detail = (error as Error).message
+      this.addEvent(letters, id, { t: "returned", at, to: "session", ok: false, detail })
+      emitNervesEvent({ level: "warn", component: "daemon", event: "letters.return_failed", message: "an answer couldn't be returned to the session that asked; it will be tried again", meta: { code: letter.code, detail } })
+    }
+    return true
+  }
+
+  /**
+   * Tries again every answer whose return to its session failed and is due, across the bundles that have letters.
+   * The daemon runs it on a timer; it answers how many it tried.
+   */
+  async returnAnswers(): Promise<number> {
+    let tried = 0
+    let names: string[] = []
+    try {
+      names = fs.readdirSync(this.deps.bundlesRoot)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    }
+    for (const name of names) {
+      const agent = name.endsWith(".ouro") ? name.slice(0, -".ouro".length) : ""
+      if (!AGENT_NAME.test(agent) || !fs.existsSync(path.join(this.deps.bundlesRoot, name, "state", "letters"))) continue
+      try {
+        const letters = this.open(agent, false)
+        tried += await this.serial(letters, async () => {
+          const now = this.now().getTime()
+          let count = 0
+          for (const entry of letters.index.list({ all: true }).filter((entry) => entry.state === "answered")) {
+            if (returnDue(entry.letter, entry.events, now) && await this.returnAnswer(letters, entry.letter.id)) count += 1
+          }
+          return count
+        })
+      } catch (error) {
+        // One agent's letters that don't read leave the others' returns alone.
+        emitNervesEvent({ level: "warn", component: "daemon", event: "letters.returns_failed", message: "an agent's answers could not be checked for return", meta: { agent, reason: (error as Error).message } })
+      }
+    }
+    return tried
   }
 
   private list(letters: AgentLetters, input: Record<string, unknown>): LetterResult {
@@ -232,13 +487,17 @@ export class LettersWriter {
       ...(typeof input.kind === "string" ? { kind: input.kind as LetterKind } : {}),
       ...(input.mine === true ? { from: letters.agent } : {}),
     })
-    const listing = entries.map((entry) => `${entry.letter.code}  ${entry.state}  ${ageOf(entry.letter.createdAt, now)}  ${entry.letter.subject}`).join("\n")
+    const listing = entries.map((entry) => {
+      const seen = seenAgo(entry, now)
+      return `${entry.letter.code}  ${seen ? `waiting, seen ${seen} ago` : entry.state}  ${ageOf(entry.letter.createdAt, now)}  ${entry.letter.subject}`
+    }).join("\n")
     return { outcome: "done", count: entries.length, listing }
   }
 
   private read(letters: AgentLetters, input: Record<string, unknown>): LetterResult {
     const entry = this.find(letters, input)
-    return { outcome: "done", state: entry.state, letter: JSON.stringify(entry.letter), events: entry.events.map((event) => eventLine(entry.letter, event)).join("\n") }
+    const seen = seenAgo(entry, this.now().getTime())
+    return { outcome: "done", state: entry.state, ...(seen ? { seen: `seen ${seen} ago, not answered` } : {}), letter: JSON.stringify(entry.letter), events: entry.events.map((event) => eventLine(entry.letter, event)).join("\n") }
   }
 
   /** Blocks until the letter leaves waiting, or has an event past the cursor, or the timeout ends. */
@@ -281,16 +540,64 @@ export class LettersWriter {
     return { outcome: "done", state: after.state }
   }
 
-  private deliver(letters: AgentLetters, input: Record<string, unknown>): LetterResult {
+  /**
+   * Sends a waiting letter, once, to the chat of the handle frozen into it when it was filed, in the text Ouro renders,
+   * and records where it landed. A send that may have reached the chat counts as delivered, so a retry never sends
+   * the person the same letter twice; the letter stays in their mailbox either way.
+   */
+  private async deliver(letters: AgentLetters, input: Record<string, unknown>, dryRun: boolean): Promise<LetterResult> {
     const entry = this.find(letters, input)
-    throw new LetterRefusal("no-answering-handle", `The person has no answering handle yet, so ${entry.letter.code} stays waiting until chat delivery is ready.`)
+    const { letter } = entry
+    if (entry.state !== "waiting") throw new LetterRefusal("not-waiting", `${letter.code} is already ${entry.state}, so there is nothing to deliver.`)
+    if (letter.expiresAt && Date.parse(letter.expiresAt) <= this.now().getTime()) throw new LetterRefusal("not-waiting", `${letter.code} expired at ${letter.expiresAt}, so there is nothing to deliver.`)
+    if (entry.events.some((event) => event.t === "delivered")) throw new LetterRefusal("already-delivered", `${letter.code} is already in the person's chat; it stays in their mailbox too.`)
+    if (!letter.answeringHandle) {
+      throw new LetterRefusal("no-answering-handle", `${letter.code} was filed before the person had an answering handle, so Ouro has no chat to send it to. It stays waiting.`)
+    }
+    const text = renderLetter(letter)
+    if (dryRun) return { outcome: "preview", state: entry.state, text }
+    const deliverChat = this.deps.deliverChat
+    if (!deliverChat) throw new LetterRefusal("chat-unavailable", `This daemon has no chat to send ${letter.code} through. It stays waiting.`)
+    let receipt: ChatReceipt
+    try {
+      receipt = await withinDeadline(deliverChat({ agent: letters.agent, handle: letter.answeringHandle, text }), this.deps.deliverDeadlineMs ?? DELIVER_DEADLINE_MS)
+    } catch (error) {
+      const reason = (error as Error).message
+      emitNervesEvent({ level: "warn", component: "daemon", event: "letters.deliver_failed", message: "a letter's chat send failed", meta: { code: letter.code, mayHaveSent: mayHaveSent(error) } })
+      if (!mayHaveSent(error)) throw new LetterRefusal("send-failed", `${letter.code} didn't send: ${reason}. It stays waiting.`)
+      this.addEvent(letters, letter.id, { t: "delivered", at: this.now().toISOString(), via: "chat", channel: "unconfirmed", key: "", messageId: "" })
+      throw new LetterRefusal("send-uncertain", `${letter.code} may have reached the chat (${reason}), so Ouro counts it as delivered and won't send it again.`)
+    }
+    try {
+      const after = this.addEvent(letters, letter.id, { t: "delivered", at: this.now().toISOString(), via: "chat", ...receipt })
+      return { outcome: "done", state: after.state, channel: receipt.channel }
+    } catch (error) {
+      emitNervesEvent({ level: "error", component: "daemon", event: "letters.deliver_unrecorded", message: "a letter was sent but its delivery wasn't recorded", meta: { code: letter.code, channel: receipt.channel, messageId: receipt.messageId } })
+      throw new LetterRefusal("sent-unrecorded", `${letter.code} went to the chat, but writing its delivered event failed (${(error as Error).message}), so the mailbox doesn't show it as delivered. Don't deliver it again.`)
+    }
   }
+}
+
+class DeadlinePassed extends Error {}
+
+/** The work's result, or DeadlinePassed once `ms` go by first; the work itself carries on. */
+function withinDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new DeadlinePassed(`no answer from the chat within ${Math.round(ms / 1000)} seconds`)), ms)
+  })
+  return Promise.race([work, deadline]).finally(() => clearTimeout(timer))
+}
+
+/** Whether a failed send may still have reached the chat: it ran out of time, or it failed after reaching the server. */
+function mayHaveSent(error: unknown): boolean {
+  return error instanceof DeadlinePassed || (error as { transportInvoked?: unknown }).transportInvoked === true
 }
 
 /** The daemon's answer to a `letters.action` command: the result, or the refusal's code and text. */
 export async function answerLettersCommand(writer: LettersWriter, command: LettersCommand): Promise<{ ok: boolean; data?: unknown; error?: string }> {
   try {
-    return { ok: true, data: await writer.run(command.agent, command.action, command.input, { dryRun: command.dryRun === true }) }
+    return { ok: true, data: await writer.run(command.agent, command.action, command.input, { dryRun: command.dryRun === true, session: command.session }) }
   } catch (error) {
     if (error instanceof LetterRefusal) return { ok: false, error: error.message, data: { code: error.code, message: error.message } }
     emitNervesEvent({ level: "error", component: "daemon", event: "letters.action_failed", message: "letters action failed", meta: { action: command.action } })

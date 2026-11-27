@@ -24,7 +24,7 @@ vi.mock("node:fs", async (importOriginal) => {
 })
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-scenarios-"))
-vi.mock("../../../heart/identity", () => ({ getAgentRoot: () => path.join(root, "sanctuary.ouro") }))
+vi.mock("../../../heart/identity", () => ({ getAgentRoot: () => path.join(root, "sanctuary.ouro"), getAgentBundlesRoot: () => "/nonexistent/AgentBundles" }))
 
 import {
   createSanctuaryScenarioCapture as createSanctuaryScenarioCaptureWithRoot,

@@ -42,6 +42,19 @@ function synthesizeFriendRecord(candidate: {
   }
 }
 
+const PHONE_REACH = "they can tap an approval, pay or decide; no terminal, desktop browser or other machine"
+
+/** What a person can reach where a message on this channel lands: the one source for every prompt line and tool description that names it. */
+export function describeChannelReach(channel: string): string {
+  if (channel === "bluebubbles") return `their phone (iMessage): ${PHONE_REACH}`
+  if (channel === "telegram") return `their phone (Telegram): ${PHONE_REACH}`
+  if (channel === "teams") return `Teams, desktop or phone, unknown, so assume phone: ${PHONE_REACH}`
+  if (channel === "cli") return "a keyboard on this machine"
+  if (channel === "mcp") return "a dev tool; the sender may be an agent acting for the person, who isn't necessarily there"
+  if (channel === "voice") return "a call, hands busy: nothing that needs a screen"
+  return ""
+}
+
 function deliveryPriority(mode: TargetSessionCandidate["delivery"]["mode"]): number {
   if (mode === "deliver_now") return 0
   if (mode === "queue_only") return 1
@@ -155,6 +168,8 @@ export function formatTargetSessionCandidates(candidates: TargetSessionCandidate
     lines.push(`- ${candidate.friendName} [${candidate.friendId}] via ${candidate.channel}/${candidate.key}`)
     lines.push(`  trust: ${candidate.trust.level} (${candidate.trust.basis}) — ${candidate.trust.summary}`)
     lines.push(`  delivery: ${candidate.delivery.mode} — ${candidate.delivery.reason}`)
+    const reach = describeChannelReach(candidate.channel)
+    if (reach) lines.push(`  reach: ${reach}`)
     lines.push(`  snapshot: ${candidate.snapshot}`)
   }
   return lines.join("\n")
