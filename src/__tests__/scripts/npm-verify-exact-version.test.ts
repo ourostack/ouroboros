@@ -54,6 +54,10 @@ if [ "$1" = "+%s" ]; then echo $(( 1000000 + $(cat "${dir}/elapsed") )); else ex
   return { ...result, calls }
 }
 
+// The fake clock runs an hour-long window as about 120 polls, each a handful of short shell processes. That takes several
+// seconds on a busy runner, past Vitest's 5 s default, so the clock-driven cases get a bound that fits their work.
+const FAKE_CLOCK_HOUR_TIMEOUT_MS = 60_000
+
 describe("npm-verify-exact-version", () => {
   it("retries E404 and succeeds when the exact version appears before the deadline", () => {
     const result = run({ versionAnswers: ["", "0.1.0-alpha.9"], deadline: 10 })
@@ -95,12 +99,12 @@ describe("npm-verify-exact-version", () => {
     const result = run({ deadline: 3600, fakeClock: { appearsAfter: 55 * 60 } })
     expect(result.status).toBe(0)
     expect(result.stdout).toContain("verified at 0.1.0-alpha.9 after 3300s")
-  })
+  }, FAKE_CLOCK_HOUR_TIMEOUT_MS)
 
   it("fails explicitly at the 3600 s bound when the version never becomes readable", () => {
     const result = run({ deadline: 3600, fakeClock: { appearsAfter: 99 * 3600 } })
     expect(result.status).toBe(1)
     expect(result.stdout).toContain("::error::@ouro.bot/cli@0.1.0-alpha.9 serves missing, expected 0.1.0-alpha.9 after 3600s")
     expect(result.stdout).toContain("version list: does not include 0.1.0-alpha.9")
-  })
+  }, FAKE_CLOCK_HOUR_TIMEOUT_MS)
 })
