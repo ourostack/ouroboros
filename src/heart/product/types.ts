@@ -3,7 +3,8 @@ import type { DaemonResponse } from "../daemon/daemon"
 import type { SchedulerOrigin } from "../daemon/scheduler-attestation"
 import type { SupercronicSupervisorSnapshot } from "../daemon/supercronic-supervisor"
 import type { ExternalEventInput } from "../external-events/router"
-import type { ToolContext } from "../../repertoire/tools-base"
+import type { ToolContext, ToolDefinition } from "../../repertoire/tools-base"
+import type { ProviderCapability } from "../core"
 
 /**
  * The product seam: how a product built on the harness (the Butler is the first) tells core what it adds, so core files
@@ -41,6 +42,58 @@ export interface OuroProduct {
    * product's own events), which runs without it so a gap in the product's config can't stop the agent from waking.
    */
   turnContext?(input: ProductTurnContextInput): Promise<ProductTurnContext>
+  /** The product's tools, and the turns of its agent that get them (J3). */
+  tools?: ProductTools
+  /** What the agent reads about itself (J7). */
+  status?: ProductStatus
+}
+
+export interface ProductTools {
+  /**
+   * The product's own tools. Core registers them while the product is loaded, so the collision check, the tool manifests
+   * and the Ouro AX X-ray see them, but a turn is offered one only when `select` returns it.
+   */
+  definitions: readonly ToolDefinition[]
+  /**
+   * Whether this agent's turns are scoped to a relationship whenever one is known, and whenever the turn comes from outside
+   * the host (any channel but inner, cli and mcp): such a turn gets only the relationship menu, and no tools at all
+   * without a known profile.
+   */
+  relationshipScoped?: boolean
+  /**
+   * Tools to add to this turn's menu, after core's own selection and before core's filters (chat-action channels, the
+   * relationship's advertised names, provider capabilities). Return only registered definitions: core's, through
+   * `input.registered`, or one of `definitions` (or a copy with the same handler). Anything else stops the selection.
+   */
+  select?(input: ProductToolSelectionInput): readonly ToolDefinition[]
+}
+
+export interface ProductToolSelectionInput {
+  /** The channel the turn runs in, when it has one. */
+  channel: string | undefined
+  /** Whether core scoped this turn to a relationship (see `relationshipScoped`). */
+  relationshipScoped: boolean
+  providerCapabilities: ReadonlySet<ProviderCapability> | undefined
+  context: ProductToolSelectionContext
+  /** One of core's registered tools by name, or undefined. */
+  registered(name: string): ToolDefinition | undefined
+}
+
+export type ProductToolSelectionContext = Pick<ToolContext, "agentName" | "agentRoot" | "rootHost" | "context" | "currentSession" | "currentExternalEvent"> & {
+  relationshipAuthorization?: Pick<NonNullable<ToolContext["relationshipAuthorization"]>, "profileId" | "advertisedToolNames"> & Partial<NonNullable<ToolContext["relationshipAuthorization"]>>
+}
+
+export interface ProductStatus {
+  /** Sections `query_active_work` adds after the live world-state, for this agent. A rejection fails the tool call. */
+  activeWorkSections(input: ProductStatusInput): Promise<string>
+}
+
+export interface ProductStatusInput {
+  agentName: string
+  /** The section the call asked for; the product says what its sections are. */
+  section?: string
+  offset: number
+  limit: number
 }
 
 export interface ProductTurnContextInput {

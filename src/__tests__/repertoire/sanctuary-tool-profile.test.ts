@@ -7,6 +7,10 @@ import { resetIdentity, setAgentName } from "../../heart/identity"
 import { approvalPolicyForToolName, execTool, getToolsForChannel, resolveToolDefinition } from "../../repertoire/tools"
 import { baseToolDefinitions } from "../../repertoire/tools-base"
 import { SANCTUARY_OWNER_ADDITIONS } from "../fixtures/sanctuary-containment"
+import { useButlerProduct } from "../test-helpers/butler-product"
+
+// These turns are the Butler's, whose tools come from its product, so the product is loaded as on its image.
+useButlerProduct()
 
 // Provided at runtime by the packaged `media` MCP server, not by a native
 // definition, so these names are authorized in the profile but only resolve

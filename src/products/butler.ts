@@ -1,7 +1,7 @@
 import * as path from "node:path"
 
 import { BUTLER_AGENT_NAMES } from "../heart/butler-agent"
-import { getAgentBundlesRoot } from "../heart/identity"
+import { getAgentBundlesRoot, getAgentRoot } from "../heart/identity"
 import { readSanctuaryAcceptanceMarker, type SanctuaryAcceptanceMarker } from "../heart/daemon/sanctuary-acceptance-marker"
 import { readSanctuaryHealthCursor, recordSanctuarySchedulerLivenessReceipt } from "../heart/daemon/sanctuary-scheduler-liveness"
 import {
@@ -10,7 +10,10 @@ import {
   resolveSanctuaryPackageManagementActivation,
 } from "../heart/daemon/sanctuary-package-management"
 import { emitNervesEvent } from "../nerves/runtime"
-import type { OuroProduct, ProductHabitRunInput } from "../heart/product/types"
+import type { OuroProduct, ProductHabitRunInput, ProductToolSelectionInput } from "../heart/product/types"
+import type { ToolDefinition } from "../repertoire/tools-base"
+import type { ButlerVisibilitySection } from "../repertoire/butler-status"
+import { rootHostToolDefinition, selectRootHostTool } from "../repertoire/tools-sanctuary-host"
 import { readOrCreateTelegramIdentityKey } from "../senses/telegram-identity-key"
 import type { DaemonResponse } from "../heart/daemon/daemon"
 
@@ -72,6 +75,28 @@ async function runSanctuaryHealth(input: ProductHabitRunInput): Promise<DaemonRe
 }
 
 /**
+ * The house-care tools the Butler's own scheduled turns get (tools-house-care.ts). Named, not imported: their module loads
+ * core's whole tool registry, and every process on the image loads the product. Core registers them, so a turn gets core's own.
+ */
+export const BUTLER_HOUSE_CARE_TOOL_NAMES = ["house_sweep", "house_digest_send"] as const
+
+/** The tools the Butler adds to a turn's menu: the root-host tool in the owner's Telegram chat, and house care on its own inner turns. */
+export function selectButlerTools(input: ProductToolSelectionInput): readonly ToolDefinition[] {
+  if (input.channel === "telegram") {
+    // Offered only when this turn carries the owner's current, verified request; selectRootHostTool says so.
+    const hostTool = selectRootHostTool(input.context, input.providerCapabilities)
+    return hostTool ? [hostTool] : []
+  }
+  // The Butler's own scheduled turns (the daily house-care await) carry no relationship, so they cannot take the owner profile's menu.
+  if (input.channel !== "inner" || input.relationshipScoped) return []
+  return BUTLER_HOUSE_CARE_TOOL_NAMES.map((name) => {
+    const definition = input.registered(name)
+    if (!definition) throw new Error(`the Butler's house-care tool ${name} is not registered`)
+    return definition
+  })
+}
+
+/**
  * The Butler, registered with the harness through the product seam. The Unraid image names this module in
  * /opt/ouro/container-runtime.json, so core loads it at runtime and never imports it. Each of the Butler's jobs gets its
  * slot here as it moves behind the seam (M3).
@@ -95,6 +120,21 @@ export const product: OuroProduct = {
   },
   // J4: every turn gets the house runtime its tools read, and the answer gates the Butler opts in to.
   turnContext: async ({ agentName }) => (await sanctuaryRuntime()).createSanctuaryToolContext(agentName),
+  // J3: remote and relationship turns get only the relationship menu; the root-host tool is the Butler's own.
+  tools: {
+    definitions: [rootHostToolDefinition],
+    relationshipScoped: true,
+    select: selectButlerTools,
+  },
+  // J7: query_active_work adds the Butler's operational status. Loaded at the call: it reads Telegram's and the house's stores.
+  status: {
+    activeWorkSections: async ({ agentName, section, offset, limit }) => {
+      const { formatButlerOperationalVisibility, readButlerOperationalVisibility } = await import("../repertoire/butler-status")
+      return formatButlerOperationalVisibility(readButlerOperationalVisibility(getAgentRoot(), agentName), {
+        section: section as ButlerVisibilitySection | undefined, offset, limit,
+      })
+    },
+  },
   // J5: the house check runs in the daemon, and only Supercronic may fire it on its cron schedule.
   habits: {
     "sanctuary-health": {

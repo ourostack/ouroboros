@@ -10,6 +10,10 @@ import { teamsToolDefinitions } from "../../repertoire/tools-teams"
 import { makeMcpView, MCP_CONTEXT, MCP_OWNER, shutdownMcpFixtures } from "./mcp-fixture"
 import * as identity from "../../heart/identity"
 import * as guardrails from "../../repertoire/guardrails"
+import { useButlerProduct } from "../test-helpers/butler-product"
+
+// These turns are the Butler's, whose tools come from its product, so the product is loaded as on its image.
+useButlerProduct()
 
 // Authorized in the packaged profile but provided by the `media` MCP server,
 // so they only resolve when a manager is attached to the turn.

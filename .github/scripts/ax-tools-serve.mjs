@@ -6,6 +6,8 @@ import { createRequire } from "node:module";
 import readline from "node:readline";
 
 const require = createRequire(import.meta.url);
+// The Butler's product is loaded as its image loads it, so the tools it adds (the root-host tool) are X-rayed with core's.
+require("../../dist/heart/product/active.js").loadProduct(require.resolve("../../dist/products/butler.js"));
 const { listInTurnTools, callInTurnTool, DISPATCH_ERRORS } = require("../../dist/repertoire/in-turn-tools-door.js");
 
 const send = (message) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);

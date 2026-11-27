@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
+/** Loads the Butler's product into this test's fresh modules, as its image does: its status sections come from it. */
+async function loadButlerProduct(): Promise<void> {
+  const { loadProduct } = await import("../../heart/product/active")
+  const { product } = await import("../../products/butler")
+  loadProduct("/opt/ouro/dist/products/butler.js", () => ({ product }))
+}
+
 function makeEmptyBoard() {
   return {
     compact: "",
@@ -118,6 +125,9 @@ const listTelegramAdmissionsMock = vi.fn(() => [{
   createdAt: Date.parse("2026-08-29T00:00:00.000Z"),
   expiresAt: Date.parse("2026-08-30T00:00:00.000Z"),
 }])
+
+// The image's runtime policy is read through fs, which this file mocks; tests that need the Butler load its product.
+vi.mock("../../heart/daemon/container-runtime", async (importOriginal) => ({ ...(await importOriginal<object>()), readContainerRuntimePolicy: () => null }))
 
 vi.mock("fs", () => ({
   existsSync: vi.fn(),
@@ -386,6 +396,7 @@ describe("query_active_work tool", () => {
   it("adds the bounded operational projection only for the Sanctuary Butler", async () => {
     const identity = await import("../../heart/identity")
     vi.mocked(identity.getAgentName).mockReturnValue("sanctuary")
+    await loadButlerProduct()
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "query_active_work")!
     const result = await tool.handler({}, { signin: async () => undefined } as any)
@@ -395,7 +406,7 @@ describe("query_active_work tool", () => {
   })
 
   it("renders full Butler visibility from the existing event, policy, await, effect, admission, daemon, and sense owners", async () => {
-    const { formatButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+    const { formatButlerOperationalVisibility } = await import("../../repertoire/butler-status")
     const result = formatButlerOperationalVisibility({
       agentName: "sanctuary",
       daemonHealth: { status: "partial", mode: "production", pid: 11, startedAt: "2026-08-29T00:00:00.000Z", uptimeSeconds: 30, safeMode: null, degraded: [], agents: { sanctuary: { status: "running", pid: 12, crashes: 0 } }, habits: {} },
@@ -421,7 +432,7 @@ describe("query_active_work tool", () => {
   })
 
   it("surfaces unavailable owners and bounds operational history", async () => {
-    const { formatButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+    const { formatButlerOperationalVisibility } = await import("../../repertoire/butler-status")
     const event = { recordPath: "/event", corrupt: false, agent: "sanctuary", source: "health", eventId: "media-down", eventType: "service", observationRevision: "r1", transition: "unchanged" as const, executionState: "handled" as const, generation: 1, attemptCount: 1, updatedAt: "2026-08-29T00:00:00.000Z", classification: "expected" as const, decision: "silent" as const, reason: "x".repeat(500), stewardPolicy: { kind: "none" as const }, nextWake: { kind: "on_change" as const }, careId: null, awaitId: null, lastError: null, nextAttemptAt: null, claimOwner: null, claimExpiresAt: null, dispatchEnabled: true, undispatched: false, retentionSummary: null }
     const result = formatButlerOperationalVisibility({
       agentName: "sanctuary", daemonHealth: null, senseStatusLines: [],
@@ -472,7 +483,7 @@ describe("query_active_work tool", () => {
     }) as any)
 
     try {
-      const { readButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+      const { readButlerOperationalVisibility } = await import("../../repertoire/butler-status")
       const status = readButlerOperationalVisibility("/mock/butler", "sanctuary")
       expect(status.awaits).toEqual([expect.objectContaining({ name: "pending", status: "pending" })])
       expect(status.telegramEffects).toEqual([expect.objectContaining({ state: "session_recorded", updatedAt: "2026-08-29T00:00:00.000Z" })])
@@ -503,7 +514,7 @@ describe("query_active_work tool", () => {
       { id: "5", authorClass: "butler", target: { kind: "approved_relationship" }, parts: [{ state: "prepared" }], updatedAt: "5" },
     ] as any)
 
-    const { readButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+    const { readButlerOperationalVisibility } = await import("../../repertoire/butler-status")
     const status = readButlerOperationalVisibility("/mock/agent-root", "sanctuary")
     expect(status.telegramEffects.map((effect) => effect.state)).toEqual(["indeterminate", "attempting", "session_recorded", "accepted", "prepared"])
     expect(status.telegramEffects[0]).toMatchObject({
@@ -523,7 +534,7 @@ describe("query_active_work tool", () => {
       { agent: "slugger", eventId: "for-slugger" },
     ] as any)
 
-    const { readButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+    const { readButlerOperationalVisibility } = await import("../../repertoire/butler-status")
     const status = readButlerOperationalVisibility("/mock/agent-root", "sanctuary")
 
     expect(status.externalEvents).toEqual([expect.objectContaining({ eventId: "for-sanctuary" })])
@@ -532,7 +543,7 @@ describe("query_active_work tool", () => {
   })
 
   it("renders unavailable health plus bounded policy and Telegram ledgers", async () => {
-    const { formatButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+    const { formatButlerOperationalVisibility } = await import("../../repertoire/butler-status")
     const desiredStates = Object.fromEntries(Array.from({ length: 11 }, (_, index) => [`desired-${index}`, {
       value: `value-${index}`, provenance: "owner", source: "telegram", version: 1, expiresAt: "2099-01-01T00:00:00.000Z",
     }]))
@@ -556,7 +567,7 @@ describe("query_active_work tool", () => {
   })
 
   it("renders bounded await and event detail including wake, return, care, and unavailable sources", async () => {
-    const { formatButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+    const { formatButlerOperationalVisibility } = await import("../../repertoire/butler-status")
     const awaits = Array.from({ length: 21 }, (_, index) => ({
       name: `await-${index}`,
       condition: index === 0 ? null : `condition-${index}`,
@@ -606,7 +617,7 @@ describe("query_active_work tool", () => {
   })
 
   it("pages canonical Butler ledgers and exposes model, sweep, action, event-turn, and Telegram receipt truth", async () => {
-    const { formatButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+    const { formatButlerOperationalVisibility } = await import("../../repertoire/butler-status")
     const event = { recordPath: "/event", corrupt: false, agent: "sanctuary", source: "health", eventId: "books", eventType: "service", observationRevision: "r1", transition: "changed" as const, executionState: "handled" as const, generation: 1, attemptCount: 1, updatedAt: "2026-08-29T03:00:00.000Z", classification: "actionable", decision: "act", reason: "restarted", stewardPolicy: { kind: "none" as const }, nextWake: null, careId: null, awaitId: null, lastError: null, nextAttemptAt: null, claimOwner: null, claimExpiresAt: null, dispatchEnabled: true, undispatched: false, retentionSummary: null }
     const common = {
       agentName: "sanctuary", daemonHealth: null, senseStatusLines: [], stewardPolicy: { schemaVersion: 1 as const, version: 1, desiredStates: { old: { value: "off", provenance: "stated" as const, version: 1, source: "old", expiresAt: "2020-01-01T00:00:00.000Z" } }, routineActionGrants: {}, updatedAt: null }, awaits: [], telegramAdmissions: [], externalEvents: [event], sourceErrors: {},
@@ -634,7 +645,7 @@ describe("query_active_work tool", () => {
   })
 
   it("renders every truthful Butler fallback and bounded receipt state", async () => {
-    const { formatButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+    const { formatButlerOperationalVisibility } = await import("../../repertoire/butler-status")
     const status = {
       agentName: "sanctuary",
       daemonHealth: { status: "healthy", mode: "production", pid: 1, agents: { sanctuary: { status: "running", pid: null, crashes: 2 } } },
@@ -693,6 +704,7 @@ describe("query_active_work tool", () => {
   it("bounds and defaults Sanctuary visibility paging arguments at the tool boundary", async () => {
     const identity = await import("../../heart/identity")
     vi.mocked(identity.getAgentName).mockReturnValue("sanctuary")
+    await loadButlerProduct()
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "query_active_work")!
 

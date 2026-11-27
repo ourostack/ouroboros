@@ -350,6 +350,14 @@ export interface ToolDefinition {
   /** For first-class MCP tools: the server this tool belongs to. */
   mcpServer?: string;
   mcpBinding?: McpToolBinding;
+  /**
+   * The tool's own admission check. The dispatcher calls it after the arguments pass the advertised schema and before
+   * anything else decides the call, and a throw rejects the call before the handler, with the error's message. A tool
+   * with `authorize` answers for its relationship itself: the dispatcher doesn't also ask the turn's relationship, checks
+   * the call against the turn's own selection instead of a fresh one, and a selection keeps the very definition it was
+   * given (not a copy), so an authorization can be bound to it.
+   */
+  authorize?(ctx: ToolContext | undefined, args: Record<string, unknown>): Promise<void>;
 }
 
 export interface ToolSelection {

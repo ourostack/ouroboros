@@ -2,7 +2,12 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { loadImageProduct, loadProduct, PRODUCT_SEAM_VERSION, productAgentAmong, productEventSource, productFor, productHabit, productTurnContext } from "../../../heart/product/active"
+import {
+  loadImageProduct, loadProduct, PRODUCT_SEAM_VERSION, productActiveWorkSections, productAgentAmong, productEventSource, productFor, productHabit,
+  productToolDefinitions, productTools, productToolSelection, productTurnContext,
+} from "../../../heart/product/active"
+import type { ProductToolSelectionInput } from "../../../heart/product/types"
+import type { ToolDefinition } from "../../../repertoire/tools-base"
 import { product as butlerProduct } from "../../../products/butler"
 import { cacheMachineRuntimeCredentialConfig } from "../../../heart/runtime-credentials"
 
@@ -69,7 +74,9 @@ describe("the product seam", () => {
       // A product the image names but that will not load fails every question, never answering as if there were none.
       expect(() => fresh.productFor("butler")).toThrow(/did not load/u)
       expect(() => fresh.productFor("butler")).toThrow(/did not load/u)
+      expect(() => fresh.productToolDefinitions()).toThrow(/did not load/u)
       policy = null
+      expect(fresh.productToolDefinitions()).toEqual([])
       expect(fresh.productFor("butler")).toBeNull()
       expect(fresh.productFor(7)).toBeNull()
     } finally {
@@ -151,6 +158,53 @@ describe("the product seam", () => {
     await expect(productTurnContext({ agentName: "helper", channel: "inner" }, { tolerant: true })).resolves.toEqual({})
     thrown = "not an error"
     await expect(productTurnContext({ agentName: "helper", channel: "a2a" })).rejects.toBe("not an error")
+  })
+
+  it("registers the product's tools for the whole process, and adds them only to its own agent's turns", () => {
+    const definition = { tool: { type: "function", function: { name: "helper_tool" } } } as unknown as ToolDefinition
+    const select = vi.fn((_input: ProductToolSelectionInput): readonly ToolDefinition[] => [definition])
+    const tools = { definitions: [definition], relationshipScoped: true, select }
+    const input = { channel: "inner", relationshipScoped: false, providerCapabilities: undefined, context: {}, registered: () => undefined }
+    expect(productToolDefinitions()).toEqual([])
+    expect(productToolSelection("helper", input)).toEqual([])
+    loadProduct(PATH, () => ({ product }))
+    expect(productTools("helper")).toBeNull()
+    expect(productToolDefinitions()).toEqual([])
+    expect(productToolSelection("helper", input)).toEqual([])
+    loadProduct(PATH, () => ({ product: { ...product, tools: { definitions: [definition] } } }))
+    expect(productToolSelection("helper", input)).toEqual([])
+    loadProduct(PATH, () => ({ product: { ...product, tools } }))
+    expect(productTools("helper")).toBe(tools)
+    expect(productTools("slugger")).toBeNull()
+    expect(productToolDefinitions()).toEqual([definition])
+    expect(productToolSelection("helper", input)).toEqual([definition])
+    expect(select).toHaveBeenCalledWith(input)
+    expect(productToolSelection("slugger", input)).toEqual([])
+    expect(productToolSelection(undefined, input)).toEqual([])
+  })
+
+  it("fails the selection when the product's tool selection throws", () => {
+    let thrown: unknown = new Error("binding is unreadable")
+    const tools = { definitions: [], select: () => { throw thrown } }
+    loadProduct(PATH, () => ({ product: { ...product, tools } }))
+    const input = { channel: "telegram", relationshipScoped: true, providerCapabilities: undefined, context: {}, registered: () => undefined }
+    expect(() => productToolSelection("helper", input)).toThrow("binding is unreadable")
+    thrown = "not an error"
+    expect(() => productToolSelection("helper", input)).toThrow("not an error")
+  })
+
+  it("adds the product's status sections for its own agent only, and fails the call when they fail", async () => {
+    const input = { agentName: "helper", section: "health", offset: 0, limit: 10 }
+    await expect(productActiveWorkSections(input)).resolves.toBeNull()
+    loadProduct(PATH, () => ({ product }))
+    await expect(productActiveWorkSections(input)).resolves.toBeNull()
+    const activeWorkSections = vi.fn(async () => "## helper status")
+    loadProduct(PATH, () => ({ product: { ...product, status: { activeWorkSections } } }))
+    await expect(productActiveWorkSections(input)).resolves.toBe("## helper status")
+    expect(activeWorkSections).toHaveBeenCalledWith(input)
+    await expect(productActiveWorkSections({ ...input, agentName: "slugger" })).resolves.toBeNull()
+    loadProduct(PATH, () => ({ product: { ...product, status: { activeWorkSections: async () => { throw new Error("ledger unreadable") } } } }))
+    await expect(productActiveWorkSections(input)).rejects.toThrow("ledger unreadable")
   })
 
   it("gives the Butler's turns its house runtime, which needs the machine's house config", async () => {
