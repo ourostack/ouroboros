@@ -6694,6 +6694,81 @@ describe("BlueBubbles sense runtime", () => {
     }))
   })
 
+  it("carries a late arrival into the next pass when its turn failed, then lets it go once a pass is clean", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const now = Date.now()
+    const sentAt = now - 10 * 60_000
+    fakeArrivalDatabase([{ rowId: 101, sentAt, fromMe: false }])
+    mocks.listRecentMessages.mockResolvedValue([makeCatchUpMessage({ messageGuid: "late-failed-guid", timestamp: sentAt })])
+    mocks.runAgent.mockRejectedValueOnce(new Error("turn exploded"))
+    const state = { upstreamStatus: "ok" as const, detail: "upstream reachable", catchUpThrough: new Date(now).toISOString(), catchUpRowId: 100, pendingRecoveryCount: 0 }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const first = await bluebubbles.catchUpMissedBlueBubblesMessages({}, state)
+    expect(first).toEqual(expect.objectContaining({ failed: 1, arrivalCursor: 101, lateSince: new Date(sentAt).toISOString() }))
+
+    // The cursor has moved past it, so only the carried sent time brings the next pass back to it.
+    mocks.emitNervesEvent.mockClear()
+    const second = await bluebubbles.catchUpMissedBlueBubblesMessages({}, { ...state, catchUpRowId: 101, catchUpLateSince: first.lateSince! })
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_catchup_start",
+      meta: expect.objectContaining({ since: new Date(sentAt).toISOString() }),
+    }))
+    expect(second).toEqual(expect.objectContaining({ failed: 0, recovered: 1 }))
+    expect(second.lateSince).toBeUndefined()
+  })
+
+  it("carries a late arrival the sent-time scan could not reach, for at most a day", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const now = Date.now()
+    const sentAt = now - 20 * 60 * 60_000
+    fakeArrivalDatabase([{ rowId: 101, sentAt, fromMe: false }])
+    mocks.listRecentMessages.mockImplementation(async ({ offset = 0 } = {}) => Array.from({ length: 50 }, (_, index) =>
+      makeCatchUpMessage({ messageGuid: `busy-${offset}-${index}`, timestamp: now - offset - index, fromMe: true })))
+    const state = { upstreamStatus: "ok" as const, detail: "upstream reachable", catchUpThrough: new Date(now).toISOString(), catchUpRowId: 100, pendingRecoveryCount: 0 }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await expect(bluebubbles.catchUpMissedBlueBubblesMessages({}, state)).resolves.toEqual(expect.objectContaining({
+      failed: 1,
+      arrivalCursor: 101,
+      lateSince: new Date(sentAt).toISOString(),
+    }))
+
+    // A carried time older than the day-long lookback is dropped, so it cannot pin every pass.
+    mocks.listRecentMessages.mockResolvedValue([])
+    mocks.emitNervesEvent.mockClear()
+    const expired = await bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      ...state,
+      catchUpRowId: 101,
+      catchUpLateSince: new Date(now - 25 * 60 * 60_000).toISOString(),
+    })
+    expect(expired).toEqual(expect.objectContaining({ failed: 0 }))
+    expect(expired.lateSince).toBeUndefined()
+    const start = mocks.emitNervesEvent.mock.calls.map(([event]) => event).find((event) => event.event === "senses.bluebubbles_catchup_start")!
+    expect(Date.parse(start.meta.since)).toBeGreaterThan(now - 5 * 60_000)
+  })
+
+  it("keeps the cursor on a late arrival when more than a page of messages was sent after it", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const now = Date.now()
+    // Row 200 landed last but was sent two hours ago, so the newest page by sent time holds only rows below it.
+    fakeArrivalDatabase([
+      ...Array.from({ length: 150 }, (_, index) => ({ rowId: 50 + index, sentAt: now - 60 * 60_000 + index, fromMe: true })),
+      { rowId: 200, sentAt: now - 2 * 60 * 60_000, fromMe: false },
+    ])
+    const state = { upstreamStatus: "ok" as const, detail: "upstream reachable", catchUpThrough: new Date(now).toISOString(), catchUpRowId: 200, pendingRecoveryCount: 0 }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await expect(bluebubbles.catchUpMissedBlueBubblesMessages({}, state)).resolves.toEqual(expect.objectContaining({ arrivalCursor: 200 }))
+    expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_arrival_cursor_reset" }))
+  })
+
   it("keeps partial catch-up pages when a later query fails", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")

@@ -3923,6 +3923,11 @@ export interface BlueBubblesCatchUpResult {
   lastRecoveredMessageGuid?: string
   /** The highest ROWID this pass saw, set only when the whole pass succeeded, so the next one starts after it. */
   arrivalCursor?: number
+  /**
+   * The sent time of the oldest late arrival this pass could not finish (a turn failed or the scan hit its page limit),
+   * carried so the next pass reaches back to it after the cursor has moved on. Unset when there is nothing to carry.
+   */
+  lateSince?: string
 }
 
 function parseTimestampMs(value: string | undefined): number | null {
@@ -4092,6 +4097,7 @@ async function syncBlueBubblesRuntime(
       lastCheckedAt: checkedAt,
       catchUpThrough: checkedAt,
       catchUpRowId: catchUp.arrivalCursor,
+      catchUpLateSince: catchUp.lateSince ?? null,
       ...recoveryLookback,
       proofMethod: "bluebubbles.checkHealth",
       ...pendingAfterCatchup,
@@ -4211,7 +4217,7 @@ interface BlueBubblesArrivalRead {
   arrivals: BlueBubblesMessageArrival[]
   /** Every ROWID up to here has been read; undefined only when the server has no rows to start a cursor from. */
   cursor?: number
-  /** Set when the server's rows all sit below the cursor, as after the Messages database is rebuilt. */
+  /** Set when no row sits at or just below the cursor and none above it, as after the Messages database is rebuilt. */
   resetFromRowId?: number
 }
 
@@ -4243,8 +4249,12 @@ async function readBlueBubblesArrivalsSince(
   }
   const first = await list({ afterRowId })
   if (first.length === 0) {
+    // A quiet pass, unless the rows near the cursor are gone too. The newest page is by sent time, not ROWID, so it is
+    // no test of where the cursor stands; it only picks a lower restart point, and a lower cursor only reads rows again.
+    const nearCursor = await list({ afterRowId: Math.max(afterRowId - BLUEBUBBLES_ARRIVAL_PAGE_SIZE, 0), throughRowId: afterRowId })
+    if (nearCursor.length > 0) return { arrivals: [], cursor: afterRowId }
     const newest = highestArrivalRowId(await list({}))
-    if (newest !== undefined && newest < afterRowId) return { arrivals: [], cursor: newest, resetFromRowId: afterRowId }
+    if (newest !== undefined) return { arrivals: [], cursor: newest, resetFromRowId: afterRowId }
     return { arrivals: [], cursor: afterRowId }
   }
   if (first.length < BLUEBUBBLES_ARRIVAL_PAGE_SIZE) return { arrivals: first, cursor: highestArrivalRowId(first) }
@@ -4328,8 +4338,16 @@ async function catchUpMissedBlueBubblesMessagesInScope(
   const lateArrivalSentAt = (arrivalRead?.arrivals ?? [])
     .filter((arrival) => !arrival.fromMe && arrival.sentAt !== null)
     .reduce((oldest, arrival) => Math.min(oldest, arrival.sentAt!), Number.POSITIVE_INFINITY)
+  // A late arrival an earlier pass could not finish is carried in state, since the cursor has already moved past it.
+  // It is dropped once older than the day-long lookback, so one message that keeps failing cannot widen every pass.
+  const lookbackFloor = nowMs - BLUEBUBBLES_RECOVERY_CATCHUP_LOOKBACK_MS
+  const carriedLateSince = parseTimestampMs(state.catchUpLateSince ?? undefined)
+  const unfinishedLateSince = Math.min(
+    lateArrivalSentAt,
+    carriedLateSince !== null && carriedLateSince >= lookbackFloor ? carriedLateSince : Number.POSITIVE_INFINITY,
+  )
   const catchUpSince = Math.max(
-    Math.min(catchUpWindow.since, Math.max(lateArrivalSentAt, nowMs - BLUEBUBBLES_RECOVERY_CATCHUP_LOOKBACK_MS)),
+    Math.min(catchUpWindow.since, Math.max(unfinishedLateSince, lookbackFloor)),
     Date.parse(cutover.effectiveAt),
   )
   if (lateArrivalSentAt < catchUpWindow.since) {
@@ -4560,10 +4578,10 @@ async function catchUpMissedBlueBubblesMessagesInScope(
     }
   }))
 
-  // The cursor holds only when a query failed, so those arrivals are read again. A capture that failed has its own
-  // retry, and a scan that reached its page limit is logged above: holding the cursor for either would pin every later
-  // pass to the same window.
+  // The cursor holds only when a query failed, so those arrivals are read again. A failed turn or a scan cut off at its
+  // page limit moves the cursor on but carries the oldest late sent time forward, so the next pass reaches it again.
   if (!catchUpQueryFailed) result.arrivalCursor = arrivalRead?.cursor
+  if (result.failed > 0 && Number.isFinite(unfinishedLateSince)) result.lateSince = new Date(unfinishedLateSince).toISOString()
   const foundWork = result.recovered > 0 || (result.queued ?? 0) > 0 || result.failed > 0
   if (result.inspected > 0 || foundWork || catchUpWindow.mode === "recovery") {
     emitNervesEvent({
