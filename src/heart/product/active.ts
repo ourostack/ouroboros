@@ -9,6 +9,9 @@ import type {
 export const PRODUCT_SEAM_VERSION = 1
 
 let active: OuroProduct | null = null
+// Unit tests run on machines with no image, often with fs mocked; their setup sets this before any module loads, so a
+// process that hasn't loaded a product answers as one with no image policy, without reading it.
+const TEST_NO_IMAGE_PRODUCT = Symbol.for("ouro.test.noImageProduct")
 // Whether this process has settled which product it runs: by an explicit load, or by the first productFor reading the image's policy.
 let settled = false
 
@@ -88,9 +91,15 @@ export function loadImageProduct(options: { policyPath?: string; load?: (moduleP
   return loadProduct(policy?.product, options.load)
 }
 
+function settle(): void {
+  if (settled) return
+  if ((globalThis as { [TEST_NO_IMAGE_PRODUCT]?: boolean })[TEST_NO_IMAGE_PRODUCT] === true) loadProduct(undefined)
+  else loadImageProduct()
+}
+
 /** The loaded product when this agent (or a saved record's `agent`) is one of its names, else null. */
 export function productFor(agentName: unknown): OuroProduct | null {
-  if (!settled) loadImageProduct()
+  settle()
   return active && typeof agentName === "string" && active.agents.includes(agentName) ? active : null
 }
 
@@ -151,7 +160,7 @@ export function productTools(agentName: unknown): ProductTools | null {
 
 /** The loaded product's own tool definitions, whichever agent asks: they are registered for the whole process, as core's are. */
 export function productToolDefinitions(): readonly ToolDefinition[] {
-  if (!settled) loadImageProduct()
+  settle()
   return active?.tools?.definitions ?? []
 }
 

@@ -76,7 +76,13 @@ describe("the product seam", () => {
     vi.resetModules()
     let policy: { product?: string } | null = { product: "/opt/example/missing-product.js" }
     vi.doMock("../../../heart/daemon/container-runtime", () => ({ readContainerRuntimePolicy: () => policy }))
+    const noImage = Symbol.for("ouro.test.noImageProduct")
+    const switches = globalThis as Record<symbol, unknown>
     try {
+      // Unit tests' setup says there is no image, so a fresh process answers none without reading the policy.
+      expect((await import("../../../heart/product/active")).productFor("butler")).toBeNull()
+      vi.resetModules()
+      switches[noImage] = false
       const fresh = await import("../../../heart/product/active")
       // A product the image names but that will not load fails every question, never answering as if there were none.
       expect(() => fresh.productFor("butler")).toThrow(/did not load/u)
@@ -87,6 +93,7 @@ describe("the product seam", () => {
       expect(fresh.productFor("butler")).toBeNull()
       expect(fresh.productFor(7)).toBeNull()
     } finally {
+      switches[noImage] = true
       vi.doUnmock("../../../heart/daemon/container-runtime")
       vi.resetModules()
     }

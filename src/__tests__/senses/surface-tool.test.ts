@@ -7,9 +7,6 @@ const mockGetBridge = vi.fn()
 const mockPlaceTrustedFriendVoiceOutboundCall = vi.fn()
 const mockSendTeamsOffTurn = vi.fn()
 
-// The image's runtime policy is read through fs, which this file mocks; no product is loaded here.
-vi.mock("../../heart/daemon/container-runtime", async (importOriginal) => ({ ...(await importOriginal<object>()), readContainerRuntimePolicy: () => null }))
-
 vi.mock("fs", () => ({
   existsSync: vi.fn().mockReturnValue(false),
   readFileSync: vi.fn().mockReturnValue(""),

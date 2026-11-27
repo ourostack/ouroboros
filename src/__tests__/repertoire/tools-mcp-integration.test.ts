@@ -7,9 +7,6 @@ import { makeMcpView as makeMockMcpManager, MCP_CONTEXT, MCP_OWNER, shutdownMcpF
 const { nervesEvents } = vi.hoisted(() => ({
   nervesEvents: [] as Array<Record<string, unknown>>,
 }))
-// The image's runtime policy is read through fs, which this file mocks; no product is loaded here.
-vi.mock("../../heart/daemon/container-runtime", async (importOriginal) => ({ ...(await importOriginal<object>()), readContainerRuntimePolicy: () => null }))
-
 vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn((event: Record<string, unknown>) => {
     nervesEvents.push(event)

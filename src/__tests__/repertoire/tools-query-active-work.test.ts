@@ -126,9 +126,6 @@ const listTelegramAdmissionsMock = vi.fn(() => [{
   expiresAt: Date.parse("2026-08-30T00:00:00.000Z"),
 }])
 
-// The image's runtime policy is read through fs, which this file mocks; tests that need the Butler load its product.
-vi.mock("../../heart/daemon/container-runtime", async (importOriginal) => ({ ...(await importOriginal<object>()), readContainerRuntimePolicy: () => null }))
-
 vi.mock("fs", () => ({
   existsSync: vi.fn(),
   readFileSync: vi.fn(),
