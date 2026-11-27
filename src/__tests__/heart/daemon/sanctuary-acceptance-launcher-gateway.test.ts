@@ -67,6 +67,7 @@ ${kind === "materialize" ? `materialize_config "$ROOT/output" "${phase}"` : "run
         expect(args.some((arg) => arg.includes("AgentBundles/sanctuary.ouro"))).toBe(false)
         traces.push({ kind, command, phase, args, trace: result.stderr })
       }
+      fs.mkdirSync("coverage", { recursive: true })
       fs.writeFileSync("coverage/s6-acceptance-finish-shell-trace.json", `${JSON.stringify(traces, null, 2)}\n`)
       expect(extract("materialize_config")).not.toContain("fixture_timeout -s KILL 30")
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
