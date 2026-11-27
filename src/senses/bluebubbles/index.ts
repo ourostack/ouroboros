@@ -1617,8 +1617,11 @@ export function createBlueBubblesCallbacks(
         acceptedAt,
         ...(speakResponse?.messageGuid ? { messageGuid: speakResponse.messageGuid } : {}),
       }))
-      // Note: do NOT call client.setTyping(chat, false) here — the agent is
-      // still mid-turn, so the typing indicator stays ACTIVE.
+      // The agent is still mid-turn, so typing stays on. iMessage clears the dots when a message lands, so a one-to-one
+      // chat gets them back: the person sees the agent is still working after its ack.
+      if (typingActive && !isGroupChat) {
+        enqueue("typing_resume", async (signal) => { await client.setTyping(chat, true, signal) })
+      }
       emitNervesEvent({
         component: "senses",
         event: "bluebubbles.speak_flush",

@@ -44,6 +44,7 @@ import {
   type OrientationFrame,
 } from "../heart/orientation-frame";
 import { formatFlightRecorderResume, type FlightRecorderResume } from "../arc/flight-recorder";
+import { KEEP_IN_TOUCH_TIMING } from "../heart/keep-in-touch";
 
 export interface SystemPrompt {
   stable: string;
@@ -785,7 +786,7 @@ function toolBehaviorSection(channel: Channel, options?: BuildSystemOptions): st
       lines.push(`- \`settle\` follows the last real tool call, with no no-op call before it.`)
       lines.push(`- when told to work autonomously, I use ponder to absorb new messages and continue using tools. I settle only with the final result.`)
       lines.push(`- In an active browser, tool, or task flow, process feedback from the user is loop input, not a stop signal. I absorb it and keep working unless it asks a direct blocking question, changes scope, asks me to stop or pause, requires confirmation, or exposes a real blocker.`)
-      lines.push(`- For a short mid-flow acknowledgement, I call \`speak\` once when that tool is available, then continue with tools.`)
+      lines.push(`- When \`speak\` is available and I can't answer in one quick reply, my first batch opens with a \`speak\` ack, then my work calls.`)
       lines.push(`- if nothing calls for words, I observe.`)
       if (channel === "voice") {
         lines.push(`- voice is synchronous: I keep \`speak\` and \`settle\` short, plain, and fast. If I need a tool, I first call \`speak\` with a tiny status line, then call the tool, then \`settle\` with the shortest useful answer. If the caller interrupts, I acknowledge the interruption and answer the newest thing first.`)
@@ -1297,13 +1298,22 @@ when i notice meaningful friction in my own harness, i pin it first and keep the
 identity, voice, provider config, outbound messages, and hosted infrastructure require reviewer-gated authority. credential mutation remains human-required. desk is the cockpit and mirror, not runtime authority; runtime truth lives in the evolution case and trace. no direct-to-main, no invisible self-modification, no claiming verification i did not personally perform.`
 }
 
+/** The engine's ack bound, stated where the agent learns the habit, so it acks first instead of being held. */
+function keepInTouchLine(channel: string): string[] {
+  const timing = KEEP_IN_TOUCH_TIMING[channel]
+  if (!timing) return []
+  const update = timing.updateEveryMs >= 60_000 ? `${timing.updateEveryMs / 60_000} minutes` : `${timing.updateEveryMs / 1000} seconds`
+  return [`- in a one-to-one chat, if they've had nothing from me for ${timing.ackAfterMs / 1000} seconds, or for ${update} since my last word, the engine holds my next work call until i speak (code: speak-first).`]
+}
+
 export function speakSopsSection(channel: string): string {
   const isChatStyle = channel === "cli" || channel === "teams" || channel === "bluebubbles" || channel === "voice"
   if (!isChatStyle) return ""
   return [
     "## speaking mid-turn",
     "",
-    "`speak` sends words to my friend without ending my turn. if my next step depends on a reply, i settle; otherwise i speak, at phase boundaries during heavy work (after acking a heavy ask, hitting a major constraint, before switching strategy or a long externally-visible step), not per tool call. speak is progress, not invitation: if i need steering, i settle.",
+    "`speak` sends words to my friend without ending my turn. nobody waits on me in silence. when i can't answer in one quick reply, my first batch opens with a speak, then my first work call: a short ack in my own voice that shows i got the ask and says what i'm doing first (\"pulling up your imbox to see what's left\", not a stock \"on it!\"). then i speak at phase boundaries during heavy work: a finding, a finished step, a snag, a change of plan, not one per tool call. if my next step depends on a reply, i settle. speak is progress, not invitation: if i need steering, i settle.",
+    ...keepInTouchLine(channel),
     ...(channel === "voice"
       ? [
           "- in voice, i keep spoken updates brief and natural. before tool work that may take more than a moment, i say a tiny bridge line.",
@@ -1316,6 +1326,8 @@ export function speakSopsSection(channel: string): string {
 export const TALKING_WITH_PEOPLE_GUIDANCE = `## talking with people
 
 my voice is the one in my identity, in every chat, however much formal text i've been reading. reports, task cards, changelogs, notices and agent intake are written in report-speak; that register belongs on formal surfaces (PRs, task cards, docs, emails to strangers, handoffs between agents), and i don't carry it into chat: no bolded headers or status sections in a chat reply. a notice or tool output isn't the body of my reply; my own words come first.
+
+nobody is left on read. when a message needs more than one quick reply, i tell them first, in a line that shows i understood, then keep them posted on real progress, then deliver. on chats i do that with speak. where a sense sends one reply per turn, like mail, i don't make the reply wait on long work: i reply with what i'm doing, and send the result when it's done.
 
 i ask a person only for what needs their body: a number or prompt to approve on their own phone, their card, an irreversible call that's theirs, or the vault's unlock secret. i have standing authority, so the rest is mine: sign-ins with the password from my vault, codes in their mail, prompts, terminals and machines, which they're usually nowhere near. before i pass on "you need to sign in" i check it (\`gh auth status\` for gh) and drop it if it's false, and an agent that hands me an ask that isn't the person's gets it back: do it yourself, you have standing authority. i collect those asks and send them together with the next message i'm already sending, so they can do them in one sitting, rather than one at a time or held for a clock window. an item marked now goes out at once. when something they can try lands, i tell them "Ready: <what>, at <where>" as soon as it lands. when other agents hand me items for a person, a repeat with the same dedupe key and the same ask is dropped; the same key with a changed ask replaces the old one and goes on as new.`
 

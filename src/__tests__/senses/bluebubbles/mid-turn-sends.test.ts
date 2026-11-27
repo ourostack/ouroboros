@@ -38,7 +38,7 @@ const chat = {
   participantHandles: ["friend@example.test"],
 } as any
 
-async function setup(options: { sendText?: (...args: any[]) => Promise<any>; noteSend?: (spoke: any) => void; durable?: boolean; replyTo?: string } = {}) {
+async function setup(options: { sendText?: (...args: any[]) => Promise<any>; noteSend?: (spoke: any) => void; durable?: boolean; replyTo?: string; activity?: boolean; group?: boolean } = {}) {
   const { createBlueBubblesCallbacks } = await import("../../../senses/bluebubbles")
   const { readBlueBubblesOutboundRecord } = await import("../../../senses/bluebubbles/outbound-state")
   const root = agentRoot()
@@ -51,8 +51,8 @@ async function setup(options: { sendText?: (...args: any[]) => Promise<any>; not
   }
   const noted: any[] = []
   const replyTarget = { getReplyToMessageGuid: vi.fn(() => options.replyTo), setSelection: vi.fn(() => "ok") }
-  const callbacks = createBlueBubblesCallbacks(client as any, chat, replyTarget as any, false, () => order.push("visible"), {
-    enableActivitySignals: false,
+  const callbacks = createBlueBubblesCallbacks(client as any, options.group ? { ...chat, isGroup: true } : chat, replyTarget as any, options.group === true, () => order.push("visible"), {
+    enableActivitySignals: options.activity === true,
     ...(options.durable === false ? {} : {
       durableOutbound: {
         agentRoot: root,
@@ -66,10 +66,32 @@ async function setup(options: { sendText?: (...args: any[]) => Promise<any>; not
       ;(options.noteSend ?? ((value) => noted.push(value)))(spoke)
     },
   })
-  return { callbacks, sendText, noted, order, read: (recordId: string) => readBlueBubblesOutboundRecord(root, recordId) }
+  return { callbacks, client, sendText, noted, order, read: (recordId: string) => readBlueBubblesOutboundRecord(root, recordId) }
 }
 
 describe("BlueBubbles mid-turn sends", () => {
+  it("brings the typing dots back after a mid-turn message in a one-to-one chat, since the agent is still working", async () => {
+    const { callbacks, client } = await setup({ activity: true })
+    callbacks.onModelStart()
+    callbacks.onTextChunk("pulling up your imbox now")
+    await callbacks.flushNow!()
+    await callbacks.flush()
+
+    const typing = client.setTyping.mock.calls.map((args: any[]) => args[1])
+    // on at the start, back on after the ack lands, off with the final reply
+    expect(typing).toEqual([true, true, false])
+  })
+
+  it("leaves typing alone after a mid-turn message in a group chat", async () => {
+    const { callbacks, client } = await setup({ activity: true, group: true })
+    callbacks.onTextChunk("on it")
+    await callbacks.flushNow!()
+    callbacks.onTextChunk("done")
+    await callbacks.flush()
+
+    expect(client.setTyping.mock.calls.map((args: any[]) => args[1])).toEqual([true, false])
+  })
+
   it("notes a mid-turn message with its own outbound record before sending it, then marks it accepted", async () => {
     const { callbacks, noted, order, read, sendText } = await setup()
     callbacks.onTextChunk("checking on that now")

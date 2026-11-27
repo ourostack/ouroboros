@@ -453,7 +453,7 @@ describe("runAgent tool loop guard", () => {
     const { isChatStyleChannel } = await import("../../heart/core")
     expect(isChatStyleChannel("cli")).toBe(true)
     expect(isChatStyleChannel("teams")).toBe(true)
-    expect(isChatStyleChannel("bluebubbles")).toBe(false)
+    expect(isChatStyleChannel("bluebubbles")).toBe(true)
     expect(isChatStyleChannel("voice")).toBe(true)
     expect(isChatStyleChannel("telegram")).toBe(true)
     expect(isChatStyleChannel("inner")).toBe(false)
@@ -462,7 +462,7 @@ describe("runAgent tool loop guard", () => {
     expect(isChatStyleChannel("anything-else")).toBe(false)
   })
 
-  it("activeTools includes speakTool for CLI and excludes it from BlueBubbles and inner", async () => {
+  it("activeTools includes speakTool for CLI and BlueBubbles and excludes it from inner", async () => {
     // Capture the tools passed to the provider in two runs
     let capturedToolsByCall: Array<Array<{ function: { name: string } }>> = []
     mockCreate.mockImplementation((req: any) => {
@@ -511,7 +511,8 @@ describe("runAgent tool loop guard", () => {
       toolContext: { signin: async () => undefined },
     })
     const blueBubblesToolNames = capturedToolsByCall[0]?.map((t) => t.function.name) ?? []
-    expect(blueBubblesToolNames).not.toContain("speak")
+    // iMessage records each mid-turn send durably, so it can ack before heads-down work.
+    expect(blueBubblesToolNames).toContain("speak")
     expect(blueBubblesToolNames).toContain("settle")
 
     // Reset capture; mock now needs another stream for the inner run

@@ -1698,7 +1698,23 @@ describe("buildSystem", () => {
     const result = speakSopsSection("voice")
     expect(result).toContain("## speaking mid-turn")
     expect(result).toContain("`speak` sends words to my friend")
-    expect(result).toContain("not per tool call")
+    expect(result).toContain("not one per tool call")
+    expect(result).toContain("in a one-to-one chat, if they've had nothing from me for 5 seconds, or for 45 seconds since my last word, the engine holds my next work call until i speak")
+  })
+
+  it("iMessage learns to ack first, with the engine's 15-second bound", async () => {
+    const { speakSopsSection } = await import("../../mind/prompt")
+    const result = speakSopsSection("bluebubbles")
+    expect(result).toContain("my first batch opens with a speak, then my first work call")
+    expect(result).toContain("shows i got the ask")
+    expect(result).toContain("in a one-to-one chat, if they've had nothing from me for 15 seconds, or for 5 minutes since my last word, the engine holds my next work call until i speak (code: speak-first)")
+  })
+
+  it("the CLI learns the habit without an engine bound, since its terminal shows each tool", async () => {
+    const { speakSopsSection } = await import("../../mind/prompt")
+    const result = speakSopsSection("cli")
+    expect(result).toContain("nobody waits on me in silence")
+    expect(result).not.toContain("the engine holds")
   })
 
   it("outward channel tool behavior includes autonomous execution guidance", async () => {
@@ -1723,7 +1739,7 @@ describe("buildSystem", () => {
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("bluebubbles", { toolChoiceRequired: true }))
     expect(result).toContain("process feedback from the user is loop input, not a stop signal")
-    expect(result).toContain("I call `speak` once when that tool is available")
+    expect(result).toContain("When `speak` is available and I can't answer in one quick reply, my first batch opens with a `speak` ack, then my work calls.")
   })
 
   it("outward channel tool behavior includes observe guidance", async () => {
@@ -5247,6 +5263,8 @@ describe("workspaceDisciplineSection expanded (Unit 1.6)", () => {
     expect(result).toContain("## talking with people")
     expect(result).toContain("my voice is the one in my identity, in every chat")
     expect(result).toContain("a notice or tool output isn't the body of my reply")
+    expect(result).toContain("nobody is left on read. when a message needs more than one quick reply, i tell them first")
+    expect(result).toContain("where a sense sends one reply per turn, like mail, i don't make the reply wait on long work")
     expect(result).toContain("i ask a person only for what needs their body")
     expect(result).toContain("do it yourself, you have standing authority")
     expect(result).toContain("\"Ready: <what>, at <where>\"")

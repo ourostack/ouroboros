@@ -97,7 +97,7 @@ export const speakTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
     name: "speak",
-    description: "i speak to send words to my friend mid-turn without ending it. for progress, acknowledgment, or phase-boundary updates during heavy work. after speaking, continue with tools unless the next step needs a reply. i settle when my work is done or i need a reply.",
+    description: "i speak to send words to my friend mid-turn without ending it. when i can't answer in one quick reply, my first move is a speak: a short ack that shows i got the ask and says what i'm doing first, in the same batch as my first work call. while i work, i speak again when something real changes. after speaking, continue with tools unless the next step needs a reply. i settle when my work is done or i need a reply.",
     parameters: {
       type: "object",
       properties: {
@@ -147,6 +147,8 @@ export const FLOW_TOOL_REFUSALS = {
   restSurfaceNotSent: (surfaceResult: string): string => withCode(`your surface this turn did not reach them: ${surfaceResult.replace(/ \(code: [a-z0-9-]+\)$/u, "").replace(/\.$/u, "")}. reach them another way now if the result names one, or rest again and it waits for their next message.`, "surface-not-sent"),
   speakEmpty: withCode("speak requires a non-empty `message` string.", "empty-message"),
   speakNotDelivered: (detail: string): string => withCode(`speak delivery failed: ${detail}. the message did not reach your friend; do not assume they saw it.`, "speak-not-delivered"),
+  speakFirstAck: (quietSeconds: number): string => withCode(`held: they've had nothing from you for ${quietSeconds}s, so nothing in this batch ran. before more work, speak: a short note in your own voice that shows you got what they asked and says what you're doing first. no stock "on it", no times you can't keep. then make these calls again: after the speak in one batch, or on their own next if one must be the only call.`, "speak-first"),
+  speakFirstUpdate: (quietMinutes: number): string => withCode(`held: your last word to them was ${quietMinutes} min ago and you're still working, so nothing in this batch ran. speak first with real progress in your own voice: what you've found or finished since, and what's next. then make these calls again: after the speak in one batch, or on their own next if one must be the only call.`, "speak-first"),
   ponderCreateIncomplete: withCode("ponder create requires kind, objective, success_criteria, and valid payload_json.", "ponder-fields-missing"),
   ponderReviseIncomplete: withCode("ponder revise requires packet_id, kind, objective, success_criteria, and valid payload_json.", "ponder-fields-missing"),
   ponderHeldWork: withCode("private runtime already has held return work in the attention queue; surface the existing delegationId instead of creating a replacement ponder packet.", "held-work-unsurfaced"),
@@ -163,6 +165,7 @@ export const toolCards: ToolDoorCard[] = [
   { id: "tool:speak", group: "turn-flow", when: "Pick this to tell the person something now, like progress on long work, while you keep working; settle gives the final answer.", effect: "write", errors: [
     { code: "empty-message", means: "The message was empty, so nothing was sent.", fix: "Call speak again with the words you mean to send." },
     { code: "speak-not-delivered", means: "The channel failed to deliver the message, so the person has not seen it.", fix: "Say it again in your settle answer, or retry speak once if the failure looks brief." },
+    { code: "speak-first", means: "In a one-to-one chat the person waited past the bound (15 s for a first word, 5 min since the last; voice 5 s and 45 s) with no word, so nothing in the batch ran.", fix: "Speak first: an ack that shows you understood, or real progress. Then repeat the held calls after it, or alone next if one must be the only call." },
   ] },
   { id: "tool:observe", group: "turn-flow", when: "Pick this in a group chat or passing moment where a reply would add nothing, to end the turn and stay quiet.", effect: "write", errors: [
     { code: "observe-alone", means: "observe came in one batch with other tool calls, so nothing in the batch ran.", fix: "Make the other calls first, read their results, then call observe on its own, or settle if you do mean to reply." },
