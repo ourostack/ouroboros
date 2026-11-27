@@ -9,10 +9,11 @@ vi.mock("../../nerves/runtime", async () => {
   return { ...actual, emitNervesEvent: vi.fn((event: Parameters<typeof actual.emitNervesEvent>[0]) => actual.emitNervesEvent(event)) }
 })
 
-const heldReturns = vi.hoisted(() => ({ queue: vi.fn() }))
+const heldReturns = vi.hoisted(() => ({ queue: vi.fn(), hold: vi.fn() }))
 vi.mock("../../mind/pending", async (original) => ({
   ...await original<typeof import("../../mind/pending")>(),
   queuePendingMessage: heldReturns.queue,
+  holdNoticeForReturn: heldReturns.hold,
 }))
 
 const outbound = vi.hoisted(() => ({ record: vi.fn(() => "recorded"), drain: vi.fn(() => 0) }))
@@ -209,6 +210,32 @@ describe("drainAndSendPendingTeams", () => {
     expect(botApi._mocks.activityCreate).not.toHaveBeenCalled()
     expect(fs.existsSync(file)).toBe(false)
     expect(heldReturns.queue).toHaveBeenCalledWith(expect.stringContaining("self"), expect.objectContaining({ channel: "inner", content: expect.stringContaining(text) }))
+  })
+
+  it("keeps a pending routine notice for the return summary instead of sending it", async () => {
+    heldReturns.hold.mockReset()
+    const friendStore = { get: vi.fn().mockResolvedValue(makeFriend()), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn(), hasAnyFriends: vi.fn(), listAll: vi.fn() }
+    const botApi = makeBotApi()
+    const teams = await loadTeams()
+    const text = "Heads-up, nothing to do yet: a sign-in expired. When it is gone, I'll send you a tap to approve."
+    const file = writePendingFile(pendingRoot, "friend-uuid-1", "session", { from: "testagent", friendId: "friend-uuid-1", channel: "teams", key: "session", content: text, timestamp: Date.now() })
+    const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
+    expect(result).toEqual({ sent: 0, skipped: 1, failed: 0 })
+    expect(botApi._mocks.activityCreate).not.toHaveBeenCalled()
+    expect(fs.existsSync(file)).toBe(false)
+    expect(heldReturns.hold).toHaveBeenCalledWith("testagent", "friend-uuid-1", text)
+  })
+
+  it("keeps the pending file and counts a failure when the routine notice cannot be held", async () => {
+    heldReturns.hold.mockReset().mockImplementation(() => { throw new Error("disk full") })
+    const friendStore = { get: vi.fn().mockResolvedValue(makeFriend()), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn(), hasAnyFriends: vi.fn(), listAll: vi.fn() }
+    const botApi = makeBotApi()
+    const teams = await loadTeams()
+    const file = writePendingFile(pendingRoot, "friend-uuid-1", "session", { from: "testagent", friendId: "friend-uuid-1", channel: "teams", key: "session", content: "The nightly run finished. Nothing needed from you.", timestamp: Date.now() })
+    const result = await teams.drainAndSendPendingTeams(friendStore as any, botApi, pendingRoot)
+    expect(result).toEqual({ sent: 0, skipped: 0, failed: 1 })
+    expect(fs.existsSync(file)).toBe(true)
+    heldReturns.hold.mockReset()
   })
 
   it("drops a pending message that sat unsent past the expiry, on two consecutive drains", async () => {
@@ -1265,6 +1292,29 @@ describe("sendProactiveTeamsMessageToSession", () => {
     expect(result).toEqual({ delivered: false, reason: "internal_content_blocked" })
     expect(botApi._mocks.conversationsCreate).not.toHaveBeenCalled()
     expect(botApi._mocks.activityCreate).not.toHaveBeenCalled()
+  })
+})
+
+describe("proactive Teams send of a routine notice", () => {
+  const routine = "The nightly run finished. Nothing needed from you."
+  const friendStore = () => ({ get: vi.fn().mockResolvedValue(makeFriend()), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn(), hasAnyFriends: vi.fn(), listAll: vi.fn() })
+
+  it("holds it for the return summary and does not send", async () => {
+    heldReturns.hold.mockReset()
+    const botApi = makeBotApi()
+    const teams = await loadTeams() as any
+    const result = await teams.sendProactiveTeamsMessageToSession({ friendId: "friend-uuid-1", sessionKey: "session", text: routine }, { botApi, createFriendStore: () => friendStore() as any })
+    expect(result).toEqual({ delivered: false, reason: "internal_content_blocked" })
+    expect(heldReturns.hold).toHaveBeenCalledWith("testagent", "friend-uuid-1", routine)
+    expect(botApi._mocks.activityCreate).not.toHaveBeenCalled()
+  })
+
+  it("reports a send error, not a silent drop, when it cannot be held", async () => {
+    heldReturns.hold.mockReset().mockImplementation(() => { throw new Error("disk full") })
+    const teams = await loadTeams() as any
+    const result = await teams.sendProactiveTeamsMessageToSession({ friendId: "friend-uuid-1", sessionKey: "session", text: routine }, { botApi: makeBotApi(), createFriendStore: () => friendStore() as any })
+    expect(result).toEqual({ delivered: false, reason: "send_error" })
+    heldReturns.hold.mockReset()
   })
 })
 

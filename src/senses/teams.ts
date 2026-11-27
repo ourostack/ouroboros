@@ -1309,16 +1309,14 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
 
     // Flush any remaining accumulated text at end of turn. The held notices are settled only once this reached the
     // person with a reply; a failed or empty delivery puts them back for the next message.
+    let delivered = false
     try {
       await callbacks.flush()
-    } catch (error) {
-      result.heldNoticeDelivery?.release()
-      throw error
-    }
-    const finalReply = result.messages?.findLast((message) => message.role === "assistant")
-    if (result.heldNoticeDelivery) {
-      if (typeof finalReply?.content === "string" && finalReply.content.trim() && result.turnOutcome !== "superseded") result.heldNoticeDelivery.confirm()
-      else result.heldNoticeDelivery.release()
+      const finalReply = result.messages?.findLast((message) => message.role === "assistant")
+      delivered = typeof finalReply?.content === "string" && finalReply.content.trim().length > 0 && result.turnOutcome !== "superseded"
+    } finally {
+      if (delivered) result.heldNoticeDelivery?.confirm()
+      else result.heldNoticeDelivery?.release()
     }
 
     // After the agent loop, check if any tool returned AUTH_REQUIRED and trigger signin.
