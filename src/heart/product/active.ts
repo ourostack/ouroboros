@@ -65,7 +65,7 @@ export function loadProduct(modulePath: string | undefined, load: (modulePath: s
 
 /**
  * Loads the product /opt/ouro/container-runtime.json names (`product`), or none when the file is absent or names none. The
- * daemon calls it first, so a broken product stops the start; every other process (each sense, inner turns, the CLI)
+ * daemon calls it first, so a broken product stops the start; every other process (each sense, the agent's own turns, the CLI)
  * settles it on its first `productFor`, so no child can run without the product its image names.
  */
 export function loadImageProduct(options: { policyPath?: string; load?: (modulePath: string) => unknown } = {}): OuroProduct | null {
