@@ -9,6 +9,10 @@ import { createProductionTelegramRelationshipComposition, createTelegramSenseApp
 import { selectToolsForChannel } from "../../repertoire/tools"
 import { getSenseSessionPath } from "../../senses/shared-turn"
 import { loadSessionEnvelopeFile } from "../../heart/session-events"
+import { useButlerProduct } from "../test-helpers/butler-product"
+
+// These turns are the Butler's, whose tools come from its product, so the product is loaded as on its image.
+useButlerProduct()
 
 const roots: string[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })

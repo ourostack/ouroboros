@@ -5,11 +5,12 @@ import { emitNervesEvent } from "../nerves/runtime"
 import type { ProviderCapability } from "../heart/core"
 import { validateHostProposalRequest, type HostProposalRequestV1 } from "../heart/daemon/sanctuary-host-authority"
 import { loadSessionEnvelopeFile, selectEffectiveSessionEvents } from "../heart/session-events"
-import { getSenseSessionPath } from "../senses/shared-turn"
+import { getSenseSessionPath } from "../heart/session-path"
 import type { RootHostApprovalPort } from "../senses/root-host-approval-port"
 import { loadRelationshipCapabilityRegistry } from "./relationship-authorization"
 import { freezeToolValue } from "./tool-arguments"
-import { withCode, type ToolContext, type ToolDefinition } from "./tools-base"
+import { withCode } from "./tool-error-code"
+import type { ToolContext, ToolDefinition } from "./tools-base"
 import { isButlerAgent } from "../heart/butler-agent"
 
 export interface RootHostBinding {
@@ -163,6 +164,10 @@ export const rootHostToolDefinition: ToolDefinition = freezeToolValue({
   riskProfile: { risk: "high", mutates: "external_side_effect", reason: "owner-approved arbitrary host command" },
   approvalPolicy: () => ({ kind: "required", policyId: "sanctuary.host.owner-approved.v1", actionClass: "owner_approved_arbitrary_host", requiresSoleCall: true }),
   handler: () => { throw new Error(withCode("Sanctuary host execution requires the root approval continuation; resident execution is forbidden", "resident-execution-forbidden")) },
+  // Only a definition selectRootHostTool made for this turn's binding is admitted; the registered one always refuses.
+  authorize: (ctx, args) => authorizeRootHostToolInvocation(ctx, rootHostToolDefinition, args),
+  // authorizeRootHostContext asks the relationship and checks its receipt itself, bound to the selected copy.
+  authorizesRelationship: true,
 })
 
 export function validateRootHostToolArguments(args: Record<string, unknown>, targetHost: string): Omit<HostProposalRequestV1, "ownerObservation"> {
@@ -183,7 +188,7 @@ export function selectRootHostTool(ctx?: RootHostSelectionContext, capabilities?
     const provenance = binding && bindings.get(binding)
     if (!ctx || !binding || !provenance || provenance.port !== ctx.rootHost!.port || !capabilities?.has("approval-continuation")
       || !isDeepStrictEqual(binding, currentCoordinates(ctx)) || (!provenance.recovery && !observationAccepted(ctx))) return undefined
-    const selected = Object.freeze({ ...rootHostToolDefinition })
+    const selected: ToolDefinition = Object.freeze({ ...rootHostToolDefinition, authorize: (call: ToolContext | undefined, args: Record<string, unknown>) => authorizeRootHostToolInvocation(call, selected, args) })
     selections.set(selected, { binding, capabilities })
     return selected
   } catch {

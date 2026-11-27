@@ -4,6 +4,10 @@ import { getChannelCapabilities } from "@ouro.bot/friends"
 import { selectToolsForChannel } from "../../repertoire/tools"
 import { parseAwaitFile } from "../../heart/awaiting/await-parser"
 import { SANCTUARY_PACKAGE_MANAGED_FILES } from "../../heart/daemon/sanctuary-bundle-migration"
+import { useButlerProduct } from "../test-helpers/butler-product"
+
+// These turns are the Butler's, whose tools come from its product, so the product is loaded as on its image.
+useButlerProduct()
 
 const AWAIT_PATH = "awaiting/house-care-sweep.md"
 const names = (tools: { tool: { function: { name: string } } }[]) => tools.map((definition) => definition.tool.function.name)

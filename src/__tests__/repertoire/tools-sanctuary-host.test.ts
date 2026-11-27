@@ -13,6 +13,10 @@ import { validateAdvertisedToolArguments } from "../../repertoire/tool-arguments
 import { approvalPolicyForInvocation, executeTool, preflightToolCall, reduceToolSelection, selectToolsForChannel, toolSelectionSchemas } from "../../repertoire/tools"
 import type { ToolContext } from "../../repertoire/tools-base"
 import { authorizeRootHostContext, rootHostToolDefinition, selectRootHostTool, validateRootHostToolArguments } from "../../repertoire/tools-sanctuary-host"
+import { useButlerProduct } from "../test-helpers/butler-product"
+
+// These turns are the Butler's, whose tools come from its product, so the product is loaded as on its image.
+useButlerProduct()
 
 const name = "sanctuary_host_execute"
 const keys = generateKeyPairSync("ed25519")

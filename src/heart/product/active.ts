@@ -1,11 +1,17 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 import { readContainerRuntimePolicy } from "../daemon/container-runtime"
-import type { OuroProduct, ProductEventSource, ProductHabit, ProductTurnContext, ProductTurnContextInput } from "./types"
+import type { ToolDefinition } from "../../repertoire/tools-base"
+import type {
+  OuroProduct, ProductEventSource, ProductHabit, ProductStatusInput, ProductToolSelectionInput, ProductTools, ProductTurnContext, ProductTurnContextInput,
+} from "./types"
 
 /** The seam version this harness runs. A product built for another stops the start. */
 export const PRODUCT_SEAM_VERSION = 1
 
 let active: OuroProduct | null = null
+// Unit tests run on machines with no image, often with fs mocked; their setup sets this before any module loads, so a
+// process that hasn't loaded a product answers as one with no image policy, without reading it.
+const TEST_NO_IMAGE_PRODUCT = Symbol.for("ouro.test.noImageProduct")
 // Whether this process has settled which product it runs: by an explicit load, or by the first productFor reading the image's policy.
 let settled = false
 
@@ -30,6 +36,18 @@ function validProduct(value: unknown, modulePath: string): OuroProduct {
     throw invalid(modulePath, "its agents are not a list of agent names")
   }
   if (new Set(agents).size !== agents.length) throw invalid(modulePath, "its agents list a name twice")
+  const tools = (product as { tools?: { definitions?: unknown } }).tools
+  if (tools !== undefined) {
+    const definitions = tools?.definitions
+    if (!Array.isArray(definitions)) throw invalid(modulePath, "its tools have no list of definitions")
+    for (const definition of definitions as Array<{ tool?: { function?: { name?: unknown } }; ax?: { id?: unknown } } | null>) {
+      const name = definition?.tool?.function?.name
+      if (typeof name !== "string" || name.length === 0) throw invalid(modulePath, "one of its tools has no name")
+      if (definition!.ax?.id !== `tool:${name}`) throw invalid(modulePath, `its tool ${name} has no Ouro AX card`)
+    }
+    const names = (definitions as Array<{ tool: { function: { name: string } } }>).map((definition) => definition.tool.function.name)
+    if (new Set(names).size !== names.length) throw invalid(modulePath, "its tools list a name twice")
+  }
   return product as OuroProduct
 }
 
@@ -73,9 +91,15 @@ export function loadImageProduct(options: { policyPath?: string; load?: (moduleP
   return loadProduct(policy?.product, options.load)
 }
 
+function settle(): void {
+  if (settled) return
+  if ((globalThis as { [TEST_NO_IMAGE_PRODUCT]?: boolean })[TEST_NO_IMAGE_PRODUCT] === true) loadProduct(undefined)
+  else loadImageProduct()
+}
+
 /** The loaded product when this agent (or a saved record's `agent`) is one of its names, else null. */
 export function productFor(agentName: unknown): OuroProduct | null {
-  if (!settled) loadImageProduct()
+  settle()
   return active && typeof agentName === "string" && active.agents.includes(agentName) ? active : null
 }
 
@@ -115,6 +139,51 @@ export async function productTurnContext(input: ProductTurnContextInput, options
       meta: { productId: product.id, hook: "turnContext", agent: input.agentName, channel: input.channel, reason: error instanceof Error ? error.message : String(error) },
     })
     if (options.tolerant) return {}
+    throw error
+  }
+}
+
+function hookFailed(product: OuroProduct, hook: string, agent: string, error: unknown, message: string): void {
+  emitNervesEvent({
+    level: "error",
+    component: "daemon",
+    event: "daemon.product_hook_error",
+    message,
+    meta: { productId: product.id, hook, agent, reason: error instanceof Error ? error.message : String(error) },
+  })
+}
+
+/** The tools the product adds for this agent's turns (J3), or null when the agent has no product or the product adds none. */
+export function productTools(agentName: unknown): ProductTools | null {
+  return productFor(agentName)?.tools ?? null
+}
+
+/** The loaded product's own tool definitions, whichever agent asks: they are registered for the whole process, as core's are. */
+export function productToolDefinitions(): readonly ToolDefinition[] {
+  settle()
+  return active?.tools?.definitions ?? []
+}
+
+/** The tools the product adds to this turn's menu (J3), or none. A throw from the product fails the selection. */
+export function productToolSelection(agentName: string | undefined, input: ProductToolSelectionInput): readonly ToolDefinition[] {
+  const product = productFor(agentName)
+  if (!product?.tools?.select) return []
+  try {
+    return product.tools.select(input)
+  } catch (error) {
+    hookFailed(product, "tools.select", agentName!, error, "the product's tool selection failed, so the turn's tools can't be selected")
+    throw error
+  }
+}
+
+/** The sections the product adds to `query_active_work` for this agent (J7), or null when it adds none. A rejection fails the call. */
+export async function productActiveWorkSections(input: ProductStatusInput): Promise<string | null> {
+  const product = productFor(input.agentName)
+  if (!product?.status) return null
+  try {
+    return await product.status.activeWorkSections(input)
+  } catch (error) {
+    hookFailed(product, "status.activeWorkSections", input.agentName, error, "the product's status sections failed, so query_active_work fails")
     throw error
   }
 }

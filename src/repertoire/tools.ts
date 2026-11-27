@@ -14,7 +14,8 @@ import { emitNervesEvent } from "../nerves/runtime";
 import type { ProviderCapability } from "../heart/core";
 import { guardInvocation } from "./guardrails";
 import { getAgentRoot } from "../heart/identity";
-import { isButlerAgent } from "../heart/butler-agent"
+import { productToolDefinitions, productTools, productToolSelection } from "../heart/product/active"
+import type { ProductToolSelectionContext } from "../heart/product/types"
 import { releaseReservedCommerceAuthority, reserveCommerceAuthority } from "../commerce/store";
 import { surfaceToolDefinition } from "./tools-surface";
 import type { McpTurnView } from "./mcp-manager";
@@ -35,7 +36,6 @@ import { inspectRoutineActionGrant } from "../heart/steward-policy";
 import { authorizeRoutineActionRequester } from "./relationship-authorization";
 import { ApprovalExecutionFailedError } from "../heart/tool-approval";
 import { localAudioToolGate, voiceLocalAudioToolDefinition } from "./tools-voice-local";
-import { authorizeRootHostToolInvocation, rootHostToolDefinition, selectRootHostTool, type RootHostSelectionContext } from "./tools-sanctuary-host";
 import { CLI_COMMANDS } from "../heart/daemon/cli-manifest";
 import { commandWords } from "../heart/daemon/cli-gate";
 
@@ -153,7 +153,7 @@ function applyPreference(tool: OpenAI.ChatCompletionFunctionTool, pref: string):
   };
 }
 
-type SelectionContext = Pick<ToolContext, "noSend" | "habitSession" | "autonomousTurnKind" | "delegatedCommand" | "voiceCall" | "allowedEngineTools"> & RootHostSelectionContext
+type SelectionContext = Pick<ToolContext, "noSend" | "habitSession" | "autonomousTurnKind" | "delegatedCommand" | "voiceCall" | "allowedEngineTools"> & ProductToolSelectionContext
 
 export function selectToolsForChannel(
   capabilities?: ChannelCapabilities,
@@ -166,13 +166,13 @@ export function selectToolsForChannel(
 ): ToolSelection {
   const relationship = context?.relationshipAuthorization
   const profileId = relationship?.profileId
-  // Every Sanctuary turn that reaches the agent from outside the host (Telegram, A2A,
-  // any future remote sense) is relationship-scoped: without a known capability
-  // profile it gets no tools at all. Only the Butler's own local channels (its inner
-  // loop and the host-local CLI/MCP) keep the unscoped tool set.
+  // A product can scope its agent's turns to relationships: every turn that reaches the agent from outside the host
+  // (Telegram, A2A, any future remote sense) then gets no tools at all without a known capability profile. Only its
+  // own local channels (the inner loop and the host-local CLI/MCP) keep the unscoped tool set.
   const channel = capabilities?.channel
   const remote = channel !== undefined && !SANCTUARY_LOCAL_CHANNELS.has(channel)
-  const sanctuary = (isButlerAgent(context?.agentName) && (relationship !== undefined || remote))
+  const product = productTools(context?.agentName)
+  const sanctuary = (product?.relationshipScoped === true && (relationship !== undefined || remote))
     || profileId?.startsWith("sanctuary-") === true
   const owner = profileId === "sanctuary-owner"
   // A trusted peer agent acting for the owner gets the owner's chat tool menu. Host
@@ -182,8 +182,9 @@ export function selectToolsForChannel(
   const knownSanctuaryProfile = relationship !== undefined && (ownerLike || profileId === "sanctuary-household" || profileId === "sanctuary-event")
   const mcp = mcpManager ? mcpToolsAsDefinitions(mcpManager) : []
   const native = [...baseToolDefinitions, ...additionalDefinitions]
+  const productDefinitions = productToolDefinitions()
   assertUniqueToolSchemas([
-    ...native.map((definition) => definition.tool), rootHostToolDefinition.tool, ...mcp.map((definition) => definition.tool),
+    ...native.map((definition) => definition.tool), ...productDefinitions.map((definition) => definition.tool), ...mcp.map((definition) => definition.tool),
     ponderTool, restTool, observeTool, settleTool, speakTool,
   ])
   let ordinary: ToolDefinition[]
@@ -225,13 +226,24 @@ export function selectToolsForChannel(
       ...integrations, ...mcp,
     ]
   }
-  const hostTool = capabilities?.channel === "telegram"
-    ? selectRootHostTool({ ...context, context: _context ?? context?.context }, providerCapabilities)
-    : undefined
-  if (hostTool) ordinary.push(hostTool)
+  const added = productToolSelection(context?.agentName, {
+    channel, relationshipScoped: sanctuary, providerCapabilities,
+    context: { ...context, context: _context ?? context?.context },
+    registered: (name) => native.find((definition) => definition.tool.function.name === name),
+  })
+  for (const definition of added) {
+    const own = productDefinitions.find((candidate) => candidate.tool.function.name === definition.tool.function.name)
+    if (!native.includes(definition) && own?.handler !== definition.handler) {
+      emitNervesEvent({
+        level: "error", component: "tools", event: "tool.product_selection_rejected",
+        message: "the product selected a tool that isn't registered", meta: { name: definition.tool.function.name },
+      })
+      throw new ToolSelectionError(`the product selected a tool that isn't registered: ${definition.tool.function.name}`)
+    }
+  }
+  // A product adds to a turn's menu but never widens one core scoped to nothing: a scoped turn without a known profile gets none.
+  if (!sanctuary || knownSanctuaryProfile) ordinary.push(...added)
   const inner = capabilities?.channel === "inner"
-  // The Butler's own scheduled turns (the daily house-care await) carry no relationship, so they cannot take the owner profile's menu.
-  if (inner && !sanctuary && isButlerAgent(context?.agentName)) ordinary.push(...houseCareToolDefinitions)
   const habit = context?.habitSession
   if (inner) {
     const canSend = habit?.permissionEnvelope.canMessageOutward === true
@@ -257,7 +269,7 @@ export function selectToolsForChannel(
     && (!relationship || relationship.advertisedToolNames.includes(tool.function.name))
     && (!context?.allowedEngineTools || context.allowedEngineTools.includes(tool.function.name)))
   return Object.freeze({
-    ordinary: Object.freeze(ordinary.map((definition) => definition === hostTool ? definition : Object.freeze({
+    ordinary: Object.freeze(ordinary.map((definition) => definition.authorize && definition.authorizesRelationship ? definition : Object.freeze({
       ...definition,
       tool: freezeToolValue(structuredClone(definition.tool)),
       ...(definition.riskProfile && typeof definition.riskProfile !== "function"
@@ -295,7 +307,7 @@ export function resolveToolDefinition(toolName: string, selection?: ToolSelectio
 
 /** Every in-turn tool definition the harness registers, before any channel or relationship narrows it. */
 export function registeredToolDefinitions(): ToolDefinition[] {
-  return [...baseToolDefinitions, ...additionalDefinitions, rootHostToolDefinition, voiceLocalAudioToolDefinition]
+  return [...baseToolDefinitions, ...additionalDefinitions, ...productToolDefinitions(), voiceLocalAudioToolDefinition]
 }
 
 /** What an unknown tool answers: the real tools its name could mean, else where the real ones are. */
@@ -497,15 +509,15 @@ export async function preflightToolCall(name: string, args: Record<string, strin
       const validation = validateAdvertisedToolArguments(JSON.stringify(args), schema.function.parameters ?? {})
       if (!validation.ok) return { kind: "rejected_before_handler", text: withCode(`invalid tool arguments: ${validation.reason}`, "invalid-arguments") }
     }
-    // The schema is public, so a malformed call learns its fix before the root authority is asked.
-    if (name === rootHostToolDefinition.tool.function.name) await authorizeRootHostToolInvocation(ctx, def, args)
+    // The schema is public, so a malformed call learns its fix before the tool's own authority is asked.
+    if (def?.authorize) await def.authorize(ctx, args)
 
     assertRelationshipToolOwner(ctx)
     if (name === "unraid_restart_container" && ctx?.routineActionSelection?.kind === "denied") {
       return { kind: "rejected_before_handler", text: routineActionDenied(ctx.routineActionSelection.reason) }
     }
     const relationship = ctx?.relationshipAuthorization
-    const decision = name === rootHostToolDefinition.tool.function.name ? undefined : await relationship?.authorizeTool(name, args)
+    const decision = def?.authorize && def.authorizesRelationship ? undefined : await relationship?.authorizeTool(name, args)
     if (decision && (!decision.allowed || !relationship!.advertisedToolNames.includes(name)
       || (decision.profileId !== undefined && decision.profileId !== relationship!.profileId))) {
       const reason = decision.allowed ? "current relationship selection changed" : decision.reason
@@ -517,11 +529,12 @@ export async function preflightToolCall(name: string, args: Record<string, strin
     }
 
     const currentSelection = ctx?.selectCurrentTools?.()
-      ?? (name === rootHostToolDefinition.tool.function.name ? selection
-        : relationship?.profileId?.startsWith("sanctuary-") || (relationship && isButlerAgent(ctx?.agentName))
+      ?? (def?.authorize && def.authorizesRelationship ? selection
+        : relationship?.profileId?.startsWith("sanctuary-") || (relationship && productTools(ctx?.agentName)?.relationshipScoped)
         ? selectToolsForChannel(undefined, undefined, undefined, undefined, undefined, undefined, ctx)
         : undefined)
-    const current = currentSelection ? findDefinition(name, currentSelection) : def?.mcpBinding ? def : findDefinition(name)
+    const current = currentSelection ? findDefinition(name, currentSelection) : def?.mcpBinding ? def
+      : findDefinition(name) ?? productToolDefinitions().find((definition) => definition.tool.function.name === name)
     const currentSchema = current?.tool ?? currentSelection?.engine.find((tool) => tool.function.name === name)
       ?? (!currentSelection ? selection?.engine.find((tool) => tool.function.name === name) : undefined)
     if (!currentSchema || !isDeepStrictEqual(schema, currentSchema)

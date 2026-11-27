@@ -34,14 +34,6 @@ const ALLOWED: Record<string, readonly string[]> = {
   "heart/turn-context": [
     "heart/butler-agent",
   ],
-  "repertoire/tools": [
-    "heart/butler-agent",
-    "repertoire/tools-sanctuary-host",
-  ],
-  "repertoire/tools-session": [
-    "heart/butler-agent",
-    "senses/sanctuary-health",
-  ],
   "senses/a2a-entry": [
     "heart/butler-agent",
   ],

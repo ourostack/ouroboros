@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest"
 import { callInTurnTool, DISPATCH_ERRORS, listInTurnTools, neverSignIn } from "../../repertoire/in-turn-tools-door"
+import { useButlerProduct } from "../test-helpers/butler-product"
+
+// The X-ray serves the tools with the Butler's product loaded, so its root-host tool is listed as on its image.
+useButlerProduct()
 
 describe("the in-turn tools door", () => {
   it("lists every registered tool once, each a function definition with an Ouro AX card", () => {
