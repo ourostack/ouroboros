@@ -7,6 +7,7 @@ import type { ExternalEventInput } from "../../heart/external-events/router"
 import type { DaemonProcessManagerLike } from "../../heart/daemon/daemon"
 import type { LogEvent } from "../../nerves"
 import type { TelegramUpdate } from "../../senses/telegram-client"
+import { useButlerProduct } from "../test-helpers/butler-product"
 
 const mocks = vi.hoisted(() => ({ home: "", create: vi.fn() }))
 let capturedEvents: LogEvent[] = []
@@ -388,6 +389,8 @@ async function fixture(desired = "intentionally_off", grant = true) {
 }
 
 describe("A-006 real Sanctuary stewardship composition", () => {
+  useButlerProduct()
+
   it("keeps intentional downtime silent and does not dispatch another turn for unchanged facts", async () => {
     const f = await fixture()
     let policyVersion = 0

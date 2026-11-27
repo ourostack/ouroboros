@@ -15,7 +15,7 @@ import { FileA2APinStore } from "./pin-store"
 import { FileA2ASeenLedger } from "./seen-ledger"
 import { makeDidResolution } from "./did-resolution"
 import { receiveInboundShare, type InboundShareDeps } from "./inbound-share"
-import { createSanctuaryToolContext, isSanctuaryAgent } from "../senses/sanctuary-runtime"
+import { productTurnContext } from "../heart/product/active"
 import { sealChatMessage } from "./sealed-chat"
 import { createRelationshipAuthorizationEvaluator, loadRelationshipCapabilityRegistry, type RelationshipAuthorizationEvaluator } from "../repertoire/relationship-authorization"
 import type { FriendRecord } from "@ouro.bot/friends"
@@ -236,7 +236,8 @@ function storageKeyFor(peerExternalId: string): string {
   return `a2a-${createHash("sha256").update(peerExternalId).digest("hex").slice(0, 24)}`
 }
 
-async function defaultTurnRunner(input: A2ATurnRunnerInput): Promise<A2ATurnRunnerOutput> {
+/** Runs an A2A turn through the shared sense pipeline: the runner the server uses unless it is given another. */
+export async function defaultTurnRunner(input: A2ATurnRunnerInput): Promise<A2ATurnRunnerOutput> {
   const result = await runSenseTurn({
     agentName: input.agentName,
     channel: "a2a",
@@ -254,12 +255,11 @@ async function defaultTurnRunner(input: A2ATurnRunnerInput): Promise<A2ATurnRunn
       externalId: input.peerAgentId,
       displayName: input.peerName,
     },
-    // The Butler's house tools read a typed Sanctuary runtime from the tool context; the
-    // Telegram sense attaches it, and a verified A2A friend's turn needs it too (without it
-    // every Unraid read answered "Sanctuary runtime is unavailable"). The relationship
-    // profile still decides which of those tools the peer may call.
+    // A product's tools read its runtime from the tool context, and a verified A2A friend's turn needs it as a
+    // Telegram turn does (without it every Butler house read answered "Sanctuary runtime is unavailable"). The
+    // relationship profile still decides which of those tools the peer may call.
     toolContext: {
-      ...(isSanctuaryAgent(input.agentName) ? createSanctuaryToolContext(input.agentName) : {}),
+      ...(await productTurnContext({ agentName: input.agentName, channel: "a2a" })),
       ...(input.relationshipAuthorization ? { relationshipAuthorization: input.relationshipAuthorization } : {}),
       ...(input.delegatedCommand ? { delegatedCommand: input.delegatedCommand } : {}),
     },

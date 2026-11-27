@@ -310,7 +310,7 @@ describe("D-007 same-public-app cleanup", () => {
     const poll = { pollOnce: vi.fn(async () => 0), run: vi.fn(async () => { observedPolling(); await stopped }), stop: vi.fn(() => finishPolling()) }
     const api = { request: vi.fn(async (): Promise<never> => { throw new Error("unexpected external send") }), stop: vi.fn() }
     const instance = createTelegramSenseApp({
-      agentName: "sanctuary", _agentRoot: directory, _toolContext: {},
+      agentName: "sanctuary", _agentRoot: directory, productContext: {},
       credentials: { botToken: "777:fixture", botId: "777", authorizedUserId: "42", authorizedChatId: "42" },
       identityKey: "k".repeat(43), api, createLongPoll: () => poll,
       migrateIdentity: async () => undefined, acceptanceMarker: () => null,

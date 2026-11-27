@@ -216,8 +216,11 @@ import {
   type RunPrivateRuntimeTurnOptions,
 } from "../../senses/private-runtime"
 import { advanceObligation, createObligation, fulfillObligation } from "../../arc/obligations"
+import { useButlerProduct } from "../test-helpers/butler-product"
 
 describe("private runtime", () => {
+  useButlerProduct()
+
   let sessionFile: string
   let agentRoot: string
   let privateDecisionCounter = 0
@@ -2513,11 +2516,14 @@ describe("private runtime", () => {
     expect(mockHandleInboundTurn.mock.calls[2][0].runAgentOptions.toolContext.autonomousTurnKind).toBe("scheduler")
   })
 
-  it("keeps sanctuary external events strict when the machine runtime config is missing", async () => {
-    const { sanctuaryToolContextFor } = await import("../../senses/private-runtime")
-    expect(() => sanctuaryToolContextFor("unconfigured-agent", "sanctuary-health")).toThrow(/machine runtime config is missing/)
-    expect(() => sanctuaryToolContextFor("unconfigured-agent", "sanctuary-usenet")).toThrow(/machine runtime config is missing/)
-    expect(sanctuaryToolContextFor("unconfigured-agent", "other-source")).toEqual({})
+  it("fails a turn for the product's own event when its turn context is missing, and runs any other private turn without it", async () => {
+    const { privateTurnProductContext } = await import("../../senses/private-runtime")
+    // The Butler under its new name has no machine runtime config cached in this file.
+    await expect(privateTurnProductContext("butler", "sanctuary-health")).rejects.toThrow(/machine runtime config is missing/)
+    await expect(privateTurnProductContext("butler", "sanctuary-usenet")).rejects.toThrow(/machine runtime config is missing/)
+    await expect(privateTurnProductContext("butler", "other-source")).resolves.toEqual({})
+    await expect(privateTurnProductContext("butler", undefined)).resolves.toEqual({})
+    await expect(privateTurnProductContext("unconfigured-agent", "sanctuary-health")).resolves.toEqual({})
   })
 
   it("does not attach the Sanctuary tool context for other agents", async () => {
@@ -5064,7 +5070,11 @@ describe("private runtime", () => {
   })
 
   it("gives Sanctuary usenet event turns the existing Sanctuary tool context", async () => {
-    cacheMachineRuntimeCredentialConfig("test-agent", { unraidGraphqlUrl: "http://unraid.test/graphql", unraidReadApiKey: "read-test", unraidWriteApiKey: "write-test", jellyfin: { userId: "b".repeat(32), accessToken: "a".repeat(32), folderIds: "library-a,library-b" } })
+    mockGetAgentName.mockReturnValue("sanctuary")
+    cacheProviderCredentialRecords("sanctuary", [
+      createProviderCredentialRecord({ provider: "minimax", credentials: { apiKey: "minimax-test-key" }, config: {}, provenance: { source: "manual" }, now: new Date("2026-03-06T11:58:00.000Z") }),
+    ], new Date("2026-03-06T11:59:00.000Z"))
+    cacheMachineRuntimeCredentialConfig("sanctuary", { unraidGraphqlUrl: "http://unraid.test/graphql", unraidReadApiKey: "read-test", unraidWriteApiKey: "write-test", jellyfin: { userId: "b".repeat(32), accessToken: "a".repeat(32), folderIds: "library-a,library-b" } })
     fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
       "sanctuary-owner": { version: 3, contextScopes: ["household.status"], toolNames: ["external_event_disposition", "unraid_inspect"], effectScopes: [] },
       "sanctuary-event": { version: 2, contextScopes: ["household.status"], toolNames: ["external_event_disposition", "unraid_inspect"], effectScopes: [] },
@@ -5076,7 +5086,9 @@ describe("private runtime", () => {
       { type: "function", function: { name: "unraid_inspect", description: "inspect", parameters: {} } },
     ])
 
-    await runApprovedPrivateRuntimeTurn({ reason: "instinct", externalEvent: { schemaVersion: 1, recordPath: "/events/sanctuary/sanctuary-usenet/provider.json", agent: "sanctuary", source: "sanctuary-usenet", eventId: "provider", generation: 1, observationRevision: "rev-1", claimOwner: "lease-1" } })
+    const now = () => new Date("2026-03-06T12:00:00.000Z")
+    const privateTurnDecision = writeLedgeredPrivateTurnDecision({ request: { agent: "sanctuary", originRefs: [{ kind: "unit-test", id: "sanctuary-usenet-event" }] }, decidedAt: now().toISOString() })
+    await runPrivateRuntimeTurn({ reason: "instinct", now, privateTurnDecision, externalEvent: { schemaVersion: 1, recordPath: "/events/sanctuary/sanctuary-usenet/provider.json", agent: "sanctuary", source: "sanctuary-usenet", eventId: "provider", generation: 1, observationRevision: "rev-1", claimOwner: "lease-1" } })
 
     expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext).toMatchObject({ sanctuary: expect.any(Object), agentRoot })
   })

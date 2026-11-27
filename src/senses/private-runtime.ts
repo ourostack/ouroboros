@@ -60,7 +60,8 @@ import { readFlightRecorderResume, formatFlightRecorderResume } from "../arc/fli
 import { deskRecordOrientationSection } from "../mind/desk-section"
 import type { HabitSessionToolContext, ToolContext } from "../repertoire/tools-base"
 import type { ExternalEventLeaseContext } from "../heart/external-events/router"
-import { createSanctuaryToolContext, isSanctuaryAgent } from "./sanctuary-runtime"
+import { productEventSource, productTurnContext } from "../heart/product/active"
+import type { ProductTurnContext } from "../heart/product/types"
 import { getSenseSessionPath } from "./shared-turn"
 import { createRelationshipAuthorizationEvaluator, loadRelationshipCapabilityRegistry, resolveProfileScopedRelationshipAuthorization } from "../repertoire/relationship-authorization"
 import {
@@ -1136,24 +1137,17 @@ function reduceHabitSessionToNoSend(
   }
 }
 
-/** Sanctuary tool context for a private turn: always for the sanctuary agent, and for sanctuary external events.
- * Sanctuary external events keep the strict behavior (a missing config fails the turn); other turns degrade to
- * no context so a config gap cannot stop the agent from waking at all. */
-export function sanctuaryToolContextFor(agentName: string, externalEventSource: string | undefined): ReturnType<typeof createSanctuaryToolContext> | Record<string, never> {
-  const sanctuaryEvent = externalEventSource === "sanctuary-health" || externalEventSource === "sanctuary-usenet"
-  if (sanctuaryEvent) return createSanctuaryToolContext(agentName)
-  if (!isSanctuaryAgent(agentName)) return {}
-  try {
-    return createSanctuaryToolContext(agentName)
-  } catch (error) {
-    emitNervesEvent({
-      component: "senses",
-      event: "senses.sanctuary_tool_context_unavailable",
-      message: "sanctuary tool context could not be built for a private turn",
-      meta: { agent: agentName, reason: String(error) },
-    })
-    return {}
-  }
+/**
+ * The product's part of a private turn's tool context. A turn for one of the product's own events fails without it; any
+ * other private turn (await, habit, instinct, another source's event) runs without it, so a gap in the product's config
+ * can't stop the agent from waking at all.
+ */
+export async function privateTurnProductContext(agentName: string, externalEventSource: string | undefined): Promise<ProductTurnContext> {
+  const productEvent = externalEventSource !== undefined && productEventSource(agentName, externalEventSource) !== null
+  return productTurnContext(
+    { agentName, channel: "inner", ...(externalEventSource !== undefined ? { externalEventSource } : {}) },
+    { tolerant: !productEvent },
+  )
 }
 
 export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptions): Promise<PrivateRuntimeTurnResult> {
@@ -1662,9 +1656,8 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
         autonomousTurnKind: options?.externalEvent ? "external-event" as const
           : reason === "await" || reason === "habit" || reason === "instinct" ? reason : "scheduler" as const,
         ...(reason === "await" && options?.awaitName ? { autonomousAwaitName: options.awaitName } : {}),
-        // The Butler's Sanctuary read tools need the typed runtime on every private turn
-        // (await, habit, instinct, external-event), not only on sanctuary external events.
-        ...(sanctuaryToolContextFor(agentName, options?.externalEvent?.source)),
+        // A product's tools need its runtime on every private turn (await, habit, instinct, external event).
+        ...(await privateTurnProductContext(agentName, options?.externalEvent?.source)),
         ...(relationshipAwait ? {
           friendStore: relationshipAwait.store,
           context: relationshipAwait.context,

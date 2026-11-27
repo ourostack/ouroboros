@@ -423,7 +423,7 @@ describe("Telegram sense", () => {
       authorityTransport: { api, settleTransport, downloadFile: vi.fn(), admitChat: vi.fn(), revokeChat: vi.fn(), metadataForUpdate },
       identityKey: "k".repeat(43),
       _agentRoot: fs.mkdtempSync(path.join(os.tmpdir(), "telegram-gateway-routing-")),
-      _toolContext: {} as never,
+      productContext: {} as never,
       acceptanceMarker: () => null,
       migrateIdentity: async () => undefined,
       offsetStore: { load: () => 0, save: vi.fn() },
@@ -463,7 +463,7 @@ describe("Telegram sense", () => {
     expect(() => sanctuaryTelegramTurnReceiptMac("k".repeat(43), { unsupported: () => undefined })).toThrow("unsupported value")
     expect(() => createTelegramSenseApp({
       agentName: "sanctuary", credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
-      identityKey: "k".repeat(43), _agentRoot: fs.mkdtempSync(path.join(os.tmpdir(), "telegram-invalid-marker-")), _toolContext: {} as never,
+      identityKey: "k".repeat(43), _agentRoot: fs.mkdtempSync(path.join(os.tmpdir(), "telegram-invalid-marker-")), productContext: {} as never,
       acceptanceMarker: () => ({ scenarioHandleDigest: "invalid" }),
     })).toThrow("scenario handle is invalid")
   })
@@ -474,7 +474,7 @@ describe("Telegram sense", () => {
     let acceptanceEventMeta!: (update: any, distinct: boolean) => Record<string, unknown>
     const app = createTelegramSenseApp({
       agentName: "sanctuary", credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
-      identityKey: "k".repeat(43), _agentRoot: root, _toolContext: {} as never, acceptanceMarker: () => marker,
+      identityKey: "k".repeat(43), _agentRoot: root, productContext: {} as never, acceptanceMarker: () => marker,
       migrateIdentity: async () => undefined, api: { request: vi.fn(async () => ({ message_id: 71 })), stop: vi.fn() }, offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: (options) => { acceptanceEventMeta = options.acceptanceEventMeta!; return { pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() } },
       approvalRuntime: {
@@ -530,7 +530,7 @@ describe("Telegram sense", () => {
       credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
       identityKey: "k".repeat(43),
       _agentRoot: root,
-      _toolContext: {} as never,
+      productContext: {} as never,
       _runTurn: run,
       acceptanceMarker: () => marker,
       migrateIdentity: async () => undefined,
@@ -597,7 +597,7 @@ describe("Telegram sense", () => {
       agentName: "sanctuary",
       credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
       identityKey: "k".repeat(43), _agentRoot: root, acceptanceReceiptRoot: root,
-      _toolContext: {} as never,
+      productContext: {} as never,
       acceptanceMarker: () => ({ scenarioHandleDigest: scenario }), migrateIdentity: async () => undefined,
       _runTurn: async (options) => {
         scenario = "b".repeat(64)
@@ -633,7 +633,7 @@ describe("Telegram sense", () => {
       agentName: "sanctuary",
       credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
       identityKey: "k".repeat(43), _agentRoot: root, acceptanceReceiptRoot: root,
-      _toolContext: {} as never, acceptanceMarker: () => marker, migrateIdentity: async () => undefined,
+      productContext: {} as never, acceptanceMarker: () => marker, migrateIdentity: async () => undefined,
       _runTurn: async (options) => {
         announceTurnStarted()
         await turnGate
@@ -673,7 +673,7 @@ describe("Telegram sense", () => {
       agentName: "sanctuary",
       credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
       identityKey: "k".repeat(43), _agentRoot: root, acceptanceReceiptRoot: root,
-      _toolContext: {} as never,
+      productContext: {} as never,
       acceptanceMarker: () => (++markerReadCount <= 2 ? null : { scenarioHandleDigest }),
       migrateIdentity: async () => undefined, _runTurn: runTurn,
       api, offsetStore: { load: () => 0, save: vi.fn() },
@@ -701,7 +701,7 @@ describe("Telegram sense", () => {
     const create = (identityKey: string, scenario = scenarioHandleDigest) => createTelegramSenseApp({
       agentName: "sanctuary",
       credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
-      identityKey, _agentRoot: root, acceptanceReceiptRoot: root, _toolContext: {} as never,
+      identityKey, _agentRoot: root, acceptanceReceiptRoot: root, productContext: {} as never,
       acceptanceMarker: () => ({ scenarioHandleDigest: scenario }), migrateIdentity: async () => undefined,
       api: { request: vi.fn(), stop: vi.fn() }, offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }),
@@ -733,7 +733,7 @@ describe("Telegram sense", () => {
     const identityKey = "k".repeat(43)
     const app = createTelegramSenseApp({
       agentName: "sanctuary", credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
-      identityKey, _agentRoot: root, acceptanceReceiptRoot: root, _toolContext: {} as never,
+      identityKey, _agentRoot: root, acceptanceReceiptRoot: root, productContext: {} as never,
       acceptanceMarker: () => ({ scenarioHandleDigest: "a".repeat(64) }), migrateIdentity: async () => undefined,
       api: { request: vi.fn(), stop: vi.fn() }, offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }),
@@ -764,7 +764,7 @@ describe("Telegram sense", () => {
       agentName: "sanctuary",
       credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
       identityKey: "k".repeat(43), _agentRoot: root, acceptanceReceiptRoot: root,
-      _toolContext: {} as never, acceptanceMarker: () => marker, migrateIdentity: async () => undefined,
+      productContext: {} as never, acceptanceMarker: () => marker, migrateIdentity: async () => undefined,
       api: { request: vi.fn(), stop: vi.fn() }, offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }),
       approvalRuntime: approvalRuntime as never,
@@ -808,7 +808,7 @@ describe("Telegram sense", () => {
       agentName: "sanctuary",
       credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
       identityKey: "k".repeat(43), _agentRoot: root, acceptanceReceiptRoot: root,
-      _toolContext: {} as never, migrateIdentity: async () => undefined,
+      productContext: {} as never, migrateIdentity: async () => undefined,
       api: { request: vi.fn(), stop: vi.fn() }, offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(async () => undefined), stop: vi.fn() }),
       approvalRuntime: approvalRuntime as never,
@@ -845,7 +845,7 @@ describe("Telegram sense", () => {
     }
     const app = createTelegramSenseApp({
       agentName: "sanctuary", credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
-      identityKey, _agentRoot: root, _toolContext: {} as never, acceptanceReceiptRoot: root, acceptanceMarker: () => ({ scenarioHandleDigest }),
+      identityKey, _agentRoot: root, productContext: {} as never, acceptanceReceiptRoot: root, acceptanceMarker: () => ({ scenarioHandleDigest }),
       migrateIdentity: async () => undefined, api: { request: vi.fn(), stop: vi.fn() }, offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }), approvalRuntime: approvalRuntime as never,
     })
@@ -877,7 +877,7 @@ describe("Telegram sense", () => {
     }
     const app = createTelegramSenseApp({
       agentName: "sanctuary", credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
-      identityKey, _agentRoot: root, _toolContext: {} as never, acceptanceReceiptRoot: root, acceptanceMarker: () => marker,
+      identityKey, _agentRoot: root, productContext: {} as never, acceptanceReceiptRoot: root, acceptanceMarker: () => marker,
       migrateIdentity: async () => undefined, api: { request: vi.fn(), stop: vi.fn() }, offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(() => new Promise<void>((resolve) => { finishPolling = resolve })), stop: vi.fn() }),
       approvalRuntime: approvalRuntime as never,
@@ -913,7 +913,7 @@ describe("Telegram sense", () => {
     }
     const app = createTelegramSenseApp({
       agentName: "sanctuary", credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
-      identityKey: "k".repeat(43), _agentRoot: root, _toolContext: {} as never, acceptanceReceiptRoot: root,
+      identityKey: "k".repeat(43), _agentRoot: root, productContext: {} as never, acceptanceReceiptRoot: root,
       acceptanceMarker: () => ({ scenarioHandleDigest }),
       migrateIdentity: async () => undefined, api: { request: vi.fn(), stop: vi.fn() }, offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }),
@@ -951,7 +951,7 @@ describe("Telegram sense", () => {
     }
     const app = createTelegramSenseApp({
       agentName: "sanctuary", credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
-      identityKey: "k".repeat(43), _agentRoot: root, _toolContext: {} as never, acceptanceMarker: () => null,
+      identityKey: "k".repeat(43), _agentRoot: root, productContext: {} as never, acceptanceMarker: () => null,
       migrateIdentity: async () => undefined, api: { request: vi.fn(), stop: vi.fn() }, offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }),
       _createApprovalRuntime: ((input: unknown) => { runtimeInput = input; return runtime }) as never,
@@ -974,7 +974,7 @@ describe("Telegram sense", () => {
   it("surfaces release-hook failures alone and aggregates them with construction failures", async () => {
     const make = (root: string, failConstruction: boolean) => () => createTelegramSenseApp({
       agentName: "sanctuary", credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
-      identityKey: "k".repeat(43), _agentRoot: root, _toolContext: {} as never,
+      identityKey: "k".repeat(43), _agentRoot: root, productContext: {} as never,
       acceptanceMarker: () => ({ scenarioHandleDigest: "a".repeat(64) }),
       api: { request: vi.fn(), stop: vi.fn() }, offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }),
@@ -1003,7 +1003,7 @@ describe("Telegram sense", () => {
     const identityKey = "k".repeat(43)
     const app = createTelegramSenseApp({
       agentName: "sanctuary", credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
-      identityKey, _agentRoot: root, acceptanceReceiptRoot: root, _toolContext: {} as never,
+      identityKey, _agentRoot: root, acceptanceReceiptRoot: root, productContext: {} as never,
       acceptanceMarker: () => ({ scenarioHandleDigest: "a".repeat(64) }), migrateIdentity: async () => undefined,
       api: { request: vi.fn(), stop: vi.fn() }, offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }),
@@ -1930,7 +1930,7 @@ describe("Telegram sense", () => {
       credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
       identityKey: "k".repeat(43),
       _agentRoot: fs.mkdtempSync(path.join(os.tmpdir(), "telegram-routine-recovery-")),
-      _toolContext: { sanctuary: { recoverRoutineActions } } as never,
+      productContext: { sanctuary: { recoverRoutineActions } } as never,
       migrateIdentity: async () => undefined,
       api: { request: vi.fn(), stop: vi.fn() },
       offsetStore: { load: () => 0, save: vi.fn() },

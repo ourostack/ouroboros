@@ -69,7 +69,7 @@ describe("approval cards go to the primary agent over A2A first", () => {
     let effects!: { sendCard(input: { idempotencyKey: string; chatId: string; text: string; buttons: Array<Array<{ text: string; callbackData: string }>> }): Promise<number> }
     const app = createTelegramSenseApp({
       agentName: "sanctuary", credentials: { botToken: "777:secret", authorizedUserId: "42", authorizedChatId: "42" },
-      identityKey: "k".repeat(43), _agentRoot: root("telegram-route-approval-"), _toolContext: {} as never,
+      identityKey: "k".repeat(43), _agentRoot: root("telegram-route-approval-"), productContext: {} as never,
       migrateIdentity: async () => undefined, api: telegram.api, offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }),
       ownerRoute: slugger.route,
@@ -147,7 +147,7 @@ describe("approval cards go to the primary agent over A2A first", () => {
     let effects!: { sendCard(input: { idempotencyKey: string; chatId: string; text: string; buttons: Array<Array<{ text: string; callbackData: string }>> }): Promise<number> }
     const app = createTelegramSenseApp({
       agentName: "sanctuary", credentials: { botToken: "777:secret", authorizedUserId: "42", authorizedChatId: "42" },
-      identityKey: "k".repeat(43), _agentRoot: bundle.agentRoot, _toolContext: {} as never,
+      identityKey: "k".repeat(43), _agentRoot: bundle.agentRoot, productContext: {} as never,
       migrateIdentity: async () => undefined, api: fakeTelegram().api, offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }),
       ownerRoute: Object.assign(async (item: OwnerRouteItem) => { routed.push(item); return { status: "delivered" as const } }, { peerDid }),

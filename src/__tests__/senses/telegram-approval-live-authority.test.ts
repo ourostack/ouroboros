@@ -91,7 +91,7 @@ describe("configured-owner Telegram approval authority", () => {
         acceptanceMarker: () => null,
         healthSweep: unused,
         _createInteractiveControl: () => ({ socketPath: path.join(root, "unused.sock"), start: unused, stop: async () => undefined }),
-        _toolContext: { agentRoot: root, sanctuary: {
+        productContext: { agentRoot: root, sanctuary: {
           listContainers: inventory, getContainerLogs: unused, getStorage: unused, getDisks: unused,
           getNotifications: unused, getSystem: unused, getInstallState: unused, checkServices: unused,
           getDownloadQueue: unused, getMediaOptimization: unused, searchMediaCatalog: unused,
@@ -147,7 +147,7 @@ describe("configured-owner Telegram approval authority", () => {
           policyDigest: digestJson({ policyId: policy.policyId, actionClass: policy.actionClass, classification: "required" }),
           policyId: policy.policyId, actionClass: policy.actionClass,
           liveToolContext: {
-            ...appOptions._toolContext, signin: async () => undefined, agentName: "sanctuary", agentRoot: root,
+            ...appOptions.productContext, signin: async () => undefined, agentName: "sanctuary", agentRoot: root,
             currentSession: { friendId, channel: "telegram", key, sessionPath },
             relationshipAuthorization: { ...relationship, requestId: ingress.reference },
           },

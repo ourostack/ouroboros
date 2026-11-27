@@ -50,7 +50,7 @@ async function fixture(enabled = true, duringCreate?: (options: Parameters<typeo
   const app = createTelegramSenseApp({
     agentName: "sanctuary", credentials, ...composition, _agentRoot: agentRoot, identityKey: readOrCreateTelegramIdentityKey(agentRoot),
     authorityTransport: transport,
-    approvalRuntime: ordinary as any, _toolContext: {} as any, _runTurn: runTurn,
+    approvalRuntime: ordinary as any, productContext: {} as any, _runTurn: runTurn,
     _createInteractiveControl: () => ({ start: vi.fn(), stop: vi.fn() }) as any,
     createLongPoll: (input: any) => { handlers = input; return { run: vi.fn(async () => undefined), stop: vi.fn(), pollOnce: vi.fn() } },
     migrateIdentity: async () => undefined,

@@ -191,7 +191,7 @@ async function residentFixture() {
     const composition = await createProductionTelegramRelationshipComposition("sanctuary", credentials, root)
     const app = createTelegramSenseApp({
       agentName: "sanctuary", credentials, identityKey, _agentRoot: root, ...composition, api,
-      _toolContext: native,
+      productContext: native,
       offsetStore: { load: () => 0, save: vi.fn() }, migrateIdentity: async () => undefined, acceptanceMarker: () => null,
       createLongPoll: (options) => { poll = options; return { pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() } },
       _createInteractiveControl: () => ({ socketPath: path.join(root, "unused.sock"), start: async () => undefined, stop: async () => undefined }),

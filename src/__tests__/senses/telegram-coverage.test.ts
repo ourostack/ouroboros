@@ -63,6 +63,7 @@ import {
 } from "../../senses/telegram"
 import { FileFriendStore } from "@ouro.bot/friends"
 import { awaitingToolDefinitions } from "../../repertoire/tools-awaiting"
+import { useButlerProduct } from "../test-helpers/butler-product"
 
 const credentials = { botToken: "synthetic-test-token", authorizedUserId: "42", authorizedChatId: "43" }
 const isolatedRoots: string[] = []
@@ -120,6 +121,8 @@ afterEach(() => {
 const MARKDOWN_SEND = { renderHtml: expect.any(Function), fallbackHtml: expect.any(Function), split: expect.any(Function) }
 
 describe("Telegram sense coverage contracts", () => {
+  useButlerProduct()
+
   const acceptanceEvent = (name = "senses.telegram_turn_start") => ({
     event: name,
     trace_id: "acceptance-trace",
@@ -571,9 +574,8 @@ describe("Telegram sense coverage contracts", () => {
 
   it("constructs default API, stores, turn runner, tool context, approval runtime, and poll paths", async () => {
     const f = defaultFixture()
-    const app = createTelegramSenseApp({ agentName: "sanctuary", credentials })
+    const app = createTelegramSenseApp({ agentName: "sanctuary", credentials, productContext: { sanctuary: true, agentRoot: "/bundles/sanctuary.ouro" } as never })
     expect(mocks.createTelegramBotApi).toHaveBeenCalledWith({ token: credentials.botToken })
-    expect(mocks.createSanctuaryToolContext).toHaveBeenCalledWith("sanctuary")
     expect(mocks.createTelegramApprovalRuntime).toHaveBeenCalledWith(expect.objectContaining({
       agentName: "sanctuary", api: f.api, authorizedUserId: "42", authorizedChatId: "43", toolContext: { sanctuary: true, agentRoot: "/bundles/sanctuary.ouro" },
     }))
@@ -672,9 +674,8 @@ describe("Telegram sense coverage contracts", () => {
     fs.rmSync(root, { recursive: true, force: true })
   })
 
-  it("supplies an empty tool context if context construction yields no value", () => {
+  it("supplies an empty tool context when it is given no product context", () => {
     const f = defaultFixture()
-    mocks.createSanctuaryToolContext.mockReturnValueOnce(undefined as any)
     createTelegramSenseApp({ agentName: "sanctuary", credentials })
     expect(mocks.createTelegramApprovalRuntime).toHaveBeenCalledWith(expect.objectContaining({ api: f.api, toolContext: {} }))
   })
@@ -1088,7 +1089,7 @@ describe("Telegram sense coverage contracts", () => {
 
   it("passes default tool and approval context, then sends a response only when no streamed delivery occurred", async () => {
     const f = defaultFixture()
-    createTelegramSenseApp({ agentName: "sanctuary", credentials })
+    createTelegramSenseApp({ agentName: "sanctuary", credentials, productContext: { sanctuary: true, agentRoot: "/bundles/sanctuary.ouro" } as never })
     await f.getOnMessage()({ updateId: 1, messageId: "2", text: "hello" })
     expect(mocks.runSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
       toolContext: { sanctuary: true, agentRoot: "/bundles/sanctuary.ouro", chatActions: { react: expect.any(Function), setReplyTarget: expect.any(Function), sendFile: expect.any(Function) } },
@@ -1245,7 +1246,7 @@ describe("Telegram sense coverage contracts", () => {
 
   it("records approval-runtime owner effects through the configured relationship session", async () => {
     defaultFixture()
-    const app = createTelegramSenseApp({ agentName: "sanctuary", credentials, _toolContext: {} as never })
+    const app = createTelegramSenseApp({ agentName: "sanctuary", credentials, productContext: {} as never })
     const runtimeOptions = mocks.createTelegramApprovalRuntime.mock.calls.at(-1)?.[0] as { effects: { sendText(input: { idempotencyKey: string; chatId: string; text: string; authorClass: "control"; causalEventId?: string }): Promise<number[]> } }
     await expect(runtimeOptions.effects.sendText({ idempotencyKey: "approval:coverage", chatId: "43", text: "Approval text", authorClass: "control" })).resolves.toEqual([71])
     await expect(runtimeOptions.effects.sendText({ idempotencyKey: "approval:causal-coverage", chatId: "43", text: "Approval text", authorClass: "control", causalEventId: "missing-causal-event" })).resolves.toEqual([71])
@@ -1317,6 +1318,9 @@ describe("Telegram sense coverage contracts", () => {
       await vi.advanceTimersByTimeAsync(1_000)
       const app = await observed
       expect(app).not.toBeInstanceOf(Error)
+      // The production start asks the Butler's product for its house runtime and hands it to the app.
+      expect(mocks.createSanctuaryToolContext).toHaveBeenCalledWith("sanctuary")
+      expect(mocks.createTelegramApprovalRuntime.mock.calls.at(-1)?.[0]?.toolContext).toMatchObject({ sanctuary: true, agentRoot: "/bundles/sanctuary.ouro" })
       await app.stop()
       expect(f.api.stop).toHaveBeenCalledOnce()
     } finally { vi.useRealTimers() }
