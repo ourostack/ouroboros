@@ -79,6 +79,18 @@ describe("BlueBubbles runtime state", () => {
     expect(readBlueBubblesRuntimeState("slugger").catchUpThrough).toBe("2026-03-11T18:15:00.000Z")
   })
 
+  it("keeps the arrival cursor through writes that do not move it", async () => {
+    const { readBlueBubblesRuntimeState, writeBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
+    writeBlueBubblesRuntimeState("slugger", { upstreamStatus: "ok", detail: "upstream reachable", catchUpThrough: "2026-03-11T18:14:00.000Z", catchUpRowId: 30158, pendingRecoveryCount: 0 })
+    writeBlueBubblesRuntimeState("slugger", { upstreamStatus: "ok", detail: "recovery pass running", catchUpThrough: "2026-03-11T18:14:30.000Z", pendingRecoveryCount: 0 })
+    expect(readBlueBubblesRuntimeState("slugger").catchUpRowId).toBe(30158)
+    writeBlueBubblesRuntimeState("slugger", { upstreamStatus: "ok", detail: "upstream reachable", catchUpThrough: "2026-03-11T18:15:00.000Z", catchUpRowId: 30161, pendingRecoveryCount: 0 })
+    expect(readBlueBubblesRuntimeState("slugger").catchUpRowId).toBe(30161)
+    const settling = { recoveryLookbackSince: "2026-03-10T18:15:00.000Z", recoveryLookbackUntil: "2026-03-11T18:45:00.000Z" }
+    writeBlueBubblesRuntimeState("slugger", { upstreamStatus: "ok", detail: "upstream reachable", catchUpThrough: "2026-03-11T18:15:30.000Z", catchUpRowId: 30162, ...settling, pendingRecoveryCount: 0 })
+    expect(readBlueBubblesRuntimeState("slugger")).toEqual(expect.objectContaining({ catchUpRowId: 30162, ...settling }))
+  })
+
   it("refreshes the heartbeat of the state on disk, and writes nothing when there is none", async () => {
     const { getBlueBubblesRuntimeStatePath, readBlueBubblesRuntimeState, touchBlueBubblesRuntimeHeartbeat, writeBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
     touchBlueBubblesRuntimeHeartbeat("slugger")
@@ -115,6 +127,7 @@ describe("BlueBubbles runtime state", () => {
         lastCheckedAt: 42,
         lastHeartbeatAt: 43,
         catchUpThrough: 44,
+        catchUpRowId: 1.5,
         proofMethod: 99,
         pendingRecoveryCount: Number.NaN,
         oldestPendingRecoveryAt: 44,
@@ -135,6 +148,7 @@ describe("BlueBubbles runtime state", () => {
       lastCheckedAt: undefined,
       lastHeartbeatAt: undefined,
       catchUpThrough: undefined,
+      catchUpRowId: undefined,
       proofMethod: undefined,
       pendingRecoveryCount: 0,
       oldestPendingRecoveryAt: undefined,

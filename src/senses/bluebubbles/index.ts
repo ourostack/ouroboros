@@ -47,7 +47,7 @@ import {
   type BlueBubblesNormalizedEvent,
   type BlueBubblesNormalizedMessage,
 } from "./model"
-import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesRepliedMessage } from "./client"
+import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesMessageArrival, type BlueBubblesRepliedMessage } from "./client"
 import { letterChatRefusal, tellAgentReplyRefused } from "./letter-guard"
 import { renderChatInteraction, resolveChatInteractionTarget } from "../../heart/chat-interaction"
 import { looksLikeAnswer } from "../../heart/letters/answer-command"
@@ -653,6 +653,7 @@ const BLUEBUBBLES_LIVE_TURN_STALLED_MS = 5 * 60_000
 const BLUEBUBBLES_CALLBACK_CLEANUP_TIMEOUT_MS = 2_000
 const BLUEBUBBLES_ACTIVITY_OPERATION_TIMEOUT_MS = 20_000
 const BLUEBUBBLES_CATCHUP_PAGE_SIZE = 50
+const BLUEBUBBLES_ARRIVAL_PAGE_SIZE = 100
 const BLUEBUBBLES_CATCHUP_MAX_PAGES = 20
 const BLUEBUBBLES_HEALTHY_CATCHUP_OVERLAP_MS = 90_000
 const BLUEBUBBLES_RECOVERY_CATCHUP_LOOKBACK_MS = 24 * 60 * 60 * 1000
@@ -3920,6 +3921,8 @@ export interface BlueBubblesCatchUpResult {
   queued?: number
   failed: number
   lastRecoveredMessageGuid?: string
+  /** The highest ROWID this pass saw, set only when the whole pass succeeded, so the next one starts after it. */
+  arrivalCursor?: number
 }
 
 function parseTimestampMs(value: string | undefined): number | null {
@@ -4088,6 +4091,7 @@ async function syncBlueBubblesRuntime(
       detail: formatBlueBubblesRuntimeDetail(pendingAfterCatchup, failed, activeAfterCatchup),
       lastCheckedAt: checkedAt,
       catchUpThrough: checkedAt,
+      catchUpRowId: catchUp.arrivalCursor,
       ...recoveryLookback,
       proofMethod: "bluebubbles.checkHealth",
       ...pendingAfterCatchup,
@@ -4203,6 +4207,28 @@ export async function recoverQueuedBlueBubblesMessages(
   return { recovered, skipped, failed, pendingRecoveryCount }
 }
 
+async function readBlueBubblesArrivalsSince(
+  client: BlueBubblesClient,
+  afterRowId: number | undefined,
+  options: BlueBubblesCatchUpOptions,
+): Promise<BlueBubblesMessageArrival[]> {
+  if (!client.listArrivalsAfter) return []
+  const arrivals: BlueBubblesMessageArrival[] = []
+  for (let page = 0; page < BLUEBUBBLES_CATCHUP_MAX_PAGES; page++) {
+    const rows = await client.listArrivalsAfter({
+      afterRowId,
+      limit: BLUEBUBBLES_ARRIVAL_PAGE_SIZE,
+      offset: page * BLUEBUBBLES_ARRIVAL_PAGE_SIZE,
+    })
+    options.lifecycleSignal?.throwIfAborted()
+    options.onProgress?.()
+    arrivals.push(...rows)
+    // With no cursor yet, the newest page is enough to start one.
+    if (afterRowId === undefined || rows.length < BLUEBUBBLES_ARRIVAL_PAGE_SIZE) break
+  }
+  return arrivals
+}
+
 interface BlueBubblesCatchUpOptions {
   processTurns?: boolean
   observationBatch?: BlueBubblesObservationBatch
@@ -4233,10 +4259,46 @@ async function catchUpMissedBlueBubblesMessagesInScope(
   const state = previousState ?? readBlueBubblesRuntimeState(agentName)
   const cutover = initializeBlueBubblesSemanticCutover(agentName)
   const catchUpWindow = resolveBlueBubblesCatchUpWindow(state)
+  /* v8 ignore next -- older injected test doubles may omit the catch-up query method */
+  if (!client.listRecentMessages) return result
+  // The window below is in sent time, but iMessage can deliver a message minutes after it was sent, and BlueBubbles
+  // sends no webhook for some of those (2026-11-27: 3 to 8 minutes late, four times in one afternoon). Rows that
+  // arrived since the last pass are found by ROWID, and the window reaches back to the oldest one's sent time.
+  const arrivals = await readBlueBubblesArrivalsSince(client, state.catchUpRowId, options).catch((error: unknown) => {
+    if (options.lifecycleSignal?.aborted) throw options.lifecycleSignal.reason
+    result.failed++
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_catchup_error",
+      message: "bluebubbles upstream arrival query failed",
+      meta: { stage: "arrivals", reason: error instanceof Error ? error.message : String(error) },
+    })
+    return null
+  })
+  const nowMs = Date.now()
+  const lateArrivalSentAt = state.catchUpRowId === undefined || arrivals === null
+    ? Number.POSITIVE_INFINITY
+    : arrivals
+      .filter((arrival) => !arrival.fromMe)
+      .reduce((oldest, arrival) => Math.min(oldest, arrival.sentAt), Number.POSITIVE_INFINITY)
   const catchUpSince = Math.max(
-    catchUpWindow.since,
+    Math.min(catchUpWindow.since, Math.max(lateArrivalSentAt, nowMs - BLUEBUBBLES_RECOVERY_CATCHUP_LOOKBACK_MS)),
     Date.parse(cutover.effectiveAt),
   )
+  if (lateArrivalSentAt < catchUpWindow.since) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_late_arrival_seen",
+      message: "a bluebubbles message reached the Messages database long after it was sent",
+      meta: {
+        sentAt: new Date(lateArrivalSentAt).toISOString(),
+        lateByMs: nowMs - lateArrivalSentAt,
+        mode: catchUpWindow.mode,
+      },
+    })
+  }
   // Healthy passes run every 30 s and stay at info; outage passes are logged, so a miss leaves evidence.
   const catchUpLogLevel = catchUpWindow.mode === "recovery" || catchUpWindow.mode === "settling" ? "warn" : "info"
   const processTurns = options.processTurns !== false
@@ -4245,9 +4307,6 @@ async function catchUpMissedBlueBubblesMessagesInScope(
     pendingKeyHashes ??= new Set(listPendingBlueBubblesSemanticCaptures(agentName).map((capture) => capture.keyHash))
     return pendingKeyHashes
   }
-
-  /* v8 ignore next -- older injected test doubles may omit the catch-up query method */
-  if (!client.listRecentMessages) return result
 
   emitNervesEvent({
     level: catchUpWindow.mode === "recovery" ? "warn" : "info",
@@ -4454,10 +4513,13 @@ async function catchUpMissedBlueBubblesMessagesInScope(
     }
   }))
 
+  const highestRowId = (arrivals ?? []).reduce((highest, arrival) => Math.max(highest, arrival.rowId), state.catchUpRowId ?? -1)
+  if (result.failed === 0 && highestRowId >= 0) result.arrivalCursor = highestRowId
   const foundWork = result.recovered > 0 || (result.queued ?? 0) > 0 || result.failed > 0
   if (result.inspected > 0 || foundWork || catchUpWindow.mode === "recovery") {
     emitNervesEvent({
-      level: foundWork || catchUpWindow.mode === "recovery" ? catchUpLogLevel : "info",
+      // Work a healthy pass finds is a message the webhook missed, so it is logged like an outage pass's.
+      level: foundWork ? "warn" : catchUpWindow.mode === "recovery" ? catchUpLogLevel : "info",
       component: "senses",
       event: "senses.bluebubbles_catchup_complete",
       message: "bluebubbles upstream catch-up pass completed",
