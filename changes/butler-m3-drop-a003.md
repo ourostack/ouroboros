@@ -1,0 +1,1 @@
+The one-time session repair from September (A003), already applied and no longer usable since the Butler's rename, is removed: its private `node dist/heart/session-redaction-repair-cli-main.js` entry point no longer ships.

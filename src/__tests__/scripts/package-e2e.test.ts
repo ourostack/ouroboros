@@ -93,42 +93,24 @@ describe("package-e2e", () => {
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 
-  it.each(["a003 private repair routing verified", "wrong marker"])("A003 asset E2E executes private and public installed-entrypoint routing: %s", (marker) => {
-    const { deps, calls } = makePackageInstallDeps(["", "0.1.0-alpha.430\n", "", "Set up providers, portable integrations, and local senses from one guided screen\n", "", "semantic ownership sqlite verified\n", "", "bluebubbles host helper verified\n", "", marker])
-    const results = runPackageE2ESuite({ tarballPath: "/tmp/a003.tgz", version: "0.1.0-alpha.430" }, deps)
-    expect(results[4].ok).toBe(marker.startsWith("a003"))
-    const smoke = calls.find((call) => call.args.some((arg) => arg.includes("session-redaction-repair-cli-main.js")))
-    expect(smoke).toBeDefined()
-    expect(smoke?.args.join("\n")).toContain("spawnSync")
-    expect(smoke?.args.join("\n")).toContain("ouro-entry.js")
-    expect(smoke?.env?.HOME).not.toBe("/Users/real-human")
-  })
-  it("A003 requires the direct repair module in the installed tarball asset inventory", () => {
-    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("dist/heart/session-redaction-repair-cli-main.js")
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "a003-package-inventory-"))
-    try {
-      writeRequiredPackageAssets(root)
-      expect(fs.statSync(path.join(root, "dist/heart/session-redaction-repair-cli-main.js")).isFile()).toBe(true)
-    } finally { fs.rmSync(root, { recursive: true, force: true }) }
-  })
-  it("A003 refuses an installed package missing the compiled private entrypoint even when its source is present", () => {
-    const { deps, calls, prefixDir } = makePackageInstallDeps(["", "a003 private repair routing verified\n"])
+  it("refuses an installed package missing a compiled entrypoint even when its source is present", () => {
+    const { deps, calls, prefixDir } = makePackageInstallDeps([""])
     const install = deps.execFileSync.getMockImplementation()!
     deps.execFileSync.mockImplementation((command, args, options) => {
       const output = install(command, args, options)
       if (command === "npm" && args[0] === "install") {
         const packageRoot = path.join(prefixDir, "node_modules", "@ouro.bot", "cli")
-        fs.unlinkSync(path.join(packageRoot, "dist/heart/session-redaction-repair-cli-main.js"))
-        const source = path.join(packageRoot, "src/heart/session-redaction-repair-cli-main.ts")
+        fs.unlinkSync(path.join(packageRoot, "dist/heart/daemon/sanctuary-host-supervisor-entry.js"))
+        const source = path.join(packageRoot, "src/heart/daemon/sanctuary-host-supervisor-entry.ts")
         fs.mkdirSync(path.dirname(source), { recursive: true })
         fs.writeFileSync(source, "export {}")
       }
       return output
     })
-    const result = runLocalTarballAssetSmoke({ tarballPath: "/tmp/a003.tgz", binName: "ouro" }, deps)
+    const result = runLocalTarballAssetSmoke({ tarballPath: "/tmp/ouro-cli.tgz", binName: "ouro" }, deps)
     expect(result).toMatchObject({
       ok: false,
-      message: "missing required package assets: dist/heart/session-redaction-repair-cli-main.js",
+      message: "missing required package assets: dist/heart/daemon/sanctuary-host-supervisor-entry.js",
     })
     expect(calls).toHaveLength(1)
     expect(calls[0].command).toBe("npm")
@@ -269,7 +251,6 @@ describe("package-e2e", () => {
       "",
       "bluebubbles host helper verified\n",
       "",
-      "a003 private repair routing verified\n",
     ])
 
     const results = runPackageE2ESuite({

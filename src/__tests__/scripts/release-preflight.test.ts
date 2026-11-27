@@ -204,8 +204,8 @@ function makePackageRootWithRequiredAssets(): string {
 describe("release-preflight", () => {
   it("checks the required source asset before build without weakening packed-artifact validation", () => {
     const packageRoot = makePackageRootWithRequiredAssets()
-    const compiled = path.join(packageRoot, "dist/heart/session-redaction-repair-cli-main.js")
-    const source = path.join(packageRoot, "src/heart/session-redaction-repair-cli-main.ts")
+    const compiled = path.join(packageRoot, "dist/heart/daemon/sanctuary-host-supervisor-entry.js")
+    const source = path.join(packageRoot, "src/heart/daemon/sanctuary-host-supervisor-entry.ts")
     fs.unlinkSync(compiled)
     fs.mkdirSync(path.dirname(source), { recursive: true })
     fs.writeFileSync(source, "export {}")

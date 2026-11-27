@@ -13,7 +13,6 @@ function missingAgent(path: string): CliErrorCard {
 }
 
 const ROOT_LIFECYCLE = "node dist/heart/daemon/sanctuary-authority-root-lifecycle.js"
-const REDACTION = "node dist/heart/session-redaction-repair-cli-main.js"
 const PROBE = "node dist/senses/sanctuary-health-acceptance-probe-entry.js"
 
 /** A root lifecycle step run as someone other than root. */
@@ -40,31 +39,6 @@ function rootUsage(step: string, words: string): CliErrorCard {
     code: "usage",
     means: `${ROOT_LIFECYCLE} ${step} takes ${words}, and got something else.`,
     fix: `Run ${step} with exactly ${words}.`,
-  }
-}
-
-/** A redaction repair step that started but didn't finish. */
-function repairUnfinished(step: string): CliErrorCard[] {
-  return [
-    {
-      code: "not-applied",
-      means: `${REDACTION} ${step} stopped before it changed the session; the file is as it was.`,
-      fix: `Its write didn't land and the session is unchanged; run ${step} again with the same manifest.`,
-    },
-    {
-      code: "indeterminate",
-      means: `${REDACTION} ${step} found the session at neither its preimage nor its postimage (it changed underneath), or reading the session back after the write threw.`,
-      fix: "Stop, and compare the session with the manifest and preimage by hand before any other step.",
-    },
-  ]
-}
-
-/** A redaction repair step the repair itself refused, such as a manifest digest that doesn't match. */
-function repairRefused(step: string): CliErrorCard {
-  return {
-    code: "repair-refused",
-    means: `${REDACTION} ${step} refused: the session, manifest or digest didn't pass its checks, and nothing changed.`,
-    fix: "Read the JSON error, then rerun inspect for a fresh manifest and use its exact digest.",
   }
 }
 
@@ -113,21 +87,6 @@ export const ENTRY_POINT_COMMANDS: readonly CliCommandDeclaration[] = [
   ] } },
   { name: "node dist/heart/session-playback-cli-main.js", effect: "private", readOnly: true, summary: "Show what replaying a session would change.", ax: { id: "cli:node dist/heart/session-playback-cli-main.js", group: "diagnostics", effect: "read", when: "When an agent loops on replay: see what the sanitizer would drop or insert in a saved session file, writing nothing.", errors: [
     { code: "usage", means: "Session playback needs the path of a saved session.json.", fix: "Pass the session file, adding --json for the report as data." },
-  ] } },
-  { name: REDACTION, effect: "private", summary: "Repair a session's redaction with a fixed recipe.", ax: { id: `cli:${REDACTION}`, group: "diagnostics", effect: "write", when: "Only for the one known redaction defect: inspect a session, then apply or roll back with the manifest inspect wrote.", errors: [
-    { code: "usage", means: `${REDACTION} takes only its three fixed shapes: inspect, apply or rollback with their exact flags.`, fix: "Start with inspect --agent <name> --session <path> --artifacts-dir <dir>." },
-  ] } },
-  { name: `${REDACTION} inspect`, effect: "private", summary: "Plan a session's redaction repair.", ax: { id: `cli:${REDACTION} inspect`, group: "diagnostics", effect: "write", when: "First step of the repair: write a manifest and preimage for one session into --artifacts-dir, leaving the session alone.", errors: [
-    { code: "usage", means: `${REDACTION} inspect needs --agent, --session and --artifacts-dir, in that order.`, fix: "Pass all three with their values and nothing else." },
-    repairRefused("inspect"),
-  ] } },
-  { name: `${REDACTION} apply`, effect: "private", summary: "Apply a planned redaction repair.", ax: { id: `cli:${REDACTION} apply`, group: "diagnostics", effect: "consequential", confirm: "The session file is rewritten from the manifest; rollback with the preimage undoes it.", when: "After inspect: rewrite the session from the manifest, given its exact --manifest-sha256.", errors: [
-    { code: "usage", means: `${REDACTION} apply needs --manifest-sha256 <digest> and the manifest path, and nothing else.`, fix: "Pass the digest and manifest path inspect printed." },
-    repairRefused("apply"), ...repairUnfinished("apply"),
-  ] } },
-  { name: `${REDACTION} rollback`, effect: "private", summary: "Undo an applied redaction repair.", ax: { id: `cli:${REDACTION} rollback`, group: "diagnostics", effect: "consequential", confirm: "The session file goes back to the preimage inspect saved.", when: "If an applied repair looks wrong: put the session back from the preimage, with the manifest's digest.", errors: [
-    { code: "usage", means: `${REDACTION} rollback needs --manifest-sha256 <digest>, the manifest path and the preimage path, and nothing else.`, fix: "Pass the digest and both paths inspect printed." },
-    repairRefused("rollback"), ...repairUnfinished("rollback"),
   ] } },
   { name: "node dist/heart/session-stats-cli-main.js", effect: "private", readOnly: true, summary: "Summarize a saved session.", ax: { id: "cli:node dist/heart/session-stats-cli-main.js", group: "diagnostics", effect: "read", when: "Size up a saved session file: message counts, token use and the last usage record, before deciding to trim it.", errors: [
     { code: "usage", means: "Session stats needs the path of a saved session.json.", fix: "Pass the session file, adding --json for the numbers as data." },
