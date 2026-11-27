@@ -645,6 +645,10 @@ describe("handleInboundTurn", () => {
         expect(heldNoticesIncludedIn(held, "The nightly backup has not started.")).toBe(false)
         expect(heldNoticesIncludedIn(held, `Backup done. Held notices: ${refs[0]}`)).toBe(false)
         expect(heldNoticesIncludedIn(held, `Held notices: ${refs.join(", ")}`)).toBe(true)
+        expect(heldNoticesIncludedIn(held, `Summary.\nHeld notices: ${refs.join(", ")}\n`)).toBe(true)
+        expect(heldNoticesIncludedIn(held, `Notes mention ${refs.join(" ")} inline.`)).toBe(false)
+        expect(heldNoticesIncludedIn(held, `Held notices: ${refs.join(", ")}\nand then more text`)).toBe(false)
+        expect(heldNoticesIncludedIn(held, "")).toBe(false)
         expect(heldNoticesIncludedIn([], "anything")).toBe(true)
       })
 

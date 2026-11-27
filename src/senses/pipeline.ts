@@ -87,10 +87,14 @@ const TELEGRAM_GENERIC_OUTREACH_PENDING_MAX_AGE_MS = 15 * 60 * 1_000
 function heldNoticeRef(notice: PendingMessage): string {
   return `H-${createHash("sha1").update(`${notice.timestamp}\n${notice.content}`).digest("hex").slice(0, 6)}`
 }
-// Inclusion is explicit: the summary prompt gives every notice a reference and asks the reply to end with a receipt line
-// naming them. A reply that lacks any reference is treated as not included, so the notices stay in the retry path.
+// Inclusion is a contract with the model, not proof that its summary is accurate: the summary prompt gives every notice a
+// reference and asks the reply to end with a "Held notices:" receipt line. Only that line is parsed, and it must name every
+// notice. Anything else counts as not included and the notices are released.
 export function heldNoticesIncludedIn(held: PendingMessage[], reply: string): boolean {
-  return held.every((notice) => reply.includes(heldNoticeRef(notice)))
+  const receipt = reply.trimEnd().split("\n").pop()!.match(/^\s*Held notices:\s*(.*)$/i)
+  if (!receipt) return held.length === 0
+  const named = new Set(receipt[1]!.match(/H-[0-9a-f]{6}\b/g) ?? [])
+  return held.every((notice) => named.has(heldNoticeRef(notice)))
 }
 
 function renderHeldNoticeSummary(held: PendingMessage[]): PendingMessage {

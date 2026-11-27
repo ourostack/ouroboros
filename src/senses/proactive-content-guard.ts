@@ -60,6 +60,8 @@ function getUntestedClaimReason(text: string): ProactiveContentBlockReason | nul
 const NO_ACTION_NOW_PATTERN = /\b(?:nothing (?:to do|needed|for you to do)|no action (?:is )?(?:needed|required)|nothing is needed|fyi|just so you know)\b/i
 const FUTURE_GATE_PATTERN = /\b(?:nothing to do yet|nothing (?:is )?needed (?:from you )?yet|no action (?:is )?(?:needed|required) yet)\b/i
 const FUTURE_GATE_LATER_PATTERN = /\b(?:when|once|after|later)\b[^.]*\b(?:i'll|i will|will)\b[^.]*\b(?:send|ask|prompt|text|message)\b/i
+// Only the announced later request itself: "when it is ready I will send you a tap (to approve on your phone)". Whatever follows it is still checked.
+const ANNOUNCED_REQUEST_PATTERN = /\b(?:when|once|after|later)\b[^.;!?]*?\b(?:i'll|i will|will)\s+(?:send|ask|prompt|text|message)\b(?:\s+(?:you|them))?(?:\s+(?:an?|the|one|single))?(?:\s+[a-z-]+){0,2}?(?:\s+(?:prompt|tap|request|message|text|notification|passkey|approval|link))+\b(?:\s+to approve(?:\s+on your phone)?)?/ig
 // Anything the person must know or act on now beats routine: a risk, a correction, a request, an update they asked for.
 const MATERIAL_RISK_PATTERN = /\b(?:lost|lose|losing|data loss|outage|still (?:down|broken|failing)|is down|are down|went down|corrupt\w*|deleted|wiped|breach\w*|leak\w*|exposed|forced reboot|crash\w*|unrecoverable|at risk|urgent|failed to)\b/i
 const CORRECTION_PATTERN = /\b(?:correction|i was wrong|i got that wrong|that was wrong|ignore (?:my )?(?:last|earlier|previous)|disregard|retract\w*|mistake|my earlier (?:message|note))\b/i
@@ -69,7 +71,7 @@ function getRoutineNoticeReason(text: string): ProactiveContentBlockReason | nul
   if (REQUESTED_STATUS_PATTERN.test(text) || MATERIAL_RISK_PATTERN.test(text) || CORRECTION_PATTERN.test(text)) return null
   // The announced later request ("I'll send you a tap to approve") is not a present ask; an ask after a "but" or in another sentence is.
   const futureGate = FUTURE_GATE_PATTERN.test(text) && FUTURE_GATE_LATER_PATTERN.test(text)
-  const withoutAnnouncedRequest = futureGate ? text.replace(new RegExp(FUTURE_GATE_LATER_PATTERN.source + "[^.;]*?(?=,?\\s+(?:but|however|except)\\b|[.;!?]|$)", "ig"), " ") : text
+  const withoutAnnouncedRequest = futureGate ? text.replace(ANNOUNCED_REQUEST_PATTERN, " ") : text
   if (PRESENT_ASK_PATTERN.test(withoutAnnouncedRequest)) return null
   if (futureGate) return "routine_notice"
   if (NO_ACTION_NOW_PATTERN.test(text) && !/\?/.test(text)) return "routine_notice"
