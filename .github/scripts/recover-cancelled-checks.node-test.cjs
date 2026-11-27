@@ -71,6 +71,7 @@ for (const [name, change] of [
   ["old head", (s) => { s.pr.head.sha = "new" }],
   ["previous recovery or manual rerun", (s) => { s.run.run_attempt = 2 }],
   ["non-PR run", (s) => { s.run.event = "push" }],
+  ["merge queue run, which the queue rebuilds itself", (s) => { s.run.event = "merge_group" }],
   ["foreign repository", (s) => { s.run.repository.full_name = "elsewhere/repo" }],
   ["unassociated PR", (s) => { s.run.pull_requests = [] }],
   ["ambiguous PR association", (s) => { s.run.pull_requests.push({ number: 1389 }) }],
@@ -192,6 +193,11 @@ test("coverage concurrency only supersedes runs belonging to the same PR", () =>
   assert.notEqual(render(context(null, 100, "push")), render(context(null, 101, "push")))
   assert.equal(runInNewContext(cancel, { github: context(1, 100) }), true)
   assert.equal(runInNewContext(cancel, { github: context(null, 100, "push") }), false)
+  // Each merge queue build has its own group and is never cancelled by another.
+  const queued = (run_id) => context(null, run_id, "merge_group")
+  assert.notEqual(render(queued(100)), render(queued(101)))
+  assert.notEqual(render(queued(100)), render(context(1, 101)))
+  assert.equal(runInNewContext(cancel, { github: queued(100) }), false)
 })
 
 test("elevated recovery executes only trusted default-branch code, never PR artifacts", () => {
