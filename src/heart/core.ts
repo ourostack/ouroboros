@@ -14,6 +14,7 @@ import { APPROVAL_UNAVAILABLE_REJECTION, classifyApprovalForInvocation, executeT
 import type { HabitSessionToolContext, ToolContext, ToolResultImage, ToolSelection } from "../repertoire/tools-base";
 import { withCode } from "../repertoire/tools-base";
 import { FLOW_TOOL_REFUSALS, SETTLE_CHECK_BACK_CADENCE } from "../repertoire/tools-flow";
+import { createKeepInTouch, offersMidTurnSpeech, type KeepInTouch } from "./keep-in-touch";
 import { buildToolImagesMessage, canModelSeeToolImages, toolImagesNote, type ToolCallImages } from "./tool-images";
 import { digestJson, validateAdvertisedToolArguments } from "../repertoire/tool-arguments";
 import type { ValidatedToolArguments } from "../repertoire/tool-arguments";
@@ -891,11 +892,10 @@ export type RunAgentOutcome =
   | "observed"
   | "rested";
 
-/** Channels that deliberately support mid-turn delivery expose `speak`.
- *  BlueBubbles is final-only: its adapter owns one accepted visibility boundary.
+/** Channels whose sense delivers `speak` mid-turn (see `offersMidTurnSpeech`).
  *  The private runtime has `ponder`; MCP returns synchronously; mail is batch. */
 export function isChatStyleChannel(channel: string): boolean {
-  return getChannelCapabilities(channel).chatStyle;
+  return offersMidTurnSpeech(getChannelCapabilities(channel));
 }
 
 function bindCurrentIngressEvidenceLocator(
@@ -1645,6 +1645,10 @@ async function runCountedTurn(
   const provider = providerRuntime.id;
   const toolChoiceRequired = options?.hardDisableTools ? false : options?.toolChoiceRequired ?? true;
   const traceId = options?.traceId;
+  const turnStartedAt = Date.now();
+  // Built at the first batch, once the turn's menu is known; null where nobody is waiting on a reply.
+  let keepInTouch: KeepInTouch | null = null;
+  let keepInTouchBuilt = false;
   emitNervesEvent({
     event: "engine.turn_start",
     trace_id: traceId,
@@ -3058,6 +3062,27 @@ async function runCountedTurn(
           continue;
         }
 
+        if (!keepInTouchBuilt) {
+          keepInTouchBuilt = true
+          const turnContext = augmentedToolContext
+          keepInTouch = createKeepInTouch({
+            channel,
+            speakOffered: activeToolNames.has("speak"),
+            answersAPerson: !isPrivateRuntimeChannel && !turnContext.noSend && !habitSession && !turnContext.autonomousTurnKind
+              && !options?.isReactionSignal && !turnContext.context?.isGroupChat,
+            startedAt: turnStartedAt,
+          })
+        }
+        const keepInTouchHold = keepInTouch?.hold(result.toolCalls.map((call) => call.name)) ?? null
+        if (keepInTouchHold) {
+          // The person has waited long enough: nothing runs until the agent tells them something in its own words.
+          streamCallbackBuffer?.discard()
+          const reason = keepInTouchHold.kind === "ack"
+            ? FLOW_TOOL_REFUSALS.speakFirstAck(Math.round(keepInTouchHold.quietMs / 1000))
+            : FLOW_TOOL_REFUSALS.speakFirstUpdate(Math.round(keepInTouchHold.quietMs / 60_000))
+          rejectToolBatch(msg, result.toolCalls.map(() => reason))
+          continue
+        }
         const requiredDispatchRejections = new Map<string, { name: string; args: Record<string, string>; message: string }>()
         for (const entry of validCalls) {
           const requiredArgs = entry.validated.arguments as Record<string, string>
@@ -3257,6 +3282,7 @@ async function runCountedTurn(
               speakDeliveryError = err instanceof Error ? err : new Error(String(err));
             }
             if (speakDeliveryError) {
+              keepInTouch?.undeliverable();
               callbacks.onToolEnd("speak", argSummary, false);
               const failMsg = withBudgetNote(FLOW_TOOL_REFUSALS.speakNotDelivered(speakDeliveryError.message), isLastCall(tc), candidateToolNames);
               pushGenerated({ role: "tool", tool_call_id: tc.id, content: failMsg });
@@ -3270,6 +3296,7 @@ async function runCountedTurn(
               });
               continue;
             }
+            keepInTouch?.spoke();
             callbacks.onToolEnd("speak", argSummary, true);
             const ack = withBudgetNote("(spoken)", isLastCall(tc), candidateToolNames);
             pushGenerated({ role: "tool", tool_call_id: tc.id, content: ack });

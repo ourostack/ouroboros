@@ -210,13 +210,13 @@ describe("speak interception in runAgent", () => {
     expect(assistantSettle).toBeDefined()
   })
 
-  it("rejects an unadvertised speak call on BlueBubbles without invoking its send callback", async () => {
+  it("rejects an unadvertised speak call on mail without invoking its send callback", async () => {
     mockCreate.mockReturnValueOnce(makeStream(speakChunk("stale mid-turn reply")))
     mockCreate.mockReturnValueOnce(makeStream(settleChunks("current final reply")))
 
     const callbacks = makeCallbacks()
     const messages: any[] = [{ role: "user", content: "latest message" }]
-    const result = await runAgent(messages, callbacks, "bluebubbles", undefined, {
+    const result = await runAgent(messages, callbacks, "mail", undefined, {
       toolContext: { signin: async () => undefined },
     })
 
@@ -233,6 +233,20 @@ describe("speak interception in runAgent", () => {
       level: "warn",
       meta: expect.objectContaining({ toolName: "speak" }),
     }))
+  })
+
+  it("delivers a mid-turn speak on BlueBubbles, now that iMessage records each mid-turn send", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(speakChunk("checking your imbox now")))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("all sorted")))
+
+    const callbacks = makeCallbacks()
+    const result = await runAgent([{ role: "user", content: "latest message" }], callbacks, "bluebubbles", undefined, {
+      toolContext: { signin: async () => undefined },
+    })
+
+    expect(result.outcome).toBe("settled")
+    expect(callbacks.onTextChunk).toHaveBeenCalledWith("checking your imbox now")
+    expect(callbacks.flushNow).toHaveBeenCalledTimes(1)
   })
 
   it("interleave: speak + read_file in same response — both run, turn continues", async () => {

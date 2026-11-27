@@ -24,6 +24,7 @@ import { voiceToolDefinitions } from "./tools-voice";
 import { detectDestructivePatterns } from "./shell-sessions";
 import { unraidToolDefinitions } from "./tools-unraid";
 import { observeTool, ponderTool, restTool, SETTLE_DESCRIPTION, settleTool, speakTool } from "./tools-flow";
+import { offersMidTurnSpeech } from "../heart/keep-in-touch";
 import { stewardPolicyToolDefinition } from "./tools-steward-policy";
 import { houseCareToolDefinitions } from "./tools-house-care";
 import { shepherdToolDefinitions, shepherdToolsEnabled } from "./tools-shepherd";
@@ -252,7 +253,7 @@ export function selectToolsForChannel(
   const engine = [
     ...(context?.noSend ? [] : [ponderTool]),
     ...(inner ? [restTool] : [observeTool, offersCheckBack ? settleCheckBackTool : settleTool]),
-    ...(capabilities?.chatStyle ? [speakTool] : []),
+    ...(offersMidTurnSpeech(capabilities) ? [speakTool] : []),
   ].filter((tool) => (!sanctuary || (knownSanctuaryProfile && tool.function.name !== "observe"))
     && (!relationship || relationship.advertisedToolNames.includes(tool.function.name))
     && (!context?.allowedEngineTools || context.allowedEngineTools.includes(tool.function.name)))
