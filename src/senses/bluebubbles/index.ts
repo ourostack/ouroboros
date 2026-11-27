@@ -4312,6 +4312,7 @@ async function catchUpMissedBlueBubblesMessagesInScope(
   // sends no webhook for some of those (2026-11-27: 3 to 8 minutes late, four times in one afternoon). Rows that
   // arrived since the last pass are found by ROWID, and the window reaches back to the oldest one's sent time.
   let catchUpQueryFailed = false
+  let reachedPageLimit = false
   const arrivalRead = await readBlueBubblesArrivalsSince(client, state.catchUpRowId, options).catch((error: unknown) => {
     if (options.lifecycleSignal?.aborted) throw options.lifecycleSignal.reason
     catchUpQueryFailed = true
@@ -4462,6 +4463,7 @@ async function catchUpMissedBlueBubblesMessagesInScope(
     if (oldestMessageTimestamp <= catchUpSince) break
 
     if (page === BLUEBUBBLES_CATCHUP_MAX_PAGES - 1) {
+      reachedPageLimit = true
       result.failed++
       emitNervesEvent({
         level: "warn",
@@ -4578,10 +4580,12 @@ async function catchUpMissedBlueBubblesMessagesInScope(
     }
   }))
 
-  // The cursor holds only when a query failed, so those arrivals are read again. A failed turn or a scan cut off at its
-  // page limit moves the cursor on but carries the oldest late sent time forward, so the next pass reaches it again.
+  // The cursor holds only when a query failed, so those arrivals are read again. Any other failure, such as a failed
+  // turn, moves the cursor on but carries the oldest late sent time forward, so the next pass reaches it again. The page
+  // limit alone carries nothing: the next pass would stop at the same limit, so it would only fail every pass for a day.
   if (!catchUpQueryFailed) result.arrivalCursor = arrivalRead?.cursor
-  if (result.failed > 0 && Number.isFinite(unfinishedLateSince)) result.lateSince = new Date(unfinishedLateSince).toISOString()
+  const unfinishedFailures = result.failed - (reachedPageLimit ? 1 : 0)
+  if (unfinishedFailures > 0 && Number.isFinite(unfinishedLateSince)) result.lateSince = new Date(unfinishedLateSince).toISOString()
   const foundWork = result.recovered > 0 || (result.queued ?? 0) > 0 || result.failed > 0
   if (result.inspected > 0 || foundWork || catchUpWindow.mode === "recovery") {
     emitNervesEvent({

@@ -6720,7 +6720,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(second.lateSince).toBeUndefined()
   })
 
-  it("carries a late arrival the sent-time scan could not reach, for at most a day", async () => {
+  it("carries nothing for a late arrival the sent-time scan cannot reach, and drops a carried time older than a day", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -6732,11 +6732,10 @@ describe("BlueBubbles sense runtime", () => {
     const state = { upstreamStatus: "ok" as const, detail: "upstream reachable", catchUpThrough: new Date(now).toISOString(), catchUpRowId: 100, pendingRecoveryCount: 0 }
 
     const bluebubbles = await import("../../../senses/bluebubbles")
-    await expect(bluebubbles.catchUpMissedBlueBubblesMessages({}, state)).resolves.toEqual(expect.objectContaining({
-      failed: 1,
-      arrivalCursor: 101,
-      lateSince: new Date(sentAt).toISOString(),
-    }))
+    // The next pass would hit the same page limit before reaching it, so carrying it would only fail every pass for a day.
+    const limited = await bluebubbles.catchUpMissedBlueBubblesMessages({}, state)
+    expect(limited).toEqual(expect.objectContaining({ failed: 1, arrivalCursor: 101 }))
+    expect(limited.lateSince).toBeUndefined()
 
     // A carried time older than the day-long lookback is dropped, so it cannot pin every pass.
     mocks.listRecentMessages.mockResolvedValue([])
