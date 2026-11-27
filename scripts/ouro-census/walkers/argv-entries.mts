@@ -5,22 +5,15 @@
 // parser source never mentions is a door of its own. Any other entry point is one door, and
 // the words its argv is compared with at the first position, in the module and the functions it passes argv to, are
 // its subcommands. Those are read from the syntax tree only: nothing here is run.
-import { readdirSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import ts from "typescript";
 import type { Door, WalkerOptions, WalkResult } from "../types.mts";
 import { applyCards, loadCards, Raises } from "./cli-cards.mts";
+import { sourceFiles } from "./source-files.mts";
 import { nextWords, Sources } from "./ts-argv.mts";
 
-const SKIP_DIRS = new Set(["node_modules", "__tests__", "fixtures"]);
 const SOURCE = /\.[cm]?ts$/;
 const NOT_SOURCE = /\.d\.[cm]?ts$|\.(test|spec)\.[cm]?ts$/;
-
-function sourceFiles(dir: string): string[] {
-  return readdirSync(dir, { withFileTypes: true })
-    .sort((a, b) => (a.name < b.name ? -1 : 1))
-    .flatMap((e) => (e.isDirectory() ? (SKIP_DIRS.has(e.name) ? [] : sourceFiles(join(dir, e.name))) : SOURCE.test(e.name) && !NOT_SOURCE.test(e.name) ? [join(dir, e.name)] : []));
-}
 
 /** `process`, or `globalThis.process`. */
 const isProcess = (n: ts.Node): boolean =>
@@ -77,13 +70,14 @@ function reaches(sources: Sources, from: string, target: string): boolean {
 export async function walkArgvEntries(opts: WalkerOptions): Promise<WalkResult> {
   const sources = new Sources();
   const dir = resolve(opts.root, opts.source);
+  const listed = sourceFiles(opts, "argv-entries", SOURCE, NOT_SOURCE);
   const entries = new Map<string, ts.Node>();
-  for (const path of sourceFiles(dir)) {
+  for (const path of listed.files) {
     const sf = sources.file(path);
     const read = entryRead(sf);
     if (read) entries.set(path, read);
   }
-  const errors: string[] = [];
+  const errors: string[] = [...listed.errors];
   /** Claimed entry → the strings its parser source holds. */
   const claimed = new Map<string, Set<string>>();
   for (const claim of opts.claims ?? []) {
@@ -118,5 +112,5 @@ export async function walkArgvEntries(opts: WalkerOptions): Promise<WalkResult> 
   }
   const cards = loadCards(opts.root, opts.cards);
   if (cards) errors.push(...cards.errors, ...applyCards(doors, cards, new Raises(sources, opts.root, opts.handlers ?? []), opts.cards!));
-  return { doors, errors, unwalked: [] };
+  return { doors, errors, unwalked: [], excluded: listed.excluded };
 }
