@@ -66,6 +66,17 @@ const supercronicMocks = vi.hoisted(() => ({
   stop: vi.fn(async () => undefined),
 }))
 
+// The Butler's root-host tool reaches the product registry through relationship authorization and the external-event router.
+// Loaded from the registry's own mock factory below, that loop never resolves, so the daemon's tests stand the tool in.
+vi.mock("../../../repertoire/tools-sanctuary-host", () => ({
+  rootHostToolDefinition: {
+    tool: { type: "function", function: { name: "sanctuary_host_execute", parameters: { type: "object" } } },
+    ax: { id: "tool:sanctuary_host_execute" },
+    handler: async () => "",
+  },
+  selectRootHostTool: () => undefined,
+}))
+
 // The image names the Butler's product, so the entry's first load registers the Butler's names.
 vi.mock("../../../heart/product/active", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../heart/product/active")>()
