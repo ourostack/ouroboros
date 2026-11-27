@@ -1200,13 +1200,13 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(() => requireHealthProbeCompleteAttestation(receipt, { imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64), running: true, health: "healthy" }, request)).not.toThrow()
   })
 
-  it("verifies the scheduler receipt MAC before accepting complete Unit16f evidence", async () => {
+  it.each(["butler", "sanctuary"] as const)("verifies the scheduler receipt MAC before accepting complete Unit16f evidence from the Butler %s", async (butler) => {
     const { requireHealthProbeCompleteAttestation } = await broker()
     const key = "k".repeat(43)
     const request = { label: "unit-16f-cron-fingerprint", scenarioHandleDigest: "a".repeat(64) }
     const slot = "2026-08-20T17:00:00.000Z"
     const occurrenceId = `cron:${slot}`
-    const command = "/usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron"
+    const command = `/usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke ${butler} --habit sanctuary-health --trigger cron`
     const unsignedScheduler = {
       schemaVersion: "sanctuary-scheduler-liveness-receipt-v1", label: request.label, trigger: "cron", scenarioHandleDigest: request.scenarioHandleDigest,
       occurrenceId, runnerId: "11111111-1111-4111-8111-111111111111", recordedAt: "2026-08-20T17:00:01.000Z",
@@ -1215,15 +1215,15 @@ describe("Sanctuary Unit 16 host broker", () => {
       sweep: { recordDigest: "d".repeat(64), opened: 0, recovered: 0, digestDue: false, deliveryId: null },
       supervisor: {
         schemaVersion: "supercronic-supervisor-snapshot-v1", daemonPid: 1, childCount: 1, childPid: 42, healthy: true,
-        binaryPath: "/usr/local/bin/supercronic", args: ["-split-logs", "-inotify", "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"],
-        crontabPath: "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab", namespace: "habit:sanctuary",
-        manifest: [{ id: "sanctuary:sanctuary-health", agent: "sanctuary", taskId: "sanctuary-health", schedule: "*/15 * * * *", lastRun: null, command, taskPath: "/home/ouro/AgentBundles/sanctuary.ouro/habits/sanctuary-health.md" }],
-        renderedCrontab: `# ouro:habit:sanctuary:sanctuary:sanctuary-health\n*/15 * * * * ${command}\n`,
+        binaryPath: "/usr/local/bin/supercronic", args: ["-split-logs", "-inotify", `/home/ouro/.ouro-cli/scheduler/${butler}.crontab`],
+        crontabPath: `/home/ouro/.ouro-cli/scheduler/${butler}.crontab`, namespace: `habit:${butler}`,
+        manifest: [{ id: `${butler}:sanctuary-health`, agent: butler, taskId: "sanctuary-health", schedule: "*/15 * * * *", lastRun: null, command, taskPath: `/home/ouro/AgentBundles/${butler}.ouro/habits/sanctuary-health.md` }],
+        renderedCrontab: `# ouro:habit:${butler}:${butler}:sanctuary-health\n*/15 * * * * ${command}\n`,
       },
       schedulerOrigin: { slot, occurrenceId, schedulerRunId: "22222222-2222-4222-8222-222222222222", invocationPid: 43, parentPid: 42, parentStartTime: "8001", invocationStartTime: "9001", proofMac: "", scenarioHandleDigest: request.scenarioHandleDigest },
     }
     const { proofMac: _proofMac, ...originWithoutProof } = unsignedScheduler.schedulerOrigin
-    const schedulerCommand = { kind: "habit.scheduler-fire", agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron", ...originWithoutProof }
+    const schedulerCommand = { kind: "habit.scheduler-fire", agent: butler, habitName: "sanctuary-health", trigger: "cron", ...originWithoutProof }
     unsignedScheduler.schedulerOrigin.proofMac = createHmac("sha256", key).update(JSON.stringify(schedulerCommand)).digest("hex")
     const receiptMac = createHmac("sha256", key).update(`sanctuary-scheduler-liveness-receipt-v2\0${JSON.stringify(unsignedScheduler)}`).digest("hex")
     const receipt = {
@@ -1244,6 +1244,10 @@ describe("Sanctuary Unit 16 host broker", () => {
       changed.schedulerReceipt.supervisor.manifest = manifest
       expect(() => requireHealthProbeCompleteAttestation(changed, snapshot, request, () => key)).toThrow()
     }
+    // A receipt whose job names one Butler and whose crontab names the other is not this Butler's evidence.
+    const crossed = JSON.parse(JSON.stringify(receipt))
+    crossed.schedulerReceipt.supervisor.crontabPath = `/home/ouro/.ouro-cli/scheduler/${butler === "butler" ? "sanctuary" : "butler"}.crontab`
+    expect(() => requireHealthProbeCompleteAttestation(crossed, snapshot, request, () => key)).toThrow()
     ;(receipt.schedulerReceipt as Record<string, unknown>).runnerId = "33333333-3333-4333-8333-333333333333"
     expect(() => requireHealthProbeCompleteAttestation(receipt, snapshot, request, () => key)).toThrow(/complete attestation/u)
   })
@@ -1667,7 +1671,12 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(source).toContain('"capDrop":{{json .HostConfig.CapDrop}}')
     expect(source).toContain("value.capDrop === null || (Array.isArray(value.capDrop) && value.capDrop.length === 0)")
     expect(source).toContain("value.securityOpt === null || (Array.isArray(value.securityOpt) && value.securityOpt.length === 0)")
-    expect(source).toContain('"vault", "status", "--agent", "sanctuary"')
+    expect(source).toContain('"vault", "status", "--agent", butler')
+    // The resident's mounts are accepted under either Butler name, all under one name, and the vault check asks that Butler.
+    expect(source).toContain('const BUTLER_NAMES = ["butler", "sanctuary"]')
+    expect(source).toContain("{ destination: containerBundle(name), source: PRODUCTION_BUNDLE_SOURCE")
+    expect(source).toContain('{ destination: `/etc/ouro/trust/${name}`, source: "/mnt/user/appdata/ouro-butler/trust/sanctuary"')
+    expect(source).toContain('vaultStatus(running, healthy, mountedButler ?? "sanctuary")')
     expect(source.match(/spawnSync\(DOCKER, \["inspect"/gu)).toHaveLength(5)
     expect(source).toContain('const GRAPHQL_ENDPOINT = "http://127.0.0.1/graphql"')
     expect(source).toContain('chownSync(socket, 0, 10001)')

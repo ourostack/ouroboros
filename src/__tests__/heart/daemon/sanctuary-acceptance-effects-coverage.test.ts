@@ -14,7 +14,7 @@ const probe = vi.hoisted(() => ({
   mode: "live" as "live" | "unavailable",
 }))
 
-vi.mock("../../../heart/identity", () => ({ getAgentRoot: () => probe.agentRoot }))
+vi.mock("../../../heart/identity", () => ({ getAgentRoot: () => probe.agentRoot, getAgentBundlesRoot: () => "/nonexistent/AgentBundles" }))
 vi.mock("../../../heart/runtime-credentials", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../heart/runtime-credentials")>(),
   refreshRuntimeCredentialConfig: async () => ({ ok: true, itemPath: "vault:test", revision: "test", updatedAt: "2026-08-29T00:00:00.000Z", config: {} }),

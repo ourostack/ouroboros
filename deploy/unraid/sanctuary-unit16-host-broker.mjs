@@ -17,6 +17,10 @@ const AUTOSTART_FILE = "/var/lib/docker/unraid-autostart"
 const RUNTIME_POLICY_FILE = "/opt/ouro/container-runtime.json"
 const PRODUCTION_RUNTIME_SOURCE = "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli"
 const PRODUCTION_BUNDLE_SOURCE = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"
+// The host bundle and trust folders keep their names through the rename; inside the container they sit under the Butler name the
+// image runs (`butler` from M2 on, `sanctuary` before it, and after a rollback to such an image), so each check accepts either.
+const BUTLER_NAMES = ["butler", "sanctuary"]
+const containerBundle = (name) => `/home/ouro/AgentBundles/${name}.ouro`
 const PRODUCTION_EVENT_SPOOL_SOURCE = "/boot/config/custom/ouro-events/spool"
 const AUTHORITY_ROOT = "/mnt/user/appdata/ouro-authority"
 const GRAPHQL_ENDPOINT = "http://127.0.0.1/graphql"
@@ -367,9 +371,9 @@ function parseVaultStatus(output, succeeded) {
   return { vaultUnlocked: unlocked, manualAuthRequired: !unlocked }
 }
 
-function vaultStatus(running, healthy) {
+function vaultStatus(running, healthy, butler) {
   if (!running || !healthy) return { vaultUnlocked: false, manualAuthRequired: true }
-  const result = spawnSync(DOCKER, ["exec", activeContainerId, "node", "/opt/ouro/dist/heart/daemon/ouro-entry.js", "vault", "status", "--agent", "sanctuary", "--store", "plaintext-file"], {
+  const result = spawnSync(DOCKER, ["exec", activeContainerId, "node", "/opt/ouro/dist/heart/daemon/ouro-entry.js", "vault", "status", "--agent", butler, "--store", "plaintext-file"], {
     cwd: "/", encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024,
     env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "pipe", "ignore"],
   })
@@ -500,17 +504,19 @@ async function containerSnapshot(expectedImage) {
     const mount = object(raw, "container mount")
     return { destination: mount.Destination, source: mount.Source, mode: mount.Mode, propagation: mount.Propagation, rw: mount.RW, type: mount.Type }
   }).sort((left, right) => String(left.destination).localeCompare(String(right.destination))) : []
-  const expectedMounts = [
+  const expectedMounts = (name) => [
     { destination: "/home/ouro/.ouro-cli", source: PRODUCTION_RUNTIME_SOURCE, propagation: "rprivate", rw: true, type: "bind" },
-    { destination: "/home/ouro/AgentBundles/sanctuary.ouro", source: PRODUCTION_BUNDLE_SOURCE, propagation: "rprivate", rw: true, type: "bind" },
+    { destination: containerBundle(name), source: PRODUCTION_BUNDLE_SOURCE, propagation: "rprivate", rw: true, type: "bind" },
     { destination: "/run/ouro-events", source: PRODUCTION_EVENT_SPOOL_SOURCE, propagation: "rprivate", rw: false, type: "bind" },
     { destination: "/run/ouro-authority", source: "/run/ouro-authority", propagation: "rprivate", rw: false, type: "bind" },
-    { destination: "/etc/ouro/trust/sanctuary", source: "/mnt/user/appdata/ouro-butler/trust/sanctuary", propagation: "rprivate", rw: false, type: "bind" },
+    { destination: `/etc/ouro/trust/${name}`, source: "/mnt/user/appdata/ouro-butler/trust/sanctuary", propagation: "rprivate", rw: false, type: "bind" },
   ]
   // alpha.978 and earlier (and a rollback to one) also mount the psyche folder read-only over the bundle; accept either set.
-  const psycheMount = { destination: "/home/ouro/AgentBundles/sanctuary.ouro/psyche", source: `${PRODUCTION_BUNDLE_SOURCE}/psyche`, propagation: "rprivate", rw: false, type: "bind" }
+  const psycheMount = (name) => ({ destination: `${containerBundle(name)}/psyche`, source: `${PRODUCTION_BUNDLE_SOURCE}/psyche`, propagation: "rprivate", rw: false, type: "bind" })
   const mountsMatch = (expectedSet) => mounts.length === expectedSet.length && expectedSet.every((expected) => mounts.some((mount) => mount.destination === expected.destination && mount.source === expected.source && mount.propagation === expected.propagation && mount.rw === expected.rw && mount.type === expected.type))
-  const mountsExact = mountsMatch(expectedMounts) || mountsMatch([...expectedMounts, psycheMount])
+  // The Butler the container runs is the one name its whole mount set is under; the vault status below asks for that agent.
+  const mountedButler = BUTLER_NAMES.find((name) => mountsMatch(expectedMounts(name)) || mountsMatch([...expectedMounts(name), psycheMount(name)]))
+  const mountsExact = mountedButler !== undefined
   const securityExact = value.privileged === false && (value.capAdd === null || (Array.isArray(value.capAdd) && value.capAdd.length === 0))
     && (value.capDrop === null || (Array.isArray(value.capDrop) && value.capDrop.length === 0))
     && (value.securityOpt === null || (Array.isArray(value.securityOpt) && value.securityOpt.length === 0))
@@ -530,7 +536,7 @@ async function containerSnapshot(expectedImage) {
   const liveProcessUser = processAfter.user
   const processBindingDigest = productionProcessBindingDigest({ ...rebound, ...processAfter })
   const healthy = value.health === "healthy"
-  const vault = vaultStatus(running, healthy)
+  const vault = vaultStatus(running, healthy, mountedButler ?? "sanctuary")
   const milestones = recoveryMilestones(running, healthy)
   return {
     schemaVersion: 1,
@@ -946,8 +952,9 @@ function healthProbeOperationBudgets() {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
-const SCHEDULER_COMMAND = "/usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron"
-const SCHEDULER_CRONTAB = "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"
+// The health habit's scheduler names, under the Butler name the receipt's job runs as (src/heart/butler-agent.ts butlerContainerPaths).
+const schedulerCommand = (name) => `/usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke ${name} --habit sanctuary-health --trigger cron`
+const schedulerCrontab = (name) => `/home/ouro/.ouro-cli/scheduler/${name}.crontab`
 
 function canonicalIso(value) {
   if (typeof value !== "string") return false
@@ -975,10 +982,13 @@ function requireExactSchedulerReceipt(scheduler, request, identityKey, phases) {
   if (manifest.length !== 1) throw new Error("scheduler manifest is invalid")
   const job = object(manifest[0], "scheduler manifest job")
   exactKeys(job, ["agent", "command", "id", "lastRun", "schedule", "taskId", "taskPath"], "scheduler manifest job")
+  const butler = BUTLER_NAMES.includes(job.agent) ? job.agent : "sanctuary"
+  const SCHEDULER_COMMAND = schedulerCommand(butler)
+  const SCHEDULER_CRONTAB = schedulerCrontab(butler)
   const unsignedScheduler = Object.fromEntries(Object.entries(scheduler).filter(([key]) => key !== "receiptMac"))
   const expectedReceiptMac = createHmac("sha256", identityKey).update(`sanctuary-scheduler-liveness-receipt-v2\0${JSON.stringify(unsignedScheduler)}`).digest("hex")
   const proofCommand = {
-    kind: "habit.scheduler-fire", agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron",
+    kind: "habit.scheduler-fire", agent: butler, habitName: "sanctuary-health", trigger: "cron",
     slot: origin.slot, occurrenceId: origin.occurrenceId, schedulerRunId: origin.schedulerRunId,
     invocationPid: origin.invocationPid, parentPid: origin.parentPid, parentStartTime: origin.parentStartTime,
     invocationStartTime: origin.invocationStartTime, scenarioHandleDigest: origin.scenarioHandleDigest,
@@ -995,10 +1005,10 @@ function requireExactSchedulerReceipt(scheduler, request, identityKey, phases) {
     || supervisor.schemaVersion !== "supercronic-supervisor-snapshot-v1" || supervisor.daemonPid !== 1 || supervisor.childCount !== 1
     || !Number.isSafeInteger(supervisor.childPid) || supervisor.childPid <= 1 || supervisor.healthy !== true
     || supervisor.binaryPath !== "/usr/local/bin/supercronic" || supervisor.crontabPath !== SCHEDULER_CRONTAB
-    || JSON.stringify(supervisor.args) !== JSON.stringify(["-split-logs", "-inotify", SCHEDULER_CRONTAB]) || supervisor.namespace !== "habit:sanctuary"
-    || job.id !== "sanctuary:sanctuary-health" || job.agent !== "sanctuary" || job.taskId !== "sanctuary-health" || job.schedule !== "*/15 * * * *"
-    || (job.lastRun !== null && !canonicalIso(job.lastRun)) || job.command !== SCHEDULER_COMMAND || job.taskPath !== "/home/ouro/AgentBundles/sanctuary.ouro/habits/sanctuary-health.md"
-    || typeof supervisor.renderedCrontab !== "string" || !supervisor.renderedCrontab.includes(`# ouro:habit:sanctuary:sanctuary:sanctuary-health\n*/15 * * * * ${SCHEDULER_COMMAND}\n`)
+    || JSON.stringify(supervisor.args) !== JSON.stringify(["-split-logs", "-inotify", SCHEDULER_CRONTAB]) || supervisor.namespace !== `habit:${butler}`
+    || job.id !== `${butler}:sanctuary-health` || job.agent !== butler || job.taskId !== "sanctuary-health" || job.schedule !== "*/15 * * * *"
+    || (job.lastRun !== null && !canonicalIso(job.lastRun)) || job.command !== SCHEDULER_COMMAND || job.taskPath !== `${containerBundle(butler)}/habits/sanctuary-health.md`
+    || typeof supervisor.renderedCrontab !== "string" || !supervisor.renderedCrontab.includes(`# ouro:habit:${butler}:${butler}:sanctuary-health\n*/15 * * * * ${SCHEDULER_COMMAND}\n`)
     || typeof origin.slot !== "string" || !canonicalIso(origin.slot) || scheduler.occurrenceId !== `cron:${origin.slot}` || origin.occurrenceId !== scheduler.occurrenceId
     || !UUID.test(origin.schedulerRunId) || origin.scenarioHandleDigest !== request.scenarioHandleDigest
     || !Number.isSafeInteger(origin.invocationPid) || origin.invocationPid <= 1 || !Number.isSafeInteger(origin.parentPid) || origin.parentPid !== supervisor.childPid

@@ -5,7 +5,9 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { SanctuarySchedulerLivenessReceipt } from "./sanctuary-scheduler-liveness"
 import { getAgentRoot } from "../identity"
+import { butlerContainerPaths } from "../butler-agent"
 import {
+  acceptanceButler,
   clearSanctuaryAcceptanceGateStatus,
   clearSanctuaryAcceptanceMarker,
   boundDirectoryEntryPath,
@@ -437,7 +439,7 @@ function hash(value: unknown): string {
 
 const CONTAINMENT_READ_SCOPE = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"]
   .map((resource) => `${resource}:READ_ANY`).sort()
-const CONTAINMENT_AUDIT_PATH = "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-audit-chain.ndjson"
+const containmentAuditPath = (): string => `${butlerContainerPaths(acceptanceButler()).agentRoot}/state/acceptance/telegram-audit-chain.ndjson`
 
 function exactContainmentAudit(evidence: SanctuaryContainmentAuditEvidence): boolean {
   const digestFields = [evidence.keyInventoryDigest, evidence.auditLedgerDigest, evidence.writeApprovalPolicyDigest]
@@ -447,7 +449,7 @@ function exactContainmentAudit(evidence: SanctuaryContainmentAuditEvidence): boo
     && evidence.writeScopeDigest === hash([...CONTAINMENT_READ_SCOPE, "DOCKER:UPDATE_ANY"].sort())
     && evidence.keyRoleAssignmentCount === 0
     && exactSanctuaryContainmentProfileBoundaries(evidence.profileBoundaries)
-    && evidence.auditPathDigest === createHash("sha256").update(CONTAINMENT_AUDIT_PATH).digest("hex")
+    && evidence.auditPathDigest === createHash("sha256").update(containmentAuditPath()).digest("hex")
     && evidence.auditRecordCount >= 2 && evidence.auditLifecyclePairCount >= 1
     // Five mounts now; six for alpha.978 and earlier (and a rollback to one), which add the read-only psyche mount. mountsExact pins the set.
     && evidence.containerUser === "10001:10001" && evidence.liveProcessUser === "10001:10001" && (evidence.mountCount === 5 || evidence.mountCount === 6) && evidence.publishedPortCount === 0
@@ -947,7 +949,7 @@ export function createSanctuaryScenarioCapture(deps: SanctuaryScenarioCaptureDep
       const capturedBefore = await deps.readFacts(input.label, scenarioHandleDigest, healthScenario ? { skipContainerSnapshot: true } : undefined)
       const before = { ...capturedBefore, sourceValues: Object.fromEntries(Object.entries(capturedBefore.sourceValues).map(([source, value]) => [source, hash(value)])) }
       const receipt: Receipt = { schemaVersion: "sanctuary-acceptance-receipt-v1", label: input.label, gate: input.externalGate, sources: [...input.sources], checkpointDigest, scenarioHandleDigest, startedAt, before }
-      writeSanctuaryAcceptanceMarker("sanctuary", { schemaVersion: "sanctuary-acceptance-marker-v1", label: input.label, scenarioHandleDigest, startedAt }, deps.agentRoot)
+      writeSanctuaryAcceptanceMarker(acceptanceButler(), { schemaVersion: "sanctuary-acceptance-marker-v1", label: input.label, scenarioHandleDigest, startedAt }, deps.agentRoot)
       atomicPrivateJson(receiptPath(checkpointDigest), receipt)
       publishSanctuaryAcceptanceGateStatus({ label: input.label, gate: input.externalGate, phase: "waiting", startedAt }, deps.gateStatusPath)
       if (healthScenario) {
@@ -1004,7 +1006,7 @@ export function createSanctuaryScenarioCapture(deps: SanctuaryScenarioCaptureDep
     if (INTERACTIVE_DRIVER_LABELS.has(input.label)) await deps.interactiveDriver!.cleanup(input.label, receipt.scenarioHandleDigest)
     if (READ_ONLY_DENIAL_LABELS.has(input.label)) await deps.denialDriver!.complete(input.label, receipt.scenarioHandleDigest)
     publishSanctuaryAcceptanceGateStatus({ label: input.label, gate: input.externalGate, phase: "complete", startedAt: receipt.startedAt }, deps.gateStatusPath)
-    clearSanctuaryAcceptanceMarker("sanctuary", receipt.scenarioHandleDigest, deps.agentRoot)
+    clearSanctuaryAcceptanceMarker(acceptanceButler(), receipt.scenarioHandleDigest, deps.agentRoot)
     fs.unlinkSync(filePath)
     emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_acceptance_scenario_end", message: "Sanctuary live acceptance scenario completed", meta: { label: input.label, scenarioHandleDigest: receipt.scenarioHandleDigest } })
     return { state: "complete", checkpointDigest: receipt.checkpointDigest, sourceDigests, assertions }
@@ -1122,12 +1124,12 @@ function durableQuarantineReceiptRoot(receiptRoot: string): void {
 }
 
 export function finalizeSanctuaryScenarioCapture(gateStatusPath?: string, configuredReceiptRoot?: string, configuredAgentRoot?: string): void {
-  const receiptRoot = configuredReceiptRoot ?? path.join(configuredAgentRoot ?? getAgentRoot("sanctuary"), "state", "acceptance", "receipts")
+  const receiptRoot = configuredReceiptRoot ?? path.join(configuredAgentRoot ?? getAgentRoot(acceptanceButler()), "state", "acceptance", "receipts")
   const errors: unknown[] = []
   let marker: ReturnType<typeof readSanctuaryAcceptanceMarker> = null
   let markerReadable = true
   let normalCleanupFailed = false
-  try { marker = readSanctuaryAcceptanceMarker("sanctuary", configuredAgentRoot) } catch (error) { markerReadable = false; errors.push(error) }
+  try { marker = readSanctuaryAcceptanceMarker(acceptanceButler(), configuredAgentRoot) } catch (error) { markerReadable = false; errors.push(error) }
   let activeReceipt: string | null = null
   let receiptSetCanonical = true
   try {
@@ -1156,14 +1158,14 @@ export function finalizeSanctuaryScenarioCapture(gateStatusPath?: string, config
   if (markerReadable && marker && receiptSetCanonical && activeReceipt) {
     try { fs.unlinkSync(activeReceipt) } catch (error) { normalCleanupFailed = true; errors.push(error) }
     if (!normalCleanupFailed) {
-      try { clearSanctuaryAcceptanceMarker("sanctuary", marker.scenarioHandleDigest, configuredAgentRoot) } catch (error) { normalCleanupFailed = true; errors.push(error) }
+      try { clearSanctuaryAcceptanceMarker(acceptanceButler(), marker.scenarioHandleDigest, configuredAgentRoot) } catch (error) { normalCleanupFailed = true; errors.push(error) }
     }
   }
   if (!markerReadable || !receiptSetCanonical || (marker && activeReceipt === null) || normalCleanupFailed) {
     try {
       durableQuarantineReceiptRoot(receiptRoot)
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") errors.push(error) }
-    try { quarantineSanctuaryAcceptanceMarker("sanctuary", configuredAgentRoot) } catch (error) { errors.push(error) }
+    try { quarantineSanctuaryAcceptanceMarker(acceptanceButler(), configuredAgentRoot) } catch (error) { errors.push(error) }
   }
   try { clearSanctuaryAcceptanceGateStatus(gateStatusPath) } catch (error) { errors.push(error) }
   if (errors.length > 0) throw new AggregateError(errors, "Sanctuary scenario finalization failed")

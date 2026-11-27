@@ -407,10 +407,10 @@ jobs:
             --label net.unraid.docker.managed=dockerman \
             --label "net.unraid.docker.icon=$AUDIT_ICON" \
             --mount type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli \
-            --mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro \
+            --mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/butler.ouro \
             --mount type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly \
             --mount type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly \
-            --mount type=bind,src=/mnt/user/appdata/ouro-butler/trust/sanctuary,dst=/etc/ouro/trust/sanctuary,readonly \
+            --mount type=bind,src=/mnt/user/appdata/ouro-butler/trust/sanctuary,dst=/etc/ouro/trust/butler,readonly \
             "$AUDIT_VERSION_IMAGE"
           test "$(docker inspect --format '{{.Config.Image}}' ouro-butler)" = "$AUDIT_VERSION_IMAGE"
           test "$(docker inspect --format '{{.Image}}' ouro-butler)" = "$AUDIT_IMAGE_ID"

@@ -29,7 +29,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 export const DEFAULT_BUNDLE = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"
-// Root-owned host directory the Butler mounts read-only at /etc/ouro/trust/sanctuary; the only place a grant is honoured from.
+// Root-owned host directory the Butler mounts read-only at /etc/ouro/trust/<name> (the Butler name the image runs); the only place a grant is honoured from.
 export const DEFAULT_TRUST_DIR = "/mnt/user/appdata/ouro-butler/trust/sanctuary"
 // Root-owned host directory holding the replay clients' seeds and the provisioning record. It sits beside the trust directory, outside the
 // bundle: the Butler's user can neither write it nor move it, so nothing in it can be planted. Only this folder and the trust directory's replay
@@ -1541,7 +1541,7 @@ export function selfTestFixtures() {
       fail: { trace: [], reply: "ok, turned off", before: emptyObservation(), after: emptyObservation({ stewardSha: "bbb" }), sink: [{ at, noticeId: "delegated:c2", friendId: "s" }] },
     },
     "book-dry-run": {
-      pass: { trace: [call("1", "shell", { command: '/home/ouro/AgentBundles/sanctuary.ouro/books/books get --title "Theft of Swords"' })], reply: "found it", before: emptyObservation(), after: emptyObservation() },
+      pass: { trace: [call("1", "shell", { command: '/home/ouro/AgentBundles/butler.ouro/books/books get --title "Theft of Swords"' })], reply: "found it", before: emptyObservation(), after: emptyObservation() },
       fail: { trace: [call("1", "shell", { command: "books get --title x --deliver" })], reply: "sent", before: emptyObservation(), after: emptyObservation({ ledgerLines: 4 }) },
     },
     "sweep-catches-stall": {

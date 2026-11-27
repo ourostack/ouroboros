@@ -93,7 +93,9 @@ describe("Ouro Butler Community Apps release", () => {
     expect(template).toContain('Target="/run/ouro-authority"')
     expect(template).toContain('Default="/run/ouro-authority" Mode="ro"')
     expect(template).not.toContain("sanctuary.ouro/psyche")
-    expect(template).toContain('Target="/etc/ouro/trust/sanctuary" Default="/mnt/user/appdata/ouro-butler/trust/sanctuary" Mode="ro"')
+    // The image runs the Butler as butler; the host folders keep their sanctuary names.
+    expect(template).toContain('Target="/home/ouro/AgentBundles/butler.ouro" Default="/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro" Mode="rw"')
+    expect(template).toContain('Target="/etc/ouro/trust/butler" Default="/mnt/user/appdata/ouro-butler/trust/sanctuary" Mode="ro"')
     expect(template).toContain('Target="/run/ouro-sync" Default="/mnt/user/appdata/ouro-butler/sync" Mode="ro"')
     expect(template).toContain("<Category>Tools:Utilities</Category>")
     expect(template).toContain("<Beta>true</Beta>")
@@ -119,8 +121,8 @@ describe("Ouro Butler Community Apps release", () => {
     const entrypoint = dockerfile.match(/^ENTRYPOINT (.+)$/mu)?.[1]
     const healthcheck = dockerfile.match(/^HEALTHCHECK (.+)$/mu)?.[1]
 
-    expect(entrypoint).toBe('["node","/opt/ouro/dist/heart/daemon/daemon-entry.js","--package-managed-agent","sanctuary"]')
-    expect(healthcheck).toContain('CMD ["node","/opt/ouro/dist/heart/daemon/container-healthcheck.js","--agent","sanctuary","--package-managed-agent","sanctuary"]')
+    expect(entrypoint).toBe('["node","/opt/ouro/dist/heart/daemon/daemon-entry.js","--package-managed-agent","butler"]')
+    expect(healthcheck).toContain('CMD ["node","/opt/ouro/dist/heart/daemon/container-healthcheck.js","--agent","butler","--package-managed-agent","butler"]')
     expect(entrypoint?.match(/--package-managed-agent/gu)).toHaveLength(1)
     expect(healthcheck?.match(/--package-managed-agent/gu)).toHaveLength(1)
     expect(template.match(/<PostArgs\s*\/>/gu)).toHaveLength(1)

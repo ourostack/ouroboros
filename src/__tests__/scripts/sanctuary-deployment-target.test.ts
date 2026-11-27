@@ -1012,6 +1012,13 @@ describe("Sanctuary effective listener containment", () => {
     const { attestOwnedListeners } = await load()
     const control = { inode: "900", path: "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-control.sock", flags: "00010000", type: "0001", state: "01" }
     expect(attestOwnedListeners({ rootPid: 321, netnsBefore: "net:[42]", netnsAfter: "net:[42]", processIdsBefore: [321, 322], processIdsAfter: [321, 322], socketInodesBefore: ["900"], socketInodesAfter: ["900"], tcpListenersBefore: [], tcpListenersAfter: [], udpListenersBefore: [], udpListenersAfter: [], unixSocketsBefore: [control], unixSocketsAfter: [control] })).toMatchObject({ inboundTcpListenerCount: 0, inboundUdpListenerCount: 0, unixControlSocketCount: 1 })
+    // The image that runs the Butler as `butler` puts its control socket under butler.ouro; any other bundle name is undocumented.
+    for (const name of ["butler", "sanctuary"]) {
+      const named = { ...control, path: `/home/ouro/AgentBundles/${name}.ouro/state/acceptance/telegram-control.sock` }
+      expect(attestOwnedListeners({ rootPid: 321, netnsBefore: "net:[42]", netnsAfter: "net:[42]", processIdsBefore: [321, 322], processIdsAfter: [321, 322], socketInodesBefore: ["900"], socketInodesAfter: ["900"], tcpListenersBefore: [], tcpListenersAfter: [], udpListenersBefore: [], udpListenersAfter: [], unixSocketsBefore: [named], unixSocketsAfter: [named] })).toMatchObject({ unixControlSocketCount: 1 })
+    }
+    const stranger = { ...control, path: "/home/ouro/AgentBundles/other.ouro/state/acceptance/telegram-control.sock" }
+    expect(() => attestOwnedListeners({ rootPid: 321, netnsBefore: "net:[42]", netnsAfter: "net:[42]", processIdsBefore: [321, 322], processIdsAfter: [321, 322], socketInodesBefore: ["900"], socketInodesAfter: ["900"], tcpListenersBefore: [], tcpListenersAfter: [], udpListenersBefore: [], udpListenersAfter: [], unixSocketsBefore: [stranger], unixSocketsAfter: [stranger] })).toThrow(/undocumented/u)
   })
 
   it("allows only the documented loopback Mailbox control listener", async () => {

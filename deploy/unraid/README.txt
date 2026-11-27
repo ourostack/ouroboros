@@ -1,14 +1,16 @@
 Ouro Butler operator runbook
 
-The production container is ouro-butler. It runs as UID/GID 10001, publishes no ports, uses host networking only so its loopback-only Unraid GraphQL client can reach 127.0.0.1, mounts the runtime and sanctuary.ouro bundle read-write, plus the privileged event spool read-only, and uses restart policy unless-stopped. The canonical-gateway image appends /run/ouro-authority -> /run/ouro-authority, readonly, rprivate, and the operator trust mount (/mnt/user/appdata/ouro-butler/trust/sanctuary -> /etc/ouro/trust/sanctuary, readonly, rprivate), a root-owned directory outside the bundle that holds the grants the Butler honours. The pinned alpha.816 predecessor has only the first three mounts. Root token, issuer, package and authority state are never mounted into the resident. The psyche folder has no mount of its own: it is part of the writable bundle and belongs to the install. Releases up to alpha.978 also mounted <bundle>/psyche read-only over the bundle, so every audit still accepts that six-mount shape, and rolling an upgrade back to such a release recreates it with that mount.
+The production container is ouro-butler. It runs as UID/GID 10001, publishes no ports, uses host networking only so its loopback-only Unraid GraphQL client can reach 127.0.0.1, mounts the runtime and sanctuary.ouro bundle read-write, plus the privileged event spool read-only, and uses restart policy unless-stopped. The canonical-gateway image appends /run/ouro-authority -> /run/ouro-authority, readonly, rprivate, and the operator trust mount (/mnt/user/appdata/ouro-butler/trust/sanctuary -> /etc/ouro/trust/butler, readonly, rprivate), a root-owned directory outside the bundle that holds the grants the Butler honours. The pinned alpha.816 predecessor has only the first three mounts. Root token, issuer, package and authority state are never mounted into the resident. The psyche folder has no mount of its own: it is part of the writable bundle and belongs to the install. Releases up to alpha.978 also mounted <bundle>/psyche read-only over the bundle, so every audit still accepts that six-mount shape, and rolling an upgrade back to such a release recreates it with that mount.
+
+The Butler's name. From the rename (M2) on, the image runs the Butler as butler: its ENTRYPOINT ends --package-managed-agent butler, and inside the container the bundle is /home/ouro/AgentBundles/butler.ouro, operator trust is /etc/ouro/trust/butler and the scheduler's crontab is /home/ouro/.ouro-cli/scheduler/butler.crontab. The host folders keep their names, /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro and /mnt/user/appdata/ouro-butler/trust/sanctuary, and the machine id stays sanctuary. An older image (and a rollback to one) runs the Butler as sanctuary and mounts the same host folders under that name. The upgrade, the replay gate, the sync cutover and the Unit 16 launcher read the name from the image's ENTRYPOINT, so they need nothing from you; when you type a command from this runbook against such an image, put sanctuary where it says butler.
 
 Root authority lifecycle
 
 The existing DockerMan transaction owns authority-install, authority-activate, authority-retire and authority-restore. A complete exact-image package, including dist and production dependencies, must remain at its package-relative paths; extracting only the old five deployment assets cannot execute this lifecycle. The reviewed root-only inputs are /mnt/user/appdata/ouro-authority/incoming-package, package-manifest.json, request.json and incoming-token. They are not a new resident credential policy. The human rotates the existing bot token directly into root custody; the root owner proves the previous token returns 401 and the fresh token belongs to the same numeric bot before continuing.
 
-Psyche mount retired: alpha.978 and earlier mounted the bundle psyche folder read-only over the bundle (six mounts). The upgrade audits still accept that shape, so the running alpha.978 resident passes them; the upgrade then recreates the resident with five mounts (no separate psyche mount) and removes the psyche Config (Target /home/ouro/AgentBundles/sanctuary.ouro/psyche) from the installed DockerMan template /boot/config/plugins/dockerMan/templates-user/my-ouro-butler.xml, so a DockerMan Apply cannot add the read-only mount back. Rolling an upgrade back to alpha.978 or earlier recreates the predecessor with the read-only psyche mount it expects; a rollback to alpha.979 or later recreates it with no psyche mount. Psyche files stay owned by uid 10001, not writable by group or others, with no symlinks (verify checks exactly that); the upgrade still resets them to 0600, because exact 0600 matters only for a rollback to alpha.978 or earlier, whose boot check requires it. From M1b the Butler writes its own TACIT and a family member in a one-to-one chat (Telegram, BlueBubbles, or Teams) can change the rest of its psyche; every gated upgrade plants psyche/.release-marker and reports psyche-survives-release (and psyche-survives-rollback after a gate failure), and a drill (b) style downgrade to alpha.979 runs with --no-gate.
+Psyche mount retired: alpha.978 and earlier mounted the bundle psyche folder read-only over the bundle (six mounts). The upgrade audits still accept that shape, so the running alpha.978 resident passes them; the upgrade then recreates the resident with five mounts (no separate psyche mount) and removes the psyche Config (Target /home/ouro/AgentBundles/butler.ouro/psyche) from the installed DockerMan template /boot/config/plugins/dockerMan/templates-user/my-ouro-butler.xml, so a DockerMan Apply cannot add the read-only mount back. Rolling an upgrade back to alpha.978 or earlier recreates the predecessor with the read-only psyche mount it expects; a rollback to alpha.979 or later recreates it with no psyche mount. Psyche files stay owned by uid 10001, not writable by group or others, with no symlinks (verify checks exactly that); the upgrade still resets them to 0600, because exact 0600 matters only for a rollback to alpha.978 or earlier, whose boot check requires it. From M1b the Butler writes its own TACIT and a family member in a one-to-one chat (Telegram, BlueBubbles, or Teams) can change the rest of its psyche; every gated upgrade plants psyche/.release-marker and reports psyche-survives-release (and psyche-survives-rollback after a gate failure), and a drill (b) style downgrade to alpha.979 runs with --no-gate.
 
-Operator trust directory. Delegated-command and escalation grants live on the host in /mnt/user/appdata/ouro-butler/trust/sanctuary, owned by root:root, mode 0755, with every file in it root-owned and mode 0644, and the directory is outside the bundle so the upgrade's recursive chown cannot reach it. The container sees it read-only at /etc/ouro/trust/sanctuary; the Butler honours a grant only when the file and every directory above it up to / are real, root-owned and closed to group and other writes. Create it once as root before the first create: `install -d -o root -g root -m 0755 /mnt/user/appdata/ouro-butler /mnt/user/appdata/ouro-butler/trust /mnt/user/appdata/ouro-butler/trust/sanctuary` (this also makes /mnt/user/appdata/ouro-butler itself root-owned 0755, which the replay gate needs for its host folder below; the agent and runtime folders inside it keep their own owners). Manage grants on the host as root with a one-off container that mounts the directory read-write (the resident's mount is read-only): `docker run --rm --user 0:0 --entrypoint node --pull=never --network none -v /mnt/user/appdata/ouro-butler/trust/sanctuary:/etc/ouro/trust/sanctuary -v /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:ro <butler image> /opt/ouro/dist/heart/daemon/ouro-entry.js a2a delegated-commands grant --agent sanctuary --friend <friend id> --did <did:key> [--expires <ISO date>] [--source <text>]`, and likewise `a2a delegated-commands revoke|list` and `a2a escalation grant --friend <id> --did <did:key>|revoke|list`. Setting OURO_OPERATOR_TRUST_DIR replaces the trust root (/etc/ouro/trust) and keeps the per-agent folder, so the files sit in <dir>/<agent>/. Grant commands take an exclusive .lock file in the directory (the lock records the writer's pid and host; one older than two minutes is taken over only when that pid is no longer running on the same host, and one written on another host only after an hour; remove a stuck one by hand) and flush the directory after each rename. A one-off container cannot read the agent's own DID, so grant then compares --did with every friend record and refuses a DID a second record also carries, and prints a note saying so; revoke works by friend id even when the friend record is gone. Revoke never writes the friend record (it runs as root); when the record still carries a legacy delegationGrant it prints a REQUIRED FOLLOW-UP docker exec -u 10001 line that clears the legacy delegationGrant field as the resident user (friend records are never written as root). The replay gate grants its replay principal and escalation peer with an expiry equal to the replay window and removes them when it closes; the replay gate keeps a root-owned list of its replay peers in the trust directory (replay-identities.json), the Butler refuses any grant without an expiry for a friend on that list (the grant's source text and the bundle's own replay registry decide nothing), and the grant commands refuse a no-expiry grant, and any escalation grant, for a listed friend. Replay seeds and the provisioning record live outside the bundle, in the root-owned host folder /mnt/user/appdata/ouro-butler/replay-client (the gate's --client-dir overrides it), created by provision as root 0700 under a parent that is root-owned and closed to group and other writes (by default only that parent, /mnt/user/appdata/ouro-butler, is checked, because Unraid's shared /mnt/user/appdata is usually nobody:users 0777); the gate refuses a folder, a parent or a seed that root did not make, and never takes over one the Butler's user could have written. Only root-owned state may supply replay friend ids and DIDs: that folder and the trust directory's replay-identities.json. Nothing in the bundle's state/replay-client or state/replay does, and a provision.json found in the bundle is ignored (its friend ids are only printed, as unverified). A run copies the seeds into a root-only directory it makes inside the container with mktemp -d, drives the CLI as root from there, and deletes it when the window closes. An existing state/replay in the bundle that root does not own is moved aside as replay.untrusted-<time> and made fresh. One-time step on the upgrade that moves the replay seeds out of the bundle: run `node sanctuary-replay-gate.mjs provision --rotate-replay-identities` as root. Earlier replay seeds were written by the Butler's user and must be treated as known to it, so this mints three new seeds (root-owned 0600, in the host folder above), moves any old seed in that folder aside as *.retired-<time>, removes the retired peers' trusted grants, marks their friend records revoked, demotes them to stranger and drops their DID pin and A2A identity (the last two as the resident user, never as root), onboards the new peers and rewrites state/replay/identities.json from the root-owned list; the old friend ids stay in that registry so they stay blocked from owner-policy writes. The peers it retires are the ones the root-owned record and replay list name. The earlier bundle copy of provision.json is not trusted, so the first rotation prints the friend ids it names as unverified; for each one you have checked is a replay peer, add `--retire-friend <id>` (repeatable). Always pass the DID the holder really signs with (`ouro a2a identity --json` on the holder's side); the Butler refuses a message signed by any other DID. First rollout of the trust mount (alpha.887): the live container then had no trust mount, so the first update failed the mount audit exactly as the psyche rollout did; the fix was to recreate the resident once by hand with the runbook's canonical-gateway create and rerun the update. If a resident without the trust mount is ever found again, recreate the resident once by hand with the five-mount create and rerun the update.
+Operator trust directory. Delegated-command and escalation grants live on the host in /mnt/user/appdata/ouro-butler/trust/sanctuary, owned by root:root, mode 0755, with every file in it root-owned and mode 0644, and the directory is outside the bundle so the upgrade's recursive chown cannot reach it. The container sees it read-only at /etc/ouro/trust/butler; the Butler honours a grant only when the file and every directory above it up to / are real, root-owned and closed to group and other writes. Create it once as root before the first create: `install -d -o root -g root -m 0755 /mnt/user/appdata/ouro-butler /mnt/user/appdata/ouro-butler/trust /mnt/user/appdata/ouro-butler/trust/sanctuary` (this also makes /mnt/user/appdata/ouro-butler itself root-owned 0755, which the replay gate needs for its host folder below; the agent and runtime folders inside it keep their own owners). Manage grants on the host as root with a one-off container that mounts the directory read-write (the resident's mount is read-only): `docker run --rm --user 0:0 --entrypoint node --pull=never --network none -v /mnt/user/appdata/ouro-butler/trust/sanctuary:/etc/ouro/trust/butler -v /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/butler.ouro:ro <butler image> /opt/ouro/dist/heart/daemon/ouro-entry.js a2a delegated-commands grant --agent butler --friend <friend id> --did <did:key> [--expires <ISO date>] [--source <text>]`, and likewise `a2a delegated-commands revoke|list` and `a2a escalation grant --friend <id> --did <did:key>|revoke|list`. Setting OURO_OPERATOR_TRUST_DIR replaces the trust root (/etc/ouro/trust) and keeps the per-agent folder, so the files sit in <dir>/<agent>/. Grant commands take an exclusive .lock file in the directory (the lock records the writer's pid and host; one older than two minutes is taken over only when that pid is no longer running on the same host, and one written on another host only after an hour; remove a stuck one by hand) and flush the directory after each rename. A one-off container cannot read the agent's own DID, so grant then compares --did with every friend record and refuses a DID a second record also carries, and prints a note saying so; revoke works by friend id even when the friend record is gone. Revoke never writes the friend record (it runs as root); when the record still carries a legacy delegationGrant it prints a REQUIRED FOLLOW-UP docker exec -u 10001 line that clears the legacy delegationGrant field as the resident user (friend records are never written as root). The replay gate grants its replay principal and escalation peer with an expiry equal to the replay window and removes them when it closes; the replay gate keeps a root-owned list of its replay peers in the trust directory (replay-identities.json), the Butler refuses any grant without an expiry for a friend on that list (the grant's source text and the bundle's own replay registry decide nothing), and the grant commands refuse a no-expiry grant, and any escalation grant, for a listed friend. Replay seeds and the provisioning record live outside the bundle, in the root-owned host folder /mnt/user/appdata/ouro-butler/replay-client (the gate's --client-dir overrides it), created by provision as root 0700 under a parent that is root-owned and closed to group and other writes (by default only that parent, /mnt/user/appdata/ouro-butler, is checked, because Unraid's shared /mnt/user/appdata is usually nobody:users 0777); the gate refuses a folder, a parent or a seed that root did not make, and never takes over one the Butler's user could have written. Only root-owned state may supply replay friend ids and DIDs: that folder and the trust directory's replay-identities.json. Nothing in the bundle's state/replay-client or state/replay does, and a provision.json found in the bundle is ignored (its friend ids are only printed, as unverified). A run copies the seeds into a root-only directory it makes inside the container with mktemp -d, drives the CLI as root from there, and deletes it when the window closes. An existing state/replay in the bundle that root does not own is moved aside as replay.untrusted-<time> and made fresh. One-time step on the upgrade that moves the replay seeds out of the bundle: run `node sanctuary-replay-gate.mjs provision --rotate-replay-identities` as root. Earlier replay seeds were written by the Butler's user and must be treated as known to it, so this mints three new seeds (root-owned 0600, in the host folder above), moves any old seed in that folder aside as *.retired-<time>, removes the retired peers' trusted grants, marks their friend records revoked, demotes them to stranger and drops their DID pin and A2A identity (the last two as the resident user, never as root), onboards the new peers and rewrites state/replay/identities.json from the root-owned list; the old friend ids stay in that registry so they stay blocked from owner-policy writes. The peers it retires are the ones the root-owned record and replay list name. The earlier bundle copy of provision.json is not trusted, so the first rotation prints the friend ids it names as unverified; for each one you have checked is a replay peer, add `--retire-friend <id>` (repeatable). Always pass the DID the holder really signs with (`ouro a2a identity --json` on the holder's side); the Butler refuses a message signed by any other DID. First rollout of the trust mount (alpha.887): the live container then had no trust mount, so the first update failed the mount audit exactly as the psyche rollout did; the fix was to recreate the resident once by hand with the runbook's canonical-gateway create and rerun the update. If a resident without the trust mount is ever found again, recreate the resident once by hand with the five-mount create and rerun the update.
 
 During installation the resident is stopped, the root gateway is installed and proven, tokenless readiness runs, and authority-activate starts the exact five-mount target. On failure, authority-retire must finish before restoring bundle/config/mounts or starting the exact three-mount predecessor; authority-restore proves that rollback before the outer template journal is removed. An uncertain or interrupted handoff leaves autostart disabled and preserves both journals and root inputs for the same reviewed recovery, never a raw old-template start. Retired keys, policy, history and Jellyfin remain untouched. Re-enabling authority requires a new human token rotation and issuer epoch, not reuse of retired authority.
 
@@ -363,7 +365,7 @@ Effective-spec audit helper:
       test "$(sanctuary_image_mount_contract "$CREATE_IMAGE_ID")" = "$CREATE_MOUNT_CONTRACT" || return 1
       test "$(docker image inspect --format '{{.Id}}' "$CREATE_IMAGE_REFERENCE")" = "$CREATE_IMAGE_ID" || return 1
       case "$CREATE_MOUNT_CONTRACT" in
-        canonical-gateway) set -- --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" --mount "type=bind,src=/mnt/user/appdata/ouro-butler/trust/sanctuary,dst=/etc/ouro/trust/sanctuary,readonly" ;;
+        canonical-gateway) set -- --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" --mount "type=bind,src=/mnt/user/appdata/ouro-butler/trust/sanctuary,dst=/etc/ouro/trust/butler,readonly" ;;
         canonical-pre-gateway) set -- ;;
         *) return 1 ;;
       esac
@@ -371,7 +373,7 @@ Effective-spec audit helper:
         --label net.unraid.docker.managed=dockerman \
         --label "net.unraid.docker.icon=https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png" \
         --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
-        --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+        --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/butler.ouro" \
         --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
         "$@" "$CREATE_IMAGE_REFERENCE" || return $?
       )
@@ -802,10 +804,10 @@ Effective-spec audit helper:
       fi
       docker run --rm --pull=never --network=none --read-only --user 10001:10001 \
         --entrypoint /usr/local/bin/node \
-        --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+        --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/butler.ouro" \
         "$MIGRATE_IMAGE_ID" /opt/ouro/deploy/unraid/migrate-sanctuary-bundle.mjs \
         --package-root /opt/ouro/deploy/unraid/sanctuary.ouro \
-        --agent-root /home/ouro/AgentBundles/sanctuary.ouro \
+        --agent-root /home/ouro/AgentBundles/butler.ouro \
         --operation "$MIGRATE_OPERATION" "$@" || return $?
     }
     read_sanctuary_bundle_transaction_status() {
@@ -1338,11 +1340,11 @@ Effective-spec audit helper:
         ! docker container inspect ouro-butler-bundle-bootstrap >/dev/null 2>&1 || return 1
         docker run --rm --pull=never --network=none --name ouro-butler-bundle-bootstrap --user 10001:10001 \
           --mount "type=bind,src=$PREPARE_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
-          --mount "type=bind,src=$PREPARE_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+          --mount "type=bind,src=$PREPARE_AGENT_ROOT,dst=/home/ouro/AgentBundles/butler.ouro" \
           --entrypoint /bin/sh "$PREPARE_IMAGE_ID" -ceu '
-            cp -R /opt/ouro/deploy/unraid/sanctuary.ouro/. /home/ouro/AgentBundles/sanctuary.ouro/
-            find /home/ouro/AgentBundles/sanctuary.ouro -type d -exec chmod 0700 {} +
-            find /home/ouro/AgentBundles/sanctuary.ouro -type f -exec chmod 0600 {} +
+            cp -R /opt/ouro/deploy/unraid/sanctuary.ouro/. /home/ouro/AgentBundles/butler.ouro/
+            find /home/ouro/AgentBundles/butler.ouro -type d -exec chmod 0700 {} +
+            find /home/ouro/AgentBundles/butler.ouro -type f -exec chmod 0600 {} +
           ' || return $?
         ! docker container inspect ouro-butler-bundle-bootstrap >/dev/null 2>&1 || return 1
       fi
@@ -1436,9 +1438,9 @@ Effective-spec audit helper:
       done
       VAULT_STATUS=$(docker run --rm --pull=never --network host --name ouro-butler-vault-status --user 10001:10001 \
         --mount "type=bind,src=$BOOTSTRAP_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
-        --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+        --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/butler.ouro" \
         --entrypoint node "$BOOTSTRAP_IMAGE_ID" /opt/ouro/dist/heart/daemon/ouro-entry.js \
-        vault status --agent sanctuary --store plaintext-file) || return $?
+        vault status --agent butler --store plaintext-file) || return $?
       ! docker container inspect ouro-butler-vault-status >/dev/null 2>&1 || return 1
       case "
 $VAULT_STATUS
@@ -1466,16 +1468,16 @@ local unlock: missing
       if test "$VAULT_ACTION" != none; then
         docker run --rm -it --pull=never --network host --name ouro-butler-vault-bootstrap --user 10001:10001 \
           --mount "type=bind,src=$BOOTSTRAP_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
-          --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+          --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/butler.ouro" \
           --entrypoint node "$BOOTSTRAP_IMAGE_ID" /opt/ouro/dist/heart/daemon/ouro-entry.js \
-          vault "$VAULT_ACTION" --agent sanctuary --store plaintext-file || return $?
+          vault "$VAULT_ACTION" --agent butler --store plaintext-file || return $?
         ! docker container inspect ouro-butler-vault-bootstrap >/dev/null 2>&1 || return 1
       fi
       VERIFIED_VAULT_STATUS=$(docker run --rm --pull=never --network host --name ouro-butler-vault-status --user 10001:10001 \
         --mount "type=bind,src=$BOOTSTRAP_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
-        --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+        --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/butler.ouro" \
         --entrypoint node "$BOOTSTRAP_IMAGE_ID" /opt/ouro/dist/heart/daemon/ouro-entry.js \
-        vault status --agent sanctuary --store plaintext-file) || return $?
+        vault status --agent butler --store plaintext-file) || return $?
       ! docker container inspect ouro-butler-vault-status >/dev/null 2>&1 || return 1
       case "
 $VERIFIED_VAULT_STATUS
@@ -1528,10 +1530,10 @@ local unlock: available
         fi
         docker run --rm --pull=never --network host --name ouro-butler-credential-bootstrap --user 10001:10001 \
           --mount "type=bind,src=$BOOTSTRAP_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
-          --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+          --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/butler.ouro" \
           --entrypoint node "$BOOTSTRAP_IMAGE_ID" -e '
             const { loadContainerCredentialBootstrap } = require("/opt/ouro/dist/heart/daemon/container-credential-bootstrap.js")
-            loadContainerCredentialBootstrap(["sanctuary"], {
+            loadContainerCredentialBootstrap(["butler"], {
               machineIdMigration: {
                 sourceMachineId: process.argv[1],
                 targetMachineId: process.argv[2],
@@ -1577,7 +1579,7 @@ local unlock: available
         const [source, destination] = process.argv.slice(1);
         const match = fs.readFileSync(source, "utf8").match(/^\s*api_key\s*=\s*(\S+)\s*$/mu);
         if (!match || !match[1]) process.exit(1);
-        const credential = { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", machineId: "sanctuary", machineRuntimeConfig: { sabnzbdApiKey: match[1] } };
+        const credential = { type: "ouro.runtimeCredentialBootstrap", agentName: "butler", machineId: "sanctuary", machineRuntimeConfig: { sabnzbdApiKey: match[1] } };
         const envelope = { schemaVersion: 1, credentials: [credential] };
         fs.writeFileSync(destination, `${JSON.stringify(envelope)}\n`, { mode: 0o600, flag: "w" });
       ' "$SAB_BOOTSTRAP_SOURCE" "$SAB_BOOTSTRAP_TMP" || return $?
@@ -1589,10 +1591,10 @@ local unlock: available
       trap - EXIT || return $?
       docker run --rm --pull=never --network host --name ouro-butler-sab-credential-bootstrap --user 10001:10001 \
         --mount "type=bind,src=$SAB_BOOTSTRAP_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
-        --mount "type=bind,src=$SAB_BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+        --mount "type=bind,src=$SAB_BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/butler.ouro" \
         --entrypoint node "$SAB_BOOTSTRAP_IMAGE_ID" -e '
           const { loadContainerCredentialBootstrap } = require("/opt/ouro/dist/heart/daemon/container-credential-bootstrap.js");
-          loadContainerCredentialBootstrap(["sanctuary"]).then(
+          loadContainerCredentialBootstrap(["butler"]).then(
             () => process.exit(0),
             () => { process.stderr.write("SAB credential bootstrap failed\n"); process.exit(1); },
           );
@@ -1607,13 +1609,13 @@ local unlock: available
       ! docker container inspect ouro-butler-sab-readiness >/dev/null 2>&1 || return 1
       docker run --rm --pull=never --network host --name ouro-butler-sab-readiness --user 10001:10001 \
         --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
-        --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+        --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/butler.ouro" \
         --entrypoint node "$SAB_READINESS_IMAGE_ID" -e '
           (async () => {
             try {
               const { refreshMachineRuntimeCredentialConfig } = require("/opt/ouro/dist/heart/runtime-credentials.js");
               const { createSanctuarySabClient } = require("/opt/ouro/dist/senses/sanctuary-sab.js");
-              const current = await refreshMachineRuntimeCredentialConfig("sanctuary", "sanctuary");
+              const current = await refreshMachineRuntimeCredentialConfig("butler", "sanctuary");
               if (!current.ok || typeof current.config.sabnzbdApiKey !== "string" || !current.config.sabnzbdApiKey.trim()) throw new Error();
               const snapshot = await createSanctuarySabClient({ loadApiKey: async () => current.config.sabnzbdApiKey }).readQueue();
               if (typeof snapshot.paused !== "boolean" || !Number.isSafeInteger(snapshot.queuedJobs) || !snapshot.observedAt) throw new Error();
@@ -1640,9 +1642,9 @@ local unlock: available
       ! docker container inspect "$AUTH_CONTAINER" >/dev/null 2>&1 || return 1
       docker run --rm -it --pull=never --network host --name "$AUTH_CONTAINER" --user 10001:10001 \
         --mount "type=bind,src=$AUTH_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
-        --mount "type=bind,src=$AUTH_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+        --mount "type=bind,src=$AUTH_AGENT_ROOT,dst=/home/ouro/AgentBundles/butler.ouro" \
         --entrypoint node "$AUTH_IMAGE_ID" /opt/ouro/dist/heart/daemon/ouro-entry.js \
-        auth --agent sanctuary --provider "$AUTH_PROVIDER" || return $?
+        auth --agent butler --provider "$AUTH_PROVIDER" || return $?
       ! docker container inspect "$AUTH_CONTAINER" >/dev/null 2>&1 || return 1
     }
     verify_sanctuary_provider_readiness() {
@@ -1653,16 +1655,16 @@ local unlock: available
       ! docker container inspect ouro-butler-provider-readiness >/dev/null 2>&1 || return 1
       docker run --rm --pull=never --network host --name ouro-butler-provider-readiness --user 10001:10001 \
         --mount "type=bind,src=$READINESS_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
-        --mount "type=bind,src=$READINESS_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+        --mount "type=bind,src=$READINESS_AGENT_ROOT,dst=/home/ouro/AgentBundles/butler.ouro" \
         --entrypoint /bin/sh "$READINESS_IMAGE_ID" -ceu '
           umask 077
-          node /opt/ouro/dist/heart/daemon/ouro-entry.js check --agent sanctuary --lane outward
-          node /opt/ouro/dist/heart/daemon/ouro-entry.js check --agent sanctuary --lane inner
+          node /opt/ouro/dist/heart/daemon/ouro-entry.js check --agent butler --lane outward
+          node /opt/ouro/dist/heart/daemon/ouro-entry.js check --agent butler --lane inner
           node - <<'"'"'NODE'"'"'
             (async () => {
               try {
                 const fs = require("node:fs");
-                const root = "/home/ouro/AgentBundles/sanctuary.ouro";
+                const root = "/home/ouro/AgentBundles/butler.ouro";
                 const agent = JSON.parse(fs.readFileSync(`${root}/agent.json`, "utf8"));
                 const policy = JSON.parse(fs.readFileSync(`${root}/provider-readiness.json`, "utf8"));
                 const expectedPolicy = { version: 1, selectionPolicy: "explicit-same-lane-only" };
@@ -1680,7 +1682,7 @@ local unlock: available
                 }
                 if (expected.size !== 0) throw new Error();
                 const { refreshProviderCredentialPool } = require("/opt/ouro/dist/heart/provider-credentials.js");
-                const refreshed = await refreshProviderCredentialPool("sanctuary", {
+                const refreshed = await refreshProviderCredentialPool("butler", {
                   providers: ["minimax"],
                   skipCache: true,
                 });
@@ -1707,7 +1709,7 @@ NODE
       TELEGRAM_READINESS_CONTRACT=$(sanctuary_image_mount_contract "$TELEGRAM_READINESS_IMAGE_ID") || return $?
       TELEGRAM_READINESS_CONTEXT=${2-}
       case "$TELEGRAM_READINESS_CONTRACT" in
-        canonical-gateway) TELEGRAM_READINESS_CONTEXT=${TELEGRAM_READINESS_CONTEXT:-strict}; set -- --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" --mount "type=bind,src=/mnt/user/appdata/ouro-butler/trust/sanctuary,dst=/etc/ouro/trust/sanctuary,readonly" ;;
+        canonical-gateway) TELEGRAM_READINESS_CONTEXT=${TELEGRAM_READINESS_CONTEXT:-strict}; set -- --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" --mount "type=bind,src=/mnt/user/appdata/ouro-butler/trust/sanctuary,dst=/etc/ouro/trust/butler,readonly" ;;
         canonical-pre-gateway) TELEGRAM_READINESS_CONTEXT=${TELEGRAM_READINESS_CONTEXT:-live-precutover}; set -- ;;
         *) return 1 ;;
       esac
@@ -1721,7 +1723,7 @@ NODE
       docker run --rm --pull=never --network host --name ouro-butler-telegram-readiness --user 10001:10001 \
         --read-only --cap-drop ALL --security-opt no-new-privileges \
         --mount "type=bind,src=$TELEGRAM_READINESS_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
-        --mount "type=bind,src=$TELEGRAM_READINESS_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly" \
+        --mount "type=bind,src=$TELEGRAM_READINESS_AGENT_ROOT,dst=/home/ouro/AgentBundles/butler.ouro,readonly" \
         --entrypoint /opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh \
         "$@" "$TELEGRAM_READINESS_IMAGE_ID" telegram-readiness >/dev/null || return $?
       ! docker container inspect ouro-butler-telegram-readiness >/dev/null 2>&1 || return 1
@@ -1935,7 +1937,7 @@ NODE
       VERIFY_RESULT=$(run_sanctuary_docker run --rm --pull=never --network host \
         --user 0:0 \
         --mount type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli,readonly \
-        --mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly \
+        --mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/butler.ouro,readonly \
         --mount type=bind,src="$KEY_PATH",dst=/run/ouro-acceptance/unraid-key.json,readonly \
         --entrypoint /opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh \
         "$IMAGE_ID" vault-probe "$KEY_ID" "$CAPABILITY") || return $?
@@ -2766,7 +2768,7 @@ Credential recovery:
   template and image updates.
   Bootstrap is not the rotation path. After SAB rotates its key, use the
   existing hidden-prompt merge command
-  `ouro vault config set --agent sanctuary --key sabnzbdApiKey --scope machine`,
+  `ouro vault config set --agent butler --key sabnzbdApiKey --scope machine`,
   restart the reviewed Butler container so its machine-config cache refreshes,
   and rerun `verify_sanctuary_sab_readiness "$IMAGE_ID"`; a conflicting
   bootstrap is expected to stop rather than overwrite canonical vault state.
@@ -2794,7 +2796,7 @@ Packaged deployment-target containment gates:
   verifies the same ID and PID resumed their original running, unpaused state,
   and only then performs the final full-profile topology capture. It
   rejects every owned UDP listener and every externally reachable owned TCP listener.
-  Only loopback Mailbox port 6876 plus stream-listening endpoints at /tmp/ouroboros-daemon.sock, /tmp/ouroboros-daemon.sock.frontend, and /home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-control.sock are permitted; all other named Unix endpoint types (including datagrams) fail closed.
+  Only loopback Mailbox port 6876 plus stream-listening endpoints at /tmp/ouroboros-daemon.sock, /tmp/ouroboros-daemon.sock.frontend, and /home/ouro/AgentBundles/butler.ouro/state/acceptance/telegram-control.sock are permitted; all other named Unix endpoint types (including datagrams) fail closed.
   Inherited descriptors for the same socket inode are deduplicated, while unknown loopback ports, wildcard/host-address listeners, process/socket/listener drift, or ambiguous ownership fail closed.
   Unit 18 uses the separately packaged fixed final command after activation.
   It accepts either the legacy-adoption topology with no canonical rollback or
@@ -2971,7 +2973,7 @@ Packaged Unit 16 acceptance execution:
   inode used by the one-shot for marker correlation.
 
 Audit and safety verification:
-  Inspect AgentBundles/sanctuary.ouro/state/approvals for durable approval and restart-attempt receipts. Confirm with docker inspect that the container has no Docker socket, device, host-root mount, or published port. Confirm `Config.Image` equals the canonical package-version tag and `.Image` equals the exact reviewed local image ID. The read key must reject Docker stop and restart mutations; only the separate write key may perform the one typed approved restart action.
+  Inspect AgentBundles/butler.ouro/state/approvals for durable approval and restart-attempt receipts. Confirm with docker inspect that the container has no Docker socket, device, host-root mount, or published port. Confirm `Config.Image` equals the canonical package-version tag and `.Image` equals the exact reviewed local image ID. The read key must reject Docker stop and restart mutations; only the separate write key may perform the one typed approved restart action.
   The packaged `unraid-key-rotate` command is the only canonical key-rotation
   authority. Its host launcher stops the exact production container and assumes
   trap-backed recovery responsibility before key mutation. It inventories the

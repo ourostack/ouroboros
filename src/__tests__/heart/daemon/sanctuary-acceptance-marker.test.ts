@@ -58,6 +58,7 @@ vi.mock("node:child_process", async () => {
 
 vi.mock("../../../heart/identity", () => ({
   getAgentRoot: (agentName: string) => path.join(root, `${agentName}.ouro`),
+  getAgentBundlesRoot: () => root,
 }))
 
 import {
@@ -72,6 +73,7 @@ import {
   secureRenameBoundInodeSync,
   sanctuaryAcceptanceEventMeta,
   writeSanctuaryAcceptanceMarker,
+  acceptanceButler,
 } from "../../../heart/daemon/sanctuary-acceptance-marker"
 
 afterEach(() => {
@@ -290,5 +292,21 @@ describe("Sanctuary acceptance marker", () => {
     })
     expect(value).toEqual({ approvalId: "approval", argumentDigest: "e".repeat(64) })
     expect(readSanctuaryAcceptanceApproval()).toBeNull()
+  })
+})
+
+describe("acceptanceButler", () => {
+  it("is the Butler whose one bundle is on disk, under the name the image mounted it", () => {
+    expect(acceptanceButler("/home/ouro/AgentBundles", (bundle) => bundle === "/home/ouro/AgentBundles/butler.ouro")).toBe("butler")
+    expect(acceptanceButler("/home/ouro/AgentBundles", (bundle) => bundle === "/home/ouro/AgentBundles/sanctuary.ouro")).toBe("sanctuary")
+  })
+
+  it("keeps sanctuary, the name from before the rename, with neither bundle or both", () => {
+    expect(acceptanceButler("/home/ouro/AgentBundles", () => false)).toBe("sanctuary")
+    expect(acceptanceButler("/home/ouro/AgentBundles", () => true)).toBe("sanctuary")
+  })
+
+  it("asks the real bundles folder by default", () => {
+    expect(["butler", "sanctuary"]).toContain(acceptanceButler())
   })
 })

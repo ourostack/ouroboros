@@ -4,8 +4,8 @@ import { AsyncLocalStorage } from "node:async_hooks"
 import { randomUUID } from "node:crypto"
 import { spawnSync } from "node:child_process"
 
-import { getAgentRoot } from "../identity"
-import { isButlerAgent } from "../butler-agent"
+import { getAgentBundlesRoot, getAgentRoot } from "../identity"
+import { butlerOnDisk, isButlerAgent, type ButlerAgentName } from "../butler-agent"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 const SHA256 = /^[0-9a-f]{64}$/u
@@ -72,6 +72,15 @@ function parseMarker(value: unknown): SanctuaryAcceptanceMarker {
     throw new Error("acceptance marker is corrupt")
   }
   return marker as unknown as SanctuaryAcceptanceMarker
+}
+
+/**
+ * The Butler this container runs: the one bundle on disk, which the image mounts under its own name (`butler` from M2 on,
+ * `sanctuary` before it and after a rollback to such an image). The acceptance tools run as their own processes, where no
+ * daemon start has said which name is running; with neither bundle (or both) there it keeps `sanctuary`.
+ */
+export function acceptanceButler(bundlesRoot = getAgentBundlesRoot(), exists: (bundlePath: string) => boolean = fs.existsSync): ButlerAgentName {
+  return butlerOnDisk(bundlesRoot, exists) ?? "sanctuary"
 }
 
 export function readSanctuaryAcceptanceMarker(agentName: string, configuredAgentRoot?: string): SanctuaryAcceptanceMarker | null {
