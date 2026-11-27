@@ -14,11 +14,6 @@ import type { OuroProduct, ProductHabitRunInput } from "../heart/product/types"
 import { readOrCreateTelegramIdentityKey } from "../senses/telegram-identity-key"
 import type { DaemonResponse } from "../heart/daemon/daemon"
 
-async function sanctuarySourceReady(agent: string, source: string): Promise<void> {
-  // Loaded here, not with the product: it imports Sanctuary's tool registry.
-  const { ensureSanctuarySourceRuntimeReady } = await import("../senses/sanctuary-runtime")
-  await ensureSanctuarySourceRuntimeReady(agent, source)
-}
 
 /** The acceptance run that proves a cron fire reaches the health sweep (Unit 16f), when one is running. */
 function cronFingerprintScenario(agent: string): SanctuaryAcceptanceMarker | null {
@@ -31,6 +26,12 @@ function cronFingerprintScenario(agent: string): SanctuaryAcceptanceMarker | nul
  * Butler. During the cron-fingerprint acceptance run it also records the liveness receipt that proves the fire was the
  * scheduler's and did no paid work.
  */
+// The Butler's runtime is loaded at its first use, not with the product: it imports Sanctuary's whole tool registry, and every
+// process on the image (each CLI command, the scheduler's poke) loads the product.
+async function sanctuaryRuntime(): Promise<typeof import("../senses/sanctuary-runtime")> {
+  return import("../senses/sanctuary-runtime")
+}
+
 async function runSanctuaryHealth(input: ProductHabitRunInput): Promise<DaemonResponse> {
   const schedulerScenario = cronFingerprintScenario(input.agent)
   const agentRoot = path.join(getAgentBundlesRoot(), `${input.agent}.ouro`)
@@ -89,9 +90,11 @@ export const product: OuroProduct = {
   },
   // J5: events from the house check and the Usenet watch wake the Butler only once its machine credentials are complete.
   eventSources: {
-    "sanctuary-health": { ready: (agent) => sanctuarySourceReady(agent, "sanctuary-health") },
-    "sanctuary-usenet": { ready: (agent) => sanctuarySourceReady(agent, "sanctuary-usenet") },
+    "sanctuary-health": { ready: async (agent) => { await (await sanctuaryRuntime()).ensureSanctuarySourceRuntimeReady(agent, "sanctuary-health") } },
+    "sanctuary-usenet": { ready: async (agent) => { await (await sanctuaryRuntime()).ensureSanctuarySourceRuntimeReady(agent, "sanctuary-usenet") } },
   },
+  // J4: every turn gets the house runtime its tools read, and the answer gates the Butler opts in to.
+  turnContext: async ({ agentName }) => (await sanctuaryRuntime()).createSanctuaryToolContext(agentName),
   // J5: the house check runs in the daemon, and only Supercronic may fire it on its cron schedule.
   habits: {
     "sanctuary-health": {

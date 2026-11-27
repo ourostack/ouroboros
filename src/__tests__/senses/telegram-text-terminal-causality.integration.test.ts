@@ -110,7 +110,7 @@ describe("Telegram text-terminal delivery causality", () => {
       credentials: { botToken, authorizedUserId: userId, authorizedChatId: chatId },
       identityKey,
       _agentRoot: harness.agentRoot,
-      _toolContext: { signin: async () => undefined, agentRoot: harness.agentRoot } as never,
+      productContext: { signin: async () => undefined, agentRoot: harness.agentRoot } as never,
       api: { request: apiRequest, stop: vi.fn() },
       offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: (options: TelegramLongPollOptions) => {

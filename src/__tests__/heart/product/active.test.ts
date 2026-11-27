@@ -2,8 +2,9 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { loadImageProduct, loadProduct, PRODUCT_SEAM_VERSION, productAgentAmong, productEventSource, productFor, productHabit } from "../../../heart/product/active"
+import { loadImageProduct, loadProduct, PRODUCT_SEAM_VERSION, productAgentAmong, productEventSource, productFor, productHabit, productTurnContext } from "../../../heart/product/active"
 import { product as butlerProduct } from "../../../products/butler"
+import { cacheMachineRuntimeCredentialConfig } from "../../../heart/runtime-credentials"
 
 const PATH = "/opt/example/dist/product.js"
 const product = { seamVersion: PRODUCT_SEAM_VERSION, id: "example", agents: ["helper", "old-helper"] }
@@ -128,5 +129,38 @@ describe("the product seam", () => {
     expect(productEventSource("helper", "toString")).toBeNull()
     loadProduct(PATH, () => ({ product }))
     expect(productEventSource("helper", "watch")).toBeNull()
+  })
+
+  it("gives a turn the product's part of its tool context, and nothing for an agent without one", async () => {
+    const turn = { agentName: "helper", channel: "telegram" }
+    await expect(productTurnContext(turn)).resolves.toEqual({})
+    loadProduct(PATH, () => ({ product }))
+    await expect(productTurnContext(turn)).resolves.toEqual({})
+    const answerGates = { brevity: true }
+    const turnContext = vi.fn(async () => ({ answerGates, agentRoot: "/bundles/helper.ouro" }))
+    loadProduct(PATH, () => ({ product: { ...product, turnContext } }))
+    await expect(productTurnContext(turn)).resolves.toEqual({ answerGates, agentRoot: "/bundles/helper.ouro" })
+    expect(turnContext).toHaveBeenCalledWith(turn)
+    await expect(productTurnContext({ agentName: "slugger", channel: "telegram" })).resolves.toEqual({})
+  })
+
+  it("fails the turn when the product's turn context fails, unless the turn may run without it", async () => {
+    let thrown: unknown = new Error("house config is missing")
+    loadProduct(PATH, () => ({ product: { ...product, turnContext: async () => { throw thrown } } }))
+    await expect(productTurnContext({ agentName: "helper", channel: "a2a" })).rejects.toThrow("house config is missing")
+    await expect(productTurnContext({ agentName: "helper", channel: "inner" }, { tolerant: true })).resolves.toEqual({})
+    thrown = "not an error"
+    await expect(productTurnContext({ agentName: "helper", channel: "a2a" })).rejects.toBe("not an error")
+  })
+
+  it("gives the Butler's turns its house runtime, which needs the machine's house config", async () => {
+    loadProduct("/opt/ouro/dist/products/butler.js", () => ({ product: butlerProduct }))
+    await expect(productTurnContext({ agentName: "butler", channel: "telegram" })).rejects.toThrow(/machine runtime config is missing/u)
+  })
+
+  it("holds the Butler's house and Usenet events until its machine config has what each needs", async () => {
+    cacheMachineRuntimeCredentialConfig("sanctuary", {})
+    await expect(butlerProduct.eventSources!["sanctuary-health"]!.ready("sanctuary")).rejects.toThrow(/\[agent-runnable\] Sanctuary machine runtime/u)
+    await expect(butlerProduct.eventSources!["sanctuary-usenet"]!.ready("sanctuary")).rejects.toThrow(/\[agent-runnable\] Sanctuary machine runtime/u)
   })
 })

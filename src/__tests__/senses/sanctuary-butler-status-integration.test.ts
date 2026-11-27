@@ -120,7 +120,7 @@ describe("Sanctuary Telegram stored-status integration", () => {
       agentName: "sanctuary",
       credentials,
       _agentRoot: harness.agentRoot,
-      _toolContext: { agentRoot: harness.agentRoot },
+      productContext: { agentRoot: harness.agentRoot },
       ...relationship,
       api,
       offsetStore: { load: () => 0, save: vi.fn() },

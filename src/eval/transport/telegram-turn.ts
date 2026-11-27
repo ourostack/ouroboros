@@ -202,7 +202,7 @@ export async function runTelegramTurn(input: TelegramTurnInput): Promise<Telegra
       credentials,
       identityKey,
       _agentRoot: agentRoot,
-      _toolContext: { agentRoot, ...house.toolContext } as never,
+      productContext: { agentRoot, ...house.toolContext } as never,
       api,
       createLongPoll: (options) => {
         onMessage = options.onMessage

@@ -1,6 +1,6 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 import { readContainerRuntimePolicy } from "../daemon/container-runtime"
-import type { OuroProduct, ProductEventSource, ProductHabit } from "./types"
+import type { OuroProduct, ProductEventSource, ProductHabit, ProductTurnContext, ProductTurnContextInput } from "./types"
 
 /** The seam version this harness runs. A product built for another stops the start. */
 export const PRODUCT_SEAM_VERSION = 1
@@ -95,4 +95,26 @@ export function productHabit(agentName: string, habitName: string): ProductHabit
 export function productEventSource(agentName: string, source: string): ProductEventSource | null {
   const sources = productFor(agentName)?.eventSources
   return sources && Object.hasOwn(sources, source) ? sources[source]! : null
+}
+
+/**
+ * The product's part of this turn's tool context (J4), or nothing when the agent has no product or the product adds none.
+ * A rejection from the product fails the turn. On a `tolerant` turn it runs without the product's part instead, and says so.
+ */
+export async function productTurnContext(input: ProductTurnContextInput, options: { tolerant?: boolean } = {}): Promise<ProductTurnContext> {
+  const product = productFor(input.agentName)
+  if (!product?.turnContext) return {}
+  try {
+    return await product.turnContext(input)
+  } catch (error) {
+    emitNervesEvent({
+      level: options.tolerant ? "warn" : "error",
+      component: "daemon",
+      event: "daemon.product_hook_error",
+      message: options.tolerant ? "the product's turn context failed, so this turn runs without it" : "the product's turn context failed, so the turn or sense start that asked for it fails",
+      meta: { productId: product.id, hook: "turnContext", agent: input.agentName, channel: input.channel, reason: error instanceof Error ? error.message : String(error) },
+    })
+    if (options.tolerant) return {}
+    throw error
+  }
 }

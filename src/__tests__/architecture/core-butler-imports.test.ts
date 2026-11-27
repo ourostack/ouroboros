@@ -14,9 +14,6 @@ const ALLOWED: Record<string, readonly string[]> = {
   "a2a/escalation-wiring": [
     "heart/butler-agent",
   ],
-  "a2a/server": [
-    "senses/sanctuary-runtime",
-  ],
   "eval/transport/telegram-turn": [
     "eval/transport/synthetic-sanctuary",
   ],
@@ -47,9 +44,6 @@ const ALLOWED: Record<string, readonly string[]> = {
   ],
   "senses/a2a-entry": [
     "heart/butler-agent",
-  ],
-  "senses/private-runtime": [
-    "senses/sanctuary-runtime",
   ],
   "senses/root-host-approval-port": [
     "heart/daemon/sanctuary-authority-codec",

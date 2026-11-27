@@ -57,7 +57,9 @@ import type { SanctuaryTelegramAuthorityTransport } from "./telegram-authority-t
 import { openSanctuaryResidentAuthority } from "./sanctuary-authority-resident"
 import { createRootHostApprovalRuntime } from "./root-host-approval-runtime"
 import { authorizeRootHostContext } from "../repertoire/tools-sanctuary-host"
-import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection, type SanctuaryToolReceiptObserver } from "./sanctuary-runtime"
+import { productTurnContext } from "../heart/product/active"
+import type { ProductTurnContext } from "../heart/product/types"
+import { runWithSanctuaryToolReceiptCollection, type SanctuaryToolReceiptObserver } from "./sanctuary-runtime"
 import { sanctuaryFullVisibilityRequiredToolCalls, sanctuaryStaleDockerCareRequiredToolCalls } from "./sanctuary-full-visibility-contract"
 import { sanctuaryInstallStateRequiredToolCalls, sanctuaryVersionQuestionRequiredToolCalls } from "./sanctuary-install-state-contract"
 import { sanctuaryMediaCatalogRequiredToolCalls } from "./sanctuary-media-catalog-contract"
@@ -566,8 +568,8 @@ export interface CreateTelegramSenseAppOptions {
   _agentRoot?: string
   /** Test seam for inspecting production approval-runtime wiring. */
   _createApprovalRuntime?: typeof createTelegramApprovalRuntime
-  /** Test seam for exercising default Sanctuary orchestration without machine credentials. */
-  _toolContext?: ReturnType<typeof createSanctuaryToolContext>
+  /** The product's part of the tool context for this sense's turns; `startTelegramSenseApp` asks the product for it. */
+  productContext?: ProductTurnContext
   /** Test seam for exercising default Sanctuary selection with a deterministic turn body. */
   _runTurn?: TelegramTurnRunner
   /** Test seam for avoiding a real Unix control socket in lifecycle tests. */
@@ -1131,12 +1133,12 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     )
   }
   const approvalEffects = createTelegramApprovalEffectPort({ target: configuredOwnerTarget(), chatId: authorizedChatId, execute: executeAuthorizedEffect, record: recordConfiguredOwnerEffect })
-  let toolContext: ReturnType<typeof createSanctuaryToolContext> | undefined
+  let toolContext: ProductTurnContext | undefined
   let approvalTransport: TelegramApprovalTransport | undefined
   let interactiveControl: ReturnType<typeof createSanctuaryInteractiveControl> | undefined
   let approvalRelayDoor: ApprovalRelayDoor | undefined
   try {
-    toolContext = useSanctuaryRuntime ? (options._toolContext ?? createSanctuaryToolContext(options.agentName)) : undefined
+    toolContext = useSanctuaryRuntime ? (options.productContext ?? {}) : undefined
     if (toolContext && options.telegramContactManager) (toolContext as import("../repertoire/tools-base").ToolContext).telegramContactManager = options.telegramContactManager
     approvalRuntime = options.approvalRuntime ?? (useSanctuaryRuntime ? (options._createApprovalRuntime ?? createTelegramApprovalRuntime)({
       agentName: options.agentName,
@@ -2761,6 +2763,7 @@ export async function startTelegramSenseApp(agentName: string, waitForAuthority 
       agentName,
       credentials,
       authorityTransport,
+      productContext: await productTurnContext({ agentName, channel: "telegram" }),
       // The owner is in Los Angeles; a container without TZ would otherwise run quiet hours on UTC.
       proactivePacing: { timeZone: process.env.TZ || "America/Los_Angeles" },
       ...((): { ownerRoute?: OwnerRoute } => { const ownerRoute = ownerRouteForAgent(agentName, getAgentRoot(agentName)); return ownerRoute ? { ownerRoute } : {} })(),

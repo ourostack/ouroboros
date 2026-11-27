@@ -3,6 +3,7 @@ import type { DaemonResponse } from "../daemon/daemon"
 import type { SchedulerOrigin } from "../daemon/scheduler-attestation"
 import type { SupercronicSupervisorSnapshot } from "../daemon/supercronic-supervisor"
 import type { ExternalEventInput } from "../external-events/router"
+import type { ToolContext } from "../../repertoire/tools-base"
 
 /**
  * The product seam: how a product built on the harness (the Butler is the first) tells core what it adds, so core files
@@ -34,7 +35,24 @@ export interface OuroProduct {
    * holds the events, unclaimed, with the error's message as the repair line.
    */
   eventSources?: Readonly<Record<string, ProductEventSource>>
+  /**
+   * What a turn of this product's agent gets in its tool context (J4): the product's runtime for its tools, and the answer
+   * gates it opts in to. Called for each private and A2A turn, and once when the Telegram sense starts. A rejection fails the turn (or the sense's start), except on an ordinary private turn (not one of the
+   * product's own events), which runs without it so a gap in the product's config can't stop the agent from waking.
+   */
+  turnContext?(input: ProductTurnContextInput): Promise<ProductTurnContext>
 }
+
+export interface ProductTurnContextInput {
+  agentName: string
+  /** The sense the turn runs in: "telegram", "a2a" or "inner" for a private turn. */
+  channel: string
+  /** The source of the external event the turn handles, when it handles one. */
+  externalEventSource?: string
+}
+
+/** The part of a turn's tool context a product supplies. */
+export type ProductTurnContext = Partial<Pick<ToolContext, "agentRoot" | "sanctuary" | "answerGates">>
 
 export interface ProductEventSource {
   ready(agentName: string): Promise<void>

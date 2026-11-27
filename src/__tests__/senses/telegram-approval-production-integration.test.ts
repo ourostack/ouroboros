@@ -1169,7 +1169,7 @@ describe("production-composed Telegram approval lifecycle", () => {
     let runtimeInput: Parameters<typeof createTelegramApprovalRuntime>[0] | undefined
     const app = createTelegramSenseApp({
       agentName: "sanctuary", credentials: owner.credentials, ...owner.composition,
-      _agentRoot: agentRoot, _toolContext: owner.runtimeContext, identityKey: owner.runtimeOptions.identityKey,
+      _agentRoot: agentRoot, productContext: owner.runtimeContext, identityKey: owner.runtimeOptions.identityKey,
       api: { request: vi.fn(), stop: vi.fn() }, offsetStore: { load: () => 0, save: vi.fn() },
       acceptanceMarker: () => null, migrateIdentity: async () => undefined,
       createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }),
