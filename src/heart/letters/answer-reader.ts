@@ -135,6 +135,26 @@ export function answerProblem(entry: IndexedLetter, message: ServerMessage, answ
   return null
 }
 
+/**
+ * Why a message the person sent doesn't show they have seen this letter, or null when it does: an iMessage from the
+ * letter's answering handle, in their one-to-one chat, sent after the letter landed there. Their read receipts may be
+ * off, but a person who writes in the chat after the letter arrived has had it on screen. `floor` is deliveryFloor.
+ */
+export function replySeenProblem(entry: IndexedLetter, message: ServerMessage, floor: number | null): string | null {
+  const letter = entry.letter
+  if (entry.state !== "waiting") return "not-waiting"
+  if (entry.events.some((event) => event.t === "seen")) return "already-seen"
+  if (!letter.answeringHandle) return "no-answering-handle"
+  if (message.isFromMe !== false) return "from-me"
+  if (message.service !== "iMessage") return "not-imessage"
+  const sender = message.sender ? normalizeAnsweringHandle(message.sender) : null
+  if (!sender?.ok || sender.handle !== letter.answeringHandle) return "wrong-sender"
+  if (message.chatGuids.length !== 1 || directChatHandle(message.chatGuids[0]) !== letter.answeringHandle) return "wrong-chat"
+  if (floor === null) return "not-delivered"
+  if (message.dateCreated === undefined || message.dateCreated <= floor) return "before-delivery"
+  return null
+}
+
 /** Logs a message that looked like an answer and wasn't one, by its reason alone. */
 export function noteAnswerRefused(reason: string): void {
   emitNervesEvent({ level: "warn", component: "daemon", event: "letters.answer_refused", message: "a message in answer form didn't answer its letter", meta: { reason } })

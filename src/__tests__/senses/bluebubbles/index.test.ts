@@ -1297,6 +1297,23 @@ describe("BlueBubbles sense runtime", () => {
     })
   })
 
+  it("tells the daemon of each message the person sends one-to-one, for the seen of a letter, without waiting on it (2026-11-27)", async () => {
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    // The daemon never answers here, so the turn running at all shows nothing waits on it.
+    const letterSeen = vi.fn(() => new Promise<boolean>(() => {}))
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload, { letterSeen })
+    expect(letterSeen).toHaveBeenCalledWith(expect.any(String), dmTopLevelPayload.data.guid)
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    // A group chat is no letter's chat.
+    await bluebubbles.handleBlueBubblesEvent(groupThreadPayload, { letterSeen })
+    expect(letterSeen).toHaveBeenCalledTimes(1)
+    // A daemon that can't be told only loses the "seen"; the message is still a turn.
+    const failing = vi.fn(async () => { throw new Error("daemon down") })
+    await bluebubbles.handleBlueBubblesEvent({ ...dmTopLevelPayload, data: { ...dmTopLevelPayload.data, guid: "seen-by-reply-2" } }, { letterSeen: failing })
+    expect(failing).toHaveBeenCalledTimes(1)
+    expect(mocks.runAgent).toHaveBeenCalledTimes(3)
+  })
+
   it("routes top-level and threaded DM turns into the same persisted chat trunk", async () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
 

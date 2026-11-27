@@ -16,7 +16,7 @@ const SEEN_TIMEOUT_MS = 30_000
  * before (a replay). Past the deadline the daemon records nothing, so a timed-out ask leaves the message a chat turn.
  */
 
-/** Tells the daemon the server reported a message read; it records `seen` if that message delivered a letter. */
+/** Tells the daemon the server reported a message read, or that the person sent one; it records `seen` for the letters that shows they have read. */
 export async function tellDaemonLetterSeen(agent: string, messageGuid: string, send: typeof sendDaemonCommand = sendDaemonCommand): Promise<boolean> {
   const answer = await send(DEFAULT_DAEMON_SOCKET_PATH, { kind: "letters.seen", agent, messageGuid }, { timeoutMs: SEEN_TIMEOUT_MS })
   if (!answer.ok) throw new Error(answer.error ?? "the daemon refused the letters.seen command")
