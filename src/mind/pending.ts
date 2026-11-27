@@ -28,6 +28,8 @@ export interface PendingMessage {
   mode?: "reflect" | "plan" | "relay"
   obligationId?: string
   requestId?: string
+  /** A routine notice held for the friend's return summary instead of being sent. */
+  disposition?: "held_notice"
 }
 
 export function getPendingDir(agentName: string, friendId: string, channel: string, key: string, agentRoot = getAgentRoot(agentName)): string {
@@ -36,6 +38,10 @@ export function getPendingDir(agentName: string, friendId: string, channel: stri
 
 export function getDeferredReturnDir(agentName: string, friendId: string): string {
   return path.join(getAgentRoot(agentName), "state", "pending-returns", friendId)
+}
+
+export function getHeldNoticeDir(agentName: string, friendId: string): string {
+  return path.join(getAgentRoot(agentName), "state", "held-notices", friendId)
 }
 
 /** Canonical private-runtime pending path segments. The path is historical durable state. */
@@ -398,6 +404,32 @@ export function drainDeferredReturns(agentName: string, friendId: string): Pendi
     meta: { friendId, queueDir, count: messages.length },
   })
   return messages
+}
+
+/**
+ * Keeps a routine notice for the friend's next return summary. One file per text, so the same notice held twice
+ * is kept once. Throws when it could not be written: the caller must then not treat the notice as held.
+ */
+export function holdNoticeForReturn(agentName: string, friendId: string, text: string): string {
+  const dir = getHeldNoticeDir(agentName, friendId)
+  fs.mkdirSync(dir, { recursive: true })
+  const filePath = path.join(dir, `${createHash("sha256").update(text).digest("hex").slice(0, 32)}.json`)
+  if (!fs.existsSync(filePath)) {
+    const message: PendingMessage = { from: agentName, friendId, content: capStructuredRecordString(text), timestamp: Date.now(), disposition: "held_notice" }
+    writeJsonAtomicSync(filePath, message)
+  }
+  emitNervesEvent({
+    event: "mind.held_notice_kept",
+    component: "mind",
+    message: "routine notice held for the friend's return summary",
+    meta: { friendId, dir },
+  })
+  return filePath
+}
+
+/** Takes a friend's held notices for the one turn that summarises them; settle after the summary is delivered, release if not. */
+export function claimHeldNotices(agentName: string, friendId: string): PendingClaim {
+  return claimPending(getHeldNoticeDir(agentName, friendId))
 }
 
 /**

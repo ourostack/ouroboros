@@ -19,7 +19,7 @@ import { loadSession } from "../mind/context"
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getChannelCapabilities, FriendResolver, FileFriendStore, accumulateFriendTokens } from "@ouro.bot/friends"
 import type { IdentityProvider, Channel } from "@ouro.bot/friends"
-import { getPendingDir, drainPending, drainDeferredReturns } from "../mind/pending"
+import { claimHeldNotices, getPendingDir, drainPending, drainDeferredReturns } from "../mind/pending"
 import { postTurnTrim, deferPostTurnPersist } from "../mind/context"
 import { enforceTrustGate } from "./trust-gate"
 import { erroredTurnReply, handleInboundTurn, type InboundTurnInput } from "./pipeline"
@@ -788,7 +788,10 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
     // A surface saved for a person's next message is picked up on their next
     // Telegram or voice turn too; agent channels (MCP, a2a) never take it.
     ...((channel === "telegram" || channel === "voice") && !options.disablePersistence
-      ? { drainDeferredReturns: (deferredFriendId: string) => drainDeferredReturns(agentName, deferredFriendId) }
+      ? {
+        drainDeferredReturns: (deferredFriendId: string) => drainDeferredReturns(agentName, deferredFriendId),
+        claimHeldNotices: (heldFriendId: string) => claimHeldNotices(agentName, heldFriendId),
+      }
       : {}),
     runAgentOptions: {
       mcpManager,

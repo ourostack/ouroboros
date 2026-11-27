@@ -83,6 +83,18 @@ export interface PrepareRunAgentOptionsInput {
 
 const VOICE_PENDING_MAX_AGE_MS = 15 * 60 * 1_000
 const TELEGRAM_GENERIC_OUTREACH_PENDING_MAX_AGE_MS = 15 * 60 * 1_000
+function renderHeldNoticeSummary(held: PendingMessage[]): PendingMessage {
+  const lines = [...held]
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map((notice) => `- (${new Date(notice.timestamp).toISOString()}) ${notice.content}`)
+  return {
+    from: held[0]!.from,
+    friendId: held[0]!.friendId,
+    timestamp: Date.now(),
+    content: `Routine notices held while they were away, not sent to them. Give them one short summary of these, folded into your reply to this message; do not send them as separate messages, and do not send this summary on its own:\n${lines.join("\n")}`,
+  }
+}
+
 function pendingExpirationReason(channel: Channel, message: PendingMessage, now: number, agentName?: string): string | null {
   /* v8 ignore start -- pending expiry edge permutations are covered by the stale voice queue tests; this helper keeps defensive non-voice fallbacks @preserve */
   if (Number.isFinite(message.expiresAt) && Number(message.expiresAt) <= now) return "explicit_expiry"
@@ -539,6 +551,11 @@ export interface InboundTurnInput {
    */
   claimPending?: (pendingDir: string) => PendingClaim
   drainDeferredReturns?: (friendId: string) => PendingMessage[]
+  /**
+   * Routine notices held for the friend's return summary. They reach the turn once, as context for one summary, and
+   * are deleted only when the turn finished and its postTurn ran; any other end puts them back.
+   */
+  claimHeldNotices?: (friendId: string) => PendingClaim
   runAgent: (
     messages: ChatCompletionMessageParam[],
     callbacks: ChannelCallbacks,
@@ -1089,6 +1106,7 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
   const liveLatencyMode = input.latencyMode === "live"
   let declinedForHome = false
   let pendingClaim: PendingClaim | undefined
+  let heldNoticeClaim: PendingClaim | undefined
   let turnActed = false
   let turnThrew = false
   let turnFailedOnMessages = false
@@ -1178,11 +1196,16 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
   const deferredReturns = input.channel === "inner"
     ? []
     : (input.drainDeferredReturns?.(resolvedContext.friend.id) ?? [])
+  heldNoticeClaim = input.channel === "inner" ? undefined : input.claimHeldNotices?.(resolvedContext.friend.id)
+  const heldNoticeSummary = heldNoticeClaim && heldNoticeClaim.messages.length > 0
+    ? [renderHeldNoticeSummary(heldNoticeClaim.messages)]
+    : []
   pendingClaim = input.claimPending?.(input.pendingDir)
   const sessionPending = pendingClaim ? pendingClaim.messages : input.drainPending(input.pendingDir)
   // A deferred return was saved for the friend's next message, whenever that comes, so a
   // sense's freshness window for its own pending never drops it.
   const pending = [
+    ...heldNoticeSummary,
     ...deferredReturns,
     ...filterDeliverablePendingMessages({
       pendingDir: input.pendingDir,
@@ -1484,7 +1507,10 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
   turnFailedOnMessages = result.outcome === "errored" && result.errorClassification === "unknown"
   const persistTurn = async (...args: Parameters<InboundTurnInput["postTurn"]>): Promise<void> => {
     await input.postTurn(...args)
-    if (turnFinished) pendingClaim?.settle()
+    if (turnFinished) {
+      pendingClaim?.settle()
+      heldNoticeClaim?.settle()
+    }
   }
 
   if (result.outcome === "suspended") {
@@ -1671,6 +1697,7 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     // Pending messages a turn did not handle go back for the next turn; a throw or an unclassified error counts
     // against them. After the first tool start the claim holds nothing, so this is a no-op.
     pendingClaim?.release({ failed: turnThrew || turnFailedOnMessages })
+    heldNoticeClaim?.release()
     // Step 6b: Post-turn sync (opt-in). The commit is synchronous, so the
     // turn's edits are recorded before the reply goes out; the push runs on
     // without being awaited, holding the lock, and records its own failure.

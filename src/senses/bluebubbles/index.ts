@@ -19,7 +19,7 @@ import {
   type UsageData,
 } from "../../mind/context"
 import { accumulateFriendTokens, upsertGroupContextParticipants, FriendResolver, type FriendResolverParams, FileFriendStore, TRUSTED_LEVELS, type FriendRecord, getChannelCapabilities } from "@ouro.bot/friends"
-import { getPendingDir, drainDeferredReturns, drainPending } from "../../mind/pending"
+import { claimHeldNotices, getPendingDir, drainDeferredReturns, drainPending, holdNoticeForReturn } from "../../mind/pending"
 import { buildSystem, flattenSystemPrompt } from "../../mind/prompt"
 import { getSharedMcpManager } from "../../repertoire/mcp-manager"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -33,7 +33,7 @@ import {
   type OrientationSource,
   type ReplyingToAuthor,
 } from "../../heart/orientation-frame"
-import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked, isReturnToSenderReason, returnHeldProactiveMessage } from "../proactive-content-guard"
+import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked, isHeldForReturnReason, isReturnToSenderReason, returnHeldProactiveMessage } from "../proactive-content-guard"
 import { containsInternalMetaMarkers, emitBluebubblesMetaBlocked } from "../bluebubbles-meta-guard"
 import type { ReplyTargetSelection, ToolContext } from "../../repertoire/tools-base"
 import {
@@ -2650,6 +2650,7 @@ async function handleBlueBubblesNormalizedEvent(
         enforceTrustGate,
         drainPending,
         drainDeferredReturns: (deferredFriendId) => drainDeferredReturns(resolvedDeps.getAgentName(), deferredFriendId),
+        claimHeldNotices: (heldFriendId) => claimHeldNotices(resolvedDeps.getAgentName(), heldFriendId),
         prepareRunAgentOptions: async ({ messages = [], currentUserMessages = [], runAgentOptions }) => {
           preparedBlueBubblesContext = await buildBlueBubblesContextMessages({
             agentName,
@@ -5090,6 +5091,13 @@ export async function sendProactiveBlueBubblesMessageToSession(
       source: "session_send",
       intent: params.intent ?? "generic_outreach",
     })
+        if (isHeldForReturnReason(internalContentBlockReason)) {
+      try {
+        holdNoticeForReturn(getAgentName(), params.friendId, params.text)
+      } catch {
+        return { delivered: false, reason: "send_error" }
+      }
+    }
     return { delivered: false, reason: "internal_content_blocked" }
   }
 
@@ -5261,6 +5269,15 @@ export async function drainAndSendPendingBlueBubbles(
 
     const internalBlockReason = getProactiveInternalContentBlockReason(messageText)
     if (internalBlockReason) {
+      if (isHeldForReturnReason(internalBlockReason)) {
+        // The pending file is the only copy: it goes only once the notice is kept.
+        try {
+          holdNoticeForReturn(getAgentName(), friendId, messageText)
+        } catch {
+          result.failed++
+          continue
+        }
+      }
       result.skipped++
       try { fs.unlinkSync(filePath) } catch { /* ignore */ }
       emitProactiveInternalContentBlocked({
