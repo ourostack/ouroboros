@@ -20,6 +20,7 @@ import {
   recordTelegramEffectsInSession,
   sweepTelegramSystemFailsafes,
 } from "../../senses/telegram-effect-adapter"
+import { useButlerProduct } from "../test-helpers/butler-product"
 
 const roots: string[] = []
 const target = { kind: "approved_relationship" as const, friendId: "ari", sessionKey: "telegram:ari" }
@@ -86,6 +87,7 @@ afterEach(() => {
 })
 
 describe("Telegram system failsafe", () => {
+  useButlerProduct()
   it("independently rereads SAB and verifies only a currently paused queue without retaining the credential", async () => {
     const loadApiKey = vi.fn(async () => "test-only-secret")
     const fetchImpl = vi.fn()

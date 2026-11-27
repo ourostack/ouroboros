@@ -5,7 +5,7 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getOuroCliHome } from "../versioning/ouro-version-manager"
 import { writeFileAtomicSync } from "../atomic-file"
-import { BUTLER_AGENT_NAMES, isButlerAgent, managedButlerAgent, type ButlerAgentName } from "../butler-agent"
+import { productAgentAmong, productFor } from "../product/active"
 
 export type ExternalEventTransition = "opened" | "unchanged" | "changed" | "escalated" | "recovered"
 export type ExternalEventExecutionState = "received" | "queued" | "running" | "handled" | "retry_wait" | "dead_letter"
@@ -177,14 +177,14 @@ const privilegedIngress = Symbol("privileged external-event ingress")
 
 interface PrivilegedReplayState extends ExternalEventReplayManifest {
   schemaVersion: 1
-  agent: ButlerAgentName
+  agent: string
   source: typeof PRIVILEGED_EVENT_SOURCE
   updatedAt: string
 }
 
 interface PrivilegedExternalEventEnvelope {
   schemaVersion: 1
-  agent: ButlerAgentName
+  agent: string
   source: typeof PRIVILEGED_EVENT_SOURCE
   eventType: "usenet.protective_action" | "usenet.health_observation"
   incidentKey: string
@@ -437,13 +437,18 @@ function isRecord(value: unknown): value is ExternalEventRecord {
 }
 
 // The Butler this daemon runs, set once at daemon start. Records saved under the Butler's other name are its records.
-let runningButler: ButlerAgentName | null = null
+let runningButler: string | null = null
+
+/** Whether this name (an agent, a record's `agent` or an event folder) is one of the product's names. */
+function isProductAgentName(name: unknown): name is string {
+  return productFor(name) !== null
+}
 
 /** The agent a record or new event belongs to: a Butler name means the running Butler, or the Butler folder it sits in. */
 function eventAgent(agent: string, folder?: string): string {
-  if (!isButlerAgent(agent)) return agent
+  if (!isProductAgentName(agent)) return agent
   if (runningButler) return runningButler
-  return folder !== undefined && isButlerAgent(folder) ? folder : agent
+  return folder !== undefined && isProductAgentName(folder) ? folder : agent
 }
 
 /** The record as the daemon sees it: owned by the running Butler, at the path it was read from. */
@@ -462,7 +467,7 @@ function readStoredExternalEventRecord(recordPath: string): ExternalEventRecord 
   if (path.resolve(parsed.recordPath) === here && expectedPath === here) return parsed
   // A Butler record whose folder was adopted under the Butler's other name: it names the folder it was written in, or this one.
   const folder = path.basename(path.dirname(path.dirname(recordPath)))
-  const adopted = isButlerAgent(parsed.agent) && isButlerAgent(folder)
+  const adopted = isProductAgentName(parsed.agent) && isProductAgentName(folder)
     && path.resolve(externalEventRecordPath(root, { ...parsed, agent: folder })) === here
     && [here, expectedPath].includes(path.resolve(parsed.recordPath))
   if (!adopted) throw new Error(`External event record identity is invalid: ${recordPath}`)
@@ -481,7 +486,7 @@ export function readExternalEventRecord(recordPath: string): ExternalEventRecord
 export function externalEventAwaitRecordPath(agentName: string, filedFromKey: string, root = getExternalEventRoot()): string {
   const resolvedRoot = path.resolve(root)
   const [folder, ...rest] = path.relative(resolvedRoot, path.resolve(filedFromKey)).split(path.sep)
-  if (!isButlerAgent(agentName) || !isButlerAgent(folder) || folder === agentName || fs.existsSync(filedFromKey)) return filedFromKey
+  if (!isProductAgentName(agentName) || !isProductAgentName(folder) || folder === agentName || fs.existsSync(filedFromKey)) return filedFromKey
   return path.join(resolvedRoot, agentName, ...rest)
 }
 
@@ -498,7 +503,7 @@ export const BUTLER_ADOPTION_CONFLICTS_FOLDER = ".adoption-conflicts"
 const BUTLER_HOST_EXTERNAL_EVENT_ROOT = "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli/daemon/external-events"
 
 /** The running Butler, as the daemon start set it; null outside the daemon, or when it manages no Butler (or both). */
-export function runningButlerAgent(): ButlerAgentName | null {
+export function runningButlerAgent(): string | null {
   return runningButler
 }
 
@@ -554,7 +559,7 @@ interface ButlerEventFolderMergeResult { moved: number; quarantined: number; qua
  * accepted envelope is accepted twice. Each record the running folder lacks moves over. A record both have that differs keeps
  * the running folder's copy, and the other's moves to `quarantine`: never deleted, and never a reason not to start.
  */
-function mergeButlerEventFolders(from: string, to: string, quarantine: string, butler: ButlerAgentName, now: string): ButlerEventFolderMergeResult {
+function mergeButlerEventFolders(from: string, to: string, quarantine: string, butler: string, now: string): ButlerEventFolderMergeResult {
   const plan = planButlerEventFolderMerge(from, to)
   const privilegedSource = path.join(from, PRIVILEGED_EVENT_SOURCE)
   const nonces = plan.conflicts.filter((conflict) => path.dirname(conflict.from) === privilegedSource).map((conflict) => quarantinedNonce(conflict.from)).filter((nonce): nonce is string => nonce !== null)
@@ -599,10 +604,12 @@ function removeMergedEventFolder(dir: string): void {
  * Butler's folder can't be settled. A symlinked other folder is left alone, with a warning.
  */
 export function prepareButlerExternalEvents(root: string, managedAgents: readonly string[], now: () => string = () => new Date().toISOString()): ButlerExternalEventAdoption {
-  const butler = managedButlerAgent(managedAgents)
+  const butler = productAgentAmong(managedAgents)
   runningButler = butler
   if (!butler) return "none"
-  const otherName = BUTLER_AGENT_NAMES.find((name) => name !== butler)!
+  // The product's other name: the Butler has exactly two, the one it runs as and the one from before the rename.
+  const otherName = productFor(butler)!.agents.find((name) => name !== butler)
+  if (otherName === undefined) return "none"
   const own = path.join(root, butler)
   const other = path.join(root, otherName)
   let otherStat: fs.Stats
@@ -754,8 +761,8 @@ function parseRepairManifest(manifestPath: string): ExternalEventRepairManifest 
 
 /** The folder a reviewed repair's record is in: its own agent's, or the other Butler name's once the daemon adopted it. */
 function repairFolderAgent(root: string, entry: ExternalEventRepairEntry): string {
-  if (!isButlerAgent(entry.agent)) return entry.agent
-  const names = [entry.agent, ...BUTLER_AGENT_NAMES.filter((name) => name !== entry.agent)]
+  if (!isProductAgentName(entry.agent)) return entry.agent
+  const names = [entry.agent, ...productFor(entry.agent)!.agents.filter((name) => name !== entry.agent)]
   return names.find((agent) => fs.existsSync(externalEventRecordPath(root, { ...entry, agent }))) ?? entry.agent
 }
 
@@ -1260,7 +1267,7 @@ function parsePrivilegedEnvelope(raw: string, fileName: string, now: string): Pr
   const observationTransitionIsAllowed = value.eventType !== "usenet.health_observation" || /^(?:auth-failed|stalled|recovered|indeterminate):\d{8}T\d{6}Z$/u.test(String(value.transitionId))
   const expectedKeys = ["action", "actionReceipt", "agent", "createdAt", "critical", "eventType", "evidence", "expiresAt", "incidentKey", "nonce", "observationRevision", "protectiveStateDigest", "protectiveStateObservedAt", "protectiveStateVerified", "schemaVersion", "source", "summary", "transitionId"]
   if (Object.keys(value).sort().join("\0") !== expectedKeys.sort().join("\0")
-    || value.schemaVersion !== 1 || !isButlerAgent(value.agent) || value.source !== PRIVILEGED_EVENT_SOURCE
+    || value.schemaVersion !== 1 || !isProductAgentName(value.agent) || value.source !== PRIVILEGED_EVENT_SOURCE
     || !eventShapeIsAllowed || !observationTransitionIsAllowed
     || value.critical !== true || !boundedIdentifier(value.incidentKey) || !boundedIdentifier(value.transitionId)
     || !/^[a-f0-9]{64}$/u.test(String(value.observationRevision)) || !/^[a-f0-9]{64}$/u.test(String(value.nonce))
@@ -1379,22 +1386,22 @@ function acquirePrivilegedReplayLock(sourceDir: string): PrivilegedLockHandle | 
   return null
 }
 
-function replayStatePath(eventRoot: string, agent: ButlerAgentName): string {
+function replayStatePath(eventRoot: string, agent: string): string {
   return path.join(eventRoot, agent, PRIVILEGED_EVENT_SOURCE, PRIVILEGED_REPLAY_STATE_FILE)
 }
 
-function replayStateFromManifest(manifest: ExternalEventReplayManifest, updatedAt: string, agent: ButlerAgentName): PrivilegedReplayState {
+function replayStateFromManifest(manifest: ExternalEventReplayManifest, updatedAt: string, agent: string): PrivilegedReplayState {
   return { schemaVersion: 1, agent, source: PRIVILEGED_EVENT_SOURCE, ...manifest, updatedAt }
 }
 
 function isReplayState(value: unknown): value is PrivilegedReplayState {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const state = value as Partial<PrivilegedReplayState>
-  if (state.schemaVersion !== 1 || !isButlerAgent(state.agent) || state.source !== PRIVILEGED_EVENT_SOURCE || !canonicalIso(state.updatedAt)) return false
+  if (state.schemaVersion !== 1 || !isProductAgentName(state.agent) || state.source !== PRIVILEGED_EVENT_SOURCE || !canonicalIso(state.updatedAt)) return false
   try { replayBytes(state as PrivilegedReplayState); return true } catch { return false }
 }
 
-function loadReplayState(eventRoot: string, agent: ButlerAgentName, sourceExisted: boolean, now: string): PrivilegedReplayState {
+function loadReplayState(eventRoot: string, agent: string, sourceExisted: boolean, now: string): PrivilegedReplayState {
   const statePath = replayStatePath(eventRoot, agent)
   const sourceDir = path.dirname(statePath)
   const stateExists = fs.existsSync(statePath)
@@ -1438,7 +1445,7 @@ function loadReplayState(eventRoot: string, agent: ButlerAgentName, sourceExiste
 }
 
 /** `agent` is the Butler the daemon runs: its events, and the replay manifest that guards them, live under its name. */
-export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot?: string; agent?: ButlerAgentName; now?: () => string }): { accepted: number; rejected: number; replayed: number } {
+export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot?: string; agent?: string; now?: () => string }): { accepted: number; rejected: number; replayed: number } {
   const entries = safeSpoolEntries(options.spoolRoot)
   let accepted = 0
   let rejected = 0
@@ -1539,7 +1546,7 @@ function commitMutation(recordPath: string, record: ExternalEventRecord, now: st
 export function bindPrivilegedFailsafeArtifact(recordPath: string, input: { artifactId: string; verificationRef: string; recordedAt?: string }): ExternalEventRecord {
   return withRecordLock(recordPath, () => {
     const record = readExternalEventRecord(recordPath)
-    if (!isButlerAgent(record.agent) || record.source !== PRIVILEGED_EVENT_SOURCE || !record.privilegedProtectiveAction) {
+    if (!isProductAgentName(record.agent) || record.source !== PRIVILEGED_EVENT_SOURCE || !record.privilegedProtectiveAction) {
       throw new Error("System failsafe requires a privileged Sanctuary event")
     }
     if (!/^[a-f0-9]{64}$/u.test(input.artifactId)) throw new Error("System failsafe artifact id is invalid")
