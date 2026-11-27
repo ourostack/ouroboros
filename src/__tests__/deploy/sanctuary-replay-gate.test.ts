@@ -1134,6 +1134,37 @@ describe("runSuite orchestration", () => {
     expect(gate.CASES.find((c: { id: string }) => c.id === "await-self-resolve")).toMatchObject({ sender: "principal", delegated: true })
   })
 
+  it("keeps reading after the await is archived until its delivery lands (alpha.1704: the outbox was read 57 ms early)", async () => {
+    const clock = { t: 1_000_000 }
+    const archived = (context: string) => empty({ done: [{ name: "w.md", status: "resolved", filedFromKey: context }] })
+    const delivered = (context: string) => empty({ done: [{ name: "w.md", status: "resolved", filedFromKey: context }], outbox: { p: ["e1"] } })
+    const { host } = fakeHost({ clock, observations: [empty(), archived, delivered] })
+    const result = await gate.runCase(host, gate.CASES.find((c: { id: string }) => c.id === "peer-await-delivers"))
+    expect(result.status).toBe("pass")
+    expect(clock.t).toBe(1_000_000 + 15_000)
+  })
+
+  it("waits for an archived await's delivery only for the grace, then fails the case", async () => {
+    const clock = { t: 1_000_000 }
+    const archived = (context: string) => empty({ done: [{ name: "w.md", status: "resolved", filedFromKey: context }] })
+    const { host } = fakeHost({ clock, observations: [empty(), archived] })
+    const result = await gate.runCase(host, gate.CASES.find((c: { id: string }) => c.id === "peer-await-delivers"))
+    expect(result.status).toBe("fail")
+    expect(clock.t).toBe(1_000_000 + gate.DELIVERY_GRACE_MS)
+  })
+
+  it("counts only sink lines that are new since the case began as the delegated await's delivery", async () => {
+    const clock = { t: 1_000_000 }
+    const old = { at: new Date(1_000_000 - 1_000).toISOString(), noticeId: "await:old", friendId: "p" }
+    const fresh = { at: new Date(1_000_000 + 15_000).toISOString(), noticeId: "await:w", friendId: "p" }
+    const archived = (context: string) => empty({ done: [{ name: "w.md", status: "resolved", filedFromKey: context }], sink: [old] })
+    const delivered = (context: string) => empty({ done: [{ name: "w.md", status: "resolved", filedFromKey: context }], sink: [old, fresh] })
+    const { host } = fakeHost({ clock, observations: [empty({ sink: [old] }), archived, delivered] })
+    const result = await gate.runCase(host, gate.CASES.find((c: { id: string }) => c.id === "await-self-resolve"))
+    expect(result.status).toBe("pass")
+    expect(clock.t).toBe(1_000_000 + 15_000)
+  })
+
   it("gives up on a polled case at its timeout and fails it", async () => {
     const clock = { t: 0 }
     const pending = empty({ awaiting: [{ name: "w.md", status: "pending" }] })

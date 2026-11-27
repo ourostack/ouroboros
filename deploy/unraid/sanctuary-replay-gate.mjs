@@ -84,6 +84,12 @@ export const GATE_PLANTED_STRINGS = ["english subtitles", "ISOLATION-CANARY", "(
 export const DEFAULT_WINDOW_MINUTES = 85
 export const AWAIT_TIMEOUT_MS = 8 * 60 * 1000
 export const AWAIT_POLL_MS = 15 * 1000
+/**
+ * How long a polled case keeps reading after its await is archived, for the delivery that follows it. The Butler archives
+ * the await, then delivers: alpha.1704's gate read the peer's outbox 57 ms before the delivery landed and failed a release
+ * that had delivered. A delivery that never comes still fails, after this grace instead of the whole poll timeout.
+ */
+export const DELIVERY_GRACE_MS = 30 * 1000
 export const MESSAGE_TIMEOUT_MS = 330 * 1000
 // The Butler's A2A server cuts a request at five minutes while the turn itself keeps running. A send that errors after this
 // long was cut, not refused (a refusal answers at once), so the gate waits for the turn to finish before it reads anything back.
@@ -192,6 +198,13 @@ export function utcMinuteAhead(now, minutes) {
 const check = (name, ok, detail = "") => ({ name, ok: Boolean(ok), ...(detail ? { detail } : {}) })
 const sinkFor = (sink, friendId, predicate) => sink.filter((line) => line.friendId === friendId && predicate(line))
 const isDelegatedNotice = (line) => String(line.noticeId).startsWith("delegated:")
+
+/** Sink lines present after that were not present before, by notice id and friend. */
+export function newSinkLines(before, after) {
+  const key = (line) => `${line.friendId}|${line.noticeId}`
+  const known = new Set((before.sink ?? []).map(key))
+  return (after.sink ?? []).filter((line) => !known.has(key(line)))
+}
 
 /** Outbox entry ids per friend that appeared between two observations. */
 export function newOutboxEntries(before, after) {
@@ -587,6 +600,7 @@ export const CASES = [
       timeoutMs: AWAIT_TIMEOUT_MS,
       intervalMs: AWAIT_POLL_MS,
       until: ({ after, before, context }) => caseAwaitsSettled(before, after, context),
+      delivered: ({ after, before, friends }) => newSinkLines(before, after).some((line) => line.friendId === friends.principal && !isDelegatedNotice(line)),
     },
     readback: ({ before, after, sink, friends, context }) => {
       const { mine: filed, others } = caseAwaits(before, after, context)
@@ -870,6 +884,7 @@ export const CASES = [
       timeoutMs: AWAIT_TIMEOUT_MS,
       intervalMs: AWAIT_POLL_MS,
       until: ({ after, before, context }) => caseAwaitsSettled(before, after, context),
+      delivered: ({ after, before, friends }) => (newOutboxEntries(before, after)[friends.principal] ?? []).length > 0,
     },
     readback: ({ before, after, sink, friends, context }) => {
       const { mine: filed, others } = caseAwaits(before, after, context)
@@ -995,7 +1010,14 @@ export async function runCase(host, testCase, { plant, deadline = Infinity } = {
   let after = await host.observe()
   if (testCase.poll) {
     const deadline = host.now() + testCase.poll.timeoutMs
-    while (!testCase.poll.until({ before, after, context }) && host.now() < deadline) {
+    let settledAt = null
+    while (host.now() < deadline) {
+      if (testCase.poll.until({ before, after, context })) {
+        // Settled is not delivered: the delivery lands just after the archive, so wait for it, but only for the grace.
+        if (!testCase.poll.delivered || testCase.poll.delivered({ before, after, context, friends: host.friends })) break
+        settledAt ??= host.now()
+        if (host.now() - settledAt >= DELIVERY_GRACE_MS) break
+      }
       await host.sleep(testCase.poll.intervalMs)
       after = await host.observe()
     }
