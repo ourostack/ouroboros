@@ -56,7 +56,7 @@ export default defineConfig({
       "src/__tests__/senses/cli/*.tsx",
     ],
     maxWorkers: 1,
-    setupFiles: ["src/__tests__/nerves/global-capture.ts", "src/__tests__/test-helpers/isolated-tmpdir.ts", "src/__tests__/test-helpers/trusted-uid.ts", "src/__tests__/test-helpers/no-built-in-desk.ts"],
+    setupFiles: ["src/__tests__/nerves/global-capture.ts", "src/__tests__/test-helpers/isolated-tmpdir.ts", "src/__tests__/test-helpers/trusted-uid.ts", "src/__tests__/test-helpers/no-built-in-desk.ts", "src/__tests__/test-helpers/no-image-product.ts"],
     coverage: {
       provider: "v8",
       reporter: ["text", "lcov", "json-summary"],

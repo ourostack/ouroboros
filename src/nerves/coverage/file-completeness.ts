@@ -68,6 +68,8 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // Shared utility modules: pure helpers consumed by modules that own observability.
   // The Butler's names and the one check that picks Butler behaviour; each caller owns its observability.
   "heart/butler-agent",
+  // A session's file path from its coordinates; each caller owns its observability.
+  "heart/session-path",
   "arc/json-store",
   "heart/mail-import-discovery",
   "repertoire/api-client",
