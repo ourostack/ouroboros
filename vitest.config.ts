@@ -70,6 +70,8 @@ export default defineConfig({
         "src/eval/*-entry.ts",
         // Ouro AX v1.3.445, vendored unchanged and tested upstream; the X arm built on it is tested here.
         "src/eval/interviews/guest/ax/**",
+        // The Ouro AX kit, vendored from Ouro UI through upstream-sources.lock.json and tested there.
+        "src/ouro-ax/**",
         "src/senses/voice/index.ts",
         "src/senses/voice/types.ts",
         "src/senses/ingress-evidence.ts",

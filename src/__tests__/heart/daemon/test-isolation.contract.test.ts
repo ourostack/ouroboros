@@ -109,6 +109,10 @@ const REAL_CLAUDE_WRITE_ALLOWLIST = new Set<string>()
 // callsites are blocked and must be added here with a comment.
 const RM_RECURSIVE_ALLOWLIST: Array<{ file: string; why: string }> = [
   {
+    file: "src/ouro-ax/flows.ts",
+    why: "Vendored Ouro AX kit: its flow runner removes its own mkdtemp scratch folder after a run. Not agent-callable — runs only from the kit's own command.",
+  },
+  {
     file: "src/heart/hatch/specialist-tools.ts",
     why: "Adoption scaffolding: moves a scratch bundle into ~/AgentBundles atomically, then removes the staging source; rolls back on failure by removing the partially-materialized target. Not agent-callable — runs inside complete_adoption's transaction.",
   },

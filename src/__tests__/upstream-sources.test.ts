@@ -39,11 +39,11 @@ describe("upstream-sources.lock.json", () => {
   })
 
   it("lists every vendored AX kit file, and no test or fixture", () => {
-    const vendored = readdirSync(join(root, "lib/ouro-ui/registry/ouro/ax"))
+    const vendored = readdirSync(join(root, "src/ouro-ax"))
       .filter((name) => /\.m?ts$/.test(name))
-      .map((name) => `lib/ouro-ui/registry/ouro/ax/${name}`)
+      .map((name) => `src/ouro-ax/${name}`)
       .sort()
-    const listed = lock.files.map((file) => file.path).filter((path) => path.includes("/registry/ouro/ax/")).sort()
+    const listed = lock.files.map((file) => file.path).filter((path) => path.startsWith("src/ouro-ax/") && /\.m?ts$/.test(path)).sort()
     expect(listed).toEqual(vendored)
     expect(listed.some((path) => /\.test\.|fixtures/.test(path))).toBe(false)
   })
