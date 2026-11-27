@@ -10,6 +10,7 @@ vi.mock("node:fs", async (importOriginal) => {
 })
 
 import { claimExternalEvent, failExternalEventAttempt, prepareButlerExternalEvents, readExternalEventRecord, recordExternalEvent, repairExternalEventsFromManifest, reviveExternalEventAfterRecovery } from "../../../heart/external-events/router"
+import { useButlerProduct } from "../../test-helpers/butler-product"
 
 const roots: string[] = []
 const sha = (raw: Buffer | string) => createHash("sha256").update(raw).digest("hex")
@@ -47,6 +48,7 @@ function manifestPath(eventRoot: string, entries: Array<{ record: ReturnType<typ
 }
 
 describe("external event repair manifest", () => {
+  useButlerProduct()
   it("applies a reviewed manifest naming the Butler's other name to the record the running Butler adopted", () => {
     const eventRoot = root(); const item = fixture(eventRoot, "evt-1", "sanctuary"); const manifest = manifestPath(eventRoot, [item])
     try {

@@ -1,15 +1,15 @@
 import { createHash } from "node:crypto"
 import { emitNervesEvent } from "../nerves/runtime"
-import { isButlerAgent } from "../heart/butler-agent"
+import { productFor } from "../heart/product/active"
 
 export const A2A_DEFAULT_PROTOCOL_VERSION = "1.0"
 export const A2A_DEFAULT_HOST = "127.0.0.1"
 export const A2A_DEFAULT_PATH = "/a2a"
 
 export function defaultA2APort(agentName: string): number {
-  // The Butler keeps one port under either name: peers saved its agent card at the port `sanctuary` gives (18940), so the
-  // rename must not move it.
-  const portKey = isButlerAgent(agentName) ? "sanctuary" : agentName
+  // A product's agent keeps the port its first name gave, whatever it is called now: peers saved its agent card at that
+  // port, so a rename must not move it. Its names run current first, so the first name is the last one listed.
+  const portKey = productFor(agentName)?.agents.at(-1) ?? agentName
   const digest = createHash("sha256").update(portKey).digest()
   const port = 18920 + (digest[0] % 60)
   emitNervesEvent({

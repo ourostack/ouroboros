@@ -18,6 +18,8 @@ import {
   readExternalEventRecord,
   recordExternalEvent,
 } from "../../../heart/external-events/router"
+import { loadProduct } from "../../../heart/product/active"
+import { useButlerProduct } from "../../test-helpers/butler-product"
 
 const roots: string[] = []
 function eventRoot(): string {
@@ -36,6 +38,7 @@ function sanctuaryRecord(root: string, eventId = "evt-1") {
 }
 
 describe("the running Butler adopts events saved under its other name", () => {
+  useButlerProduct()
   it("moves the other name's folder to the running Butler, and its records read as the running Butler's", () => {
     const root = eventRoot()
     const saved = sanctuaryRecord(root)
@@ -254,5 +257,13 @@ describe("the running Butler adopts events saved under its other name", () => {
     fs.mkdirSync(path.dirname(otherEvent), { recursive: true })
     fs.copyFileSync(saved.recordPath, otherEvent)
     expect(() => readExternalEventRecord(otherEvent)).toThrow(/identity is invalid/u)
+  })
+
+  it("has nothing to adopt when the product's agent has only one name", () => {
+    const root = eventRoot()
+    loadProduct("/opt/example/dist/product.js", () => ({ product: { seamVersion: 1, id: "example", agents: ["helper"] } }))
+    fs.mkdirSync(path.join(root, "sanctuary"), { recursive: true })
+    expect(prepareButlerExternalEvents(root, ["helper"])).toBe("none")
+    expect(fs.existsSync(path.join(root, "sanctuary"))).toBe(true)
   })
 })

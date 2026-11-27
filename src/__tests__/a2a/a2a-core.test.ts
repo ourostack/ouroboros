@@ -10,6 +10,8 @@ import { onboardA2APeer } from "../../a2a/onboarding"
 import { FileA2ATaskStore } from "../../a2a/task-store"
 import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2ATask } from "../../a2a/types"
 import { FriendResolver, FileFriendStore } from "@ouro.bot/friends"
+import { loadProduct } from "../../heart/product/active"
+import { product as butlerProduct } from "../../products/butler"
 
 let tmp: TmpBundleHandle | null = null
 let server: A2AServerHandle | null = null
@@ -794,9 +796,12 @@ describe("A2A core substrate", () => {
 })
 
 describe("defaultA2APort", () => {
-  it("gives the Butler the same A2A port under either name", () => {
+  it("gives a product's agent the port its first name gave, under either name", () => {
+    loadProduct("/opt/ouro/dist/products/butler.js", () => ({ product: butlerProduct }))
     expect(defaultA2APort("sanctuary")).toBe(18940)
     expect(defaultA2APort("butler")).toBe(18940)
     expect(defaultA2APort("slugger")).not.toBe(18940)
+    loadProduct(undefined)
+    expect(defaultA2APort("butler")).toBe(18972)
   })
 })

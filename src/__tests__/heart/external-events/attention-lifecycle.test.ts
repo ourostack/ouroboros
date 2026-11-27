@@ -19,6 +19,7 @@ import {
   renewExternalEventClaim,
   externalEventRecordPath,
 } from "../../../heart/external-events/router"
+import { useButlerProduct } from "../../test-helpers/butler-product"
 
 const roots: string[] = []
 
@@ -34,6 +35,7 @@ afterEach(() => {
 })
 
 describe("external event attention lifecycle", () => {
+  useButlerProduct()
   it("wakes once before classification and updates unchanged evidence without another generation", () => {
     const eventRoot = root()
     const input = {

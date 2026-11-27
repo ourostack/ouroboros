@@ -24,7 +24,7 @@ import { DaemonSenseManager } from "./sense-manager"
 import { listBundleSyncRows, listHomeBundleAgents, readPrivateRuntimeConfig } from "./agent-discovery"
 import { checkAgentHomes } from "./agent-home"
 import { getRepoRoot, getAgentBundlesRoot, loadAgentConfig } from "../identity"
-import { isButlerAgent, managedButlerAgent } from "../butler-agent"
+import { loadImageProduct, productAgentAmong, productFor } from "../product/active"
 import { appSessionsRecord } from "./app-sessions-record"
 import { detectRuntimeMode } from "./runtime-mode"
 import { HabitScheduler } from "../habits/habit-scheduler"
@@ -103,6 +103,15 @@ if (homeFilesystemProblem) {
 }
 /* v8 ignore stop */
 
+/* v8 ignore start -- the product module the image names loads first, so a broken one stops the start; the loader is unit-tested in heart/product @preserve */
+try {
+  loadImageProduct()
+} catch (failure) {
+  process.stderr.write(`${failure instanceof Error ? failure.message : String(failure)}\ncode: product-invalid\n`)
+  process.exit(1)
+}
+/* v8 ignore stop */
+
 const entryPath = path.resolve(__dirname, "daemon-entry.js")
 const mode = detectRuntimeMode(getRepoRoot())
 // Each agent runs on exactly one machine: manage only agents homed here
@@ -111,7 +120,7 @@ const daemonMachine = loadOrCreateMachineIdentity()
 const daemonMachineId = daemonMachine.machineId
 const managedAgents = listHomeBundleAgents({ machineId: daemonMachineId })
 // The Butler under whichever name its bundle has; its container paths follow that name.
-const butlerName = managedButlerAgent(managedAgents) ?? "sanctuary"
+const butlerName = productAgentAmong(managedAgents) ?? "sanctuary"
 // Its saved external events follow that name too: a folder left under the other name (by the rename or a rollback) moves over.
 // It must: records left under the other name can't be settled, so a failed move or merge stops the start.
 try {
@@ -554,7 +563,7 @@ const daemon = new OuroDaemon({
   },
   schedulerFireConsumer: (origin) => consumeSanctuarySchedulerFire(path.join(getAgentBundlesRoot(), `${butlerName}.ouro`), origin),
   nativeHabitRunner: async ({ agent, habitName, trigger, occurrenceId, runnerId, schedulerOrigin }) => {
-    if (!isButlerAgent(agent) || habitName !== "sanctuary-health") return null
+    if (!productFor(agent) || habitName !== "sanctuary-health") return null
     const marker = readSanctuaryAcceptanceMarker(agent)
     const schedulerScenario = marker?.label === "unit-16f-cron-fingerprint" ? marker : null
     const agentRoot = path.join(getAgentBundlesRoot(), `${agent}.ouro`)
@@ -594,7 +603,7 @@ const daemon = new OuroDaemon({
     }
     return result
   },
-  nativeHabitMatch: (agent, habitName) => isButlerAgent(agent) && habitName === "sanctuary-health",
+  nativeHabitMatch: (agent, habitName) => productFor(agent) !== null && habitName === "sanctuary-health",
   mode,
   onStopCommandComplete: async () => {
     await stopEntryRuntime()
@@ -924,7 +933,7 @@ void startDaemonAfterContainerCredentialBootstrap({
         habitsDir,
         osCronManager,
         onHabitFire: (habitName, trigger, context) => {
-          if (isRsvpHabitName(habitName) || (isButlerAgent(agent) && habitName === "sanctuary-health")) {
+          if (isRsvpHabitName(habitName) || (productFor(agent) !== null && habitName === "sanctuary-health")) {
             sendDaemonCommand(socketPath, {
               kind: "habit.poke",
               agent,

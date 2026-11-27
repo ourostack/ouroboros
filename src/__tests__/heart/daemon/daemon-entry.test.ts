@@ -65,6 +65,13 @@ const supercronicMocks = vi.hoisted(() => ({
   stop: vi.fn(async () => undefined),
 }))
 
+// The image names the Butler's product, so the entry's first load registers the Butler's names.
+vi.mock("../../../heart/product/active", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../heart/product/active")>()
+  const { product } = await import("../../../products/butler")
+  return { ...actual, loadImageProduct: () => actual.loadProduct("/opt/ouro/dist/products/butler.js", () => ({ product })) }
+})
+
 vi.mock("../../../heart/daemon/container-runtime", () => ({
   readContainerRuntimePolicy: () => supercronicMocks.policy,
 }))

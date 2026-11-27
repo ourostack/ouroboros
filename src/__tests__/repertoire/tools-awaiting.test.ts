@@ -36,6 +36,7 @@ import {
 import { expectedCappedContent, expectedTruncationMarker, expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap"
 import { claimExternalEvent, commitExternalEventDisposition, externalEventAwaitRecordPath, getExternalEventRoot, prepareButlerExternalEvents, readExternalEventRecord, recordExternalEvent } from "../../heart/external-events/router"
 import { advanceObligation, createObligation, readVerifiedPendingObligations } from "../../arc/obligations"
+import { useButlerProduct } from "../test-helpers/butler-product"
 
 const fileAwaitDef = awaitingToolDefinitions.find((d) => d.tool.function.name === "await_condition")!
 const resolveAwaitDef = awaitingToolDefinitions.find((d) => d.tool.function.name === "resolve_await")!
@@ -54,6 +55,7 @@ function readDoneFile(agentRoot: string, name: string): string {
 }
 
 describe("tools-awaiting", () => {
+  useButlerProduct()
   const cleanup: string[] = []
   let agentRoot: string
 
