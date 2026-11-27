@@ -164,6 +164,7 @@ interface HealthProbeRecord {
 async function broker(): Promise<BrokerModule> {
   return import(pathToFileURL(path.resolve("deploy/unraid/sanctuary-unit16-host-broker.mjs")).href) as Promise<{
     acknowledgeStoredUnraidKey: BrokerModule["acknowledgeStoredUnraidKey"]
+    runtimePolicyDisablesUpdates(text: string): boolean
     createOwnerMutationCoordinator(): ReturnType<BrokerModule["createOwnerMutationCoordinator"]>
     createUnraidKey: BrokerModule["createUnraidKey"]
     probeRevokedUnraidKey: BrokerModule["probeRevokedUnraidKey"]
@@ -1623,6 +1624,17 @@ describe("Sanctuary Unit 16 host broker", () => {
       .toEqual({ vaultUnlocked: false, manualAuthRequired: true })
     expect(parseVaultStatus("local unlock: available\n", false))
       .toEqual({ vaultUnlocked: false, manualAuthRequired: true })
+  })
+
+  it("reads the image's runtime policy, with or without a product module", async () => {
+    const { runtimePolicyDisablesUpdates } = await broker()
+    expect(runtimePolicyDisablesUpdates(JSON.stringify({ scheduler: "supercronic", updates: "disabled" }))).toBe(true)
+    expect(runtimePolicyDisablesUpdates(JSON.stringify({ scheduler: "supercronic", updates: "disabled", product: "/opt/ouro/dist/products/butler.js" }))).toBe(true)
+    expect(runtimePolicyDisablesUpdates(JSON.stringify({ scheduler: "supercronic", updates: "enabled" }))).toBe(false)
+    expect(() => runtimePolicyDisablesUpdates(JSON.stringify({ scheduler: "supercronic", updates: "disabled", extra: true }))).toThrow(/shape is invalid/u)
+    for (const product of ["/opt/ouro/../x.js", "/home/ouro/x.js", 7]) {
+      expect(() => runtimePolicyDisablesUpdates(JSON.stringify({ scheduler: "supercronic", updates: "disabled", product }))).toThrow(/product is invalid/u)
+    }
   })
 
   it("rejects unknown operations, extra authority, and invalid target coordinates", async () => {

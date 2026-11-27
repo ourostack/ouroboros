@@ -1,0 +1,1 @@
+- The Butler's image may name a product module in `/opt/ouro/container-runtime.json`. The harness checks and loads it, and then asks it what that product adds. No image names one yet, so behaviour is unchanged. In the image the policy file is now owned by root and read-only, so the agent can't change which code it loads.
