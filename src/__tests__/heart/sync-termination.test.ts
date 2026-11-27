@@ -132,7 +132,8 @@ describe("signals during a sync", () => {
 
       expect(exit).toEqual({ code: null, signal: "SIGTERM" })
       expect(fs.existsSync(path.join(agent, ".git", "ouro-sync.lock"))).toBe(false)
-      await waitFor(() => !alive(group!.pid), 5_000)
+      // The group can outlive its leader for a moment (a killed child waits to be reaped), so wait for both.
+      await waitFor(() => !alive(group!.pid) && !alive(-group!.pgid), 5_000)
       expect(alive(group.pid)).toBe(false)
       expect(alive(-group.pgid)).toBe(false)
       expect(git(remote, ["--git-dir", remote, "rev-parse", "main"])).toBe(before)
