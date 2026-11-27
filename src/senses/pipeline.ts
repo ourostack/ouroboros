@@ -4,6 +4,7 @@
 //
 // Transport-level concerns (BB API calls, Teams cards, readline) stay in sense adapters.
 
+import { createHash } from "node:crypto"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 import type { ApprovalSuspensionResult, ChannelCallbacks, CompletionMetadata, ProviderErrorClassification, RunAgentOptions, RunAgentOutcome } from "../heart/core"
 import type { SessionTurnLease } from "../mind/session-transaction"
@@ -83,29 +84,24 @@ export interface PrepareRunAgentOptionsInput {
 
 const VOICE_PENDING_MAX_AGE_MS = 15 * 60 * 1_000
 const TELEGRAM_GENERIC_OUTREACH_PENDING_MAX_AGE_MS = 15 * 60 * 1_000
-const NOTICE_WORD_SKIP = new Set(["that", "this", "with", "from", "have", "were", "been", "your", "will", "there", "about", "needed", "nothing", "again", "still", "when", "then", "they", "them", "what", "just"])
-function noticeKeywords(text: string): Set<string> {
-  return new Set((text.toLowerCase().match(/[a-z0-9]{4,}/g) ?? []).filter((word) => !NOTICE_WORD_SKIP.has(word)).map((word) => word.slice(0, 5)))
+function heldNoticeRef(notice: PendingMessage): string {
+  return `H-${createHash("sha1").update(`${notice.timestamp}\n${notice.content}`).digest("hex").slice(0, 6)}`
 }
-// A reply covers the held notices only when it shares distinctive wording with every one of them (up to two keywords each);
-// anything less is treated as not included, so the notices are kept.
+// Inclusion is explicit: the summary prompt gives every notice a reference and asks the reply to end with a receipt line
+// naming them. A reply that lacks any reference is treated as not included, so the notices stay in the retry path.
 export function heldNoticesIncludedIn(held: PendingMessage[], reply: string): boolean {
-  const replyWords = noticeKeywords(reply)
-  return held.every((notice) => {
-    const words = [...noticeKeywords(notice.content)]
-    return words.filter((word) => replyWords.has(word)).length >= Math.min(2, words.length)
-  })
+  return held.every((notice) => reply.includes(heldNoticeRef(notice)))
 }
 
 function renderHeldNoticeSummary(held: PendingMessage[]): PendingMessage {
   const lines = [...held]
     .sort((a, b) => a.timestamp - b.timestamp)
-    .map((notice) => `- (${new Date(notice.timestamp).toISOString()}) ${notice.content}`)
+    .map((notice) => `- [${heldNoticeRef(notice)}] (${new Date(notice.timestamp).toISOString()}) ${notice.content}`)
   return {
     from: held[0]!.from,
     friendId: held[0]!.friendId,
     timestamp: Date.now(),
-    content: `Routine notices held while they were away, not sent to them. Give them one short summary of these, folded into your reply to this message; do not send them as separate messages, and do not send this summary on its own:\n${lines.join("\n")}`,
+    content: `Routine notices held while they were away, not sent to them. Give them one short summary of these, folded into your reply to this message; do not send them as separate messages, and do not send this summary on its own. End your reply with a final line "Held notices: " followed by every reference below, so delivery can be confirmed:\n${lines.join("\n")}`,
   }
 }
 

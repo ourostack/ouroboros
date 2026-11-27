@@ -402,6 +402,26 @@ describe("Teams adapter - delivery state", () => {
     expect(bad.callbacks.deliveryState()).toBe("failed")
   })
 
+  it("fails when a later follow-up message throws synchronously after an earlier one was acknowledged", async () => {
+    for (const slowFirst of [false, true]) {
+      let calls = 0
+      const { callbacks, teams } = await setup(() => Promise.resolve(), (() => {
+        calls++
+        if (calls === 1) return slowFirst ? new Promise<void>((resolve) => setTimeout(resolve, 10)) : Promise.resolve()
+        throw new Error("sync send failure")
+      }) as any)
+      for (const chunk of ["a".repeat(3990), "b".repeat(30), "c".repeat(30), "d".repeat(30)]) {
+        callbacks.onTextChunk(chunk)
+        vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+      }
+      const done = callbacks.flush()
+      await vi.advanceTimersByTimeAsync(20)
+      await done
+      expect(calls).toBeGreaterThanOrEqual(2)
+      expect(callbacks.deliveryState()).toBe("failed")
+    }
+  })
+
   it("counts an overflow with no message transport as lost", async () => {
     const { callbacks, teams } = await setup(() => Promise.resolve())
     callbacks.onTextChunk("a".repeat(3990))

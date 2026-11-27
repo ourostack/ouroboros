@@ -459,13 +459,15 @@ export function createTeamsCallbacks(
         sendChain = sent.catch((err) => markStopped("send", err)).finally(() => { sendChainBusy = false })
       } catch (err) {
         sendChainBusy = false
+        lost++
         markStopped("send", err)
       }
     } else {
       // Chain is busy -- queue onto the existing chain
       sendChain = sendChain.then(() => {
         if (stopped) { lost++; return }
-        const sent = sendMessage(text)
+        let sent: Promise<void>
+        try { sent = sendMessage(text) } catch (err) { lost++; throw err }
         track(sent)
         return sent
       }).catch((err) => markStopped("send-queued", err))

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 import * as fs from "fs"
@@ -635,13 +636,15 @@ describe("handleInboundTurn", () => {
     })
 
     describe("held routine notices", () => {
-      it("counts a reply as covering held notices only when it shares their wording, paraphrase included", () => {
+      it("counts a reply as covering held notices only when it carries every notice reference", () => {
         const held = [
-          { from: "a", friendId: "f", timestamp: 1, content: "Three Microsoft sign-ins on the mini have expired." },
-          { from: "a", friendId: "f", timestamp: 2, content: "ok" },
+          { from: "a", friendId: "f", timestamp: 1, content: "The nightly backup finished. Nothing needed from you." },
+          { from: "a", friendId: "f", timestamp: 2, content: "夜間バックアップが完了しました" },
         ]
-        expect(heldNoticesIncludedIn(held, "While you were away: the Microsoft sign-ins expired on the mini. ok")).toBe(true)
-        expect(heldNoticesIncludedIn(held, "Welcome back, nothing else.")).toBe(false)
+        const refs = held.map((n) => `H-${createHash("sha1").update(`${n.timestamp}\n${n.content}`).digest("hex").slice(0, 6)}`)
+        expect(heldNoticesIncludedIn(held, "The nightly backup has not started.")).toBe(false)
+        expect(heldNoticesIncludedIn(held, `Backup done. Held notices: ${refs[0]}`)).toBe(false)
+        expect(heldNoticesIncludedIn(held, `Held notices: ${refs.join(", ")}`)).toBe(true)
         expect(heldNoticesIncludedIn([], "anything")).toBe(true)
       })
 
@@ -662,6 +665,7 @@ describe("handleInboundTurn", () => {
         expect(options.pendingMessages).toHaveLength(1)
         const summary = options.pendingMessages![0]!.content
         expect(summary).toContain("one short summary")
+        expect(summary).toMatch(/\[H-[0-9a-f]{6}\] /)
         expect(summary).toContain("three sign-ins expired")
         expect(summary).toContain("the nightly run finished")
         expect(claim.settle).toHaveBeenCalledWith()
