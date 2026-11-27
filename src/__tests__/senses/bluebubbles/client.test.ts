@@ -1713,6 +1713,91 @@ describe("BlueBubbles client", () => {
     }))
   })
 
+  describe("listArrivalsAfter", () => {
+    async function makeClient() {
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+      return createBlueBubblesClient(
+        { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+        { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+      )
+    }
+
+    it("asks for rows past the cursor by ROWID and reads each one's arrival order, sent time and direction", async () => {
+      global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        data: [
+          { originalROWID: 30158, dateCreated: 1795807863063, isFromMe: false },
+          { ROWID: 30159, dateCreated: 1795808323201, isFromMe: true },
+          // A row without a ROWID is not an arrival; one without a sent time still holds its place.
+          { dateCreated: 1795808323201 },
+          { originalROWID: 30160, dateCreated: 0 },
+        ],
+      }), { status: 200 })) as typeof fetch
+      const client = await makeClient()
+
+      const arrivals = await client.listArrivalsAfter!({ afterRowId: 30157, throughRowId: 30257, limit: 100, offset: 200 })
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        "http://bluebubbles.local/api/v1/message/query?password=secret-token",
+        expect.objectContaining({ method: "POST", signal: expect.any(AbortSignal) }),
+      )
+      expect(JSON.parse((global.fetch as any).mock.calls[0][1].body)).toEqual({
+        limit: 100,
+        offset: 200,
+        sort: "DESC",
+        with: [],
+        where: [
+          { statement: "message.ROWID > :afterRowId", args: { afterRowId: 30157 } },
+          { statement: "message.ROWID <= :throughRowId", args: { throughRowId: 30257 } },
+        ],
+      })
+      expect(arrivals).toEqual([
+        { rowId: 30158, sentAt: 1795807863063, fromMe: false },
+        { rowId: 30159, sentAt: 1795808323201, fromMe: true },
+        { rowId: 30160, sentAt: null, fromMe: false },
+      ])
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.bluebubbles_arrivals_listed",
+        meta: { afterRowId: 30157, throughRowId: 30257, rows: 4, arrivals: 3 },
+      }))
+    })
+
+    it("asks for the newest rows when there is no cursor yet", async () => {
+      global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 })) as typeof fetch
+      const client = await makeClient()
+
+      await expect(client.listArrivalsAfter!({ limit: 100, offset: 0 })).resolves.toEqual([])
+      expect(JSON.parse((global.fetch as any).mock.calls[0][1].body)).toEqual({ limit: 100, offset: 0, sort: "DESC", with: [] })
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.bluebubbles_arrivals_listed",
+        meta: { afterRowId: null, throughRowId: null, rows: 0, arrivals: 0 },
+      }))
+    })
+
+    it("bounds only the top of the range when asked for rows up to a ROWID", async () => {
+      global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 })) as typeof fetch
+      const client = await makeClient()
+
+      await client.listArrivalsAfter!({ throughRowId: 50, limit: 100, offset: 0 })
+      expect(JSON.parse((global.fetch as any).mock.calls[0][1].body).where).toEqual([
+        { statement: "message.ROWID <= :throughRowId", args: { throughRowId: 50 } },
+      ])
+    })
+
+    it("fails with the server's reason, or unknown when the body cannot be read", async () => {
+      global.fetch = vi.fn()
+        .mockResolvedValueOnce(new Response("query unavailable", { status: 503 }))
+        .mockResolvedValueOnce({ ok: false, status: 502, text: vi.fn().mockRejectedValue(new Error("body unreadable")) } as unknown as Response) as typeof fetch
+      const client = await makeClient()
+
+      await expect(client.listArrivalsAfter!({ afterRowId: 1, limit: 100, offset: 0 })).rejects.toThrow(
+        "BlueBubbles arrival query failed (503): query unavailable",
+      )
+      await expect(client.listArrivalsAfter!({ afterRowId: 1, limit: 100, offset: 0 })).rejects.toThrow(
+        "BlueBubbles arrival query failed (502): unknown",
+      )
+    })
+  })
+
   it("surfaces recent-message query failures even when the response body cannot be read", async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: false,
