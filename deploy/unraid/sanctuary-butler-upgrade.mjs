@@ -1385,8 +1385,10 @@ export function templateNeedsButlerName(text, name) {
 
 /**
  * The template with its bundle Config's Target and its trust Config's Target moved to this Butler name. Their Defaults and
- * values, the host folders, stay. `{ problem }` when the parser cannot read it, it lacks exactly one bundle Config and one
- * trust Config, a Target appears more than once in the text, or the result does not parse with exactly those two moved.
+ * values, the host folders, stay. A template with no trust Config keeps none: the resident's trust mount comes from the root
+ * lifecycle, which names it from the image, and the live install's template has never had one. `{ problem }` when the parser
+ * cannot read it, it lacks exactly one bundle Config, it has more than one trust Config, a Target appears more than once in the
+ * text, or the result does not parse with exactly those moved.
  */
 export function withButlerTargets(text, name, parse) {
   const configs = (document, targets) => document.children.filter((child) => child.name === "Config" && targets.includes(child.attributes.Target))
@@ -1394,17 +1396,18 @@ export function withButlerTargets(text, name, parse) {
   if (!before) return { problem: "the DockerMan template cannot be parsed" }
   const bundles = configs(before, BUTLER_NAMES.map(containerBundle))
   const trusts = configs(before, BUTLER_NAMES.map(trustTarget))
-  if (bundles.length !== 1 || trusts.length !== 1) return { problem: "the DockerMan template does not have exactly one bundle Config and one trust Config" }
+  if (bundles.length !== 1 || trusts.length > 1) return { problem: "the DockerMan template does not have exactly one bundle Config and at most one trust Config" }
   let next = text
-  for (const [config, target] of [[bundles[0], containerBundle(name)], [trusts[0], trustTarget(name)]]) {
+  const moves = [[bundles[0], containerBundle(name)], ...trusts.map((trust) => [trust, trustTarget(name)])]
+  for (const [config, target] of moves) {
     const from = `Target="${config.attributes.Target}"`
     if (config.attributes.Target === target) continue
     if (next.split(from).length !== 2) return { problem: `the DockerMan template has ${from} more than once` }
     next = next.replace(from, `Target="${target}"`)
   }
   const after = parse(next)
-  if (!after || after.children.length !== before.children.length || configs(after, [containerBundle(name)]).length !== 1 || configs(after, [trustTarget(name)]).length !== 1) {
-    return { problem: "moving the DockerMan template's bundle and trust Targets did not leave exactly those two moved" }
+  if (!after || after.children.length !== before.children.length || configs(after, [containerBundle(name)]).length !== 1 || configs(after, [trustTarget(name)]).length !== trusts.length) {
+    return { problem: "moving the DockerMan template's bundle and trust Targets did not leave exactly those moved" }
   }
   return { text: next }
 }
