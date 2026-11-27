@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest"
-import { loadProduct, productFor } from "../../../heart/product/active"
-import { PRODUCT_SEAM_VERSION } from "../../../heart/product/types"
+import { loadProduct, PRODUCT_SEAM_VERSION, productFor } from "../../../heart/product/active"
 
 const PATH = "/opt/example/dist/product.js"
 const product = { seamVersion: PRODUCT_SEAM_VERSION, id: "example", agents: ["helper", "old-helper"] }

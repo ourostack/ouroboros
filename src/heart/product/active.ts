@@ -1,5 +1,8 @@
 import { emitNervesEvent } from "../../nerves/runtime"
-import { PRODUCT_SEAM_VERSION, type OuroProduct } from "./types"
+import type { OuroProduct } from "./types"
+
+/** The seam version this harness runs. A product built for another stops the start. */
+export const PRODUCT_SEAM_VERSION = 1
 
 let active: OuroProduct | null = null
 
