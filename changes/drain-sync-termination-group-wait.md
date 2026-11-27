@@ -1,0 +1,1 @@
+- Made a flaky sync test steadier (#2056): after a SIGTERM during push, "no git child" now waits for the whole process group to be gone, not only its leader, before asserting. No change to the shipped sync code.
