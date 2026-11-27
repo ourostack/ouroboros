@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 const startupMocks = vi.hoisted(() => ({
   emit: vi.fn(),
@@ -16,10 +16,52 @@ import {
   failFastButlerExternalEventsStartup,
   failFastContainerCredentialBootstrapStartup,
   failFastSanctuaryBundlePreparationStartup,
+  productStartupFor,
   providerReadinessAgents,
   startDaemonAfterContainerCredentialBootstrap,
 } from "../../../heart/daemon/daemon-bootstrap-startup"
 import { ButlerExternalEventAdoptionError } from "../../../heart/external-events/router"
+import { loadProduct } from "../../../heart/product/active"
+import type { OuroProduct, ProductStartupInput } from "../../../heart/product/types"
+
+describe("a product prepares its bundle at startup (J2)", () => {
+  const base: ProductStartupInput = { mode: "production", argv: ["node", "daemon-entry.js"], managedAgents: ["host"], repoRoot: "/opt/ouro", bundlesRoot: "/bundles", runtimePackageVersion: "1.0.0" }
+  const flagged: ProductStartupInput = { ...base, argv: ["node", "daemon-entry.js", "--package-managed-agent", "host"] }
+  const fixture = (startup?: OuroProduct["startup"]): OuroProduct => ({ seamVersion: 1, id: "fixture", agents: ["host", "former-host"], ...(startup ? { startup } : {}) })
+  afterEach(() => { loadProduct(undefined) })
+
+  it("asks the product that runs the managed agent, with what the daemon knows", () => {
+    const startup = { preflight: vi.fn(), prepareManagedBundle: vi.fn() }
+    const make = vi.fn(() => startup)
+    loadProduct("/fixture.js", () => ({ product: fixture(make) }))
+    expect(productStartupFor(flagged)).toBe(startup)
+    expect(make).toHaveBeenCalledWith(flagged)
+  })
+
+  it("has nothing to prepare without a product, or for an agent no product runs", () => {
+    loadProduct(undefined)
+    expect(productStartupFor(base)).toBeNull()
+    expect(productStartupFor({ ...flagged, mode: "dev" })).toBeNull()
+    loadProduct("/fixture.js", () => ({ product: fixture(() => ({ preflight: vi.fn(), prepareManagedBundle: vi.fn() })) }))
+    expect(productStartupFor({ ...base, managedAgents: ["slugger"] })).toBeNull()
+    loadProduct("/fixture.js", () => ({ product: fixture() }))
+    expect(productStartupFor(base)).toBeNull()
+  })
+
+  it.each([
+    ["no product is loaded", undefined, ["host"]],
+    ["the product has no startup", fixture(), ["host"]],
+    ["no managed agent is the product's", fixture(() => ({ preflight: vi.fn(), prepareManagedBundle: vi.fn() })), ["slugger"]],
+    ["two managed agents are the product's", fixture(() => ({ preflight: vi.fn(), prepareManagedBundle: vi.fn() })), ["host", "former-host"]],
+  ] as const)("refuses a packaged bundle when %s", (_case, product, managedAgents) => {
+    loadProduct(product ? "/fixture.js" : undefined, () => ({ product }))
+    startupMocks.emit.mockClear()
+    const startup = productStartupFor({ ...flagged, managedAgents })!
+    expect(() => startup.preflight()).toThrow("human-required: roll back to a verified Ouro Butler release or install that release again")
+    expect(() => startup.prepareManagedBundle()).toThrow("human-required")
+    expect(startupMocks.emit).toHaveBeenCalledWith(expect.objectContaining({ level: "error", event: "daemon.product_startup_missing", meta: expect.objectContaining({ managedAgents: [...managedAgents] }) }))
+  })
+})
 
 describe("daemon container credential bootstrap startup boundary", () => {
   it("scopes Workbench daemon readiness to its selected safe agent", () => {

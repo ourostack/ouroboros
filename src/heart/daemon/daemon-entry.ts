@@ -64,10 +64,10 @@ import {
   createProviderReadinessPreparationFailure,
   failFastButlerExternalEventsStartup,
   failFastSanctuaryBundlePreparationStartup,
+  productStartupFor,
   providerReadinessAgents,
   startDaemonAfterContainerCredentialBootstrap,
 } from "./daemon-bootstrap-startup"
-import { prepareSanctuaryPackageManagedBundle, requireSanctuaryPackageManagementDecision, resolveSanctuaryPackageManagementActivation } from "./sanctuary-package-management"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
 import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
 import { consumeSanctuarySchedulerFire, readSanctuaryHealthCursor, recordSanctuarySchedulerLivenessReceipt } from "./sanctuary-scheduler-liveness"
@@ -133,9 +133,11 @@ const readinessAgents = providerReadinessAgents(
   managedAgents,
   process.env.OURO_DAEMON_REQUIRED_AGENT,
 )
-const sanctuaryPackageManagement = resolveSanctuaryPackageManagementActivation({ mode, argv: process.argv, managedAgents, repoRoot: getRepoRoot(), bundlesRoot: getAgentBundlesRoot(), runtimePackageVersion: getPackageVersion() })
+// The product that runs the managed agent prepares its bundle (J2); a packaged bundle with no product to prepare it stops the start.
+let productStartup: ReturnType<typeof productStartupFor> = null
 try {
-  requireSanctuaryPackageManagementDecision(sanctuaryPackageManagement)
+  productStartup = productStartupFor({ mode, argv: process.argv, managedAgents, repoRoot: getRepoRoot(), bundlesRoot: getAgentBundlesRoot(), runtimePackageVersion: getPackageVersion() })
+  productStartup?.preflight()
 } catch (failure) {
   failFastSanctuaryBundlePreparationStartup({ failure, exit: (code) => process.exit(code) })
   throw failure
@@ -842,9 +844,9 @@ function scheduleStartupSentinelAfterProviderPreload(agent: string, preload: Pro
 
 /* v8 ignore start -- habit wiring: lambdas delegate to processManager/fs; tested via HabitScheduler unit tests @preserve */
 void startDaemonAfterContainerCredentialBootstrap({
-  preflight: () => { requireSanctuaryPackageManagementDecision(sanctuaryPackageManagement) },
+  preflight: () => { productStartup?.preflight() },
   loadBootstrap: () => loadContainerCredentialBootstrap(managedAgents),
-  prepareManagedBundle: () => { prepareSanctuaryPackageManagedBundle(sanctuaryPackageManagement) },
+  prepareManagedBundle: () => { productStartup?.prepareManagedBundle() },
   prepareDaemon: prepareProviderRuntime,
   startDaemon: async () => {
     // Presence off here: publish that this machine left every roster before any sense starts under the home lease.
