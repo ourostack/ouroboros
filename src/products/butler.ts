@@ -80,7 +80,7 @@ async function runSanctuaryHealth(input: ProductHabitRunInput): Promise<DaemonRe
  */
 export const BUTLER_HOUSE_CARE_TOOL_NAMES = ["house_sweep", "house_digest_send"] as const
 
-/** The tools the Butler adds to a turn's menu: the root-host tool in the owner's Telegram chat, and house care on its own inner turns. */
+/** The tools the Butler adds to a turn's menu: the root-host tool in the owner's Telegram chat, and house care on its own private turns. */
 export function selectButlerTools(input: ProductToolSelectionInput): readonly ToolDefinition[] {
   if (input.channel === "telegram") {
     // Offered only when this turn carries the owner's current, verified request; selectRootHostTool says so.

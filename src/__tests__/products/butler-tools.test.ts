@@ -32,7 +32,7 @@ describe("the Butler's tools", () => {
     expect([...BUTLER_HOUSE_CARE_TOOL_NAMES]).toEqual(houseCareToolDefinitions.map((definition) => definition.tool.function.name))
   })
 
-  it("give the Butler's own unscoped inner turns house care, and no other turn", () => {
+  it("give the Butler's own unscoped private turns house care, and no other turn", () => {
     expect(selectButlerTools(input({}))).toEqual(houseCareToolDefinitions)
     expect(selectButlerTools(input({ relationshipScoped: true }))).toEqual([])
     expect(selectButlerTools(input({ channel: "cli" }))).toEqual([])
