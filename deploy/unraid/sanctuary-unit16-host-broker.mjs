@@ -349,8 +349,16 @@ function updaterDisabled(expectedImage) {
     env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "pipe", "ignore"],
   })
   if (result.error || result.status !== 0) throw new Error("container runtime policy read failed")
-  const policy = object(JSON.parse(result.stdout), "container runtime policy")
-  exactKeys(policy, ["scheduler", "updates"], "container runtime policy")
+  return runtimePolicyDisablesUpdates(result.stdout)
+}
+
+function runtimePolicyDisablesUpdates(text) {
+  const policy = object(JSON.parse(text), "container runtime policy")
+  // An image may also name its product module (an absolute path under /opt ending in .js); the policy is otherwise exact.
+  exactKeys(policy, policy.product === undefined ? ["scheduler", "updates"] : ["product", "scheduler", "updates"], "container runtime policy")
+  if (policy.product !== undefined && !(typeof policy.product === "string" && /^\/opt\/[a-z0-9][a-z0-9/_.-]*\.js$/u.test(policy.product) && !policy.product.split("/").includes(".."))) {
+    throw new Error("container runtime policy product is invalid")
+  }
   return policy.scheduler === "supercronic" && policy.updates === "disabled"
 }
 
@@ -2059,6 +2067,7 @@ if (process.argv[1]?.endsWith("sanctuary-unit16-host-broker.mjs")) {
 
 export {
   acknowledgeStoredUnraidKey,
+  runtimePolicyDisablesUpdates,
   assertStableContainerProcess,
   attestHealthProbeProcessAbsent,
   armRestartAfterResponseClosed,

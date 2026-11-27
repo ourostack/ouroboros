@@ -1,7 +1,24 @@
 import * as fs from "node:fs"
 import { emitNervesEvent } from "../../nerves/runtime"
 
-export interface ContainerRuntimePolicy { scheduler: "supercronic"; updates: "disabled" }
+export interface ContainerRuntimePolicy { scheduler: "supercronic"; updates: "disabled"; product?: string }
+
+/**
+ * The product module an image may name (`product`): an absolute path to a built .js file inside the image. The image's
+ * build chooses it and the file is root-owned, so the agent's own files never choose which code loads.
+ */
+export function isProductModulePath(value: unknown): value is string {
+  return typeof value === "string" && /^\/opt\/[a-z0-9][a-z0-9/_.-]*\.js$/u.test(value) && !value.split("/").includes("..")
+}
+
+/** Whether a parsed container runtime policy is exactly the locked policy: scheduler and updates, and optionally product. */
+export function isContainerRuntimePolicy(value: unknown): value is ContainerRuntimePolicy {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const policy = value as Record<string, unknown>
+  const keys = Object.keys(policy).sort().join(",")
+  if (keys !== "scheduler,updates" && keys !== "product,scheduler,updates") return false
+  return policy.scheduler === "supercronic" && policy.updates === "disabled" && (policy.product === undefined || isProductModulePath(policy.product))
+}
 
 export function hasManagedAgentProcess(processArguments: string, agent: string): boolean {
   const wanted = agent.trim()
@@ -50,10 +67,8 @@ export function readContainerRuntimePolicy(options: { path?: string; readFile?: 
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null
     throw error
   }
-  const value = JSON.parse(raw) as Record<string, unknown>
-  if (value.scheduler !== "supercronic" || value.updates !== "disabled" || Object.keys(value).sort().join(",") !== "scheduler,updates") {
-    throw new Error("container runtime policy is invalid")
-  }
-  emitNervesEvent({ component: "daemon", event: "daemon.container_runtime_policy_loaded", message: "container runtime policy loaded", meta: { scheduler: value.scheduler, updates: value.updates } })
-  return { scheduler: "supercronic", updates: "disabled" }
+  const value: unknown = JSON.parse(raw)
+  if (!isContainerRuntimePolicy(value)) throw new Error("container runtime policy is invalid")
+  emitNervesEvent({ component: "daemon", event: "daemon.container_runtime_policy_loaded", message: "container runtime policy loaded", meta: { scheduler: value.scheduler, updates: value.updates, product: value.product ?? null } })
+  return value.product === undefined ? { scheduler: "supercronic", updates: "disabled" } : { scheduler: "supercronic", updates: "disabled", product: value.product }
 }

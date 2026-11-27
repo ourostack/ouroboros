@@ -64,6 +64,8 @@ RUN chown root:root /etc/ouro /etc/ouro/github_known_hosts /usr/local/libexec/ou
   && visudo -cf /etc/sudoers.d/ouro-sync
 COPY assets/sanctuary-host-launcher.sh /opt/ouro/deploy/unraid/sanctuary-host-launcher.sh
 RUN chown -R 10001:10001 /opt/ouro /home/ouro
+# The runtime policy names the product module to load, so the agent (10001) must not be able to change it.
+RUN chown root:root /opt/ouro/container-runtime.json && chmod 0444 /opt/ouro/container-runtime.json
 
 USER 10001:10001
 ENV HOME=/home/ouro
