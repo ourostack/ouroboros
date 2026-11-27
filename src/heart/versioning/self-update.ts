@@ -36,7 +36,7 @@ export interface SelfUpdateDeps {
   lookupLatest: () => Promise<ReleaseLookup>
   install: (version: string, lookup: ReleaseLookup) => Promise<ReleaseSourceName>
   validate: (version: string) => { ok: boolean; message?: string }
-  smokeTest: (version: string) => Promise<{ ok: boolean; detail?: string }>
+  smokeTest: (version: string) => Promise<{ ok: boolean; detail?: string; seenVersion?: string }>
   activate: (version: string) => void
   isDaemonRunning: () => Promise<boolean>
   /** The version a running daemon reports, or null when none answers. */
@@ -148,6 +148,16 @@ async function runLocked(deps: SelfUpdateDeps): Promise<SelfUpdateResult> {
   const restartOrRollBack = async (target: string, fallback: string | null, source?: ReleaseSourceName): Promise<SelfUpdateResult | null> => {
     const health = await deps.restartDaemon(target)
     if (health.ok) return null
+    if (health.seenVersion && compareCliVersions(health.seenVersion, target) > 0) {
+      // A newer release landed mid-pass and the daemon already runs it: target is not at fault.
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.self_update_newer_daemon_kept",
+        message: "the daemon already runs a newer release than the one this pass installed; no rollback",
+        meta: { target, seenVersion: health.seenVersion },
+      })
+      return null
+    }
     failedVersions.push(target)
     if (!fallback) {
       return finish("rolled-back", {

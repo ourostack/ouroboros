@@ -234,7 +234,7 @@ export function createDefaultSelfUpdateDeps(options: { homeDir?: string; socketP
         return judgeRestartAfterUpFailure({ upFailure, upRefusedOnHandoffHealth, expectedVersion, seenVersion: seen, before, after })
       }
       if (seen === expectedVersion) return { ok: true }
-      return { ok: false, detail: seen ? `daemon answered with ${seen}, expected ${expectedVersion}` : "daemon did not answer after ouro up" }
+      return { ok: false, detail: seen ? `daemon answered with ${seen}, expected ${expectedVersion}` : "daemon did not answer after ouro up", ...(seen ? { seenVersion: seen } : {}) }
     },
     isDevMode: () => fs.existsSync(path.join(cliHome, "dev-config.json")),
     isDaemonReplacementStranded: () => {

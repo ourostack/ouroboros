@@ -84,6 +84,18 @@ describe("runSelfUpdate", () => {
     expect(m.deps.restartDaemon).not.toHaveBeenCalled()
   })
 
+  it("keeps a daemon that already runs a newer release than the one this pass installed", async () => {
+    const m = machine({ daemonRunning: true })
+    vi.mocked(m.deps.restartDaemon).mockResolvedValueOnce({ ok: false, detail: "daemon answered with 0.1.0-alpha.900, expected 0.1.0-alpha.896", seenVersion: "0.1.0-alpha.900" })
+
+    const result = await runSelfUpdate(m.deps)
+
+    expect(result.outcome).not.toBe("rolled-back")
+    expect(m.intent).toBeNull()
+    expect(m.state?.failedVersions ?? []).toEqual([])
+    expect(m.deps.restartDaemon).toHaveBeenCalledTimes(1)
+  })
+
   it("rolls back, pins the previous version and never retries a release whose daemon is unhealthy", async () => {
     const m = machine({ daemonRunning: true })
     vi.mocked(m.deps.restartDaemon).mockResolvedValueOnce({ ok: false, detail: "daemon answered with 0.1.0-alpha.805" })

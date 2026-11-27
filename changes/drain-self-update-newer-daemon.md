@@ -1,0 +1,1 @@
+- Unattended self-update no longer rolls back a healthy daemon when a newer release lands mid-pass and the daemon already answers on it: the installed version is not marked failed and nothing is pinned.
