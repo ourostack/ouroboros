@@ -792,3 +792,11 @@ describe("A2A core substrate", () => {
     })).rejects.toMatchObject({ code: "EADDRINUSE" })
   })
 })
+
+describe("defaultA2APort", () => {
+  it("gives the Butler the same A2A port under either name", () => {
+    expect(defaultA2APort("sanctuary")).toBe(18940)
+    expect(defaultA2APort("butler")).toBe(18940)
+    expect(defaultA2APort("slugger")).not.toBe(18940)
+  })
+})
