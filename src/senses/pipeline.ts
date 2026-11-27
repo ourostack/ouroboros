@@ -83,6 +83,20 @@ export interface PrepareRunAgentOptionsInput {
 
 const VOICE_PENDING_MAX_AGE_MS = 15 * 60 * 1_000
 const TELEGRAM_GENERIC_OUTREACH_PENDING_MAX_AGE_MS = 15 * 60 * 1_000
+const NOTICE_WORD_SKIP = new Set(["that", "this", "with", "from", "have", "were", "been", "your", "will", "there", "about", "needed", "nothing", "again", "still", "when", "then", "they", "them", "what", "just"])
+function noticeKeywords(text: string): Set<string> {
+  return new Set((text.toLowerCase().match(/[a-z0-9]{4,}/g) ?? []).filter((word) => !NOTICE_WORD_SKIP.has(word)).map((word) => word.slice(0, 5)))
+}
+// A reply covers the held notices only when it shares distinctive wording with every one of them (up to two keywords each);
+// anything less is treated as not included, so the notices are kept.
+export function heldNoticesIncludedIn(held: PendingMessage[], reply: string): boolean {
+  const replyWords = noticeKeywords(reply)
+  return held.every((notice) => {
+    const words = [...noticeKeywords(notice.content)]
+    return words.filter((word) => replyWords.has(word)).length >= Math.min(2, words.length)
+  })
+}
+
 function renderHeldNoticeSummary(held: PendingMessage[]): PendingMessage {
   const lines = [...held]
     .sort((a, b) => a.timestamp - b.timestamp)
@@ -608,7 +622,7 @@ export interface InboundTurnResult {
   /** Pending envelopes drained at turn start, including deferred returns. */
   drainedPending?: PendingMessage[]
   /** Held notices carried in this turn's return summary, awaiting the sense's delivery confirmation. */
-  heldNoticeDelivery?: { confirm(): void; release(): void }
+  heldNoticeDelivery?: { confirm(): void; release(): void; includedIn(reply: string): boolean }
   /** If set, the turn errored and this message should be shown to the user for failover. */
   failoverMessage?: string
   /** If set, a provider switch was executed via failover reply. */
@@ -1697,7 +1711,7 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     messages: sessionMessages,
     drainedPending: pending,
     ...(handedOffHeldNotices && heldClaimForDelivery ? {
-      heldNoticeDelivery: { confirm: () => heldClaimForDelivery.settle(), release: () => heldClaimForDelivery.release() },
+      heldNoticeDelivery: { confirm: () => heldClaimForDelivery.settle(), release: () => heldClaimForDelivery.release(), includedIn: (reply: string) => heldNoticesIncludedIn(heldClaimForDelivery.messages, reply) },
     } : {}),
     ...(input.switchedProvider ? { switchedProvider: input.switchedProvider } : {}),
     // Every chat sense answers an errored turn. The inner channel stays silent, and the CLI keeps showing its operator the raw error.

@@ -17,7 +17,7 @@ import * as tempoModule from "../../heart/tempo"
 import * as temporalViewModule from "../../heart/temporal-view"
 import * as presenceModule from "../../arc/presence"
 import * as flightRecorderModule from "../../arc/flight-recorder"
-import { handleInboundTurn, selectCheckpointCurrentAsk } from "../../senses/pipeline"
+import { handleInboundTurn, heldNoticesIncludedIn, selectCheckpointCurrentAsk } from "../../senses/pipeline"
 import type { InboundTurnInput, InboundTurnResult } from "../../senses/pipeline"
 import { readAgentProviderSelectionFixture, writeAgentProviderSelectionFixture, type AgentProviderSelectionFixture } from "../helpers/agent-provider-selection"
 import { a003Event, a003RetainedHistoryEnvelope } from "../fixtures/a003-session"
@@ -635,6 +635,16 @@ describe("handleInboundTurn", () => {
     })
 
     describe("held routine notices", () => {
+      it("counts a reply as covering held notices only when it shares their wording, paraphrase included", () => {
+        const held = [
+          { from: "a", friendId: "f", timestamp: 1, content: "Three Microsoft sign-ins on the mini have expired." },
+          { from: "a", friendId: "f", timestamp: 2, content: "ok" },
+        ]
+        expect(heldNoticesIncludedIn(held, "While you were away: the Microsoft sign-ins expired on the mini. ok")).toBe(true)
+        expect(heldNoticesIncludedIn(held, "Welcome back, nothing else.")).toBe(false)
+        expect(heldNoticesIncludedIn([], "anything")).toBe(true)
+      })
+
       const notices: PendingMessage[] = [
         { from: "testagent", friendId: "friend-1", content: "three sign-ins expired; nothing to do yet", timestamp: 1000, disposition: "held_notice" },
         { from: "testagent", friendId: "friend-1", content: "the nightly run finished; nothing needed from you", timestamp: 2000, disposition: "held_notice" },
@@ -679,6 +689,7 @@ describe("handleInboundTurn", () => {
 
         const result = await handleInboundTurn(input)
         result.heldNoticeDelivery!.release()
+        expect(result.heldNoticeDelivery!.includedIn("nothing relevant")).toBe(false)
 
         expect(claim.settle).not.toHaveBeenCalled()
         expect(claim.release).toHaveBeenCalledTimes(1)

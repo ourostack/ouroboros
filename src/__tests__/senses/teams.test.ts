@@ -312,6 +312,127 @@ describe("Teams adapter - MIN_INITIAL_CHARS streaming", () => {
   })
 })
 
+// ── Delivery acknowledgement ledger ──────────────────────────────────────────
+describe("Teams adapter - delivery state", () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  async function setup(emit: () => unknown, sendMessage?: (text: string) => Promise<void>) {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const stream = { emit: vi.fn().mockImplementation(emit), update: vi.fn(), close: vi.fn() }
+    const callbacks = teams.createTeamsCallbacks(stream as any, new AbortController(), sendMessage)
+    return { teams, stream, callbacks }
+  }
+
+  it("is unconfirmed before anything is sent and confirmed once an emit is acknowledged", async () => {
+    const { callbacks } = await setup(() => Promise.resolve())
+    expect(callbacks.deliveryState()).toBe("unconfirmed")
+    callbacks.onTextChunk("The sign-ins expired and I will tell you more.")
+    await callbacks.flush()
+    expect(callbacks.deliveryState()).toBe("confirmed")
+  })
+
+  it("counts a periodic fire-and-forget emit only once its acknowledgement arrives, and fails when it is rejected", async () => {
+    const ok = await setup(() => Promise.resolve())
+    ok.callbacks.onTextChunk("The sign-ins expired and I will tell you more.")
+    vi.advanceTimersByTime(ok.teams.DEFAULT_FLUSH_INTERVAL_MS)
+    await ok.callbacks.flush()
+    expect(ok.callbacks.deliveryState()).toBe("confirmed")
+
+    const bad = await setup(() => Promise.reject(new Error("403")))
+    bad.callbacks.onTextChunk("The sign-ins expired and I will tell you more.")
+    vi.advanceTimersByTime(bad.teams.DEFAULT_FLUSH_INTERVAL_MS)
+    await bad.callbacks.flush()
+    expect(bad.callbacks.deliveryState()).toBe("failed")
+  })
+
+  it("is unconfirmed when the stream gives no acknowledgement to wait for", async () => {
+    const { callbacks, teams } = await setup(() => undefined)
+    callbacks.onTextChunk("The sign-ins expired and I will tell you more.")
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    await callbacks.flush()
+    expect(callbacks.deliveryState()).toBe("unconfirmed")
+  })
+
+  it("fails when a synchronous emit throws, and when text arrives after the stream stopped", async () => {
+    const { callbacks, teams } = await setup(() => { throw new Error("boom") })
+    callbacks.onTextChunk("The sign-ins expired and I will tell you more.")
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    callbacks.onTextChunk("A second chunk that is long enough to flush.")
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    await callbacks.flush()
+    expect(callbacks.deliveryState()).toBe("failed")
+  })
+
+  it("is never confirmed when the stream died, and fails when a size rejection has no message fallback", async () => {
+    const dead = await setup(() => Promise.reject(new Error("403")))
+    dead.callbacks.onTextChunk("The sign-ins expired and I will tell you more.")
+    await dead.callbacks.flush().catch(() => undefined)
+    expect(dead.callbacks.deliveryState()).toBe("unconfirmed")
+
+    const tooBig = await setup(() => Promise.reject(Object.assign(new Error("413"), { response: { status: 413 } })))
+    tooBig.callbacks.onTextChunk("The sign-ins expired and I will tell you more.")
+    await tooBig.callbacks.flush()
+    expect(tooBig.callbacks.deliveryState()).toBe("failed")
+  })
+
+  it("confirms follow-up messages after finalization, queued sends included, and fails when one is rejected", async () => {
+    const sent: string[] = []
+    const ok = await setup(() => Promise.resolve(), async (text) => { sent.push(text) })
+    ok.callbacks.onTextChunk("a".repeat(3990))
+    vi.advanceTimersByTime(ok.teams.DEFAULT_FLUSH_INTERVAL_MS)
+    ok.callbacks.onTextChunk("b".repeat(30))
+    vi.advanceTimersByTime(ok.teams.DEFAULT_FLUSH_INTERVAL_MS)
+    ok.callbacks.onTextChunk("c".repeat(30))
+    vi.advanceTimersByTime(ok.teams.DEFAULT_FLUSH_INTERVAL_MS)
+    ok.callbacks.onTextChunk("d".repeat(30))
+    await ok.callbacks.flush()
+    expect(sent.length).toBeGreaterThanOrEqual(2)
+    expect(ok.callbacks.deliveryState()).toBe("confirmed")
+
+    const bad = await setup(() => Promise.resolve(), () => Promise.reject(new Error("send down")))
+    bad.callbacks.onTextChunk("a".repeat(3990))
+    vi.advanceTimersByTime(bad.teams.DEFAULT_FLUSH_INTERVAL_MS)
+    bad.callbacks.onTextChunk("b".repeat(30))
+    vi.advanceTimersByTime(bad.teams.DEFAULT_FLUSH_INTERVAL_MS)
+    bad.callbacks.onTextChunk("c".repeat(30))
+    vi.advanceTimersByTime(bad.teams.DEFAULT_FLUSH_INTERVAL_MS)
+    await bad.callbacks.flush()
+    expect(bad.callbacks.deliveryState()).toBe("failed")
+  })
+
+  it("counts an overflow with no message transport as lost", async () => {
+    const { callbacks, teams } = await setup(() => Promise.resolve())
+    callbacks.onTextChunk("a".repeat(3990))
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    callbacks.onTextChunk("b".repeat(30))
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    await callbacks.flush()
+    expect(callbacks.deliveryState()).toBe("failed")
+  })
+
+  it("counts a mid-turn speak and the message fallback after a dead stream as acknowledged", async () => {
+    const sendMessage = vi.fn().mockResolvedValue(undefined)
+    const speak = await setup(() => Promise.resolve(), sendMessage)
+    speak.callbacks.onTextChunk("Speaking up right now about the sign-ins.")
+    await speak.callbacks.flushNow!()
+    expect(speak.callbacks.deliveryState()).toBe("confirmed")
+
+    const fallback = await setup(() => Promise.reject(Object.assign(new Error("413"), { response: { status: 413 } })), sendMessage)
+    fallback.callbacks.onTextChunk("Speaking up right now about the sign-ins.")
+    await fallback.callbacks.flushNow!()
+    fallback.callbacks.onTextChunk("And then the final words of this reply.")
+    await fallback.callbacks.flush()
+    expect(fallback.callbacks.deliveryState()).toBe("confirmed")
+
+    const sync = await setup(() => undefined, sendMessage)
+    sync.callbacks.onTextChunk("Speaking up right now about the sign-ins.")
+    await sync.callbacks.flushNow!()
+    expect(sync.callbacks.deliveryState()).toBe("unconfirmed")
+  })
+})
+
 // ── Proactive >4000 finalization ─────────────────────────────────────────────
 describe("Teams adapter - proactive >4000 finalization", () => {
   let mockStream: { emit: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }
@@ -4134,7 +4255,7 @@ describe("Teams adapter - session persistence", () => {
     parseSlashCommandFn?: any
     dispatchFn?: any
     teamsChannelConfig?: any
-    heldNoticeDelivery?: { confirm: () => void; release: () => void }
+    heldNoticeDelivery?: { confirm: () => void; release: () => void; includedIn: (reply: string) => boolean }
   } = {}) {
     const {
       runAgentFn = vi.fn().mockResolvedValue({ usage: undefined }),
@@ -6629,22 +6750,42 @@ describe("Teams adapter - pipeline integration (U7)", () => {
     expect(typeof input.accumulateFriendTokens).toBe("function")
   })
 
-  it("confirms held notices only after a reply was delivered, and puts them back when none was", async () => {
-    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+  it("settles held notices only when every reply chunk was acknowledged and covers them, else puts them back", async () => {
     const ctx = { signin: vi.fn(), aadObjectId: "aad-user-123", tenantId: "tenant-abc", displayName: "Test User" }
+    const reply = "Welcome back. Meanwhile: the sign-ins expired."
+    const run = async (name: string, opts: { emit: () => unknown; includes?: boolean; speak?: boolean }) => {
+      vi.resetModules()
+      const held = { confirm: vi.fn(), release: vi.fn(), includedIn: vi.fn().mockReturnValue(opts.includes ?? true) }
+      const replying = vi.fn().mockImplementation(async (msgs: any[], cb: any) => {
+        if (opts.speak !== false) {
+          cb.onTextChunk(reply)
+          msgs.push({ role: "assistant", content: reply })
+        }
+        return { usage: undefined }
+      })
+      mockPipelineDeps({ runAgentFn: replying, heldNoticeDelivery: held })
+      const stream = { emit: vi.fn().mockImplementation(opts.emit), update: vi.fn(), close: vi.fn() }
+      await (await import("../../senses/teams")).handleTeamsMessage("hello", stream as any, name, ctx).catch(() => undefined)
+      return held
+    }
 
-    vi.resetModules()
-    const delivered = { confirm: vi.fn(), release: vi.fn() }
-    const replying = vi.fn().mockImplementation(async (msgs: any[]) => { msgs.push({ role: "assistant", content: "Welcome back. Meanwhile: the sign-ins expired." }); return { usage: undefined } })
-    mockPipelineDeps({ runAgentFn: replying, heldNoticeDelivery: delivered })
-    await (await import("../../senses/teams")).handleTeamsMessage("hello", mockStream as any, "conv-held-1", ctx)
-    expect(delivered.confirm).toHaveBeenCalledTimes(1)
-    expect(delivered.release).not.toHaveBeenCalled()
+    const acked = await run("conv-held-acked", { emit: () => Promise.resolve() })
+    expect(acked.confirm).toHaveBeenCalledTimes(1)
+    expect(acked.release).not.toHaveBeenCalled()
 
-    vi.resetModules()
-    const silent = { confirm: vi.fn(), release: vi.fn() }
-    mockPipelineDeps({ heldNoticeDelivery: silent })
-    await (await import("../../senses/teams")).handleTeamsMessage("hello", mockStream as any, "conv-held-2", ctx)
+    const uncovered = await run("conv-held-uncovered", { emit: () => Promise.resolve(), includes: false })
+    expect(uncovered.confirm).not.toHaveBeenCalled()
+    expect(uncovered.release).toHaveBeenCalledTimes(1)
+
+    const unacknowledged = await run("conv-held-unacked", { emit: () => undefined })
+    expect(unacknowledged.confirm).not.toHaveBeenCalled()
+    expect(unacknowledged.release).toHaveBeenCalledTimes(1)
+
+    const failed = await run("conv-held-failed", { emit: () => Promise.reject(new Error("403")) })
+    expect(failed.confirm).not.toHaveBeenCalled()
+    expect(failed.release).toHaveBeenCalledTimes(1)
+
+    const silent = await run("conv-held-silent", { emit: () => Promise.resolve(), speak: false })
     expect(silent.confirm).not.toHaveBeenCalled()
     expect(silent.release).toHaveBeenCalledTimes(1)
   })

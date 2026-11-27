@@ -343,6 +343,7 @@ vi.mock("../../../mind/pending", async () => {
     getPendingDir: (...args: any[]) => mocks.getPendingDir(...args),
     drainPending: (...args: any[]) => mocks.drainPending(...args),
     drainDeferredReturns: (...args: any[]) => mocks.drainDeferredReturns(...args),
+    claimHeldNotices: actual.claimHeldNotices,
     getPrivateRuntimePendingDir: actual.getPrivateRuntimePendingDir,
     queuePendingMessageOnce: actual.queuePendingMessageOnce,
   }
@@ -12488,6 +12489,56 @@ describe("BlueBubbles sense runtime", () => {
     const input = mocks.handleInboundTurn.mock.calls[0][0]
     expect(input.pendingDir).toEqual(expect.stringContaining("pending"))
     expect(typeof input.drainPending).toBe("function")
+  })
+
+  describe("held notices ride the next reply", () => {
+    function withHeldDelivery(includes: boolean, reply = "got it") {
+      const held = { confirm: vi.fn(), release: vi.fn(), includedIn: vi.fn().mockReturnValue(includes) }
+      const base = mocks.handleInboundTurn.getMockImplementation()!
+      mocks.handleInboundTurn.mockImplementationOnce(async (input: any) => ({
+        ...(await base(input)),
+        messages: [{ role: "assistant", content: reply }],
+        heldNoticeDelivery: held,
+      }))
+      return held
+    }
+
+    it("claims held notices and settles them once the reply send was accepted", async () => {
+      const held = withHeldDelivery(true)
+      const bluebubbles = await import("../../../senses/bluebubbles")
+      await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+      const input = mocks.handleInboundTurn.mock.calls[0][0]
+      expect(input.confirmHeldNoticeDelivery).toBe(true)
+      expect(typeof input.claimHeldNotices).toBe("function")
+      expect(held.includedIn).toHaveBeenCalledWith("got it")
+      expect(held.confirm).toHaveBeenCalledTimes(1)
+      expect(held.release).not.toHaveBeenCalled()
+    })
+
+    it("keeps held notices when the reply send fails", async () => {
+      const held = withHeldDelivery(true)
+      mocks.sendText.mockRejectedValueOnce(new Error("send down"))
+      const bluebubbles = await import("../../../senses/bluebubbles")
+      const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+      expect(result).toEqual(expect.objectContaining({ reason: "delivery_failed" }))
+      expect(held.confirm).not.toHaveBeenCalled()
+      expect(held.release).toHaveBeenCalledTimes(1)
+    })
+
+    it("keeps held notices when the reply does not cover them or is empty", async () => {
+      const notCovered = withHeldDelivery(false)
+      const bluebubbles = await import("../../../senses/bluebubbles")
+      await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+      expect(notCovered.confirm).not.toHaveBeenCalled()
+      expect(notCovered.release).toHaveBeenCalledTimes(1)
+
+      const empty = withHeldDelivery(true, "   ")
+      await bluebubbles.handleBlueBubblesEvent({ ...dmTopLevelPayload, data: { ...dmTopLevelPayload.data, guid: "guid-empty-reply" } } as any)
+      expect(empty.confirm).not.toHaveBeenCalled()
+      expect(empty.release).toHaveBeenCalledTimes(1)
+    })
   })
 
   it("passes deferred-return drain to pipeline for friend-level completion routing", async () => {

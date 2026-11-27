@@ -1,1 +1,2 @@
 - Ouro no longer sends you unprompted routine notices, or heads-ups about a later approval that asks nothing of you now. It holds them and gives you one short summary the next time you write to it. Requested updates, anything that needs you now (including the later approval request itself), warnings about lost work or an ongoing outage, and corrections still send right away.
+- The summary works on iMessage as well as Teams. Held notices are only cleared once the reply carrying the summary is confirmed delivered; a failed or unconfirmed send keeps them for the next message.

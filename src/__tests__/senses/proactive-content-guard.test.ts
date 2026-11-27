@@ -43,6 +43,7 @@ describe("proactive content guard", () => {
 
     it("sends a mixed text whose future-gate part rides with a real present ask", () => {
       expect(getProactiveInternalContentBlockReason("Nothing to do yet on the sign-in; when it is ready I will send the prompt. Please approve the pending deployment now.")).toBeNull()
+      expect(getProactiveInternalContentBlockReason("Nothing to do yet; when it is ready I will send the prompt, but please approve the deployment now.")).toBeNull()
     })
 
     it("sends the later request for the passkey tap itself", () => {
