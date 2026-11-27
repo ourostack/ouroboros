@@ -1,3 +1,9 @@
+import type { HabitRunTrigger } from "../../arc/flight-recorder"
+import type { DaemonResponse } from "../daemon/daemon"
+import type { SchedulerOrigin } from "../daemon/scheduler-attestation"
+import type { SupercronicSupervisorSnapshot } from "../daemon/supercronic-supervisor"
+import type { ExternalEventInput } from "../external-events/router"
+
 /**
  * The product seam: how a product built on the harness (the Butler is the first) tells core what it adds, so core files
  * never import product code. The image names the product's module in /opt/ouro/container-runtime.json (`product`); each
@@ -17,6 +23,49 @@ export interface OuroProduct {
    * `prepareManagedBundle` runs between them; a throw from either stops the start with the error's message.
    */
   startup?(input: ProductStartupInput): ProductStartup
+  /**
+   * Habits the daemon runs itself instead of waking the agent (J5), by habit name. A poke or cron fire of one of these
+   * habits for this product's agent runs `run`, and the daemon records the run as it records any habit's.
+   */
+  habits?: Readonly<Record<string, ProductHabit>>
+  /**
+   * External-event sources whose events need the product's runtime ready before they wake the agent (J5), by source name.
+   * The daemon checks `ready` before it claims a source's events, and the agent's process again before it runs one; a throw
+   * holds the events, unclaimed, with the error's message as the repair line.
+   */
+  eventSources?: Readonly<Record<string, ProductEventSource>>
+}
+
+export interface ProductEventSource {
+  ready(agentName: string): Promise<void>
+}
+
+export interface ProductHabit {
+  /** Runs the habit; the response is the poke's. A throw records the run as failed with the error's message. */
+  run(input: ProductHabitRunInput): Promise<DaemonResponse>
+  /**
+   * Whether a cron fire must prove it came from the container's scheduler (Supercronic). Core keeps the proof: it signs the
+   * cron poke's process ancestry, checks it in the daemon, consumes each fire once, and refuses an unproven cron poke.
+   */
+  requiresSchedulerAttestation: boolean
+  /** The acceptance scenario an attested fire binds to now, or null when none is running. Core signs it into the fire and checks it on arrival. */
+  attestationScenario?(agentName: string): string | null
+}
+
+/** What the daemon gives a product habit's run. */
+export interface ProductHabitRunInput {
+  agent: string
+  habitName: string
+  trigger: HabitRunTrigger
+  occurrenceId?: string
+  /** This run's id, as its habit-run receipt records it. */
+  runnerId: string
+  /** The authenticated scheduler fire that started this run, on an attested cron fire only. */
+  schedulerOrigin?: SchedulerOrigin
+  /** The daemon's attested snapshot of the Supercronic it supervises for this agent, or null when it runs none. */
+  schedulerSnapshot(): SupercronicSupervisorSnapshot | null
+  /** Files an external event through the daemon, as `external.event.submit`; throws when the daemon refuses it. */
+  submitExternalEvent(input: ExternalEventInput): Promise<{ shouldWake: boolean }>
 }
 
 /** What the daemon knows about this start when it asks the product to prepare. */
