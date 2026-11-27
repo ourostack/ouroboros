@@ -134,8 +134,9 @@ const readinessAgents = providerReadinessAgents(
   process.env.OURO_DAEMON_REQUIRED_AGENT,
 )
 // The product that runs the managed agent prepares its bundle (J2); a packaged bundle with no product to prepare it stops the start.
-const productStartup = productStartupFor({ mode, argv: process.argv, managedAgents, repoRoot: getRepoRoot(), bundlesRoot: getAgentBundlesRoot(), runtimePackageVersion: getPackageVersion() })
+let productStartup: ReturnType<typeof productStartupFor> = null
 try {
+  productStartup = productStartupFor({ mode, argv: process.argv, managedAgents, repoRoot: getRepoRoot(), bundlesRoot: getAgentBundlesRoot(), runtimePackageVersion: getPackageVersion() })
   productStartup?.preflight()
 } catch (failure) {
   failFastSanctuaryBundlePreparationStartup({ failure, exit: (code) => process.exit(code) })
