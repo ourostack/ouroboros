@@ -153,6 +153,11 @@ export interface WalkerOptions {
   passthrough?: string[];
   /** tool-schemas: functions that decide approval apart from a tool's policy, as `<file>#<function>`. */
   approvals?: string[];
+  /**
+   * argv-entries, tool-schemas: folders under `source` that hold another product's code vendored here (a copy of the
+   * Ouro AX kit, say), whose doors that product's own census counts. Each is left out and reported as excluded.
+   */
+  skip?: string[];
   /** tool-schemas: functions that re-encode tools the census already counts in another wire shape, as `<file>#<function>`. */
   reshape?: string[];
 }

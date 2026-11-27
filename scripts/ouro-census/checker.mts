@@ -27,6 +27,7 @@ export const CHECKER_FILES = [
   "walkers/literals.mts",
   "walkers/mcp-schemas.mts",
   "walkers/registry.mts",
+  "walkers/source-files.mts",
   "walkers/tool-schemas.mts",
   "walkers/ts-argv.mts",
   "walkers/ts-parser.mts",
