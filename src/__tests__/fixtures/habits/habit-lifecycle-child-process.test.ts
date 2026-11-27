@@ -15,6 +15,13 @@ import {
   type HabitLifecycleLease,
 } from "../../../heart/habits/habit-lifecycle"
 
+// The parent waits for the file to exist, so it must never exist half-written.
+function writeResultAtomically(resultPath: string, content: string): void {
+  const tmpPath = `${resultPath}.${process.pid}.tmp`
+  fs.writeFileSync(tmpPath, content, "utf8")
+  fs.renameSync(tmpPath, resultPath)
+}
+
 const childMode = process.env.HABIT_LIFECYCLE_CHILD_MODE
 
 async function enterStartBarrier(): Promise<void> {
@@ -59,7 +66,7 @@ describe.skipIf(!childMode || !["lock", "abandon"].includes(childMode))(
       })
       expect(result.status).toBe("acquired")
       if (result.status !== "acquired") throw new Error(`lock was not acquired: ${result.status}`)
-      fs.writeFileSync(resultPath, JSON.stringify({ pid: process.pid, lease: result.lease }), "utf8")
+      writeResultAtomically(resultPath, JSON.stringify({ pid: process.pid, lease: result.lease }))
       if (childMode === "abandon") return
 
       const releasePath = process.env.HABIT_LIFECYCLE_CHILD_RELEASE!
@@ -124,7 +131,7 @@ describe.skipIf(childMode !== "receipt")(
       } catch (error) {
         outcome = error instanceof Error && "code" in error ? String(error.code) : String(error)
       }
-      fs.writeFileSync(resultPath, JSON.stringify({ outcome }), "utf8")
+      writeResultAtomically(resultPath, JSON.stringify({ outcome }))
       expect(["published", "duplicate", "lifecycle_receipt_collision"]).toContain(outcome)
     })
   },
@@ -146,7 +153,7 @@ describe.skipIf(childMode !== "definition")(
       } catch (error) {
         outcome = error instanceof Error && "code" in error ? String(error.code) : String(error)
       }
-      fs.writeFileSync(resultPath, JSON.stringify({ outcome }), "utf8")
+      writeResultAtomically(resultPath, JSON.stringify({ outcome }))
       expect(["published", "exists"]).toContain(outcome)
     })
   },
