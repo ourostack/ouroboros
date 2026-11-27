@@ -61,9 +61,14 @@ describe("the product seam", () => {
 
   it("settles the product on the first question in a process that has not loaded one", async () => {
     vi.resetModules()
-    vi.doMock("../../../heart/daemon/container-runtime", () => ({ readContainerRuntimePolicy: () => null }))
+    let policy: { product?: string } | null = { product: "/opt/example/missing-product.js" }
+    vi.doMock("../../../heart/daemon/container-runtime", () => ({ readContainerRuntimePolicy: () => policy }))
     try {
       const fresh = await import("../../../heart/product/active")
+      // A product the image names but that will not load fails every question, never answering as if there were none.
+      expect(() => fresh.productFor("butler")).toThrow(/did not load/u)
+      expect(() => fresh.productFor("butler")).toThrow(/did not load/u)
+      policy = null
       expect(fresh.productFor("butler")).toBeNull()
       expect(fresh.productFor(7)).toBeNull()
     } finally {

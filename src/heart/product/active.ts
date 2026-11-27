@@ -39,12 +39,13 @@ function validProduct(value: unknown, modulePath: string): OuroProduct {
  * invalid stops the start.
  */
 export function loadProduct(modulePath: string | undefined, load: (modulePath: string) => unknown = require): OuroProduct | null {
-  settled = true
+  active = null
   if (modulePath === undefined) {
-    active = null
+    settled = true
     return null
   }
-  active = null
+  // A module that fails stays unsettled, so every later productFor in this process fails the same way instead of answering null.
+  settled = false
   let loaded: unknown
   try {
     loaded = load(modulePath)
@@ -52,6 +53,7 @@ export function loadProduct(modulePath: string | undefined, load: (modulePath: s
     throw invalid(modulePath, `it did not load (${error instanceof Error ? error.message : String(error)})`)
   }
   active = validProduct(loaded, modulePath)
+  settled = true
   emitNervesEvent({
     component: "daemon",
     event: "daemon.product_loaded",
