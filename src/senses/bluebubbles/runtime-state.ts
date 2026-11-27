@@ -13,6 +13,17 @@ export interface BlueBubblesRuntimeState {
   /** The start of the last sync whose catch-up finished; the next catch-up starts from here. Kept by writes that omit it. */
   catchUpThrough?: string
   /**
+   * The highest Messages database ROWID the last finished catch-up saw. iMessage can deliver a message minutes after
+   * it was sent, dated when it was sent, and BlueBubbles may send no webhook for it; arrival order is the only thing
+   * that says it is new. Kept by writes that omit it.
+   */
+  catchUpRowId?: number
+  /**
+   * The sent time of a late arrival a catch-up could not finish, which the next catch-up reaches back to after the
+   * cursor has moved past it. Kept by writes that omit it; a write of null clears it.
+   */
+  catchUpLateSince?: string | null
+  /**
    * After an outage, iMessage keeps delivering the messages it held for minutes after BlueBubbles answers again, and
    * they carry the time they were sent, not the time they landed. Until `recoveryLookbackUntil`, every catch-up keeps
    * reaching back to `recoveryLookbackSince` instead of the healthy overlap, so a late-landing message is still found.
@@ -67,6 +78,10 @@ export function readBlueBubblesRuntimeState(agentName: string, agentRoot?: strin
       lastCheckedAt: typeof parsed.lastCheckedAt === "string" ? parsed.lastCheckedAt : undefined,
       lastHeartbeatAt: typeof parsed.lastHeartbeatAt === "string" ? parsed.lastHeartbeatAt : undefined,
       catchUpThrough: typeof parsed.catchUpThrough === "string" ? parsed.catchUpThrough : undefined,
+      catchUpRowId: typeof parsed.catchUpRowId === "number" && Number.isInteger(parsed.catchUpRowId)
+        ? parsed.catchUpRowId
+        : undefined,
+      catchUpLateSince: typeof parsed.catchUpLateSince === "string" ? parsed.catchUpLateSince : undefined,
       recoveryLookbackSince: typeof parsed.recoveryLookbackSince === "string" ? parsed.recoveryLookbackSince : undefined,
       recoveryLookbackUntil: typeof parsed.recoveryLookbackUntil === "string" ? parsed.recoveryLookbackUntil : undefined,
       proofMethod: typeof parsed.proofMethod === "string" && parsed.proofMethod.trim()
@@ -107,16 +122,24 @@ export function readBlueBubblesRuntimeState(agentName: string, agentRoot?: strin
 export function writeBlueBubblesRuntimeState(agentName: string, state: BlueBubblesRuntimeState, agentRoot?: string): string {
   const filePath = getBlueBubblesRuntimeStatePath(agentName, agentRoot)
   try {
-    const kept = state.catchUpThrough === undefined || state.recoveryLookbackUntil === undefined
+    const kept = state.catchUpThrough === undefined
+      || state.catchUpRowId === undefined
+      || state.catchUpLateSince === undefined
+      || state.recoveryLookbackUntil === undefined
       ? readBlueBubblesRuntimeState(agentName, agentRoot)
       : null
     const catchUpThrough = state.catchUpThrough ?? kept?.catchUpThrough
+    const catchUpRowId = state.catchUpRowId ?? kept?.catchUpRowId
+    const catchUpLateSince = state.catchUpLateSince === undefined ? kept?.catchUpLateSince : state.catchUpLateSince
     const recoveryLookbackSince = state.recoveryLookbackUntil === undefined ? kept?.recoveryLookbackSince : state.recoveryLookbackSince
     const recoveryLookbackUntil = state.recoveryLookbackUntil ?? kept?.recoveryLookbackUntil
     // Replaced whole, so the daemon reading it mid-write never sees half a file.
     writeJsonAtomicSync(filePath, {
       ...state,
       ...(catchUpThrough === undefined ? {} : { catchUpThrough }),
+      ...(catchUpRowId === undefined ? {} : { catchUpRowId }),
+      // Null clears it: an undefined value is left out of the file.
+      catchUpLateSince: catchUpLateSince ?? undefined,
       ...(recoveryLookbackSince === undefined || recoveryLookbackUntil === undefined ? {} : { recoveryLookbackSince, recoveryLookbackUntil }),
       lastHeartbeatAt: new Date(Date.now()).toISOString(),
     })

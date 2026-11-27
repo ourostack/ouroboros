@@ -88,6 +88,11 @@ export interface BlueBubblesClient {
   checkHealth(): Promise<void>
   listRecentMessages?(params?: BlueBubblesListRecentMessagesParams): Promise<BlueBubblesNormalizedEvent[]>
   queryRecentMessagesWithMetadata?(params?: BlueBubblesListRecentMessagesParams): Promise<BlueBubblesMessageQueryResult>
+  /**
+   * Rows whose ROWID (the Messages database's arrival order) is above `afterRowId` and at most `throughRowId`, newest
+   * sent time first. With neither bound, the newest rows. Catch-up uses it to find messages iMessage delivered late.
+   */
+  listArrivalsAfter?(params: BlueBubblesListArrivalsParams): Promise<BlueBubblesMessageArrival[]>
   repairEvent(event: BlueBubblesNormalizedEvent): Promise<BlueBubblesNormalizedEvent>
   /** Fetch the text content of a message by its GUID. Returns null if not found or on error. */
   getMessageText(messageGuid: string): Promise<string | null>
@@ -111,6 +116,32 @@ export interface BlueBubblesListRecentMessagesParams {
   chatGuid?: string
   chatIdentifier?: string
   beforeTimestamp?: number
+}
+
+export interface BlueBubblesListArrivalsParams {
+  afterRowId?: number
+  throughRowId?: number
+  limit: number
+  offset: number
+}
+
+/** Where a row sits in the Messages database's arrival order, and when it says it was sent. */
+export interface BlueBubblesMessageArrival {
+  rowId: number
+  /** Null when the row carries no usable sent time. */
+  sentAt: number | null
+  fromMe: boolean
+}
+
+function toMessageArrival(row: unknown): BlueBubblesMessageArrival | null {
+  const record = asRecord(row)
+  const rowId = record?.originalROWID ?? record?.ROWID
+  if (typeof rowId !== "number" || !Number.isInteger(rowId)) return null
+  return {
+    rowId,
+    sentAt: hasValidRawMessageCausalTimestamp(row) ? record!.dateCreated as number : null,
+    fromMe: record!.isFromMe === true,
+  }
 }
 
 export interface BlueBubblesMessageQueryResult {
@@ -866,6 +897,53 @@ export function createBlueBubblesClient(
         invalidCausalTimestampRowCount,
         request,
       }
+    },
+
+    async listArrivalsAfter(params: BlueBubblesListArrivalsParams): Promise<BlueBubblesMessageArrival[]> {
+      await assertHostAccount()
+      const url = buildBlueBubblesApiUrl(config.serverUrl, "/api/v1/message/query", config.password)
+      const body = {
+        limit: params.limit,
+        offset: params.offset,
+        sort: "DESC",
+        with: [],
+        ...(params.afterRowId === undefined && params.throughRowId === undefined
+          ? {}
+          : {
+              where: [
+                ...(params.afterRowId === undefined
+                  ? []
+                  : [{ statement: "message.ROWID > :afterRowId", args: { afterRowId: params.afterRowId } }]),
+                ...(params.throughRowId === undefined
+                  ? []
+                  : [{ statement: "message.ROWID <= :throughRowId", args: { throughRowId: params.throughRowId } }]),
+              ],
+            }),
+      }
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
+      })
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "")
+        throw new Error(`BlueBubbles arrival query failed (${response.status}): ${errorText || "unknown"}`)
+      }
+      const rows = extractMessageQueryRows(await parseJsonBody(response))
+      const arrivals = rows.map(toMessageArrival).filter((arrival): arrival is BlueBubblesMessageArrival => arrival !== null)
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.bluebubbles_arrivals_listed",
+        message: "listed bluebubbles message arrivals",
+        meta: {
+          afterRowId: params.afterRowId ?? null,
+          throughRowId: params.throughRowId ?? null,
+          rows: rows.length,
+          arrivals: arrivals.length,
+        },
+      })
+      return arrivals
     },
 
     async listRecentMessages(params: BlueBubblesListRecentMessagesParams = {}): Promise<BlueBubblesNormalizedEvent[]> {

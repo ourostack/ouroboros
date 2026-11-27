@@ -47,7 +47,7 @@ import {
   type BlueBubblesNormalizedEvent,
   type BlueBubblesNormalizedMessage,
 } from "./model"
-import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesRepliedMessage } from "./client"
+import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesMessageArrival, type BlueBubblesRepliedMessage } from "./client"
 import { letterChatRefusal, tellAgentReplyRefused } from "./letter-guard"
 import { renderChatInteraction, resolveChatInteractionTarget } from "../../heart/chat-interaction"
 import { looksLikeAnswer } from "../../heart/letters/answer-command"
@@ -653,6 +653,7 @@ const BLUEBUBBLES_LIVE_TURN_STALLED_MS = 5 * 60_000
 const BLUEBUBBLES_CALLBACK_CLEANUP_TIMEOUT_MS = 2_000
 const BLUEBUBBLES_ACTIVITY_OPERATION_TIMEOUT_MS = 20_000
 const BLUEBUBBLES_CATCHUP_PAGE_SIZE = 50
+const BLUEBUBBLES_ARRIVAL_PAGE_SIZE = 100
 const BLUEBUBBLES_CATCHUP_MAX_PAGES = 20
 const BLUEBUBBLES_HEALTHY_CATCHUP_OVERLAP_MS = 90_000
 const BLUEBUBBLES_RECOVERY_CATCHUP_LOOKBACK_MS = 24 * 60 * 60 * 1000
@@ -3920,6 +3921,13 @@ export interface BlueBubblesCatchUpResult {
   queued?: number
   failed: number
   lastRecoveredMessageGuid?: string
+  /** The highest ROWID this pass saw, set only when the whole pass succeeded, so the next one starts after it. */
+  arrivalCursor?: number
+  /**
+   * The sent time of the oldest late arrival this pass could not finish (a turn failed or the scan hit its page limit),
+   * carried so the next pass reaches back to it after the cursor has moved on. Unset when there is nothing to carry.
+   */
+  lateSince?: string
 }
 
 function parseTimestampMs(value: string | undefined): number | null {
@@ -4088,6 +4096,8 @@ async function syncBlueBubblesRuntime(
       detail: formatBlueBubblesRuntimeDetail(pendingAfterCatchup, failed, activeAfterCatchup),
       lastCheckedAt: checkedAt,
       catchUpThrough: checkedAt,
+      catchUpRowId: catchUp.arrivalCursor,
+      catchUpLateSince: catchUp.lateSince ?? null,
       ...recoveryLookback,
       proofMethod: "bluebubbles.checkHealth",
       ...pendingAfterCatchup,
@@ -4203,6 +4213,69 @@ export async function recoverQueuedBlueBubblesMessages(
   return { recovered, skipped, failed, pendingRecoveryCount }
 }
 
+interface BlueBubblesArrivalRead {
+  arrivals: BlueBubblesMessageArrival[]
+  /** Every ROWID up to here has been read; undefined only when the server has no rows to start a cursor from. */
+  cursor?: number
+  /** Set when no row sits at or just below the cursor and none above it, as after the Messages database is rebuilt. */
+  resetFromRowId?: number
+}
+
+function highestArrivalRowId(arrivals: BlueBubblesMessageArrival[]): number | undefined {
+  return arrivals.length === 0 ? undefined : arrivals.reduce((highest, arrival) => Math.max(highest, arrival.rowId), -1)
+}
+
+/**
+ * Reads the rows past the cursor. A short first page is all of them. A longer backlog is read oldest first, in ROWID
+ * windows a page wide, so a pass that reaches the page limit has read a contiguous run and the next pass carries on
+ * from where it stopped.
+ */
+async function readBlueBubblesArrivalsSince(
+  client: BlueBubblesClient,
+  afterRowId: number | undefined,
+  options: BlueBubblesCatchUpOptions,
+): Promise<BlueBubblesArrivalRead> {
+  /* v8 ignore next -- older injected test doubles may omit the arrival query method */
+  if (!client.listArrivalsAfter) return { arrivals: [], cursor: afterRowId }
+  const list = async (params: { afterRowId?: number; throughRowId?: number }): Promise<BlueBubblesMessageArrival[]> => {
+    const rows = await client.listArrivalsAfter!({ ...params, limit: BLUEBUBBLES_ARRIVAL_PAGE_SIZE, offset: 0 })
+    options.lifecycleSignal?.throwIfAborted()
+    options.onProgress?.()
+    return rows
+  }
+  if (afterRowId === undefined) {
+    // With no cursor yet, the newest rows start one, and nothing counts as late.
+    return { arrivals: [], cursor: highestArrivalRowId(await list({})) }
+  }
+  const first = await list({ afterRowId })
+  if (first.length === 0) {
+    // A quiet pass, unless the rows near the cursor are gone too. The newest page is by sent time, not ROWID, so it is
+    // no test of where the cursor stands; it only picks a lower restart point, and a lower cursor only reads rows again.
+    const nearCursor = await list({ afterRowId: Math.max(afterRowId - BLUEBUBBLES_ARRIVAL_PAGE_SIZE, 0), throughRowId: afterRowId })
+    if (nearCursor.length > 0) return { arrivals: [], cursor: afterRowId }
+    const newest = highestArrivalRowId(await list({}))
+    if (newest !== undefined) return { arrivals: [], cursor: newest, resetFromRowId: afterRowId }
+    return { arrivals: [], cursor: afterRowId }
+  }
+  if (first.length < BLUEBUBBLES_ARRIVAL_PAGE_SIZE) return { arrivals: first, cursor: highestArrivalRowId(first) }
+
+  const arrivals: BlueBubblesMessageArrival[] = []
+  let cursor = afterRowId
+  for (let page = 1; page < BLUEBUBBLES_CATCHUP_MAX_PAGES; page++) {
+    const windowEnd = cursor + BLUEBUBBLES_ARRIVAL_PAGE_SIZE
+    const rows = await list({ afterRowId: cursor, throughRowId: windowEnd })
+    arrivals.push(...rows)
+    if (rows.length > 0) {
+      cursor = highestArrivalRowId(rows)!
+      continue
+    }
+    // An empty window is a run of deleted rows when a later row exists (new rows only ever get higher ROWIDs), or the end.
+    if ((await list({ afterRowId: windowEnd })).length === 0) break
+    cursor = windowEnd
+  }
+  return { arrivals, cursor }
+}
+
 interface BlueBubblesCatchUpOptions {
   processTurns?: boolean
   observationBatch?: BlueBubblesObservationBatch
@@ -4233,10 +4306,64 @@ async function catchUpMissedBlueBubblesMessagesInScope(
   const state = previousState ?? readBlueBubblesRuntimeState(agentName)
   const cutover = initializeBlueBubblesSemanticCutover(agentName)
   const catchUpWindow = resolveBlueBubblesCatchUpWindow(state)
+  /* v8 ignore next -- older injected test doubles may omit the catch-up query method */
+  if (!client.listRecentMessages) return result
+  // The window below is in sent time, but iMessage can deliver a message minutes after it was sent, and BlueBubbles
+  // sends no webhook for some of those (2026-11-27: 3 to 8 minutes late, four times in one afternoon). Rows that
+  // arrived since the last pass are found by ROWID, and the window reaches back to the oldest one's sent time.
+  let catchUpQueryFailed = false
+  let reachedPageLimit = false
+  const arrivalRead = await readBlueBubblesArrivalsSince(client, state.catchUpRowId, options).catch((error: unknown) => {
+    if (options.lifecycleSignal?.aborted) throw options.lifecycleSignal.reason
+    catchUpQueryFailed = true
+    result.failed++
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_catchup_error",
+      message: "bluebubbles upstream arrival query failed",
+      meta: { stage: "arrivals", reason: error instanceof Error ? error.message : String(error) },
+    })
+    return null
+  })
+  if (arrivalRead?.resetFromRowId !== undefined) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_arrival_cursor_reset",
+      message: "every bluebubbles message row sits below the arrival cursor; starting it again from the newest",
+      meta: { fromRowId: arrivalRead.resetFromRowId, toRowId: arrivalRead.cursor },
+    })
+  }
+  const nowMs = Date.now()
+  const lateArrivalSentAt = (arrivalRead?.arrivals ?? [])
+    .filter((arrival) => !arrival.fromMe && arrival.sentAt !== null)
+    .reduce((oldest, arrival) => Math.min(oldest, arrival.sentAt!), Number.POSITIVE_INFINITY)
+  // A late arrival an earlier pass could not finish is carried in state, since the cursor has already moved past it.
+  // It is dropped once older than the day-long lookback, so one message that keeps failing cannot widen every pass.
+  const lookbackFloor = nowMs - BLUEBUBBLES_RECOVERY_CATCHUP_LOOKBACK_MS
+  const carriedLateSince = parseTimestampMs(state.catchUpLateSince ?? undefined)
+  const unfinishedLateSince = Math.min(
+    lateArrivalSentAt,
+    carriedLateSince !== null && carriedLateSince >= lookbackFloor ? carriedLateSince : Number.POSITIVE_INFINITY,
+  )
   const catchUpSince = Math.max(
-    catchUpWindow.since,
+    Math.min(catchUpWindow.since, Math.max(unfinishedLateSince, lookbackFloor)),
     Date.parse(cutover.effectiveAt),
   )
+  if (lateArrivalSentAt < catchUpWindow.since) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_late_arrival_seen",
+      message: "a bluebubbles message reached the Messages database long after it was sent",
+      meta: {
+        sentAt: new Date(lateArrivalSentAt).toISOString(),
+        lateByMs: nowMs - lateArrivalSentAt,
+        mode: catchUpWindow.mode,
+      },
+    })
+  }
   // Healthy passes run every 30 s and stay at info; outage passes are logged, so a miss leaves evidence.
   const catchUpLogLevel = catchUpWindow.mode === "recovery" || catchUpWindow.mode === "settling" ? "warn" : "info"
   const processTurns = options.processTurns !== false
@@ -4245,9 +4372,6 @@ async function catchUpMissedBlueBubblesMessagesInScope(
     pendingKeyHashes ??= new Set(listPendingBlueBubblesSemanticCaptures(agentName).map((capture) => capture.keyHash))
     return pendingKeyHashes
   }
-
-  /* v8 ignore next -- older injected test doubles may omit the catch-up query method */
-  if (!client.listRecentMessages) return result
 
   emitNervesEvent({
     level: catchUpWindow.mode === "recovery" ? "warn" : "info",
@@ -4284,6 +4408,7 @@ async function catchUpMissedBlueBubblesMessagesInScope(
       })
     } catch (error) {
       if (options.lifecycleSignal?.aborted) throw options.lifecycleSignal.reason
+      catchUpQueryFailed = true
       result.failed++
       emitNervesEvent({
         level: "warn",
@@ -4338,6 +4463,7 @@ async function catchUpMissedBlueBubblesMessagesInScope(
     if (oldestMessageTimestamp <= catchUpSince) break
 
     if (page === BLUEBUBBLES_CATCHUP_MAX_PAGES - 1) {
+      reachedPageLimit = true
       result.failed++
       emitNervesEvent({
         level: "warn",
@@ -4454,10 +4580,17 @@ async function catchUpMissedBlueBubblesMessagesInScope(
     }
   }))
 
+  // The cursor holds only when a query failed, so those arrivals are read again. Any other failure, such as a failed
+  // turn, moves the cursor on but carries the oldest late sent time forward, so the next pass reaches it again. The page
+  // limit alone carries nothing: the next pass would stop at the same limit, so it would only fail every pass for a day.
+  if (!catchUpQueryFailed) result.arrivalCursor = arrivalRead?.cursor
+  const unfinishedFailures = result.failed - (reachedPageLimit ? 1 : 0)
+  if (unfinishedFailures > 0 && Number.isFinite(unfinishedLateSince)) result.lateSince = new Date(unfinishedLateSince).toISOString()
   const foundWork = result.recovered > 0 || (result.queued ?? 0) > 0 || result.failed > 0
   if (result.inspected > 0 || foundWork || catchUpWindow.mode === "recovery") {
     emitNervesEvent({
-      level: foundWork || catchUpWindow.mode === "recovery" ? catchUpLogLevel : "info",
+      // Work a healthy pass finds is a message the webhook missed, so it is logged like an outage pass's.
+      level: foundWork ? "warn" : catchUpWindow.mode === "recovery" ? catchUpLogLevel : "info",
       component: "senses",
       event: "senses.bluebubbles_catchup_complete",
       message: "bluebubbles upstream catch-up pass completed",
