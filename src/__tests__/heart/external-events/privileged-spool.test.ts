@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { claimExternalEvent, commitExternalEventDisposition, listExternalEventStatus, prepareButlerExternalEvents, readExternalEventRecord, recordExternalEvent, scanPrivilegedEventSpool } from "../../../heart/external-events/router"
+import { useButlerProduct } from "../../test-helpers/butler-product"
 
 const spoolMock = vi.hoisted(() => ({ root: "", readOnly: false, authorityBarrierUsed: false, mountInfo: null as string | null, mountReadError: false, replaceLockOwner: false, failReplayLockMkdir: false, changeOpenedFile: false, preserveReplayLock: false, oversizedFdRead: false, skipDurabilityFsync: false }))
 vi.mock("node:fs", async (importOriginal) => {
@@ -165,6 +166,7 @@ afterEach(() => {
 })
 
 describe("privileged external-event spool", () => {
+  useButlerProduct()
   it("accepts one root-owned file from a read-only mount into the canonical receipt and fences replay across scanner restart", () => {
     const spoolRoot = root("ouro-privileged-spool")
     const eventRoot = root("ouro-privileged-events")

@@ -11,9 +11,6 @@ import { describe, expect, it } from "vitest"
  * has gone but is still listed fails the second, so whoever removes one also deletes its line.
  */
 const ALLOWED: Record<string, readonly string[]> = {
-  "a2a/config": [
-    "heart/butler-agent",
-  ],
   "a2a/escalation-wiring": [
     "heart/butler-agent",
   ],
@@ -44,7 +41,6 @@ const ALLOWED: Record<string, readonly string[]> = {
     "senses/sanctuary-runtime",
   ],
   "heart/daemon/daemon-entry": [
-    "heart/butler-agent",
     "heart/daemon/sanctuary-acceptance-marker",
     "heart/daemon/sanctuary-package-management",
     "heart/daemon/sanctuary-scheduler-liveness",
@@ -52,9 +48,6 @@ const ALLOWED: Record<string, readonly string[]> = {
     "senses/sanctuary-health-runner",
   ],
   "heart/daemon/sense-manager": [
-    "heart/butler-agent",
-  ],
-  "heart/external-events/router": [
     "heart/butler-agent",
   ],
   "heart/turn-context": [
@@ -104,9 +97,6 @@ const ALLOWED: Record<string, readonly string[]> = {
   "senses/telegram-authority-transport": [
     "heart/daemon/sanctuary-authority-codec",
     "heart/daemon/sanctuary-telegram-authority-gateway",
-  ],
-  "senses/telegram-effect-adapter": [
-    "heart/butler-agent",
   ],
 }
 

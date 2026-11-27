@@ -1,10 +1,13 @@
 import { emitNervesEvent } from "../../nerves/runtime"
+import { readContainerRuntimePolicy } from "../daemon/container-runtime"
 import type { OuroProduct } from "./types"
 
 /** The seam version this harness runs. A product built for another stops the start. */
 export const PRODUCT_SEAM_VERSION = 1
 
 let active: OuroProduct | null = null
+// Whether this process has settled which product it runs: by an explicit load, or by the first productFor reading the image's policy.
+let settled = false
 
 function invalid(modulePath: string, problem: string): Error {
   emitNervesEvent({
@@ -36,10 +39,12 @@ function validProduct(value: unknown, modulePath: string): OuroProduct {
  * invalid stops the start.
  */
 export function loadProduct(modulePath: string | undefined, load: (modulePath: string) => unknown = require): OuroProduct | null {
+  settled = true
   if (modulePath === undefined) {
     active = null
     return null
   }
+  active = null
   let loaded: unknown
   try {
     loaded = load(modulePath)
@@ -56,7 +61,24 @@ export function loadProduct(modulePath: string | undefined, load: (modulePath: s
   return active
 }
 
-/** The loaded product when this agent is one of its names, else null. */
-export function productFor(agentName: string): OuroProduct | null {
-  return active && active.agents.includes(agentName) ? active : null
+/**
+ * Loads the product /opt/ouro/container-runtime.json names (`product`), or none when the file is absent or names none. The
+ * daemon calls it first, so a broken product stops the start; every other process (each sense, inner turns, the CLI)
+ * settles it on its first `productFor`, so no child can run without the product its image names.
+ */
+export function loadImageProduct(options: { policyPath?: string; load?: (modulePath: string) => unknown } = {}): OuroProduct | null {
+  const policy = readContainerRuntimePolicy(options.policyPath === undefined ? {} : { path: options.policyPath })
+  return loadProduct(policy?.product, options.load)
+}
+
+/** The loaded product when this agent (or a saved record's `agent`) is one of its names, else null. */
+export function productFor(agentName: unknown): OuroProduct | null {
+  if (!settled) loadImageProduct()
+  return active && typeof agentName === "string" && active.agents.includes(agentName) ? active : null
+}
+
+/** The one agent among `agents` that the product runs, or null when there is none or more than one. */
+export function productAgentAmong(agents: readonly string[]): string | null {
+  const owned = agents.filter((agent) => productFor(agent) !== null)
+  return owned.length === 1 ? owned[0]! : null
 }
