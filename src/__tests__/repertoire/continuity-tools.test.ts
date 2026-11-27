@@ -128,6 +128,7 @@ vi.mock("../../repertoire/coding", () => ({
 
 import { baseToolDefinitions, type ToolDefinition } from "../../repertoire/tools-base"
 import { validateAdvertisedToolArguments } from "../../repertoire/tool-arguments"
+import { useButlerProduct } from "../test-helpers/butler-product"
 
 // ── Test helpers ─────────────────────────────────────────────────
 
@@ -140,6 +141,7 @@ function findTool(name: string): ToolDefinition {
 // ── Tests ────────────────────────────────────────────────────────
 
 describe("continuity tools", () => {
+  useButlerProduct()
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(fs.existsSync).mockReturnValue(false)

@@ -14,6 +14,7 @@ import { getSenseSessionPath } from "../../senses/shared-turn"
 import { FileTelegramEffectJournal, FIXED_USENET_SYSTEM_FAILSAFE, prepareTelegramEffect } from "../../senses/telegram-effect-adapter"
 import { createObligation, markObligationReturnReady, readObligation } from "../../arc/obligations"
 import { resolveToolDefinition } from "../../repertoire/tools"
+import { useButlerProduct } from "../test-helpers/butler-product"
 
 const RECEIPT_DOMAIN = "ouroboros.telegram.turn-receipt.v3"
 const RECEIPT_KEY = "k".repeat(43)
@@ -176,6 +177,7 @@ function writeEligibleFailsafeRecord(eventRoot: string): string {
 }
 
 describe("Telegram sense", () => {
+  useButlerProduct()
   it("activates the required-read obligation for the exact authorized storage-and-shrink owner story", async () => {
     const preparedOptions: any[] = []
     const advertisedToolNames = ["unraid_get_storage", "sanctuary_get_media_optimization", "settle"]

@@ -19,6 +19,7 @@ import { cacheProviderCredentialRecords, createProviderCredentialRecord, resetPr
 import { clearProviderReadinessCache, recordProviderLaneReadiness } from "../../../heart/provider-readiness-cache"
 import * as providerBindingResolver from "../../../heart/provider-binding-resolver"
 import * as sanctuaryRuntime from "../../../senses/sanctuary-runtime"
+import { useButlerProduct } from "../../test-helpers/butler-product"
 
 function tmpSocketPath(name: string): string {
   return path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
@@ -49,6 +50,7 @@ function sendRaw(socketPath: string, payload: string): Promise<string> {
 }
 
 describe("daemon command plane branches", () => {
+  useButlerProduct()
   const make = (
     socketPath: string,
     bundlesRoot?: string,
