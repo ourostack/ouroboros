@@ -572,6 +572,16 @@ describe("Sanctuary pre-activation container auditor", () => {
       expectedImage,
     }).ok).toBe(false)
     expect(auditSanctuaryStagedFiles({
+      templateXml: stagedTemplate(),
+      runtimePolicyText: JSON.stringify({ scheduler: "supercronic", updates: "disabled", product: "/opt/ouro/dist/products/butler.js" }),
+      expectedImage,
+    })).toEqual({ ok: true, violations: [] })
+    expect(auditSanctuaryStagedFiles({
+      templateXml: stagedTemplate(),
+      runtimePolicyText: JSON.stringify({ scheduler: "supercronic", updates: "disabled", product: "/home/ouro/product.js" }),
+      expectedImage,
+    }).violations).toContain("container runtime policy must be exactly scheduler=supercronic and updates=disabled, with an optional product module under /opt")
+    expect(auditSanctuaryStagedFiles({
       templateXml: stagedTemplate().replace("Type=\"Path\"", "Type=\"Port\""),
       runtimePolicyText: JSON.stringify({ scheduler: "supercronic", updates: "disabled" }),
       expectedImage,

@@ -1,5 +1,6 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 import { BUTLER_AGENT_NAMES, type ButlerAgentName } from "../butler-agent"
+import { isContainerRuntimePolicy } from "./container-runtime"
 
 interface DockerManTemplateElement {
   name: string
@@ -240,9 +241,8 @@ function auditTemplate(input: { templateXml: string | Uint8Array; runtimePolicyT
   } catch {
     runtimePolicy = null
   }
-  const policy = record(runtimePolicy)
-  if (policy?.scheduler !== "supercronic" || policy.updates !== "disabled" || Object.keys(policy).sort().join(",") !== "scheduler,updates") {
-    violations.push("container runtime policy must be exactly scheduler=supercronic and updates=disabled")
+  if (!isContainerRuntimePolicy(runtimePolicy)) {
+    violations.push("container runtime policy must be exactly scheduler=supercronic and updates=disabled, with an optional product module under /opt")
   }
   const configEntries = directChildren(template, "Config")
   const pathConfigs = configEntries.map((entry) => {
