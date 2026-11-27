@@ -456,7 +456,7 @@ describe("butler-ship orchestrator", () => {
 
   it("stops when no commit names the release", async () => {
     const h = await harness({ gh: (a) => (a[1]?.includes("commits?") ? ok("[]") : (undefined as unknown as Res)) })
-    await expect(h.run()).rejects.toThrow(/no commit on main names/)
+    await expect(h.run()).rejects.toThrow(/no commit on main names.*neither npm.s gitHead nor the v.* tag exists yet.*wait for that job/)
   })
 
   it("fails on gh errors and a failed coverage-gate", async () => {
