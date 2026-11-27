@@ -1239,8 +1239,21 @@ describe("the Butler's name follows the image", () => {
       expect(noParser).toEqual({ problem: "the DockerMan template parser could not be loaded (ENOENT)" })
       expect(upgrade.pinTemplateText(template("sanctuary").replace("ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.1999", "elsewhere/image:1"), reference, "butler", parseDockerManTemplateXml))
         .toEqual({ problem: "the DockerMan template's Repository is not recognised" })
-      const noTrust = template("sanctuary").replace(config("/etc/ouro/trust/sanctuary", "/mnt/user/appdata/ouro-butler/trust/sanctuary"), "")
-      expect(upgrade.pinTemplateText(noTrust, reference, "butler", parseDockerManTemplateXml)).toEqual({ problem: "the DockerMan template does not have exactly one bundle Config and one trust Config" })
+      const trustConfig = config("/etc/ouro/trust/sanctuary", "/mnt/user/appdata/ouro-butler/trust/sanctuary")
+      // The live install's template has no trust Config (the root lifecycle mounts it): only the bundle Target moves.
+      const noTrust = template("sanctuary").replace(trustConfig, "")
+      const movedNoTrust = upgrade.pinTemplateText(noTrust, reference, "butler", parseDockerManTemplateXml)
+      expect(movedNoTrust.text).toContain('Target="/home/ouro/AgentBundles/butler.ouro"')
+      expect(movedNoTrust.text).not.toContain('Target="/home/ouro/AgentBundles/sanctuary.ouro"')
+      expect(movedNoTrust.text).not.toContain("/etc/ouro/trust/")
+      // And a rollback moves it back.
+      const backNoTrust = upgrade.pinTemplateText(movedNoTrust.text!, reference, "sanctuary", parseDockerManTemplateXml)
+      expect(backNoTrust.text).toContain('Target="/home/ouro/AgentBundles/sanctuary.ouro"')
+      expect(backNoTrust.text).not.toContain("/etc/ouro/trust/")
+      const twoTrusts = template("sanctuary", { extra: config("/etc/ouro/trust/butler", "/mnt/user/appdata/ouro-butler/trust/sanctuary") })
+      expect(upgrade.pinTemplateText(twoTrusts, reference, "butler", parseDockerManTemplateXml)).toEqual({ problem: "the DockerMan template does not have exactly one bundle Config and at most one trust Config" })
+      const noBundle = template("sanctuary").replace(config("/home/ouro/AgentBundles/sanctuary.ouro", "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"), "")
+      expect(upgrade.pinTemplateText(noBundle, reference, "butler", parseDockerManTemplateXml)).toEqual({ problem: "the DockerMan template does not have exactly one bundle Config and at most one trust Config" })
     })
     it("keeps today's warnings for a sanctuary image, whatever the template", () => {
       expect(upgrade.pinTemplateText(template("sanctuary"), reference, "sanctuary", null, "ENOENT")).toEqual({
@@ -1273,7 +1286,7 @@ describe("the Butler's name follows the image", () => {
       expect(upgrade.withButlerTargets(twice, "butler", parseDockerManTemplateXml)).toEqual({ problem: 'the DockerMan template has Target="/home/ouro/AgentBundles/sanctuary.ouro" more than once' })
       let calls = 0
       const rejectsResult = (text: string) => (calls++ === 0 ? parseDockerManTemplateXml(text) : null)
-      expect(upgrade.withButlerTargets(template("sanctuary"), "butler", rejectsResult)).toEqual({ problem: "moving the DockerMan template's bundle and trust Targets did not leave exactly those two moved" })
+      expect(upgrade.withButlerTargets(template("sanctuary"), "butler", rejectsResult)).toEqual({ problem: "moving the DockerMan template's bundle and trust Targets did not leave exactly those moved" })
       expect(upgrade.withButlerTargets(template("butler"), "butler", parseDockerManTemplateXml)).toEqual({ text: template("butler") })
     })
     it("is checked before the upgrade changes anything, and fails the pin instead of warning", () => {
