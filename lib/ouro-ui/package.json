@@ -1,6 +1,0 @@
-{
-  "private": true,
-  "imports": {
-    "#ouro-ax/*": "./registry/ouro/ax/*"
-  }
-}
