@@ -4207,26 +4207,63 @@ export async function recoverQueuedBlueBubblesMessages(
   return { recovered, skipped, failed, pendingRecoveryCount }
 }
 
+interface BlueBubblesArrivalRead {
+  arrivals: BlueBubblesMessageArrival[]
+  /** Every ROWID up to here has been read; undefined only when the server has no rows to start a cursor from. */
+  cursor?: number
+  /** Set when the server's rows all sit below the cursor, as after the Messages database is rebuilt. */
+  resetFromRowId?: number
+}
+
+function highestArrivalRowId(arrivals: BlueBubblesMessageArrival[]): number | undefined {
+  return arrivals.length === 0 ? undefined : arrivals.reduce((highest, arrival) => Math.max(highest, arrival.rowId), -1)
+}
+
+/**
+ * Reads the rows past the cursor. A short first page is all of them. A longer backlog is read oldest first, in ROWID
+ * windows a page wide, so a pass that reaches the page limit has read a contiguous run and the next pass carries on
+ * from where it stopped.
+ */
 async function readBlueBubblesArrivalsSince(
   client: BlueBubblesClient,
   afterRowId: number | undefined,
   options: BlueBubblesCatchUpOptions,
-): Promise<BlueBubblesMessageArrival[]> {
-  if (!client.listArrivalsAfter) return []
-  const arrivals: BlueBubblesMessageArrival[] = []
-  for (let page = 0; page < BLUEBUBBLES_CATCHUP_MAX_PAGES; page++) {
-    const rows = await client.listArrivalsAfter({
-      afterRowId,
-      limit: BLUEBUBBLES_ARRIVAL_PAGE_SIZE,
-      offset: page * BLUEBUBBLES_ARRIVAL_PAGE_SIZE,
-    })
+): Promise<BlueBubblesArrivalRead> {
+  /* v8 ignore next -- older injected test doubles may omit the arrival query method */
+  if (!client.listArrivalsAfter) return { arrivals: [], cursor: afterRowId }
+  const list = async (params: { afterRowId?: number; throughRowId?: number }): Promise<BlueBubblesMessageArrival[]> => {
+    const rows = await client.listArrivalsAfter!({ ...params, limit: BLUEBUBBLES_ARRIVAL_PAGE_SIZE, offset: 0 })
     options.lifecycleSignal?.throwIfAborted()
     options.onProgress?.()
-    arrivals.push(...rows)
-    // With no cursor yet, the newest page is enough to start one.
-    if (afterRowId === undefined || rows.length < BLUEBUBBLES_ARRIVAL_PAGE_SIZE) break
+    return rows
   }
-  return arrivals
+  if (afterRowId === undefined) {
+    // With no cursor yet, the newest rows start one, and nothing counts as late.
+    return { arrivals: [], cursor: highestArrivalRowId(await list({})) }
+  }
+  const first = await list({ afterRowId })
+  if (first.length === 0) {
+    const newest = highestArrivalRowId(await list({}))
+    if (newest !== undefined && newest < afterRowId) return { arrivals: [], cursor: newest, resetFromRowId: afterRowId }
+    return { arrivals: [], cursor: afterRowId }
+  }
+  if (first.length < BLUEBUBBLES_ARRIVAL_PAGE_SIZE) return { arrivals: first, cursor: highestArrivalRowId(first) }
+
+  const arrivals: BlueBubblesMessageArrival[] = []
+  let cursor = afterRowId
+  for (let page = 1; page < BLUEBUBBLES_CATCHUP_MAX_PAGES; page++) {
+    const windowEnd = cursor + BLUEBUBBLES_ARRIVAL_PAGE_SIZE
+    const rows = await list({ afterRowId: cursor, throughRowId: windowEnd })
+    arrivals.push(...rows)
+    if (rows.length > 0) {
+      cursor = highestArrivalRowId(rows)!
+      continue
+    }
+    // An empty window is a run of deleted rows when a later row exists (new rows only ever get higher ROWIDs), or the end.
+    if ((await list({ afterRowId: windowEnd })).length === 0) break
+    cursor = windowEnd
+  }
+  return { arrivals, cursor }
 }
 
 interface BlueBubblesCatchUpOptions {
@@ -4264,8 +4301,10 @@ async function catchUpMissedBlueBubblesMessagesInScope(
   // The window below is in sent time, but iMessage can deliver a message minutes after it was sent, and BlueBubbles
   // sends no webhook for some of those (2026-11-27: 3 to 8 minutes late, four times in one afternoon). Rows that
   // arrived since the last pass are found by ROWID, and the window reaches back to the oldest one's sent time.
-  const arrivals = await readBlueBubblesArrivalsSince(client, state.catchUpRowId, options).catch((error: unknown) => {
+  let catchUpQueryFailed = false
+  const arrivalRead = await readBlueBubblesArrivalsSince(client, state.catchUpRowId, options).catch((error: unknown) => {
     if (options.lifecycleSignal?.aborted) throw options.lifecycleSignal.reason
+    catchUpQueryFailed = true
     result.failed++
     emitNervesEvent({
       level: "warn",
@@ -4276,12 +4315,19 @@ async function catchUpMissedBlueBubblesMessagesInScope(
     })
     return null
   })
+  if (arrivalRead?.resetFromRowId !== undefined) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_arrival_cursor_reset",
+      message: "every bluebubbles message row sits below the arrival cursor; starting it again from the newest",
+      meta: { fromRowId: arrivalRead.resetFromRowId, toRowId: arrivalRead.cursor },
+    })
+  }
   const nowMs = Date.now()
-  const lateArrivalSentAt = state.catchUpRowId === undefined || arrivals === null
-    ? Number.POSITIVE_INFINITY
-    : arrivals
-      .filter((arrival) => !arrival.fromMe)
-      .reduce((oldest, arrival) => Math.min(oldest, arrival.sentAt), Number.POSITIVE_INFINITY)
+  const lateArrivalSentAt = (arrivalRead?.arrivals ?? [])
+    .filter((arrival) => !arrival.fromMe && arrival.sentAt !== null)
+    .reduce((oldest, arrival) => Math.min(oldest, arrival.sentAt!), Number.POSITIVE_INFINITY)
   const catchUpSince = Math.max(
     Math.min(catchUpWindow.since, Math.max(lateArrivalSentAt, nowMs - BLUEBUBBLES_RECOVERY_CATCHUP_LOOKBACK_MS)),
     Date.parse(cutover.effectiveAt),
@@ -4343,6 +4389,7 @@ async function catchUpMissedBlueBubblesMessagesInScope(
       })
     } catch (error) {
       if (options.lifecycleSignal?.aborted) throw options.lifecycleSignal.reason
+      catchUpQueryFailed = true
       result.failed++
       emitNervesEvent({
         level: "warn",
@@ -4513,8 +4560,10 @@ async function catchUpMissedBlueBubblesMessagesInScope(
     }
   }))
 
-  const highestRowId = (arrivals ?? []).reduce((highest, arrival) => Math.max(highest, arrival.rowId), state.catchUpRowId ?? -1)
-  if (result.failed === 0 && highestRowId >= 0) result.arrivalCursor = highestRowId
+  // The cursor holds only when a query failed, so those arrivals are read again. A capture that failed has its own
+  // retry, and a scan that reached its page limit is logged above: holding the cursor for either would pin every later
+  // pass to the same window.
+  if (!catchUpQueryFailed) result.arrivalCursor = arrivalRead?.cursor
   const foundWork = result.recovered > 0 || (result.queued ?? 0) > 0 || result.failed > 0
   if (result.inspected > 0 || foundWork || catchUpWindow.mode === "recovery") {
     emitNervesEvent({

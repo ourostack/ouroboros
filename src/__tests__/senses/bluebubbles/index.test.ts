@@ -554,6 +554,24 @@ const fromMePayload = {
   },
 }
 
+/** BlueBubbles' arrival query over an in-memory Messages table: ROWID bounds, newest sent time first. */
+function fakeArrivalDatabase(initial: Array<{ rowId: number; sentAt: number; fromMe: boolean }>) {
+  const rows = [...initial]
+  const failures: unknown[] = []
+  mocks.listArrivalsAfter.mockImplementation(async (params: { afterRowId?: number; throughRowId?: number; limit: number; offset: number }) => {
+    if (failures.length > 0) throw failures.shift()
+    return rows
+      .filter((row) => (params.afterRowId === undefined || row.rowId > params.afterRowId)
+        && (params.throughRowId === undefined || row.rowId <= params.throughRowId))
+      .sort((left, right) => right.sentAt - left.sentAt)
+      .slice(params.offset, params.offset + params.limit)
+  })
+  return {
+    add: (row: { rowId: number; sentAt: number; fromMe: boolean }) => { rows.push(row) },
+    failNext: (error: unknown) => { failures.push(error) },
+  }
+}
+
 function makeCatchUpMessage(overrides: Partial<{
   messageGuid: string
   timestamp: number
@@ -7246,7 +7264,7 @@ describe("BlueBubbles sense runtime", () => {
       expect.any(Object),
     )
     expect(readBlueBubblesRuntimeState("testagent").catchUpRowId).toBe(101)
-    expect(mocks.listArrivalsAfter).toHaveBeenLastCalledWith({ afterRowId: 101, limit: 100, offset: 0 })
+    expect(mocks.listArrivalsAfter).toHaveBeenCalledWith({ afterRowId: 101, limit: 100, offset: 0 })
     closableServer.close()
   })
 
@@ -7256,16 +7274,7 @@ describe("BlueBubbles sense runtime", () => {
     mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
     const { readBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
     mocks.checkHealth.mockResolvedValue(undefined)
-    let calls = 0
-    mocks.listArrivalsAfter.mockImplementation(({ afterRowId }: { afterRowId?: number }) => {
-      calls++
-      if (afterRowId === undefined) return Promise.resolve([{ rowId: 7, sentAt: Date.now(), fromMe: true }, { rowId: 9, sentAt: Date.now(), fromMe: false }])
-      if (calls === 2) return Promise.reject(new Error("arrival query down"))
-      if (calls === 5) return Promise.reject("arrival query refused")
-      // A burst bigger than a page is read to the end.
-      if (calls === 3) return Promise.resolve(Array.from({ length: 100 }, (_, index) => ({ rowId: 10 + index, sentAt: Date.now(), fromMe: true })))
-      return Promise.resolve([])
-    })
+    const db = fakeArrivalDatabase([{ rowId: 7, sentAt: Date.now(), fromMe: true }, { rowId: 9, sentAt: Date.now(), fromMe: false }])
     const closableServer = createClosableServer()
     mocks.createServer.mockReturnValue(closableServer.server as any)
 
@@ -7274,10 +7283,11 @@ describe("BlueBubbles sense runtime", () => {
     await vi.advanceTimersByTimeAsync(1_000)
     await flushAsyncWork()
     // With no cursor yet, the newest page starts one, and nothing counts as late.
-    expect(mocks.listArrivalsAfter).toHaveBeenCalledWith({ afterRowId: undefined, limit: 100, offset: 0 })
+    expect(mocks.listArrivalsAfter).toHaveBeenCalledWith({ limit: 100, offset: 0 })
     expect(readBlueBubblesRuntimeState("testagent").catchUpRowId).toBe(9)
     expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_late_arrival_seen" }))
 
+    db.failNext(new Error("arrival query down"))
     await vi.advanceTimersByTimeAsync(30_000)
     await flushAsyncWork()
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -7287,18 +7297,151 @@ describe("BlueBubbles sense runtime", () => {
     }))
     expect(readBlueBubblesRuntimeState("testagent").catchUpRowId).toBe(9)
 
+    // A failed sent-time page also holds it, so the next pass reads those arrivals again.
+    db.add({ rowId: 10, sentAt: Date.now(), fromMe: true })
+    mocks.listRecentMessages.mockRejectedValueOnce(new Error("page down"))
     await vi.advanceTimersByTimeAsync(30_000)
     await flushAsyncWork()
-    expect(mocks.listArrivalsAfter).toHaveBeenCalledWith({ afterRowId: 9, limit: 100, offset: 100 })
-    expect(readBlueBubblesRuntimeState("testagent").catchUpRowId).toBe(109)
+    expect(readBlueBubblesRuntimeState("testagent").catchUpRowId).toBe(9)
 
+    db.failNext("arrival query refused")
     await vi.advanceTimersByTimeAsync(30_000)
     await flushAsyncWork()
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_catchup_error",
       meta: expect.objectContaining({ stage: "arrivals", reason: "arrival query refused" }),
     }))
-    expect(readBlueBubblesRuntimeState("testagent").catchUpRowId).toBe(109)
+    await vi.advanceTimersByTimeAsync(30_000)
+    await flushAsyncWork()
+    expect(readBlueBubblesRuntimeState("testagent").catchUpRowId).toBe(10)
+    closableServer.close()
+  })
+
+  it("reads a backlog of arrivals oldest first, so a late message among the oldest is found however many came after it", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const { writeBlueBubblesRuntimeState, readBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
+    const startedAt = Date.now()
+    writeBlueBubblesRuntimeState("testagent", {
+      upstreamStatus: "ok",
+      detail: "upstream reachable",
+      catchUpThrough: new Date(startedAt).toISOString(),
+      catchUpRowId: 100,
+      pendingRecoveryCount: 0,
+    })
+    // After hours away, 2,500 rows landed: the first one is a late message from the person, then the agent's own,
+    // with a hole of deleted rows in the middle.
+    const sentAt = startedAt - 2 * 60 * 60_000
+    const backlog = [
+      { rowId: 101, sentAt, fromMe: false },
+      ...Array.from({ length: 2_499 }, (_, index) => ({ rowId: 102 + index + (index >= 1_000 ? 300 : 0), sentAt: startedAt - 1_000 + index, fromMe: true })),
+    ]
+    fakeArrivalDatabase(backlog)
+    mocks.listRecentMessages.mockImplementation(({ offset }: { offset: number }) => Promise.resolve(
+      offset === 0 ? [makeCatchUpMessage({ messageGuid: "late-backlog-guid", timestamp: sentAt, textForAgent: "first of the backlog" })] : [],
+    ))
+    mocks.checkHealth.mockResolvedValue(undefined)
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushAsyncWork()
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_late_arrival_seen",
+      meta: expect.objectContaining({ sentAt: new Date(sentAt).toISOString() }),
+    }))
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_catchup_complete",
+      meta: expect.objectContaining({ queued: 1 }),
+    }))
+    // One pass reads a bounded number of pages, and stops where it read to; the next pass carries on from there.
+    const afterFirst = readBlueBubblesRuntimeState("testagent").catchUpRowId!
+    expect(afterFirst).toBeGreaterThan(101)
+    expect(afterFirst).toBeLessThan(2_900)
+    for (let pass = 0; pass < 4; pass++) {
+      await vi.advanceTimersByTimeAsync(30_000)
+      await flushAsyncWork()
+    }
+    expect(readBlueBubblesRuntimeState("testagent").catchUpRowId).toBe(2_900)
+    closableServer.close()
+  })
+
+  it("keeps the arrival cursor moving when the sent-time scan reaches its page limit", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const { writeBlueBubblesRuntimeState, readBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
+    writeBlueBubblesRuntimeState("testagent", {
+      upstreamStatus: "ok",
+      detail: "upstream reachable",
+      catchUpThrough: new Date().toISOString(),
+      catchUpRowId: 100,
+      pendingRecoveryCount: 0,
+    })
+    fakeArrivalDatabase([{ rowId: 101, sentAt: Date.now() - 20 * 60 * 60_000, fromMe: false }])
+    const fullPage = Array.from({ length: 50 }, (_, index) => ({ kind: "read", messageGuid: `read-${index}` }))
+    mocks.listRecentMessages.mockResolvedValue(fullPage)
+    mocks.checkHealth.mockResolvedValue(undefined)
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushAsyncWork()
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_catchup_error",
+      message: "bluebubbles upstream catch-up reached the bounded page limit",
+    }))
+    // The limit is logged, and it must not pin every later pass to the same day-old window.
+    expect(readBlueBubblesRuntimeState("testagent").catchUpRowId).toBe(101)
+    closableServer.close()
+  })
+
+  it("starts the arrival cursor again when the Messages database is rebuilt with lower ROWIDs", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const { writeBlueBubblesRuntimeState, readBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
+    const startedAt = Date.now()
+    writeBlueBubblesRuntimeState("testagent", {
+      upstreamStatus: "ok",
+      detail: "upstream reachable",
+      catchUpThrough: new Date(startedAt).toISOString(),
+      catchUpRowId: 5_000,
+      pendingRecoveryCount: 0,
+    })
+    const db = fakeArrivalDatabase([{ rowId: 30, sentAt: startedAt - 60_000, fromMe: true }])
+    mocks.checkHealth.mockResolvedValue(undefined)
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushAsyncWork()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_arrival_cursor_reset",
+      meta: { fromRowId: 5_000, toRowId: 30 },
+    }))
+    expect(readBlueBubblesRuntimeState("testagent").catchUpRowId).toBe(30)
+
+    // A message that then lands late is found by the new cursor.
+    const sentAt = Date.now() - 10 * 60_000
+    db.add({ rowId: 31, sentAt, fromMe: false })
+    await vi.advanceTimersByTimeAsync(30_000)
+    await flushAsyncWork()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_late_arrival_seen",
+      meta: expect.objectContaining({ sentAt: new Date(sentAt).toISOString() }),
+    }))
+    expect(readBlueBubblesRuntimeState("testagent").catchUpRowId).toBe(31)
     closableServer.close()
   })
 

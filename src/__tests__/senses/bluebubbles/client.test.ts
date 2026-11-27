@@ -1727,14 +1727,14 @@ describe("BlueBubbles client", () => {
         data: [
           { originalROWID: 30158, dateCreated: 1795807863063, isFromMe: false },
           { ROWID: 30159, dateCreated: 1795808323201, isFromMe: true },
-          // Rows without a ROWID or a sent time are not arrivals.
+          // A row without a ROWID is not an arrival; one without a sent time still holds its place.
           { dateCreated: 1795808323201 },
           { originalROWID: 30160, dateCreated: 0 },
         ],
       }), { status: 200 })) as typeof fetch
       const client = await makeClient()
 
-      const arrivals = await client.listArrivalsAfter!({ afterRowId: 30157, limit: 100, offset: 200 })
+      const arrivals = await client.listArrivalsAfter!({ afterRowId: 30157, throughRowId: 30257, limit: 100, offset: 200 })
 
       expect(global.fetch).toHaveBeenCalledWith(
         "http://bluebubbles.local/api/v1/message/query?password=secret-token",
@@ -1745,15 +1745,19 @@ describe("BlueBubbles client", () => {
         offset: 200,
         sort: "DESC",
         with: [],
-        where: [{ statement: "message.ROWID > :afterRowId", args: { afterRowId: 30157 } }],
+        where: [
+          { statement: "message.ROWID > :afterRowId", args: { afterRowId: 30157 } },
+          { statement: "message.ROWID <= :throughRowId", args: { throughRowId: 30257 } },
+        ],
       })
       expect(arrivals).toEqual([
         { rowId: 30158, sentAt: 1795807863063, fromMe: false },
         { rowId: 30159, sentAt: 1795808323201, fromMe: true },
+        { rowId: 30160, sentAt: null, fromMe: false },
       ])
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         event: "senses.bluebubbles_arrivals_listed",
-        meta: { afterRowId: 30157, rows: 4, arrivals: 2 },
+        meta: { afterRowId: 30157, throughRowId: 30257, rows: 4, arrivals: 3 },
       }))
     })
 
@@ -1765,8 +1769,18 @@ describe("BlueBubbles client", () => {
       expect(JSON.parse((global.fetch as any).mock.calls[0][1].body)).toEqual({ limit: 100, offset: 0, sort: "DESC", with: [] })
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         event: "senses.bluebubbles_arrivals_listed",
-        meta: { afterRowId: null, rows: 0, arrivals: 0 },
+        meta: { afterRowId: null, throughRowId: null, rows: 0, arrivals: 0 },
       }))
+    })
+
+    it("bounds only the top of the range when asked for rows up to a ROWID", async () => {
+      global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 })) as typeof fetch
+      const client = await makeClient()
+
+      await client.listArrivalsAfter!({ throughRowId: 50, limit: 100, offset: 0 })
+      expect(JSON.parse((global.fetch as any).mock.calls[0][1].body).where).toEqual([
+        { statement: "message.ROWID <= :throughRowId", args: { throughRowId: 50 } },
+      ])
     })
 
     it("fails with the server's reason, or unknown when the body cannot be read", async () => {
