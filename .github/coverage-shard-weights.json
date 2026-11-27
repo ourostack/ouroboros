@@ -429,7 +429,6 @@
  "src/__tests__/heart/session-events-approval.test.ts": 1.3,
  "src/__tests__/heart/session-events.test.ts": 0.6,
  "src/__tests__/heart/session-playback.test.ts": 0.2,
- "src/__tests__/heart/session-redaction-repair.test.ts": 16.2,
  "src/__tests__/heart/session-stats.test.ts": 0.2,
  "src/__tests__/heart/session-transcript.test.ts": 0.3,
  "src/__tests__/heart/settle-gate.test.ts": 1.6,
