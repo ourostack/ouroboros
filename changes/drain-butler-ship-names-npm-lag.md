@@ -1,0 +1,1 @@
+- `butler:ship` no longer asks "is the release merged?" when the release was just published: when neither npm's gitHead nor the `v<version>` tag exists yet, it says so and tells you to wait for the release's verify-npm job and run it again (#2032).
