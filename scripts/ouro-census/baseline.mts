@@ -77,6 +77,7 @@ export interface WalkerSource {
   passthrough?: readonly string[];
   approvals?: readonly string[];
   reshape?: readonly string[];
+  skip?: readonly string[];
   server?: string;
 }
 

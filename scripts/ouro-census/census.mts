@@ -78,6 +78,9 @@ async function readConfig(path: string): Promise<Config> {
     if (!strings(s.passthrough) || !strings(s.approvals) || !strings(s.reshape)) {
       throw new CensusFailure(`ax-census: ${path}: a source's passthrough, approvals and reshape must be lists of <file>#<function>`);
     }
+    if (s.skip !== undefined && (!strings(s.skip) || !["argv-entries", "tool-schemas"].includes(s.walker))) {
+      throw new CensusFailure(`ax-census: ${path}: ${s.walker}: skip is a list of folders, on an argv-entries or tool-schemas source only`);
+    }
   }
   const walkers = (config as { walkers?: unknown }).walkers ?? {};
   if (typeof walkers !== "object" || walkers === null || Array.isArray(walkers)) {

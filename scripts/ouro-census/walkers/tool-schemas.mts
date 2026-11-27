@@ -34,22 +34,16 @@
 // gives `mutates`, a resolver gives `mutates: "depends on arguments"`, and none gives nothing, so a `read` card needs a
 // profile that says `mutates: "none"`. A card's error codes count as raised when they're literals outside cards in the
 // door's file or a `handlers` file (the dispatcher).
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
 import ts from "typescript";
 import type { Door, DoorCard, Gap, WalkerOptions, WalkResult } from "../types.mts";
 import { literalsOutsideCards } from "./literals.mts";
+import { sourceFiles } from "./source-files.mts";
 
-const SKIP_DIRS = new Set(["node_modules", "__tests__", "fixtures"]);
 const SOURCE = /\.[cm]?tsx?$/;
 const NOT_SOURCE = /\.d\.[cm]?ts$|\.(test|spec)\.[cm]?tsx?$/;
-
-function sourceFiles(dir: string): string[] {
-  return readdirSync(dir, { withFileTypes: true })
-    .sort((a, b) => (a.name < b.name ? -1 : 1))
-    .flatMap((e) => (e.isDirectory() ? (SKIP_DIRS.has(e.name) ? [] : sourceFiles(join(dir, e.name))) : SOURCE.test(e.name) && !NOT_SOURCE.test(e.name) ? [join(dir, e.name)] : []));
-}
 
 type Fn = ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.MethodDeclaration;
 
@@ -380,7 +374,6 @@ interface Factory {
 }
 
 export async function walkToolSchemas(opts: WalkerOptions): Promise<WalkResult> {
-  const dir = resolve(opts.root, opts.source);
   const errors: string[] = [];
   const unwalked: Gap[] = [];
   const excluded: { hit: string; category: string }[] = [];
@@ -406,7 +399,10 @@ export async function walkToolSchemas(opts: WalkerOptions): Promise<WalkResult> 
     // A tool the census can't name that asks for approval hides a prompt too.
     if (approvalLine !== undefined) unwalked.push({ id: `approval:${file}#${collapse(expr)}`, kind: "approval", file, line: approvalLine, reasons: [reason] });
   };
-  const sources = sourceFiles(dir);
+  const listed = sourceFiles(opts, "tool-schemas", SOURCE, NOT_SOURCE);
+  errors.push(...listed.errors);
+  excluded.push(...listed.excluded);
+  const sources = listed.files;
   // Files that look like they hold tools, whose built modules' exports must all match a found schema.
   const candidates = new Set<string>();
   const entryPoints = new Set<string>();
