@@ -2941,7 +2941,7 @@ describe("daemon command plane branches", () => {
     })
     const { daemon, processManager } = make(socketPath, bundlesRoot, { nativeHabitRunner, nativeHabitMatch: () => true, schedulerFireVerifier, schedulerFireConsumer })
     processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot("sanctuary")])
-    await expect(daemon.handleCommand({ kind: "habit.poke", agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron" })).resolves.toEqual({ ok: false, error: "Sanctuary cron habit requires authenticated Supercronic provenance" })
+    await expect(daemon.handleCommand({ kind: "habit.poke", agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron" })).resolves.toEqual({ ok: false, error: "cron habit 'sanctuary-health' requires authenticated Supercronic provenance" })
     const privateCommand = { kind: "habit.scheduler-fire", agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron", occurrenceId: origin.occurrenceId, scenarioHandleDigest: "b".repeat(64), ...origin } as const
     await expect(daemon.handleCommand(privateCommand)).resolves.toEqual({ ok: true, message: "health sweep complete" })
     await expect(daemon.handleCommand(privateCommand)).resolves.toEqual({ ok: false, error: "scheduler fire replay rejected" })
@@ -2949,6 +2949,19 @@ describe("daemon command plane branches", () => {
     expect(schedulerFireConsumer).toHaveBeenCalledTimes(2)
     expect(nativeHabitRunner).toHaveBeenCalledOnce()
     expect(nativeHabitRunner).toHaveBeenCalledWith(expect.objectContaining({ trigger: "cron", occurrenceId: origin.occurrenceId, schedulerOrigin: expect.objectContaining({ schedulerRunId: origin.schedulerRunId }) }))
+  })
+
+  it("asks for scheduler provenance only for the product's attested habit", async () => {
+    const socketPath = tmpSocketPath("daemon-unattested-cron-habit")
+    const { daemon } = make(socketPath)
+    // slugger is no product's agent, and the Butler's other habits need no proof: both go the core route.
+    for (const command of [
+      { kind: "habit.poke", agent: "slugger", habitName: "sanctuary-health", trigger: "cron" },
+      { kind: "habit.poke", agent: "butler", habitName: "heartbeat", trigger: "cron" },
+    ] as const) {
+      await expect(daemon.handleCommand(command)).resolves.toEqual({ ok: false, error: `No managed agent '${command.agent}' is registered with daemon-managed private runtime.` })
+    }
+    await expect(daemon.handleCommand({ kind: "habit.poke", agent: "butler", habitName: "sanctuary-health", trigger: "cron" })).resolves.toEqual({ ok: false, error: "cron habit 'sanctuary-health' requires authenticated Supercronic provenance" })
   })
 
   it("fails closed when scheduler authentication is configured without durable consumption", async () => {

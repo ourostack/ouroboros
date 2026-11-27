@@ -49,11 +49,12 @@ vi.mock("../../../heart/daemon/sanctuary-acceptance-marker", () => ({
 vi.mock("../../../heart/daemon/sanctuary-scheduler-liveness", () => ({
   readSanctuaryHealthCursor: sanctuaryAcceptanceMocks.readCursor,
   recordSanctuarySchedulerLivenessReceipt: sanctuaryAcceptanceMocks.recordReceipt,
-  consumeSanctuarySchedulerFire: sanctuaryAcceptanceMocks.consumeFire,
 }))
 
-vi.mock("../../../heart/daemon/sanctuary-scheduler-origin", () => ({
-  verifySanctuarySchedulerFireCommand: sanctuaryAcceptanceMocks.verifyFire,
+vi.mock("../../../heart/daemon/scheduler-attestation", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../heart/daemon/scheduler-attestation")>(),
+  verifySchedulerFireCommand: sanctuaryAcceptanceMocks.verifyFire,
+  consumeSchedulerFire: sanctuaryAcceptanceMocks.consumeFire,
 }))
 
 vi.mock("../../../senses/telegram-identity-key", () => ({ readOrCreateTelegramIdentityKey: () => "k".repeat(43) }))
@@ -434,7 +435,7 @@ describe("daemon entrypoint", () => {
       handleCommand,
       daemonOptions: daemonCtor.mock.calls[0]?.[0] as {
         schedulerFireVerifier: (command: unknown) => unknown
-        schedulerFireConsumer: (origin: unknown) => unknown
+        schedulerFireConsumer: (origin: unknown, fire: { agent: string; habitName: string }) => unknown
         nativeHabitRunner: (input: { agent: string; habitName: string; trigger?: string; occurrenceId?: string; runnerId?: string; schedulerOrigin?: unknown }) => Promise<unknown>
       },
       processManagerOptions: processManagerCtor.mock.calls[0]?.[0] as {
@@ -809,6 +810,13 @@ describe("daemon entrypoint", () => {
     await expect(daemonOptions.nativeHabitRunner({ agent: "slugger", habitName: "sanctuary-health" })).resolves.toBeNull()
     await expect(daemonOptions.nativeHabitRunner({ agent: "sanctuary", habitName: "other" })).resolves.toBeNull()
     await expect(daemonOptions.nativeHabitRunner({ agent: "sanctuary", habitName: "sanctuary-health" })).resolves.toEqual({ ok: true, message: "health:sanctuary" })
+    // With no Supercronic to attest, a cron-fingerprint run cannot record its liveness receipt.
+    sanctuaryAcceptanceMocks.marker = { label: "unit-16f-cron-fingerprint", scenarioHandleDigest: "a".repeat(64) }
+    try {
+      await expect((daemonOptions.nativeHabitRunner as (input: unknown) => Promise<unknown>)({
+        agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron", occurrenceId: "cron:slot", runnerId: "runner-0", schedulerOrigin: { occurrenceId: "cron:slot" },
+      })).rejects.toThrow("supervisor provenance is unavailable")
+    } finally { sanctuaryAcceptanceMocks.marker = null }
     expect(() => daemonOptions.schedulerFireVerifier({ kind: "scheduler.fire" })).toThrow("Supercronic scheduler is unavailable")
     expect(daemonOptions.senseManager.listSenseRows()).toEqual([])
     expect(daemonOptions.scheduler.listJobs()).toEqual([])
@@ -977,14 +985,19 @@ describe("daemon entrypoint", () => {
     })
     expect(process.exit).toHaveBeenCalledWith(1)
 
-    const schedulerCommand = { kind: "scheduler.fire" }
+    const schedulerCommand = { kind: "habit.scheduler-fire", agent: "sanctuary", habitName: "sanctuary-health" }
     expect(daemonOptions.schedulerFireVerifier(schedulerCommand)).toEqual({ schedulerRunId: "run-1", occurrenceId: "occurrence-1" })
-    expect(sanctuaryAcceptanceMocks.verifyFire).toHaveBeenCalledWith(schedulerCommand, expect.objectContaining({ childPid: 42, scenarioHandleDigest: null, identityKey: "k".repeat(43) }))
+    expect(sanctuaryAcceptanceMocks.verifyFire).toHaveBeenCalledWith(schedulerCommand, expect.objectContaining({ childPid: 42, scenarioHandleDigest: null, identityKey: "k".repeat(43), crontabPath: expect.stringMatching(/scheduler\/sanctuary\.crontab$/u) }))
     const schedulerOrigin = { schedulerRunId: "run-1", occurrenceId: "occurrence-1" }
-    expect(daemonOptions.schedulerFireConsumer(schedulerOrigin)).toEqual(schedulerOrigin)
+    daemonOptions.schedulerFireConsumer(schedulerOrigin, { agent: "sanctuary", habitName: "sanctuary-health" })
+    expect(sanctuaryAcceptanceMocks.consumeFire).toHaveBeenCalledWith(expect.stringMatching(/sanctuary\.ouro$/u), "sanctuary-health", schedulerOrigin)
 
     sanctuaryAcceptanceMocks.marker = { label: "unit-16f-cron-fingerprint", scenarioHandleDigest: "a".repeat(64) }
     expect(daemonOptions.schedulerFireVerifier(schedulerCommand)).toEqual({ schedulerRunId: "run-1", occurrenceId: "occurrence-1" })
+    // The Butler's habit binds the fire to the acceptance run in progress; a habit that is not the product's binds none.
+    expect(sanctuaryAcceptanceMocks.verifyFire).toHaveBeenLastCalledWith(schedulerCommand, expect.objectContaining({ scenarioHandleDigest: "a".repeat(64) }))
+    daemonOptions.schedulerFireVerifier({ ...schedulerCommand, habitName: "other" })
+    expect(sanctuaryAcceptanceMocks.verifyFire).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ scenarioHandleDigest: null }))
     runSanctuaryHealthHabitMock.mockImplementationOnce(async (_agent, options: any) => {
       options.acceptanceMetrics.onPrivateTurnStart()
       options.acceptanceMetrics.onProviderInvocation()
@@ -1006,7 +1019,7 @@ describe("daemon entrypoint", () => {
     runSanctuaryHealthHabitMock.mockImplementationOnce(async (_agent, options: any) => options.submitEvidence({ source: "sanctuary-health", eventId: "books" }))
     await expect(daemonOptions.nativeHabitRunner({
       agent: "sanctuary", habitName: "sanctuary-health",
-    })).rejects.toThrow("Sanctuary health evidence submission failed")
+    })).rejects.toThrow("sanctuary-health could not submit its external event")
 
     sanctuaryAcceptanceMocks.readCursor.mockReturnValueOnce(null)
     await expect(daemonOptions.nativeHabitRunner({

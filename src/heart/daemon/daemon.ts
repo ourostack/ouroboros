@@ -5,7 +5,6 @@ import * as path from "path"
 import { randomUUID } from "node:crypto"
 import { StringDecoder } from "node:string_decoder"
 import { getAgentBundlesRoot, getAgentRoot, getRepoRoot, setAgentName } from "../identity"
-import { isButlerAgent } from "../butler-agent"
 import { runAgentStateRetention } from "./state-retention"
 import {
   listAllBundleAgents,
@@ -58,7 +57,7 @@ import { isRsvpHabitName } from "../../rsvp/habit-policy"
 import { readContainerRuntimePolicy } from "./container-runtime"
 import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
 import { completeHabitRun } from "../habits/habit-session"
-import type { SanctuarySchedulerFireCommand, SanctuarySchedulerOrigin } from "./sanctuary-scheduler-origin"
+import { attestedHabit, type SchedulerFireCommand, type SchedulerOrigin } from "./scheduler-attestation"
 import { withTurnExecutionLease } from "../turn-execution-lease"
 import type { LettersCommand, LettersWriter } from "../letters/writer"
 import { FrontendSessionService, lazyFrontendAuthority } from "../frontend-session-service"
@@ -543,7 +542,7 @@ export type DaemonCommand =
   | { kind: "chat.connect"; agent: string }
   | { kind: "task.poke"; agent: string; taskId: string }
   | { kind: "habit.poke"; agent: string; habitName: string; trigger?: HabitRunTrigger; occurrenceId?: string }
-  | SanctuarySchedulerFireCommand
+  | SchedulerFireCommand
   | { kind: "habit.probe"; agent: string; habitName: string; noSend?: true }
   | { kind: "await.poke"; agent: string; awaitName: string }
   | { kind: "external.event.submit"; agent: string; source: string; eventType: string; eventId: string; summary?: string; evidence?: string[]; payloadPath?: string; priority?: string; sessionId?: string; taskRef?: string; wake?: boolean; observationRevision?: string; transition?: import("../external-events/router").ExternalEventTransition }
@@ -595,10 +594,10 @@ export interface OuroDaemonOptions {
   privilegedEventScanner?: typeof scanPrivilegedEventSpool
   /** Test seam for typed native RSVP habit execution. Defaults to the real native runner. */
   rsvpHabitRunner?: (input: RunNativeRsvpHabitInput) => Promise<RunNativeRsvpHabitResult>
-  nativeHabitRunner?: (input: { agent: string; habitName: string; trigger: HabitRunTrigger; occurrenceId?: string; runnerId: string; schedulerOrigin?: SanctuarySchedulerOrigin }) => Promise<DaemonResponse | null>
+  nativeHabitRunner?: (input: { agent: string; habitName: string; trigger: HabitRunTrigger; occurrenceId?: string; runnerId: string; schedulerOrigin?: SchedulerOrigin }) => Promise<DaemonResponse | null>
   nativeHabitMatch?: (agent: string, habitName: string) => boolean
-  schedulerFireVerifier?: (command: SanctuarySchedulerFireCommand) => SanctuarySchedulerOrigin & { occurrenceId: string }
-  schedulerFireConsumer?: (origin: SanctuarySchedulerOrigin & { occurrenceId: string }) => void
+  schedulerFireVerifier?: (command: SchedulerFireCommand) => SchedulerOrigin & { occurrenceId: string }
+  schedulerFireConsumer?: (origin: SchedulerOrigin & { occurrenceId: string }, fire: { agent: string; habitName: string }) => void
   /** Startup barrier that proves no prior Ouro daemon/worker remains before
    *  this daemon opens its socket or autostarts any replacement. */
   orphanStartupDrain?: (socketPath: string) => Promise<void>
@@ -952,7 +951,7 @@ export class OuroDaemon {
   private readonly nativeHabitRunner?: OuroDaemonOptions["nativeHabitRunner"]
   private readonly nativeHabitMatch?: OuroDaemonOptions["nativeHabitMatch"]
   private readonly nativeHabitClaims = new Set<string>()
-  private readonly authenticatedSchedulerPokes = new WeakMap<object, SanctuarySchedulerOrigin>()
+  private readonly authenticatedSchedulerPokes = new WeakMap<object, SchedulerOrigin>()
   private readonly schedulerFireVerifier?: OuroDaemonOptions["schedulerFireVerifier"]
   private readonly schedulerFireConsumer?: OuroDaemonOptions["schedulerFireConsumer"]
   private readonly orphanStartupDrain: (socketPath: string) => Promise<void>
@@ -2793,10 +2792,10 @@ export class OuroDaemon {
       }
       case "habit.scheduler-fire": {
         if (!this.schedulerFireVerifier || !this.schedulerFireConsumer) return { ok: false, error: "authenticated scheduler fire is unavailable" }
-        let origin: SanctuarySchedulerOrigin & { occurrenceId: string }
+        let origin: SchedulerOrigin & { occurrenceId: string }
         try {
           origin = this.schedulerFireVerifier(command)
-          this.schedulerFireConsumer(origin)
+          this.schedulerFireConsumer(origin, { agent: command.agent, habitName: command.habitName })
         }
         catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) } }
         const poke = { kind: "habit.poke", agent: command.agent, habitName: command.habitName, trigger: "cron", occurrenceId: origin.occurrenceId } as const
@@ -2816,8 +2815,8 @@ export class OuroDaemon {
           return { ok: false, error: `invalid habit trigger: ${String(trigger)}` }
         }
         const schedulerOrigin = this.authenticatedSchedulerPokes.get(command)
-        if (isButlerAgent(command.agent) && command.habitName === "sanctuary-health" && trigger === "cron" && !schedulerOrigin) {
-          return { ok: false, error: "Sanctuary cron habit requires authenticated Supercronic provenance" }
+        if (trigger === "cron" && !schedulerOrigin && attestedHabit(command.agent, command.habitName)) {
+          return { ok: false, error: `cron habit '${command.habitName}' requires authenticated Supercronic provenance` }
         }
         if (!isRsvpHabitName(command.habitName) && !this.hasManagedPrivateRuntime(command.agent)) {
           return {
