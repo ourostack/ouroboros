@@ -558,7 +558,7 @@ interface RuntimeDeps {
    * message from the server itself, so nothing this process saw in the webhook decides the answer.
    */
   answerLetter: (agent: string, messageGuid: string) => Promise<boolean>
-  /** A read receipt for a message this side sent; the daemon records `seen` if it delivered a letter. */
+  /** A read receipt for a message this side sent, or the person's own message in a one-to-one chat; the daemon records `seen` for the letters it shows they have read. */
   letterSeen: (agent: string, messageGuid: string) => Promise<boolean>
 }
 
@@ -2230,6 +2230,15 @@ async function handleBlueBubblesNormalizedEvent(
         return { handled: true, notifiedAgent: false, kind: event.kind, reason: "from_me" }
       }
       options.lifecycleSignal?.throwIfAborted()
+
+      // Any message the person sends in a one-to-one chat shows they have had the letters that landed there on screen,
+      // even with their read receipts off; the daemon checks it against the server's copy. Nothing waits on it.
+      if (event.eventType === "new-message" && !event.chat.isGroup && event.fromMe !== true) {
+        const messageGuid = event.messageGuid
+        resolvedDeps.letterSeen(agentName, messageGuid).catch((error: Error) => {
+          emitNervesEvent({ level: "warn", component: "senses", event: "senses.bluebubbles_letter_seen_unchecked", message: "couldn't tell the daemon a message was read", meta: { messageGuid, reason: error.message } })
+        })
+      }
 
       // A message in answer form ("L7 2") from a one-to-one chat may answer a letter. The daemon decides from the
       // server's copy; a recorded answer is the harness's, so it doesn't become a chat turn, and the daemon tells

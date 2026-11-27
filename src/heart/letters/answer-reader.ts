@@ -135,6 +135,42 @@ export function answerProblem(entry: IndexedLetter, message: ServerMessage, answ
   return null
 }
 
+/**
+ * The time a message must come after to show the person has seen a letter: the server's own send time for it, or
+ * else the daemon's delivered time with no slack, since a plain message carries no code to tie it to the letter.
+ * Null when the letter isn't delivered.
+ */
+export async function seenFloor(entry: IndexedLetter, sentAt?: (messageGuid: string) => Promise<number | undefined>): Promise<number | null> {
+  const delivered = entry.events.find((event) => event.t === "delivered")
+  if (!delivered) return null
+  if (delivered.messageId && sentAt) {
+    const serverTime = await sentAt(delivered.messageId).catch(() => undefined)
+    if (serverTime !== undefined) return serverTime
+  }
+  return Date.parse(delivered.at)
+}
+
+/**
+ * Why a message the person sent doesn't show they have seen this letter, or null when it does: an iMessage from the
+ * letter's answering handle, in their one-to-one chat, sent after the letter landed there. Their read receipts may be
+ * off, but a person who writes in the chat after the letter arrived has had it on screen. `floor` is seenFloor.
+ */
+export function replySeenProblem(entry: IndexedLetter, message: ServerMessage, floor: number | null): string | null {
+  const letter = entry.letter
+  const sentAfterExpiry = letter.expiresAt !== undefined && (message.dateCreated ?? Number.POSITIVE_INFINITY) >= Date.parse(letter.expiresAt)
+  if (entry.state !== "waiting" || sentAfterExpiry) return "not-waiting"
+  if (entry.events.some((event) => event.t === "seen")) return "already-seen"
+  if (!letter.answeringHandle) return "no-answering-handle"
+  if (message.isFromMe !== false) return "from-me"
+  if (message.service !== "iMessage") return "not-imessage"
+  const sender = message.sender ? normalizeAnsweringHandle(message.sender) : null
+  if (!sender?.ok || sender.handle !== letter.answeringHandle) return "wrong-sender"
+  if (message.chatGuids.length !== 1 || directChatHandle(message.chatGuids[0]) !== letter.answeringHandle) return "wrong-chat"
+  if (floor === null) return "not-delivered"
+  if (message.dateCreated === undefined || message.dateCreated <= floor) return "before-delivery"
+  return null
+}
+
 /** Logs a message that looked like an answer and wasn't one, by its reason alone. */
 export function noteAnswerRefused(reason: string): void {
   emitNervesEvent({ level: "warn", component: "daemon", event: "letters.answer_refused", message: "a message in answer form didn't answer its letter", meta: { reason } })

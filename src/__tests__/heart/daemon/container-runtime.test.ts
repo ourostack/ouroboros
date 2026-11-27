@@ -5,7 +5,7 @@ import * as path from "node:path"
 import * as net from "node:net"
 import { createHash } from "node:crypto"
 import { execFileSync, spawnSync } from "node:child_process"
-import { hasManagedAgentProcess, hasManagedSupercronicProcess, hasManagedTelegramProcess, readContainerRuntimePolicy } from "../../../heart/daemon/container-runtime"
+import { hasManagedAgentProcess, hasManagedSupercronicProcess, hasManagedTelegramProcess, isContainerRuntimePolicy, isProductModulePath, readContainerRuntimePolicy } from "../../../heart/daemon/container-runtime"
 import { createSanctuaryInteractiveControl } from "../../../senses/sanctuary-interactive-control"
 
 function extractRunbookFunction(runbook: string, name: string): string {
@@ -38,6 +38,26 @@ describe("container runtime policy", () => {
     expect(readContainerRuntimePolicy({ readFile: () => JSON.stringify({ scheduler: "supercronic", updates: "disabled" }) })).toEqual({ scheduler: "supercronic", updates: "disabled" })
     expect(() => readContainerRuntimePolicy({ readFile: () => JSON.stringify({ scheduler: "cron", updates: "disabled" }) })).toThrow()
     expect(() => readContainerRuntimePolicy({ readFile: () => JSON.stringify({ scheduler: "supercronic", updates: "disabled", extra: true }) })).toThrow()
+  })
+
+  it("accepts a product module path inside the image, and nothing else", () => {
+    const withProduct = (product: unknown) => () => JSON.stringify({ scheduler: "supercronic", updates: "disabled", product })
+    expect(readContainerRuntimePolicy({ readFile: withProduct("/opt/ouro/dist/products/butler.js") }))
+      .toEqual({ scheduler: "supercronic", updates: "disabled", product: "/opt/ouro/dist/products/butler.js" })
+    for (const bad of ["dist/products/butler.js", "/home/ouro/AgentBundles/butler.ouro/product.js", "/opt/ouro/../tmp/x.js", "/opt/ouro/dist/products/butler.ts", 7, null]) {
+      expect(() => readContainerRuntimePolicy({ readFile: withProduct(bad) })).toThrow("container runtime policy is invalid")
+    }
+    expect(isContainerRuntimePolicy([])).toBe(false)
+    expect(isContainerRuntimePolicy(null)).toBe(false)
+    expect(isProductModulePath("/opt/butler/dist/product.js")).toBe(true)
+  })
+
+  it("keeps the product choice out of the agent's reach in the image", () => {
+    const dockerfile = fs.readFileSync("deploy/unraid/Dockerfile", "utf8")
+    const chownAll = dockerfile.indexOf("RUN chown -R 10001:10001 /opt/ouro /home/ouro")
+    const rootOwned = dockerfile.indexOf("RUN chown root:root /opt/ouro/container-runtime.json && chmod 0444 /opt/ouro/container-runtime.json")
+    expect(chownAll).toBeGreaterThan(-1)
+    expect(rootOwned).toBeGreaterThan(chownAll)
   })
 
   it("uses the packaged default path and distinguishes a missing policy from read failures", () => {

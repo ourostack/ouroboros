@@ -1,0 +1,1 @@
+- A letter now counts as seen when the person writes to the agent in the same one-to-one iMessage chat after the letter arrived there, even if their read receipts are off. Before, a letter was marked seen only from a read receipt, so for someone who doesn't send read receipts it stayed unseen even after they had replied.
