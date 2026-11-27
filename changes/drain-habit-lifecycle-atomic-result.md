@@ -1,0 +1,1 @@
+- Test-only: the habit lifecycle child writes its JSON result atomically, so the parent never reads a half-written file.
