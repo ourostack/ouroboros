@@ -26,6 +26,27 @@ describe("Unraid first-install script", () => {
     expect(unknown.stderr).toContain("unknown option --frobnicate")
   })
 
+  it("names the Butler from the image it pulled, with sanctuary for an image that says neither", () => {
+    const start = source.indexOf("AGENT=$(docker image inspect")
+    const end = source.indexOf("esac", start) + 4
+    expect(start).toBeGreaterThan(-1)
+    const derive = source.slice(start, end)
+    expect(source.slice(0, start)).toContain('docker pull "$IMAGE"')
+    for (const [entrypoint, name] of [
+      ['["node","/opt/ouro/dist/heart/daemon/daemon-entry.js","--package-managed-agent","butler"]', "butler"],
+      ['["node","/opt/ouro/dist/heart/daemon/daemon-entry.js","--package-managed-agent","sanctuary"]', "sanctuary"],
+      ['["node","/opt/ouro/dist/heart/daemon/daemon-entry.js","--package-managed-agent","other"]', "sanctuary"],
+      ['["node","/opt/ouro/dist/heart/daemon/daemon-entry.js"]', "sanctuary"],
+    ]) {
+      const script = `set -euo pipefail\nIMAGE=img\ndie() { echo "$*" >&2; exit 1; }\ndocker() { printf '%s\\n' ${JSON.stringify(entrypoint)}; }\n${derive}\nprintf '%s' "$AGENT"`
+      const result = spawnSync("bash", ["-c", script], { encoding: "utf8" })
+      expect(result.stdout, result.stderr).toBe(name)
+    }
+    // The host folders keep their names whatever the image says; only the container side follows it.
+    expect(source).toContain('dst=/home/ouro/AgentBundles/$AGENT.ouro')
+    expect(source).toContain("MACHINE_ID=sanctuary")
+  })
+
   it("never puts a secret on a command line", () => {
     expect(source).toContain("stty -echo")
     expect(source).toContain('printf \'%s\' "$ANTHROPIC_KEY" | ouro_stdin auth --agent "$AGENT" --provider anthropic --api-key-file /dev/stdin')

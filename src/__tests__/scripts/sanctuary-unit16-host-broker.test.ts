@@ -1672,6 +1672,11 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(source).toContain("value.capDrop === null || (Array.isArray(value.capDrop) && value.capDrop.length === 0)")
     expect(source).toContain("value.securityOpt === null || (Array.isArray(value.securityOpt) && value.securityOpt.length === 0)")
     expect(source).toContain('"vault", "status", "--agent", butler')
+    // The resident's mounts are accepted under either Butler name, all under one name, and the vault check asks that Butler.
+    expect(source).toContain('const BUTLER_NAMES = ["butler", "sanctuary"]')
+    expect(source).toContain("{ destination: containerBundle(name), source: PRODUCTION_BUNDLE_SOURCE")
+    expect(source).toContain('{ destination: `/etc/ouro/trust/${name}`, source: "/mnt/user/appdata/ouro-butler/trust/sanctuary"')
+    expect(source).toContain('vaultStatus(running, healthy, mountedButler ?? "sanctuary")')
     expect(source.match(/spawnSync\(DOCKER, \["inspect"/gu)).toHaveLength(5)
     expect(source).toContain('const GRAPHQL_ENDPOINT = "http://127.0.0.1/graphql"')
     expect(source).toContain('chownSync(socket, 0, 10001)')
