@@ -1,0 +1,1 @@
+- No change for people using Ouroboros. A new test lists every import that core harness files make of Butler code, and fails when one is added. Today there are 53, in 24 files. The list may only shrink: when an import goes, its line must go too. This is how the harness's Butler imports reach zero.
