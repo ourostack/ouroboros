@@ -20,12 +20,8 @@ const ALLOWED: Record<string, readonly string[]> = {
   "eval/transport/telegram-turn": [
     "eval/transport/synthetic-sanctuary",
   ],
-  "heart/agent-entry": [
-    "senses/sanctuary-runtime",
-  ],
   "heart/daemon/cli-exec": [
     "heart/daemon/sanctuary-bundle-migration",
-    "heart/daemon/sanctuary-scheduler-origin",
   ],
   "heart/daemon/container-healthcheck": [
     "heart/butler-agent",
@@ -34,17 +30,6 @@ const ALLOWED: Record<string, readonly string[]> = {
   ],
   "heart/daemon/container-spec-auditor": [
     "heart/butler-agent",
-  ],
-  "heart/daemon/daemon": [
-    "heart/butler-agent",
-    "heart/daemon/sanctuary-scheduler-origin",
-    "senses/sanctuary-runtime",
-  ],
-  "heart/daemon/daemon-entry": [
-    "heart/daemon/sanctuary-acceptance-marker",
-    "heart/daemon/sanctuary-scheduler-liveness",
-    "heart/daemon/sanctuary-scheduler-origin",
-    "senses/sanctuary-health-runner",
   ],
   "heart/daemon/sense-manager": [
     "heart/butler-agent",

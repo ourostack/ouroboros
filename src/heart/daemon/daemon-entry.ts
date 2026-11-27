@@ -3,7 +3,7 @@ import { execSync } from "child_process"
 import * as fs from "fs"
 import * as path from "path"
 import { DaemonProcessManager, type RuntimeCredentialBootstrap } from "./process-manager"
-import { OuroDaemon, type DaemonHealthResult } from "./daemon"
+import { OuroDaemon, type DaemonHealthResult, type DaemonResponse } from "./daemon"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { registerGlobalLogSink } from "../../nerves/index"
 import { FileMessageRouter } from "./message-router"
@@ -24,7 +24,7 @@ import { DaemonSenseManager } from "./sense-manager"
 import { listBundleSyncRows, listHomeBundleAgents, readPrivateRuntimeConfig } from "./agent-discovery"
 import { checkAgentHomes } from "./agent-home"
 import { getRepoRoot, getAgentBundlesRoot, loadAgentConfig } from "../identity"
-import { loadImageProduct, productAgentAmong, productFor } from "../product/active"
+import { loadImageProduct, productAgentAmong, productHabit } from "../product/active"
 import { appSessionsRecord } from "./app-sessions-record"
 import { detectRuntimeMode } from "./runtime-mode"
 import { HabitScheduler } from "../habits/habit-scheduler"
@@ -69,9 +69,7 @@ import {
   startDaemonAfterContainerCredentialBootstrap,
 } from "./daemon-bootstrap-startup"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
-import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
-import { consumeSanctuarySchedulerFire, readSanctuaryHealthCursor, recordSanctuarySchedulerLivenessReceipt } from "./sanctuary-scheduler-liveness"
-import { verifySanctuarySchedulerFireCommand } from "./sanctuary-scheduler-origin"
+import { consumeSchedulerFire, schedulerCrontabPath, verifySchedulerFireCommand } from "./scheduler-attestation"
 import { readOrCreateTelegramIdentityKey } from "../../senses/telegram-identity-key"
 import { checkBundleSyncHealth } from "../sync-health"
 import { abortInFlightSync, syncNow } from "../sync"
@@ -386,7 +384,7 @@ const containerRuntimePolicy = readContainerRuntimePolicy()
 const supercronicSupervisor = containerRuntimePolicy?.scheduler === "supercronic"
   ? new SupercronicSupervisor({
       binaryPath: "/usr/local/bin/supercronic",
-      crontabPath: path.join(getAgentBundlesRoot(), "..", ".ouro-cli", "scheduler", `${butlerName}.crontab`),
+      crontabPath: schedulerCrontabPath(butlerName),
       onFatal: (error) => {
         emitNervesEvent({ level: "error", component: "daemon", event: "daemon.supercronic_state", message: "Supercronic restart budget exhausted", meta: { error: error.message } })
         process.exit(1)
@@ -555,57 +553,30 @@ const daemon = new OuroDaemon({
   router,
   schedulerFireVerifier: (command) => {
     if (!supercronicSupervisor) throw new Error("Supercronic scheduler is unavailable")
-    const marker = readSanctuaryAcceptanceMarker(butlerName)
-    return verifySanctuarySchedulerFireCommand(command, {
+    return verifySchedulerFireCommand(command, {
       childPid: supercronicSupervisor.authenticatedSnapshot(`habit:${butlerName}`).childPid,
+      crontabPath: schedulerCrontabPath(command.agent),
       identityKey: readOrCreateTelegramIdentityKey(path.join(getAgentBundlesRoot(), `${butlerName}.ouro`)),
-      scenarioHandleDigest: marker?.label === "unit-16f-cron-fingerprint" ? marker.scenarioHandleDigest : null, now: () => new Date(),
+      scenarioHandleDigest: productHabit(command.agent, command.habitName)?.attestationScenario?.(butlerName) ?? null, now: () => new Date(),
       readFile: (target) => fs.readFileSync(target, "utf8"), readLink: (target) => fs.readlinkSync(target),
     })
   },
-  schedulerFireConsumer: (origin) => consumeSanctuarySchedulerFire(path.join(getAgentBundlesRoot(), `${butlerName}.ouro`), origin),
-  nativeHabitRunner: async ({ agent, habitName, trigger, occurrenceId, runnerId, schedulerOrigin }) => {
-    if (!productFor(agent) || habitName !== "sanctuary-health") return null
-    const marker = readSanctuaryAcceptanceMarker(agent)
-    const schedulerScenario = marker?.label === "unit-16f-cron-fingerprint" ? marker : null
-    const agentRoot = path.join(getAgentBundlesRoot(), `${agent}.ouro`)
-    const before = schedulerScenario ? readSanctuaryHealthCursor(agentRoot) : null
-    let providerInvocationCount = 0
-    let privateTurnCount = 0
-    // Loaded here, not at startup: it imports Sanctuary's tool registry.
-    const { runSanctuaryHealthHabit } = await import("../../senses/sanctuary-health-runner")
-    const result = await runSanctuaryHealthHabit(agent, {
-      submitEvidence: async (input) => {
-        const response = await daemon.handleCommand({ kind: "external.event.submit", ...input })
-        if (!response.ok) throw new Error(response.error ?? "Sanctuary health evidence submission failed")
+  schedulerFireConsumer: (origin, fire) => consumeSchedulerFire(path.join(getAgentBundlesRoot(), `${butlerName}.ouro`), fire.habitName, origin),
+  // A habit the agent's product runs itself; every other habit wakes the agent as usual.
+  nativeHabitRunner: async (input): Promise<DaemonResponse | null> => {
+    const habit = productHabit(input.agent, input.habitName)
+    if (!habit) return null
+    return habit.run({
+      ...input,
+      schedulerSnapshot: () => supercronicSupervisor ? supercronicSupervisor.authenticatedSnapshot(`habit:${input.agent}`) : null,
+      submitExternalEvent: async (event): Promise<{ shouldWake: boolean }> => {
+        const response: DaemonResponse = await daemon.handleCommand({ kind: "external.event.submit", ...event })
+        if (!response.ok) throw new Error(response.error ?? `${input.habitName} could not submit its external event`)
         return (response.data as { event: { shouldWake: boolean } }).event
       },
-      ...(schedulerScenario ? {
-        acceptanceMetrics: {
-          onPrivateTurnStart: () => { privateTurnCount += 1 },
-          onProviderInvocation: () => { providerInvocationCount += 1 },
-        },
-      } : {}),
     })
-    if (schedulerScenario) {
-      if (!supercronicSupervisor || !before || !occurrenceId || !schedulerOrigin) throw new Error("Sanctuary scheduler liveness supervisor provenance is unavailable")
-      recordSanctuarySchedulerLivenessReceipt({
-        agentRoot,
-        trigger,
-        occurrenceId,
-        runnerId,
-        scenario: schedulerScenario,
-        supervisor: supercronicSupervisor.authenticatedSnapshot(`habit:${agent}`),
-        before,
-        providerInvocationCount,
-        privateTurnCount,
-        schedulerOrigin,
-        identityKey: readOrCreateTelegramIdentityKey(agentRoot),
-      })
-    }
-    return result
   },
-  nativeHabitMatch: (agent, habitName) => productFor(agent) !== null && habitName === "sanctuary-health",
+  nativeHabitMatch: (agent, habitName) => productHabit(agent, habitName) !== null,
   mode,
   onStopCommandComplete: async () => {
     await stopEntryRuntime()
@@ -935,7 +906,7 @@ void startDaemonAfterContainerCredentialBootstrap({
         habitsDir,
         osCronManager,
         onHabitFire: (habitName, trigger, context) => {
-          if (isRsvpHabitName(habitName) || (productFor(agent) !== null && habitName === "sanctuary-health")) {
+          if (isRsvpHabitName(habitName) || productHabit(agent, habitName) !== null) {
             sendDaemonCommand(socketPath, {
               kind: "habit.poke",
               agent,

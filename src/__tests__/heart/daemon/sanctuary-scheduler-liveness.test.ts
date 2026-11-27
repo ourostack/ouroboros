@@ -5,7 +5,8 @@ import * as path from "node:path"
 
 import { describe, expect, it, vi } from "vitest"
 
-import { consumeSanctuarySchedulerFire, durableExclusiveJson, publishSanctuarySchedulerReceipt, readSanctuaryHealthCursor, recordSanctuarySchedulerLivenessReceipt, verifySanctuarySchedulerLivenessReceiptMac } from "../../../heart/daemon/sanctuary-scheduler-liveness"
+import { publishSanctuarySchedulerReceipt, readSanctuaryHealthCursor, recordSanctuarySchedulerLivenessReceipt, verifySanctuarySchedulerLivenessReceiptMac } from "../../../heart/daemon/sanctuary-scheduler-liveness"
+import { durableExclusiveJson } from "../../../heart/daemon/scheduler-attestation"
 import { SupercronicSupervisor } from "../../../heart/daemon/supercronic-supervisor"
 
 const scenarioHandleDigest = "a".repeat(64)
@@ -49,35 +50,6 @@ function readyInput(f: ReturnType<typeof setup>, namespace = "habit:sanctuary") 
 }
 
 describe("Sanctuary scheduler liveness receipt", () => {
-  it("durably consumes one scheduler occurrence before effect and rejects run or occurrence replay across restarts", () => {
-    const f = setup()
-    try {
-      consumeSanctuarySchedulerFire(f.agentRoot, authenticated.schedulerOrigin)
-      expect(() => consumeSanctuarySchedulerFire(f.agentRoot, authenticated.schedulerOrigin)).toThrow(/replay/u)
-      expect(() => consumeSanctuarySchedulerFire(f.agentRoot, {
-        ...authenticated.schedulerOrigin,
-        schedulerRunId: "33333333-3333-4333-8333-333333333333",
-      })).toThrow(/replay/u)
-      expect(() => consumeSanctuarySchedulerFire(f.agentRoot, {
-        ...authenticated.schedulerOrigin,
-        slot: "2026-08-18T17:15:00.000Z",
-        occurrenceId: "cron:2026-08-18T17:15:00.000Z",
-        schedulerRunId: "44444444-4444-4444-8444-444444444444",
-      })).not.toThrow()
-      expect(fs.readdirSync(path.join(f.agentRoot, "state/scheduler/sanctuary-fire-claims"))).toHaveLength(2)
-    } finally { fs.rmSync(f.agentRoot, { recursive: true, force: true }) }
-  })
-
-  it("fails closed when a scheduler claim cannot be durably created", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-scheduler-claim-error-"))
-    const nonDirectoryRoot = path.join(root, "not-a-directory")
-    fs.writeFileSync(nonDirectoryRoot, "occupied")
-    try {
-      expect(() => consumeSanctuarySchedulerFire(nonDirectoryRoot, authenticated.schedulerOrigin)).toThrow()
-      expect(() => consumeSanctuarySchedulerFire(root, { ...authenticated.schedulerOrigin, schedulerRunId: "invalid" })).toThrow(/claim is invalid/u)
-    } finally { fs.rmSync(root, { recursive: true, force: true }) }
-  })
-
   it("reads and validates the durable cursor", () => {
     const f = setup()
     try {

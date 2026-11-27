@@ -315,7 +315,7 @@
  "src/__tests__/heart/daemon/sanctuary-package-management.test.ts": 0.2,
  "src/__tests__/heart/daemon/sanctuary-retired-containment-contract.test.ts": 1.2,
  "src/__tests__/heart/daemon/sanctuary-scheduler-liveness.test.ts": 0.2,
- "src/__tests__/heart/daemon/sanctuary-scheduler-origin.test.ts": 1.3,
+ "src/__tests__/heart/daemon/scheduler-attestation.test.ts": 1.3,
  "src/__tests__/heart/daemon/sanctuary-telegram-authority-entry.test.ts": 1.4,
  "src/__tests__/heart/daemon/sanctuary-telegram-authority-gateway.test.ts": 0.9,
  "src/__tests__/heart/daemon/sanctuary-telegram-authority-service.test.ts": 1.9,

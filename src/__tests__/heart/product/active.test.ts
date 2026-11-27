@@ -2,7 +2,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { loadImageProduct, loadProduct, PRODUCT_SEAM_VERSION, productAgentAmong, productFor } from "../../../heart/product/active"
+import { loadImageProduct, loadProduct, PRODUCT_SEAM_VERSION, productAgentAmong, productEventSource, productFor, productHabit } from "../../../heart/product/active"
 import { product as butlerProduct } from "../../../products/butler"
 
 const PATH = "/opt/example/dist/product.js"
@@ -99,5 +99,34 @@ describe("the product seam", () => {
     const missing = butlerProduct.startup!({ ...input, bundlesRoot: path.join(os.tmpdir(), "no-such-bundles"), argv: ["node", "daemon-entry.js", "--package-managed-agent", "butler"] })
     expect(() => missing.preflight()).toThrow(/human-required/u)
     expect(() => missing.prepareManagedBundle()).toThrow(/human-required/u)
+  })
+
+  it("answers a habit only for the product's agent and the product's own habit names", () => {
+    const sweep = { run: async () => ({ ok: true }), requiresSchedulerAttestation: true }
+    loadProduct(PATH, () => ({ product: { ...product, habits: { sweep } } }))
+    expect(productHabit("helper", "sweep")).toBe(sweep)
+    expect(productHabit("old-helper", "sweep")).toBe(sweep)
+    expect(productHabit("slugger", "sweep")).toBeNull()
+    expect(productHabit("helper", "other")).toBeNull()
+    // Habit names come from bundle files, so a name that is only an object's built-in is no habit.
+    expect(productHabit("helper", "constructor")).toBeNull()
+    loadProduct(PATH, () => ({ product }))
+    expect(productHabit("helper", "sweep")).toBeNull()
+  })
+
+  it("has the Butler run its house check in the daemon, fired only with the scheduler's proof", () => {
+    expect(Object.keys(butlerProduct.habits!)).toEqual(["sanctuary-health"])
+    expect(butlerProduct.habits!["sanctuary-health"]!.requiresSchedulerAttestation).toBe(true)
+  })
+
+  it("answers an event source only for the product's agent and the product's own source names", () => {
+    const watch = { ready: async () => undefined }
+    loadProduct(PATH, () => ({ product: { ...product, eventSources: { watch } } }))
+    expect(productEventSource("helper", "watch")).toBe(watch)
+    expect(productEventSource("slugger", "watch")).toBeNull()
+    expect(productEventSource("helper", "other")).toBeNull()
+    expect(productEventSource("helper", "toString")).toBeNull()
+    loadProduct(PATH, () => ({ product }))
+    expect(productEventSource("helper", "watch")).toBeNull()
   })
 })

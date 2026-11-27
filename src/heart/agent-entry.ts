@@ -188,7 +188,7 @@ import("./runtime-credentials")
       attachProcessListeners: false,
       bufferedMessages: [],
     })
-    const { ensureSanctuarySourceRuntimeReady } = await import("../senses/sanctuary-runtime")
+    const { productEventSource } = await import("./product/active")
     const readinessPendingDispatchIds = new Set<string>()
     const cancelledReadinessDispatchIds = new Set<string>()
     const handleWorkerMessage = async (message: unknown): Promise<void> => {
@@ -207,7 +207,7 @@ import("./runtime-credentials")
       try {
         if (typeof envelope?.externalEvent?.source === "string") {
           if (dispatchId) readinessPendingDispatchIds.add(dispatchId)
-          await ensureSanctuarySourceRuntimeReady(agentName, envelope.externalEvent.source)
+          await productEventSource(agentName, envelope.externalEvent.source)?.ready(agentName)
           if (dispatchId) readinessPendingDispatchIds.delete(dispatchId)
           if (dispatchId && cancelledReadinessDispatchIds.delete(dispatchId)) return
         }
