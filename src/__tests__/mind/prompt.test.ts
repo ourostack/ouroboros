@@ -1698,7 +1698,7 @@ describe("buildSystem", () => {
     const result = speakSopsSection("voice")
     expect(result).toContain("## speaking mid-turn")
     expect(result).toContain("`speak` sends words to my friend")
-    expect(result).toContain("never per tool call")
+    expect(result).toContain("not one per tool call")
     expect(result).toContain("in a one-to-one chat, if they've had nothing from me for 5 seconds, or for 45 seconds since my last word, the engine holds my next work call until i speak")
   })
 
