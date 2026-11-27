@@ -36,6 +36,11 @@ const selections = new WeakMap<ToolDefinition, { binding: RootHostBinding; capab
 
 export class RootHostAuthorizationError extends Error {}
 
+/** Core keeps `rootHost.binding` opaque; only this file sets it, always to a RootHostBinding, so reading it back is exact. */
+function boundBinding(ctx: Pick<ToolContext, "rootHost"> | undefined): RootHostBinding | undefined {
+  return ctx?.rootHost?.binding as RootHostBinding | undefined
+}
+
 function requireOwner(condition: unknown): asserts condition {
   if (!condition) throw new RootHostAuthorizationError(withCode("Sanctuary root host authorization denied", "root-host-denied"))
 }
@@ -84,7 +89,7 @@ function observationAccepted(ctx: RootHostSelectionContext): boolean {
 }
 
 export async function authorizeRootHostContext(ctx: ToolContext, expected?: RootHostBinding): Promise<RootHostBinding> {
-  const previous = ctx.rootHost?.binding
+  const previous = boundBinding(ctx)
   const provenance = previous && bindings.get(previous)
   if (previous) bindings.delete(previous)
   const coordinates = currentCoordinates(ctx)
@@ -174,7 +179,7 @@ export function validateRootHostToolArguments(args: Record<string, unknown>, tar
 
 export function selectRootHostTool(ctx?: RootHostSelectionContext, capabilities?: ReadonlySet<ProviderCapability>): ToolDefinition | undefined {
   try {
-    const binding = ctx?.rootHost?.binding
+    const binding = boundBinding(ctx)
     const provenance = binding && bindings.get(binding)
     if (!ctx || !binding || !provenance || provenance.port !== ctx.rootHost!.port || !capabilities?.has("approval-continuation")
       || !isDeepStrictEqual(binding, currentCoordinates(ctx)) || (!provenance.recovery && !observationAccepted(ctx))) return undefined

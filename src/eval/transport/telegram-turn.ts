@@ -35,18 +35,27 @@ import fs from "node:fs"
 import path from "node:path"
 import { FileFriendStore } from "@ouro.bot/friends"
 import type { ProviderRuntime, ProviderTurnRequest, RunAgentOptions } from "../../heart/core"
+import type { ToolContext } from "../../repertoire/tools-base"
 import { getAgentRoot, setAgentName } from "../../heart/identity"
 import { saveSession } from "../../mind/context"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { SANCTUARY_ANSWER_GATES } from "../../senses/sanctuary-runtime"
 import { runSenseTurn, getSenseSessionPath, type RunSenseTurnResult } from "../../senses/shared-turn"
 import { createProductionTelegramRelationshipComposition, createTelegramSenseApp, opaqueTelegramSubject } from "../../senses/telegram"
 import type { TelegramInboundMessage } from "../../senses/telegram-client"
 import { readOrCreateTelegramIdentityKey } from "../../senses/telegram-identity-key"
 import type { Case, Observation, TraceCall, TraceReply } from "../domain/case"
-import { createSyntheticSanctuary } from "./synthetic-sanctuary"
+import { syntheticSanctuaryHouse } from "./synthetic-sanctuary"
 
-const AGENT = "sanctuary"
+/**
+ * The fake house a turn runs in: the agent whose bundle it is, the relationship profile its owner Friend gets, and the
+ * tool context the sense hands every turn (answer checks and service context). Nothing reaches a live host.
+ */
+export type TelegramTurnHouse = {
+  agentName: string
+  ownerProfileId: string
+  toolContext: Pick<ToolContext, "answerGates" | "sanctuary">
+}
+
 const BOT_ID = "7001"
 const OWNER_USER = "4242"
 const OWNER_FRIEND_ID = "eval-owner"
@@ -60,6 +69,8 @@ export type TelegramTurnInput = {
   systemLine?: string
   /** Later owner messages in the same chat (the interviews' debrief), each its own turn after the job's. */
   followUps?: string[]
+  /** The fake house; the synthetic Sanctuary when absent. */
+  house?: TelegramTurnHouse
 }
 
 /** Per owner message, where its part of the timeline starts, its answer, its outcome and its model calls. */
@@ -68,11 +79,11 @@ export type TelegramTurns = Array<{ start: number; finalReply: string; outcome: 
 /** The job's reply and outcome are the first message's; `turns` is there only when later messages were given. */
 export type TelegramTurnResult = Pick<Observation, "timeline" | "finalReply" | "outcome" | "steps"> & { turns?: TelegramTurns }
 
-async function writeOwner(agentRoot: string): Promise<void> {
+async function writeOwner(agentRoot: string, capabilityProfileId: string): Promise<void> {
   const now = new Date().toISOString()
   await new FileFriendStore(path.join(agentRoot, "friends")).put(OWNER_FRIEND_ID, {
     id: OWNER_FRIEND_ID, name: "Ari", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive",
-    capabilityProfileId: "sanctuary-owner",
+    capabilityProfileId,
     externalIds: [{ provider: "telegram-user", externalId: OWNER_USER, tenantId: BOT_ID, linkedAt: now }],
     tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: now, updatedAt: now, schemaVersion: 1,
   })
@@ -154,13 +165,15 @@ function visibleText(html: string): string {
 export async function runTelegramTurn(input: TelegramTurnInput): Promise<TelegramTurnResult> {
   emitNervesEvent({ component: "eval", event: "eval.telegram_turn_start", message: "running one eval Telegram turn", meta: { steps: input.prefix.length } })
   try {
+    const house = input.house ?? syntheticSanctuaryHouse()
+    const agent = house.agentName
     const agentRoot = path.resolve(input.agentRoot)
-    if (agentRoot !== getAgentRoot(AGENT)) throw new Error(`agentRoot must be the sanctuary bundle at ${getAgentRoot(AGENT)}, where the turn reads it`)
-    setAgentName(AGENT)
-    await writeOwner(agentRoot)
+    if (agentRoot !== getAgentRoot(agent)) throw new Error(`agentRoot must be the ${agent} bundle at ${getAgentRoot(agent)}, where the turn reads it`)
+    setAgentName(agent)
+    await writeOwner(agentRoot, house.ownerProfileId)
     const identityKey = readOrCreateTelegramIdentityKey(agentRoot)
     const sessionKey = `telegram:${opaqueTelegramSubject(identityKey, BOT_ID, OWNER_USER, OWNER_USER)}`
-    const sessionPath = getSenseSessionPath(AGENT, OWNER_FRIEND_ID, "telegram", sessionKey, agentRoot)
+    const sessionPath = getSenseSessionPath(agent, OWNER_FRIEND_ID, "telegram", sessionKey, agentRoot)
     fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
     saveSession(sessionPath, [{ role: "system", content: "" }, ...input.prefix])
 
@@ -185,11 +198,11 @@ export async function runTelegramTurn(input: TelegramTurnInput): Promise<Telegra
     let turnError: unknown
     let onMessage!: (message: TelegramInboundMessage) => Promise<void>
     const app = createTelegramSenseApp({
-      agentName: AGENT,
+      agentName: agent,
       credentials,
       identityKey,
       _agentRoot: agentRoot,
-      _toolContext: { agentRoot, answerGates: SANCTUARY_ANSWER_GATES, sanctuary: createSyntheticSanctuary() } as never,
+      _toolContext: { agentRoot, ...house.toolContext } as never,
       api,
       createLongPoll: (options) => {
         onMessage = options.onMessage
@@ -197,7 +210,7 @@ export async function runTelegramTurn(input: TelegramTurnInput): Promise<Telegra
       },
       _createInteractiveControl: (() => ({ socketPath: "unused", start: idle, stop: idle })) as never,
       migrateIdentity: idle,
-      ...(await createProductionTelegramRelationshipComposition(AGENT, credentials, agentRoot)),
+      ...(await createProductionTelegramRelationshipComposition(agent, credentials, agentRoot)),
       _runTurn: async (options) => {
         try {
           turn = await runSenseTurn({

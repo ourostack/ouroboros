@@ -19,6 +19,8 @@ import {
 import { annotateContainers, serviceContainers } from "../../repertoire/sanctuary-container-policy"
 import type { StewardPolicyRecord } from "../../heart/steward-policy"
 import { normalizeSanctuaryMediaText } from "../../senses/sanctuary-media-optimization"
+import { SANCTUARY_ANSWER_GATES } from "../../senses/sanctuary-runtime"
+import type { TelegramTurnHouse } from "./telegram-turn"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 type SanctuaryContext = NonNullable<ToolContext["sanctuary"]>
@@ -130,4 +132,9 @@ export function createSyntheticSanctuary(): SanctuaryContext {
     resumeDownloadQueue: async () => unavailable("The eval sandbox does not resume a download queue"),
     restartContainer: async () => unavailable("The eval sandbox does not restart containers"),
   }
+}
+
+/** The Butler's fake house for the eval Telegram turn: its bundle, its owner profile, its answer checks and the synthetic services. */
+export function syntheticSanctuaryHouse(): TelegramTurnHouse {
+  return { agentName: "sanctuary", ownerProfileId: "sanctuary-owner", toolContext: { answerGates: SANCTUARY_ANSWER_GATES, sanctuary: createSyntheticSanctuary() } }
 }

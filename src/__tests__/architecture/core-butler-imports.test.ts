@@ -22,7 +22,6 @@ const ALLOWED: Record<string, readonly string[]> = {
   ],
   "eval/transport/telegram-turn": [
     "eval/transport/synthetic-sanctuary",
-    "senses/sanctuary-runtime",
   ],
   "heart/agent-entry": [
     "senses/sanctuary-runtime",
@@ -63,9 +62,6 @@ const ALLOWED: Record<string, readonly string[]> = {
   ],
   "repertoire/tools": [
     "heart/butler-agent",
-    "repertoire/tools-sanctuary-host",
-  ],
-  "repertoire/tools-base": [
     "repertoire/tools-sanctuary-host",
   ],
   "repertoire/tools-session": [

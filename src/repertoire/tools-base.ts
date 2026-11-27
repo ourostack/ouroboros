@@ -216,7 +216,8 @@ export interface ToolContext {
   rootHost?: {
     port: import("../senses/root-host-approval-port").RootHostApprovalPort;
     observation?: import("../senses/telegram-client").TelegramAuthorityTransportMetadata;
-    binding?: import("./tools-sanctuary-host").RootHostBinding;
+    /** Opaque to core: the Butler's root-host tool makes, reads and compares it by identity, and owns its shape. */
+    binding?: object;
   };
   readonly toolSelection?: ToolSelection;
   readonly selectCurrentTools?: () => ToolSelection;
