@@ -634,6 +634,89 @@ describe("handleInboundTurn", () => {
       expect(claim.release).toHaveBeenCalledWith({ failed: true })
     })
 
+    describe("held routine notices", () => {
+      const notices: PendingMessage[] = [
+        { from: "testagent", friendId: "friend-1", content: "three sign-ins expired; nothing to do yet", timestamp: 1000, disposition: "held_notice" },
+        { from: "testagent", friendId: "friend-1", content: "the nightly run finished; nothing needed from you", timestamp: 2000, disposition: "held_notice" },
+      ]
+
+      it("puts every held notice into one return summary, not separate messages, and deletes them after the turn", async () => {
+        const claim = claimOf(notices)
+        const input = makeInput({ drainPending: vi.fn().mockReturnValue([]) }) as any
+        input.claimHeldNotices = vi.fn().mockReturnValue(claim)
+
+        await handleInboundTurn(input)
+
+        expect(input.claimHeldNotices).toHaveBeenCalledWith("friend-1")
+        const options = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0][4] as RunAgentOptions
+        expect(options.pendingMessages).toHaveLength(1)
+        const summary = options.pendingMessages![0]!.content
+        expect(summary).toContain("one short summary")
+        expect(summary).toContain("three sign-ins expired")
+        expect(summary).toContain("the nightly run finished")
+        expect(claim.settle).toHaveBeenCalledWith()
+      })
+
+      it("leaves the held notices claimed until the sense confirms delivery, then settles once", async () => {
+        const claim = claimOf(notices)
+        const input = makeInput({ drainPending: vi.fn().mockReturnValue([]) }) as any
+        input.claimHeldNotices = vi.fn().mockReturnValue(claim)
+        input.confirmHeldNoticeDelivery = true
+
+        const result = await handleInboundTurn(input)
+
+        expect(claim.settle).not.toHaveBeenCalled()
+        expect(claim.release).not.toHaveBeenCalled()
+        result.heldNoticeDelivery!.confirm()
+        expect(claim.settle).toHaveBeenCalledTimes(1)
+      })
+
+      it("puts the held notices back when the sense reports delivery failed or unconfirmed", async () => {
+        const claim = claimOf(notices)
+        const input = makeInput({ drainPending: vi.fn().mockReturnValue([]) }) as any
+        input.claimHeldNotices = vi.fn().mockReturnValue(claim)
+        input.confirmHeldNoticeDelivery = true
+
+        const result = await handleInboundTurn(input)
+        result.heldNoticeDelivery!.release()
+
+        expect(claim.settle).not.toHaveBeenCalled()
+        expect(claim.release).toHaveBeenCalledTimes(1)
+      })
+
+      it("keeps the held notices when the turn that carried the summary did not finish", async () => {
+        const claim = claimOf(notices)
+        const input = makeInput({ runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "errored" }) }) as any
+        input.claimHeldNotices = vi.fn().mockReturnValue(claim)
+
+        await handleInboundTurn(input)
+
+        expect(claim.settle).not.toHaveBeenCalled()
+        expect(claim.release).toHaveBeenCalled()
+      })
+
+      it("keeps the held notices when persisting the turn throws", async () => {
+        const claim = claimOf(notices)
+        const input = makeInput({ postTurn: vi.fn().mockRejectedValue(new Error("disk full")) }) as any
+        input.claimHeldNotices = vi.fn().mockReturnValue(claim)
+
+        await expect(handleInboundTurn(input)).rejects.toThrow("disk full")
+
+        expect(claim.settle).not.toHaveBeenCalled()
+        expect(claim.release).toHaveBeenCalled()
+      })
+
+      it("adds no summary when nothing is held", async () => {
+        const input = makeInput({ drainPending: vi.fn().mockReturnValue([]) }) as any
+        input.claimHeldNotices = vi.fn().mockReturnValue(claimOf([]))
+
+        await handleInboundTurn(input)
+
+        const options = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0][4] as RunAgentOptions
+        expect(options.pendingMessages ?? []).toEqual([])
+      })
+    })
+
     it("counts the try when persisting a finished turn throws before it acted", async () => {
       const claim = claimOf()
       const input = makeInput({ claimPending: vi.fn().mockReturnValue(claim), postTurn: vi.fn().mockRejectedValue(new Error("disk full")) })

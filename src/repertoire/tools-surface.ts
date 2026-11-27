@@ -8,7 +8,7 @@ import { advanceReturnObligation, findPendingObligationForOrigin, fulfillObligat
 import { completePonderPacket } from "../arc/packets";
 import { listSessionActivity } from "../heart/session-activity";
 import { containsInternalMetaMarkers } from "../senses/bluebubbles-meta-guard";
-import { getProactiveInternalContentBlockReason, isReturnToSenderReason, proactiveContentBlockGuidance } from "../senses/proactive-content-guard";
+import { getProactiveInternalContentBlockReason, isHeldForReturnReason, isReturnToSenderReason, proactiveContentBlockGuidance } from "../senses/proactive-content-guard";
 import { emitNervesEvent } from "../nerves/runtime";
 import * as path from "path";
 import type { AttentionItem } from "../arc/attention-types";
@@ -328,6 +328,7 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
       if (sent && teamsSendMayHaveGoneOut(sent)) return { status: "unconfirmed", detail: unconfirmedDetail("Teams") }
       if (sent?.reason && CONTENT_REFUSALS.has(sent.reason)) {
         const held = getProactiveInternalContentBlockReason(content)
+        if (isHeldForReturnReason(held)) return { status: "queued", detail: "held for their return summary; they get it with other routine notices when they next message" }
         const detail = isReturnToSenderReason(held)
           ? proactiveContentBlockGuidance(held)
           : `blocked: Teams refused this text as internal (${sent.reason}); rewrite it as plain words for them`
@@ -431,6 +432,15 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
     // them, never into a session only agents read (MCP) or one they must reopen (CLI).
     // Text the senses' content guard refuses goes nowhere, whichever chat is newest.
     const contentBlock = getProactiveInternalContentBlockReason(content)
+    if (isHeldForReturnReason(contentBlock)) {
+      try {
+        const { holdNoticeForReturn } = await import("../mind/pending")
+        holdNoticeForReturn(agentName, friendId, content)
+      } catch (error) {
+        return { status: "failed", detail: withCode(`the notice could not be kept for their return summary (${error instanceof Error ? error.message : String(error)}); nothing was sent`, "delivery-blocked") }
+      }
+      return { status: "queued", detail: "held for their return summary; they get it with other routine notices when they next message" }
+    }
     if (contentBlock) {
       return { status: "failed", detail: withCode(proactiveContentBlockGuidance(contentBlock), "delivery-blocked") }
     }

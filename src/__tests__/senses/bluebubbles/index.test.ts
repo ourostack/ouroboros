@@ -13766,6 +13766,57 @@ describe("drainAndSendPendingBlueBubbles", () => {
     }))
   })
 
+  describe("routine notices held for the return summary", () => {
+    const routine = "The nightly run finished. Nothing needed from you."
+    const clients = () => ({ sendText: mocks.sendText, editMessage: mocks.editMessage, setTyping: mocks.setTyping, markChatRead: mocks.markChatRead, checkHealth: mocks.checkHealth, repairEvent: mocks.repairEvent, getMessageText: mocks.getMessageText })
+    const store = () => ({ get: vi.fn().mockResolvedValue(makeFriend()), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn(), hasAnyFriends: vi.fn(), listAll: vi.fn() })
+
+    async function withHold(hold: (...args: unknown[]) => void, run: () => Promise<void>): Promise<void> {
+      vi.doMock("../../../mind/pending", async (original) => ({ ...await original<typeof import("../../../mind/pending")>(), holdNoticeForReturn: hold }))
+      try { await run() } finally { vi.doUnmock("../../../mind/pending") }
+    }
+
+    it("keeps a pending routine notice and does not send it", async () => {
+      const hold = vi.fn()
+      const file = writePendingFile("friend-uuid-1", "session", { from: "testagent", friendId: "friend-uuid-1", channel: "bluebubbles", key: "session", content: routine, timestamp: Date.now() })
+      await withHold(hold, async () => {
+        const bluebubbles = await import("../../../senses/bluebubbles")
+        const result = await bluebubbles.drainAndSendPendingBlueBubbles({ createClient: clients, createFriendStore: () => store() as any }, pendingRoot)
+        expect(result.skipped).toBe(1)
+      })
+      expect(hold).toHaveBeenCalledWith(expect.any(String), "friend-uuid-1", routine)
+      expect(mocks.sendText).not.toHaveBeenCalled()
+      expect(fs.existsSync(file)).toBe(false)
+    })
+
+    it("keeps the pending file and counts a failure when the notice cannot be held", async () => {
+      const file = writePendingFile("friend-uuid-1", "session", { from: "testagent", friendId: "friend-uuid-1", channel: "bluebubbles", key: "session", content: routine, timestamp: Date.now() })
+      await withHold(() => { throw new Error("disk full") }, async () => {
+        const bluebubbles = await import("../../../senses/bluebubbles")
+        const result = await bluebubbles.drainAndSendPendingBlueBubbles({ createClient: clients, createFriendStore: () => store() as any }, pendingRoot)
+        expect(result.failed).toBe(1)
+      })
+      expect(fs.existsSync(file)).toBe(true)
+    })
+
+    it("holds a proactive routine notice, or reports a send error when it cannot be held", async () => {
+      const send = async () => (await import("../../../senses/bluebubbles")).sendProactiveBlueBubblesMessageToSession(
+        { friendId: "friend-uuid-1", sessionKey: "chat:any;-;alice@icloud.com", text: routine },
+        { createClient: clients, createFriendStore: () => store() as any },
+      )
+      const hold = vi.fn()
+      await withHold((...args: unknown[]) => {
+        hold(...args)
+        if (hold.mock.calls.length > 1) throw new Error("disk full")
+      }, async () => {
+        expect(await send()).toEqual({ delivered: false, reason: "internal_content_blocked" })
+        expect(hold).toHaveBeenCalledWith(expect.any(String), "friend-uuid-1", routine)
+        expect(await send()).toEqual({ delivered: false, reason: "send_error" })
+      })
+      expect(mocks.sendText).not.toHaveBeenCalled()
+    })
+  })
+
   it("holds a pending untested claim and returns it to the agent's private runtime", async () => {
     const queue = vi.fn()
     vi.doMock("../../../mind/pending", async (original) => ({ ...await original<typeof import("../../../mind/pending")>(), queuePendingMessage: queue }))

@@ -25,6 +25,45 @@ describe("proactive content guard", () => {
     emitNervesEvent = nerves.emitNervesEvent as ReturnType<typeof vi.fn>
   })
 
+  describe("routine notices", () => {
+    const headsUp = "Heads-up, nothing to do yet: three Microsoft sign-ins on the mini have expired. When one is there, I'll send you a single passkey tap to approve on your phone."
+    const reboot = "The mini needed a forced reboot, and it's back. The last save point before the reboot was at 6:21 PT last night, so a few sessions may have lost work done after that. Nothing needed from you."
+
+    it("holds the heads-up that announces a later passkey tap", () => {
+      expect(getProactiveInternalContentBlockReason(headsUp)).toBe("routine_notice")
+    })
+
+    it("holds a plain routine status that needs no action", () => {
+      expect(getProactiveInternalContentBlockReason("The nightly run finished. Nothing needed from you.")).toBe("routine_notice")
+    })
+
+    it("sends the forced-reboot notice, a material warning about lost work", () => {
+      expect(getProactiveInternalContentBlockReason(reboot)).toBeNull()
+    })
+
+    it("sends a mixed text whose future-gate part rides with a real present ask", () => {
+      expect(getProactiveInternalContentBlockReason("Nothing to do yet on the sign-in; when it is ready I will send the prompt. Please approve the pending deployment now.")).toBeNull()
+    })
+
+    it("sends the later request for the passkey tap itself", () => {
+      expect(getProactiveInternalContentBlockReason("A Microsoft sign-in is ready. Please tap to approve the passkey on your phone.")).toBeNull()
+      expect(getProactiveInternalContentBlockReason("Nothing else is needed, but please approve the passkey on your phone now.")).toBeNull()
+    })
+
+    it("sends an update the person asked for", () => {
+      expect(getProactiveInternalContentBlockReason("As you asked, here's the status: the nightly run finished. Nothing needed from you.")).toBeNull()
+    })
+
+    it("sends a correction", () => {
+      expect(getProactiveInternalContentBlockReason("Correction: the earlier report was wrong. Nothing needed from you.")).toBeNull()
+    })
+
+    it("keeps a held notice out of the return-to-sender path and tells the sender it is held", () => {
+      expect(isReturnToSenderReason("routine_notice")).toBe(false)
+      expect(proactiveContentBlockGuidance("routine_notice")).toContain("held, not sent")
+    })
+  })
+
   describe("getProactiveInternalContentBlockReason", () => {
     // PR 447 patterns
     it("blocks raw XML meta markers like <think>", () => {

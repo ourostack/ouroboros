@@ -788,7 +788,9 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
     // A surface saved for a person's next message is picked up on their next
     // Telegram or voice turn too; agent channels (MCP, a2a) never take it.
     ...((channel === "telegram" || channel === "voice") && !options.disablePersistence
-      ? { drainDeferredReturns: (deferredFriendId: string) => drainDeferredReturns(agentName, deferredFriendId) }
+      ? {
+        drainDeferredReturns: (deferredFriendId: string) => drainDeferredReturns(agentName, deferredFriendId),
+      }
       : {}),
     runAgentOptions: {
       mcpManager,

@@ -20,7 +20,7 @@ import { createTraceId } from "../nerves"
 import { emitNervesEvent } from "../nerves/runtime"
 import { renderChatInteraction, resolveChatMessageRef, type ChatMessageRef } from "../heart/chat-interaction"
 import { recordSentMessage, sentMessageLookup } from "../heart/sent-message-ledger"
-import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked, isReturnToSenderReason, returnHeldProactiveMessage } from "./proactive-content-guard"
+import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked, isHeldForReturnReason, isReturnToSenderReason, returnHeldProactiveMessage } from "./proactive-content-guard"
 import { createTurnCoordinator, type SteeringFollowUp } from "../heart/turn-coordinator"
 import { getAgentRoot, getAgentName } from "../heart/identity"
 import { teamsInboundText, type TeamsActivityAttachment } from "./teams-attachments"
@@ -42,7 +42,7 @@ import { stampReplyingToText, type ReplyingToAuthor } from "../heart/orientation
 import { admitSessionActivity, SessionTransactionError, SessionTurnBusyError, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
 
 const teamsFailoverStates = new Map<string, FailoverState>()
-import { drainDeferredReturns, drainPending, getPendingDir } from "../mind/pending"
+import { claimHeldNotices, drainDeferredReturns, drainPending, getPendingDir, holdNoticeForReturn } from "../mind/pending"
 import { classifySteeringFollowUpEffect, type SteeringFollowUpEffect } from "./continuity"
 import { createTeamsImageSender, teamsImageFileSender, type TeamsImageAttachment } from "./teams-image"
 import { repeatEvery } from "./repeat-while"
@@ -1243,6 +1243,8 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
       enforceTrustGate,
       drainPending,
       drainDeferredReturns: (deferredFriendId) => drainDeferredReturns(agentName, deferredFriendId),
+      claimHeldNotices: (heldFriendId) => claimHeldNotices(agentName, heldFriendId),
+      confirmHeldNoticeDelivery: true,
       runAgent: async (msgs, cb, channel, sig, opts) => {
         consumingTeamsSteering.add(turnKey)
         try { return await runAgent(msgs, cb, channel, sig, {
@@ -1305,8 +1307,17 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
       return
     }
 
-    // Flush any remaining accumulated text at end of turn
-    await callbacks.flush()
+    // Flush any remaining accumulated text at end of turn. The held notices are settled only once this reached the
+    // person with a reply; a failed or empty delivery puts them back for the next message.
+    let delivered = false
+    try {
+      await callbacks.flush()
+      const finalReply = result.messages?.findLast((message) => message.role === "assistant")
+      delivered = typeof finalReply?.content === "string" && finalReply.content.trim().length > 0 && result.turnOutcome !== "superseded"
+    } finally {
+      if (delivered) result.heldNoticeDelivery?.confirm()
+      else result.heldNoticeDelivery?.release()
+    }
 
     // After the agent loop, check if any tool returned AUTH_REQUIRED and trigger signin.
     // This must happen after the stream is done so the OAuth card renders properly.
@@ -2104,6 +2115,13 @@ export async function sendProactiveTeamsMessageToSession(
       reason: internalContentBlockReason,
       source: "session_send",
     })
+        if (isHeldForReturnReason(internalContentBlockReason)) {
+      try {
+        holdNoticeForReturn(getAgentName(), params.friendId, params.text)
+      } catch {
+        return { delivered: false, reason: "send_error" }
+      }
+    }
     return { delivered: false, reason: "internal_content_blocked" }
   }
 
@@ -2269,6 +2287,15 @@ export async function drainAndSendPendingTeams(
 
     const internalBlockReason = getProactiveInternalContentBlockReason(messageText)
     if (internalBlockReason) {
+      if (isHeldForReturnReason(internalBlockReason)) {
+        // The pending file is the only copy: it goes only once the notice is kept.
+        try {
+          holdNoticeForReturn(getAgentName(), friendId, messageText)
+        } catch {
+          result.failed++
+          continue
+        }
+      }
       result.skipped++
       try { fs.unlinkSync(filePath) } catch { /* ignore */ }
       emitProactiveInternalContentBlocked({

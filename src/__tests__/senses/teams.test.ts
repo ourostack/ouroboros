@@ -4134,6 +4134,7 @@ describe("Teams adapter - session persistence", () => {
     parseSlashCommandFn?: any
     dispatchFn?: any
     teamsChannelConfig?: any
+    heldNoticeDelivery?: { confirm: () => void; release: () => void }
   } = {}) {
     const {
       runAgentFn = vi.fn().mockResolvedValue({ usage: undefined }),
@@ -6330,6 +6331,7 @@ describe("Teams adapter - pipeline integration (U7)", () => {
         usage: result.usage,
         sessionPath: session.sessionPath,
         messages: msgs,
+        ...(overrides.heldNoticeDelivery ? { heldNoticeDelivery: overrides.heldNoticeDelivery } : {}),
       }
     })
 
@@ -6625,6 +6627,26 @@ describe("Teams adapter - pipeline integration (U7)", () => {
     expect(typeof input.runAgent).toBe("function")
     expect(typeof input.postTurn).toBe("function")
     expect(typeof input.accumulateFriendTokens).toBe("function")
+  })
+
+  it("confirms held notices only after a reply was delivered, and puts them back when none was", async () => {
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const ctx = { signin: vi.fn(), aadObjectId: "aad-user-123", tenantId: "tenant-abc", displayName: "Test User" }
+
+    vi.resetModules()
+    const delivered = { confirm: vi.fn(), release: vi.fn() }
+    const replying = vi.fn().mockImplementation(async (msgs: any[]) => { msgs.push({ role: "assistant", content: "Welcome back. Meanwhile: the sign-ins expired." }); return { usage: undefined } })
+    mockPipelineDeps({ runAgentFn: replying, heldNoticeDelivery: delivered })
+    await (await import("../../senses/teams")).handleTeamsMessage("hello", mockStream as any, "conv-held-1", ctx)
+    expect(delivered.confirm).toHaveBeenCalledTimes(1)
+    expect(delivered.release).not.toHaveBeenCalled()
+
+    vi.resetModules()
+    const silent = { confirm: vi.fn(), release: vi.fn() }
+    mockPipelineDeps({ heldNoticeDelivery: silent })
+    await (await import("../../senses/teams")).handleTeamsMessage("hello", mockStream as any, "conv-held-2", ctx)
+    expect(silent.confirm).not.toHaveBeenCalled()
+    expect(silent.release).toHaveBeenCalledTimes(1)
   })
 
   it("passes friendStore to pipeline", async () => {
