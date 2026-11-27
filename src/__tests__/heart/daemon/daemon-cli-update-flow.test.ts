@@ -245,6 +245,68 @@ describe("ouro up: CLI update flow", () => {
     expect(deps.reExecFromNewVersion).toHaveBeenCalledWith(["up"])
   })
 
+  it("leaves updating to a self-update pass that is already running", async () => {
+    // 2026-11-27: the pass restarted the daemon with `ouro up`, that `ouro up` installed a release newer than the
+    // pass's, and the pass then read the newer daemon as a failure and rolled back.
+    const deps = makeDeps({
+      acquireSelfUpdateLock: vi.fn(() => null),
+      checkForCliUpdate: vi.fn(async () => ({ available: true, latestVersion: "0.1.0-alpha.90" })),
+      readVersionIntent: vi.fn(() => ({ schemaVersion: 1, mode: "latest", targetVersion: "0.1.0-alpha.80" })),
+      installCliVersion: vi.fn(async () => {}),
+      activateCliVersion: vi.fn(),
+      writeVersionIntent: vi.fn(),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      reExecFromNewVersion: vi.fn() as unknown as (args: string[]) => never,
+    })
+
+    await runOuroCli(["up"], deps)
+
+    expect(deps.checkForCliUpdate).not.toHaveBeenCalled()
+    expect(deps.installCliVersion).not.toHaveBeenCalled()
+    expect(deps.activateCliVersion).not.toHaveBeenCalled()
+    expect(deps.writeVersionIntent).not.toHaveBeenCalled()
+    expect(deps.reExecFromNewVersion).not.toHaveBeenCalled()
+  })
+
+  it("holds the self-update lock while it installs and frees it before re-executing", async () => {
+    const release = vi.fn()
+    const reExec = vi.fn(() => { throw new Error("__REEXEC__") }) as unknown as (args: string[]) => never
+    const deps = makeDeps({
+      acquireSelfUpdateLock: vi.fn(() => release),
+      checkForCliUpdate: vi.fn(async () => ({ available: true, latestVersion: "0.1.0-alpha.90" })),
+      readVersionIntent: vi.fn(() => ({ schemaVersion: 1, mode: "latest", targetVersion: "0.1.0-alpha.80" })),
+      installCliVersion: vi.fn(async () => {}),
+      activateCliVersion: vi.fn(),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      installOuroCommand: vi.fn(successfulLauncherInstall),
+      writeVersionIntent: vi.fn(),
+      reExecFromNewVersion: reExec,
+    })
+
+    await expect(runOuroCli(["up"], deps)).rejects.toThrow("__REEXEC__")
+
+    expect(release).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(deps.acquireSelfUpdateLock!).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(deps.installCliVersion!).mock.invocationCallOrder[0],
+    )
+    expect(release.mock.invocationCallOrder[0]).toBeGreaterThan(vi.mocked(deps.activateCliVersion!).mock.invocationCallOrder[0])
+    expect(release.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(reExec).mock.invocationCallOrder[0])
+  })
+
+  it("frees the self-update lock when there is nothing to install", async () => {
+    const release = vi.fn()
+    const deps = makeDeps({
+      acquireSelfUpdateLock: vi.fn(() => release),
+      checkForCliUpdate: vi.fn(async () => ({ available: false, latestVersion: "0.1.0-alpha.80" })),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      installOuroCommand: vi.fn(successfulLauncherInstall),
+    })
+
+    await runOuroCli(["up"], deps)
+
+    expect(release).toHaveBeenCalledTimes(1)
+  })
+
   it("does not install when registry returns same version", async () => {
     const deps = makeDeps({
       checkForCliUpdate: vi.fn(async () => ({ available: false, latestVersion: "0.1.0-alpha.80" })),

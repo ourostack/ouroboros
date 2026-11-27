@@ -1,5 +1,5 @@
 import { emitNervesEvent } from "../../nerves/runtime"
-import { compareCliVersions } from "./ouro-version-manager"
+import { cliVersionAtLeast, compareCliVersions } from "./ouro-version-manager"
 import type { ReleaseLookup, ReleaseSourceName } from "./release-sources"
 import type { SelfUpdateOutcome, SelfUpdateState } from "./update-state"
 import type { VersionIntent } from "./version-intent"
@@ -21,8 +21,11 @@ import type { VersionIntent } from "./version-intent"
  *  4. Activate it. If the daemon was running, restart it on the new version
  *     and check that it answers; otherwise leave the daemon stopped.
  *  5. On a failed check, reactivate the previous version, pin it with reason
- *     "auto-rollback", restart the daemon on it, and never retry the failed
- *     version.
+ *     "auto-rollback", and never retry the failed version. Restart the daemon
+ *     on the previous version only when the failed one is what runs (or
+ *     nothing answers): a rollback never stops a daemon that answers on
+ *     another version, and a daemon answering on a newer release than the
+ *     target is a success, not a failure (2026-11-27).
  */
 export const PIN_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
@@ -41,8 +44,11 @@ export interface SelfUpdateDeps {
   isDaemonRunning: () => Promise<boolean>
   /** The version a running daemon reports, or null when none answers. */
   runningDaemonVersion: () => Promise<string | null>
-  /** Restart a running daemon on the active version and confirm it answers with that version. */
-  restartDaemon: (expectedVersion: string) => Promise<{ ok: boolean; detail?: string }>
+  /**
+   * Restart a running daemon on the active version and judge it by health: it passes when it comes up healthy on
+   * that version or a newer one. `runningVersion` is what it answered with, when it answered.
+   */
+  restartDaemon: (expectedVersion: string) => Promise<{ ok: boolean; detail?: string; runningVersion?: string | null }>
   /**
    * True when a runtime replacement booted the daemon's launchd label out and
    * died before loading the new plist, so nothing will start the daemon again.
@@ -142,16 +148,30 @@ async function runLocked(deps: SelfUpdateDeps): Promise<SelfUpdateResult> {
 
   /**
    * Restart the daemon on `target`. On a failed health check, never retry
-   * `target`, pin and reactivate `fallback`, and restart on it. Returns the
-   * rolled-back result, or null when `target` came up healthy.
+   * `target` and pin and reactivate `fallback`; restart on it only when the
+   * daemon runs `target` or does not answer. Returns the rolled-back result,
+   * or the version the daemon is healthy on.
    */
-  const restartOrRollBack = async (target: string, fallback: string | null, source?: ReleaseSourceName): Promise<SelfUpdateResult | null> => {
+  const restartOrRollBack = async (target: string, fallback: string | null, source?: ReleaseSourceName): Promise<SelfUpdateResult | { healthyOn: string }> => {
     const health = await deps.restartDaemon(target)
-    if (health.ok) return null
+    if (health.ok) return { healthyOn: health.runningVersion ?? target }
+    const why = health.detail ?? "no detail"
+    const answering = await deps.runningDaemonVersion()
+    if (answering && answering !== target && cliVersionAtLeast(answering, target)) {
+      // A newer release came up while this pass waited on its own: the machine is ahead of the target, not broken.
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.self_update_newer_release_running",
+        message: "the daemon came up on a newer release than the one this pass installed; counting it as healthy",
+        meta: { target, running: answering, detail: why },
+      })
+      return { healthyOn: answering }
+    }
     failedVersions.push(target)
     if (!fallback) {
       return finish("rolled-back", {
-        summary: `${target} did not come up healthy (${health.detail ?? "no detail"}) and there is no previous version to return to`,
+        summary: `${target} did not come up healthy (${why}) and there is no previous version to return to`,
         latestVersion: target,
         source,
       })
@@ -164,9 +184,17 @@ async function runLocked(deps: SelfUpdateDeps): Promise<SelfUpdateResult> {
       reason: "auto-rollback",
     })
     deps.activate(fallback)
+    if (answering && answering !== target) {
+      // The failed release is not what runs, so stopping the daemon would only take a healthy one down.
+      return finish("rolled-back", {
+        summary: `${target} did not come up healthy (${why}); rolled back to ${fallback} and left the daemon running on ${answering}`,
+        latestVersion: target,
+        source,
+      })
+    }
     const restored = await deps.restartDaemon(fallback)
     return finish("rolled-back", {
-      summary: `${target} did not come up healthy (${health.detail ?? "no detail"}); rolled back to ${fallback}${restored.ok ? "" : ` but the daemon did not answer on it either (${restored.detail ?? "no detail"})`}`,
+      summary: `${target} did not come up healthy (${why}); rolled back to ${fallback}${restored.ok ? "" : ` but the daemon did not answer on it either (${restored.detail ?? "no detail"})`}`,
       latestVersion: target,
       source,
     })
@@ -212,9 +240,12 @@ async function runLocked(deps: SelfUpdateDeps): Promise<SelfUpdateResult> {
     // A pass killed between activation and restart leaves the old daemon
     // running; finish the job instead of reporting "current" forever.
     const daemonVersion = deps.isDevMode() ? null : await deps.runningDaemonVersion()
-    if (daemonVersion && daemonVersion !== currentVersion) {
-      const restart = await restartOrRollBack(currentVersion, daemonVersion)
-      if (restart) return restart
+    // A daemon ahead of CurrentVersion was updated by someone else and stays, unless it runs a release that failed here.
+    const daemonNeedsRestart = daemonVersion !== null && daemonVersion !== currentVersion
+      && (!cliVersionAtLeast(daemonVersion, currentVersion) || failedVersions.includes(daemonVersion))
+    if (daemonVersion && daemonNeedsRestart) {
+      const restart = await restartOrRollBack(currentVersion, failedVersions.includes(daemonVersion) ? null : daemonVersion)
+      if (!("healthyOn" in restart)) return restart
       return finish("updated", {
         summary: `daemon was still running ${daemonVersion}; restarted it on ${currentVersion} and it is healthy`,
         latestVersion: latest,
@@ -317,12 +348,15 @@ async function runLocked(deps: SelfUpdateDeps): Promise<SelfUpdateResult> {
   }
   deps.writeIntent({ schemaVersion: 1, mode: "latest", targetVersion: latest })
   deps.activate(latest)
+  let healthyOn = latest
   if (daemonWasRunning) {
     const restart = await restartOrRollBack(latest, currentVersion, installSource)
-    if (restart) return restart
+    if (!("healthyOn" in restart)) return restart
+    healthyOn = restart.healthyOn
   }
+  const healthy = healthyOn === latest ? "; daemon restarted and healthy" : `; daemon restarted and healthy on ${healthyOn}`
   return finish("updated", {
-    summary: `updated ${currentVersion ?? "unknown"} -> ${latest} via ${installSource}${daemonWasRunning ? "; daemon restarted and healthy" : "; daemon was not running and was left stopped"}`,
+    summary: `updated ${currentVersion ?? "unknown"} -> ${latest} via ${installSource}${daemonWasRunning ? healthy : "; daemon was not running and was left stopped"}`,
     latestVersion: latest,
     source: installSource,
   })

@@ -8402,9 +8402,24 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     // ── versioned CLI update check ──
     const versionIntent = deps.readVersionIntent?.() ?? null
     const pinnedUpdate = versionIntent?.mode === "pinned" && !command.latest
+    // The update lock keeps this `ouro up` from installing a release in the middle of a self-update pass, including
+    // the pass's own `ouro up` restart of the daemon (2026-11-27: that restart installed a newer release and the pass
+    // rolled back the healthy daemon running it).
+    const releaseUpdateLock = deps.checkForCliUpdate && !pinnedUpdate && deps.acquireSelfUpdateLock
+      ? deps.acquireSelfUpdateLock()
+      : undefined
     if (deps.checkForCliUpdate && pinnedUpdate) {
       progress.startPhase("update check")
       progress.completePhase("update check", `pinned to ${versionIntent.targetVersion}`)
+    } else if (deps.checkForCliUpdate && releaseUpdateLock === null) {
+      progress.startPhase("update check")
+      progress.completePhase("update check", "skipped: another update is running")
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.cli_update_check_skipped_for_update_in_progress",
+        message: "left updating to the self-update pass or ouro up that holds the update lock",
+        meta: {},
+      })
     } else if (deps.checkForCliUpdate) {
       progress.startPhase("update check")
       progress.updateDetail(`current runtime: ${getPackageVersion()}\nchecking npm registry\ncontinuing startup if it stays quiet`)
@@ -8477,6 +8492,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         })
       }
       /* v8 ignore stop */
+      releaseUpdateLock?.()
       if (pendingReExec) {
         progress.end()
         deps.reExecFromNewVersion!(args)

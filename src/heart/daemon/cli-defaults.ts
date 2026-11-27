@@ -32,6 +32,7 @@ import { getPackageVersion } from "../../mind/bundle-manifest"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "../versioning/ouro-bot-global-installer"
 import { readVersionIntent as defaultReadVersionIntent, writeVersionIntent as defaultWriteVersionIntent } from "../versioning/version-intent"
 import { ensureDefaultUpdaterAgent, isDefaultUpdaterAgentInstalled } from "../versioning/self-update-defaults"
+import { acquireSelfUpdateLock } from "../versioning/self-update-lock"
 import { formatUpdateStatusLine, readUpdateState } from "../versioning/update-state"
 import { readHostSelfUpdateConfig, writeHostSelfUpdateConfig } from "../versioning/host-self-update"
 import { pruneDaemonLogs as defaultPruneDaemonLogs } from "./logs-prune"
@@ -973,6 +974,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
         distTag: CLI_UPDATE_DIST_TAG,
       })
     },
+    acquireSelfUpdateLock: () => acquireSelfUpdateLock(getOuroCliHome()),
     readVersionIntent: () => defaultReadVersionIntent(),
     writeVersionIntent: (intent) => defaultWriteVersionIntent(intent),
     installCliVersion: async (version: string) => {

@@ -1395,6 +1395,9 @@ describe("daemon CLI default dependency branches", () => {
       rmSync: vi.fn(),
       openSync: vi.fn(() => 99),
       closeSync: vi.fn(),
+      // `ouro up` takes the self-update lock before its update check.
+      mkdirSync: vi.fn(),
+      writeSync: vi.fn(),
     }))
     const { createDefaultOuroCliDeps, runOuroCli } = await import("../../../heart/daemon/daemon-cli")
 

@@ -9,9 +9,10 @@ import { DEFAULT_DAEMON_SOCKET_PATH, checkDaemonSocketAlive, sendDaemonCommand }
 import { DAEMON_PLIST_LABEL } from "../daemon/launchd"
 import { HANDOFF_HEALTH_REFUSED_EXIT_CODE, handoffSnapshot, judgeRestartAfterUpFailure, unsettledReason, type HandoffSnapshot } from "../daemon/handoff-blockers"
 import { isRuntimeReplacementStranded, runtimeReplacementMarkerPath } from "../daemon/runtime-replacement-handoff"
-import { activateVersion, getCurrentVersion, getOuroCliHome, pruneOldVersions, validateInstalledVersionForActivation } from "./ouro-version-manager"
+import { activateVersion, cliVersionAtLeast, getCurrentVersion, getOuroCliHome, pruneOldVersions, validateInstalledVersionForActivation } from "./ouro-version-manager"
 import { installRelease, lookupLatestRelease, selfUpdateE2eOverrides, type ReleaseSourceDeps } from "./release-sources"
 import type { SelfUpdateDeps } from "./self-update"
+import { acquireSelfUpdateLock, isSelfUpdateLockHeld } from "./self-update-lock"
 import { readUpdateState, writeUpdateState } from "./update-state"
 import { chooseUpdaterNodePath, ensureUpdaterAgent, isHostUserHome, restoreUpdaterAgentIfMissing, UPDATER_PLIST_LABEL, type UpdaterAgentRestoreResult, type UpdaterAgentResult } from "./updater-launchd"
 import { readVersionIntent, writeVersionIntent } from "./version-intent"
@@ -105,56 +106,7 @@ const EMPTY_HANDOFF_SNAPSHOT: HandoffSnapshot = { blockers: [], workers: [], hea
 
 export const releaseSourceDeps: ReleaseSourceDeps = { fetchJson, execFile: execFileText, ...selfUpdateE2eOverrides(process.env) }
 
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
-
-function lockPath(cliHome: string): string {
-  return path.join(cliHome, "self-update.lock")
-}
-
-/** The pid holding the update lock when that process is still alive. */
-function liveLockOwner(cliHome: string): number | null {
-  try {
-    const pid = Number.parseInt(fs.readFileSync(lockPath(cliHome), "utf8"), 10)
-    return Number.isFinite(pid) && pid > 0 && isPidAlive(pid) ? pid : null
-  } catch {
-    return null
-  }
-}
-
-/** True when another live process is in the middle of an update pass. */
-export function isSelfUpdateLockHeld(cliHome: string): boolean {
-  const owner = liveLockOwner(cliHome)
-  return owner !== null && owner !== process.pid
-}
-
-function acquireLock(cliHome: string): (() => void) | null {
-  const file = lockPath(cliHome)
-  fs.mkdirSync(cliHome, { recursive: true })
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const fd = fs.openSync(file, "wx", 0o600)
-      fs.writeSync(fd, `${process.pid}\n`)
-      fs.closeSync(fd)
-      return () => {
-        try { fs.unlinkSync(file) } catch { /* already released */ }
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-      // A lock is stale only when its owner is gone; a long install by a live
-      // owner keeps it, however long it takes.
-      if (liveLockOwner(cliHome) !== null) return null
-      try { fs.unlinkSync(file) } catch { /* raced with the owner releasing it */ }
-    }
-  }
-  return null
-}
+export { isSelfUpdateLockHeld }
 
 function versionEntry(cliHome: string, version: string): string {
   return path.join(cliHome, "versions", version, "node_modules", "@ouro.bot", "cli", "dist", "heart", "daemon", "ouro-entry.js")
@@ -214,14 +166,16 @@ export function createDefaultSelfUpdateDeps(options: { homeDir?: string; socketP
       }
       const deadline = Date.now() + DAEMON_HEALTH_WAIT_MS
       let seen: string | null = null
+      // A newer release can come up in place of the expected one (someone else updated meanwhile); that is healthy too.
+      const answeredOnTarget = (version: string | null): version is string => version !== null && cliVersionAtLeast(version, expectedVersion)
       while (Date.now() < deadline) {
         seen = await runningDaemonVersion(socketPath)
-        if (seen === expectedVersion) break
+        if (answeredOnTarget(seen)) break
         await new Promise((resolve) => setTimeout(resolve, 2_000))
       }
       if (upFailure !== null) {
         let after: HandoffSnapshot | null = null
-        if (upRefusedOnHandoffHealth && seen === expectedVersion) {
+        if (upRefusedOnHandoffHealth && answeredOnTarget(seen)) {
           // Judge only a settled status: one read before health checks run or workers register hides problems.
           const settleDeadline = Date.now() + DAEMON_HEALTH_WAIT_MS
           for (;;) {
@@ -231,10 +185,10 @@ export function createDefaultSelfUpdateDeps(options: { homeDir?: string; socketP
             await new Promise((resolve) => setTimeout(resolve, 2_000))
           }
         }
-        return judgeRestartAfterUpFailure({ upFailure, upRefusedOnHandoffHealth, expectedVersion, seenVersion: seen, before, after })
+        return { ...judgeRestartAfterUpFailure({ upFailure, upRefusedOnHandoffHealth, expectedVersion, seenVersion: seen, before, after }), runningVersion: seen }
       }
-      if (seen === expectedVersion) return { ok: true }
-      return { ok: false, detail: seen ? `daemon answered with ${seen}, expected ${expectedVersion}` : "daemon did not answer after ouro up" }
+      if (answeredOnTarget(seen)) return { ok: true, runningVersion: seen }
+      return { ok: false, runningVersion: seen, detail: seen ? `daemon answered with ${seen}, expected ${expectedVersion} or newer` : "daemon did not answer after ouro up" }
     },
     isDevMode: () => fs.existsSync(path.join(cliHome, "dev-config.json")),
     isDaemonReplacementStranded: () => {
@@ -256,7 +210,7 @@ export function createDefaultSelfUpdateDeps(options: { homeDir?: string; socketP
         },
       })
     },
-    acquireLock: () => acquireLock(cliHome),
+    acquireLock: () => acquireSelfUpdateLock(cliHome),
     diskSpace: () => {
       try {
         const stats = fs.statfsSync(cliHome)

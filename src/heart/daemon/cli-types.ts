@@ -246,6 +246,11 @@ export interface OuroCliDeps {
    */
   readMailroomRegistry?: (config: MailroomRuntimeConfig) => Promise<MailroomRegistry>
   checkForCliUpdate?: () => Promise<CheckForUpdateResult>
+  /**
+   * Takes the machine's self-update lock for `ouro up`'s update check, or returns null while a self-update pass (or
+   * another `ouro up`) holds it; `ouro up` then leaves updating to that holder.
+   */
+  acquireSelfUpdateLock?: () => (() => void) | null
   readVersionIntent?: () => VersionIntent | null
   writeVersionIntent?: (intent: VersionIntent) => void
   updateCheckTimeoutMs?: number

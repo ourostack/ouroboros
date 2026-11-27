@@ -319,6 +319,18 @@ export function activateVersion(version: string, deps: Pick<OuroVersionManagerDe
  * any version that doesn't match the pattern (so unexpected version
  * formats sort consistently rather than throwing).
  */
+/**
+ * True when `version` is `floor` or a release after it. Anything that cannot be
+ * ordered by release number (such as the "unknown" a daemon shows when it
+ * reports no version) is never taken for a newer release.
+ */
+export function cliVersionAtLeast(version: string, floor: string): boolean {
+  if (version === floor) return true
+  const versionMatch = /alpha\.(\d+)$/.exec(version)
+  const floorMatch = /alpha\.(\d+)$/.exec(floor)
+  return Boolean(versionMatch && floorMatch && compareCliVersions(version, floor) > 0)
+}
+
 export function compareCliVersions(a: string, b: string): number {
   const aMatch = /alpha\.(\d+)/.exec(a)
   const bMatch = /alpha\.(\d+)/.exec(b)

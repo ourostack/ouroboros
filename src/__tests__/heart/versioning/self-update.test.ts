@@ -135,6 +135,58 @@ describe("runSelfUpdate", () => {
     expect((await runSelfUpdate(bare.deps)).summary).toBe("0.1.0-alpha.896 did not come up healthy (no detail) and there is no previous version to return to")
   })
 
+  it("counts a daemon that came up on a newer release than the target as healthy, not as a failure", async () => {
+    // 2026-11-27: the pass installed 1710, a newer 1711 came up while it waited, and the pass called that a failure,
+    // marked 1710 failed, pinned 1704 and stopped the healthy 1711 daemon.
+    const m = machine({ current: "0.1.0-alpha.1704", latest: "0.1.0-alpha.1710", daemonRunning: true })
+    vi.mocked(m.deps.restartDaemon).mockResolvedValueOnce({ ok: false, detail: "daemon answered with 0.1.0-alpha.1711, expected 0.1.0-alpha.1710" })
+    vi.mocked(m.deps.runningDaemonVersion).mockResolvedValue("0.1.0-alpha.1711")
+
+    const result = await runSelfUpdate(m.deps)
+
+    expect(result.outcome).toBe("updated")
+    expect(result.summary).toBe("updated 0.1.0-alpha.1704 -> 0.1.0-alpha.1710 via github; daemon restarted and healthy on 0.1.0-alpha.1711")
+    expect(m.deps.restartDaemon).toHaveBeenCalledTimes(1)
+    expect(m.intent).toEqual({ schemaVersion: 1, mode: "latest", targetVersion: "0.1.0-alpha.1710" })
+    expect(m.state).toMatchObject({ outcome: "updated", failedVersions: [], consecutiveFailures: 0 })
+  })
+
+  it("names the newer version a healthy restart came up on", async () => {
+    const m = machine({ daemonRunning: true })
+    vi.mocked(m.deps.restartDaemon).mockResolvedValueOnce({ ok: true, runningVersion: "0.1.0-alpha.897" })
+
+    const result = await runSelfUpdate(m.deps)
+
+    expect(result.summary).toBe("updated 0.1.0-alpha.805 -> 0.1.0-alpha.896 via github; daemon restarted and healthy on 0.1.0-alpha.897")
+  })
+
+  it("rolls back without stopping a daemon that still answers on another version", async () => {
+    const m = machine({ daemonRunning: true })
+    vi.mocked(m.deps.restartDaemon).mockResolvedValueOnce({ ok: false, detail: "ouro up exited 1" })
+    vi.mocked(m.deps.runningDaemonVersion).mockResolvedValue("0.1.0-alpha.805")
+
+    const result = await runSelfUpdate(m.deps)
+
+    expect(result.outcome).toBe("rolled-back")
+    expect(result.summary).toBe("0.1.0-alpha.896 did not come up healthy (ouro up exited 1); rolled back to 0.1.0-alpha.805 and left the daemon running on 0.1.0-alpha.805")
+    expect(m.deps.restartDaemon).toHaveBeenCalledTimes(1)
+    expect(m.current).toBe("0.1.0-alpha.805")
+    expect(m.intent).toMatchObject({ mode: "pinned", targetVersion: "0.1.0-alpha.805", reason: "auto-rollback" })
+    expect(m.state?.failedVersions).toEqual(["0.1.0-alpha.896"])
+  })
+
+  it("restarts on the previous version when the failed release itself is what answers", async () => {
+    const m = machine({ daemonRunning: true })
+    vi.mocked(m.deps.restartDaemon).mockResolvedValueOnce({ ok: false, detail: "new since the update: sense down" })
+    vi.mocked(m.deps.runningDaemonVersion).mockResolvedValue("0.1.0-alpha.896")
+
+    const result = await runSelfUpdate(m.deps)
+
+    expect(result.outcome).toBe("rolled-back")
+    expect(m.deps.restartDaemon).toHaveBeenLastCalledWith("0.1.0-alpha.805")
+    expect(m.deps.restartDaemon).toHaveBeenCalledTimes(2)
+  })
+
   it("rejects a release that fails its smoke test without activating it", async () => {
     const m = machine()
     vi.mocked(m.deps.smokeTest).mockResolvedValueOnce({ ok: false, detail: "--version printed \"boom\"" })
@@ -392,6 +444,30 @@ describe("runSelfUpdate", () => {
     expect(m.current).toBe("0.1.0-alpha.804")
     expect(m.intent).toMatchObject({ mode: "pinned", targetVersion: "0.1.0-alpha.804", reason: "auto-rollback" })
     expect(m.state?.failedVersions).toEqual(["0.1.0-alpha.805"])
+  })
+
+  it("leaves a daemon running a newer release than CurrentVersion alone", async () => {
+    const m = machine({ current: "0.1.0-alpha.1704", latest: "0.1.0-alpha.1704", daemonVersion: "0.1.0-alpha.1711" })
+
+    const result = await runSelfUpdate(m.deps)
+
+    expect(result.outcome).toBe("current")
+    expect(m.deps.restartDaemon).not.toHaveBeenCalled()
+    expect(m.current).toBe("0.1.0-alpha.1704")
+  })
+
+  it("moves a daemon off a newer release that already failed on this machine", async () => {
+    const m = machine({
+      current: "0.1.0-alpha.805",
+      latest: "0.1.0-alpha.805",
+      daemonVersion: "0.1.0-alpha.896",
+      state: { schemaVersion: 1, lastRunAt: new Date(NOW).toISOString(), outcome: "rolled-back", currentVersion: "0.1.0-alpha.805", failedVersions: ["0.1.0-alpha.896"], consecutiveFailures: 1 },
+    })
+
+    const result = await runSelfUpdate(m.deps)
+
+    expect(result.outcome).toBe("updated")
+    expect(m.deps.restartDaemon).toHaveBeenCalledWith("0.1.0-alpha.805")
   })
 
   it("leaves a matching or dev-mode daemon alone when current", async () => {

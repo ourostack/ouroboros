@@ -1,4 +1,5 @@
 import { emitNervesEvent } from "../../nerves/runtime"
+import { cliVersionAtLeast } from "../versioning/ouro-version-manager"
 import type { StatusPayload } from "./cli-render"
 
 /** One thing in `ouro status` that stops `ouro up` handing off: `key` names it, `text` says what is wrong now. */
@@ -101,14 +102,14 @@ export interface RestartAfterUpFailureInput {
  * `ouro up` refuses while any sense is down, so one sense's outage (BlueBubbles while its macOS account is logged
  * out) rolled back every release for a day and marked each one failed (2026-10-24, and alpha.1559 to alpha.1586 on
  * 2026-11-25). A release is only at fault for what it broke: it passes when `ouro up` failed only on the final
- * health check, the daemon answers on it with a settled status, and every blocker it reports was already there,
+ * health check, the daemon answers on it (or on a newer release) with a settled status, and every blocker it reports was already there,
  * at the same severity, before the update.
  */
 export function judgeRestartAfterUpFailure(input: RestartAfterUpFailureInput): { ok: boolean; detail: string } {
   if (!input.upRefusedOnHandoffHealth) {
     return { ok: false, detail: input.upFailure }
   }
-  if (input.seenVersion !== input.expectedVersion) {
+  if (input.seenVersion === null || !cliVersionAtLeast(input.seenVersion, input.expectedVersion)) {
     const answered = input.seenVersion ? `; the daemon answered with ${input.seenVersion}` : "; the daemon did not answer"
     return { ok: false, detail: `${input.upFailure}${answered}` }
   }
@@ -135,7 +136,7 @@ export function judgeRestartAfterUpFailure(input: RestartAfterUpFailureInput): {
   return {
     ok: true,
     detail: carried.length > 0
-      ? `came up on ${input.expectedVersion}; still blocked by what was already wrong before the update: ${carried.join("; ")}`
-      : `came up on ${input.expectedVersion}`,
+      ? `came up on ${input.seenVersion}; still blocked by what was already wrong before the update: ${carried.join("; ")}`
+      : `came up on ${input.seenVersion}`,
   }
 }
