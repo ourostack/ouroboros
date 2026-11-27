@@ -217,7 +217,10 @@ export interface TeamsCallbackOptions {
 
 // Extended callbacks type that includes flush() for chunked streaming.
 // flush() is async (awaits sendMessage for content after the first emit).
-export type TeamsCallbacksWithFlush = ChannelCallbacks & { flush(): void | Promise<void> }
+// deliveryState() reports whether every reply chunk was acknowledged by the transport: "failed" when any chunk was lost,
+// "unconfirmed" when a chunk had no acknowledgement to await (or none was sent), else "confirmed".
+export type TeamsDeliveryState = "confirmed" | "failed" | "unconfirmed"
+export type TeamsCallbacksWithFlush = ChannelCallbacks & { flush(): void | Promise<void>; deliveryState(): TeamsDeliveryState }
 
 // Create Teams-specific callbacks for the agent loop.
 // The SDK handles cumulative text, debouncing (500ms), and the streaming
@@ -336,6 +339,19 @@ export function createTeamsCallbacks(
   // Handle the result of a stream call: if it returns a Promise (the Teams SDK
   // does async HTTP under the hood even though the interface types it as void),
   // catch its rejection so we detect a dead stream and abort the agent loop.
+  // Delivery ledger: only a transport acknowledgement counts as delivered.
+  let acked = 0
+  let unacked = 0
+  let lost = 0
+  const inflight: Promise<unknown>[] = []
+  function track(result: unknown): void {
+    if (result && typeof (result as { then?: Function }).then === "function") {
+      inflight.push((result as Promise<unknown>).then(() => { acked++ }, () => { lost++ }))
+    } else {
+      unacked++
+    }
+  }
+
   function catchAsync(result: unknown): void {
     if (result && typeof (result as { catch?: Function }).catch === "function") {
       (result as Promise<unknown>).catch((err) => markStopped("stream-async", err))
@@ -345,13 +361,15 @@ export function createTeamsCallbacks(
   // Safely emit a text delta to the stream with AI labels.
   // On error (e.g. 403 from Teams stop button), abort the controller.
   function safeEmit(text: string): void {
-    /* v8 ignore next -- defensive guard: stopped set by prior 403; tested via flush abort path @preserve */
-    if (stopped) return
+    if (stopped) { lost++; return }
     try {
-      catchAsync(stream.emit(streamChunk(text)))
+      const emitted: unknown = stream.emit(streamChunk(text))
+      catchAsync(emitted)
+      track(emitted)
       streamHasContent = true
       totalEmitted += text.length
     } catch (err) {
+      lost++
       markStopped("safeEmit", err)
     }
   }
@@ -370,6 +388,9 @@ export function createTeamsCallbacks(
       if (result && typeof (result as { then?: Function }).then === "function") {
         awaitingTransport = true
         await (result as Promise<unknown>)
+        acked++
+      } else {
+        unacked++
       }
       return true
     } catch (err) {
@@ -394,6 +415,9 @@ export function createTeamsCallbacks(
       if (result && typeof (result as { then?: Function }).then === "function") {
         awaitingTransport = true
         await (result as Promise<unknown>)
+        acked++
+      } else {
+        unacked++
       }
       return true
     } catch (error) {
@@ -425,12 +449,14 @@ export function createTeamsCallbacks(
   let sendChain = Promise.resolve()
   let sendChainBusy = false
   function safeSend(text: string): void {
-    if (stopped || !sendMessage) return
+    if (stopped || !sendMessage) { lost++; return }
     if (!sendChainBusy) {
       // Chain is idle -- start the send synchronously and mark busy
       sendChainBusy = true
       try {
-        sendChain = sendMessage(text).catch((err) => markStopped("send", err)).finally(() => { sendChainBusy = false })
+        const sent = sendMessage(text)
+        track(sent)
+        sendChain = sent.catch((err) => markStopped("send", err)).finally(() => { sendChainBusy = false })
       } catch (err) {
         sendChainBusy = false
         markStopped("send", err)
@@ -438,8 +464,10 @@ export function createTeamsCallbacks(
     } else {
       // Chain is busy -- queue onto the existing chain
       sendChain = sendChain.then(() => {
-        if (stopped) return
-        return sendMessage(text)
+        if (stopped) { lost++; return }
+        const sent = sendMessage(text)
+        track(sent)
+        return sent
       }).catch((err) => markStopped("send-queued", err))
     }
   }
@@ -564,6 +592,7 @@ export function createTeamsCallbacks(
       if (!delivered && sendMessage) {
         try {
           await sendMessage(trimmed)
+          acked++
           delivered = true
           lastError = null
         } catch (err) {
@@ -644,6 +673,7 @@ export function createTeamsCallbacks(
         safeSend(msg)
       }
     },
+    deliveryState: () => lost > 0 ? "failed" : unacked > 0 || acked === 0 ? "unconfirmed" : "confirmed",
     flush: async () => {
       stopFlushTimer()
       stopPhraseRotation()
@@ -666,16 +696,21 @@ export function createTeamsCallbacks(
           // Stream is dead (not from finalization) — fall back to sendMessage; split on failure as recovery.
           try {
             await sendMessage(text)
+            acked++
           } catch (error) {
             // A lost acknowledgement is not a rejection. Only a definite size rejection permits a smaller retry.
             if (!isTeamsSizeRejection(error) || text.length <= RECOVERY_CHUNK_SIZE) throw error
             const chunks = splitMessage(text, RECOVERY_CHUNK_SIZE)
-            for (const chunk of chunks) await sendMessage(chunk)
+            for (const chunk of chunks) { await sendMessage(chunk); acked++ }
           }
+        } else if (stopped && !sendMessage) {
+          lost++
         }
       } else if (!streamHasContent && !options?.suppressEmptyStreamMessage) {
         safeEmit("(completed with tool calls only — no text response)")
       }
+      await sendChain
+      await Promise.all(inflight)
       emitNervesEvent({
         component: "senses",
         event: "teams.flush_done",
@@ -1308,12 +1343,14 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     }
 
     // Flush any remaining accumulated text at end of turn. The held notices are settled only once this reached the
-    // person with a reply; a failed or empty delivery puts them back for the next message.
+    // person with a reply that the transport acknowledged and that covers them; anything less puts them back.
     let delivered = false
     try {
       await callbacks.flush()
       const finalReply = result.messages?.findLast((message) => message.role === "assistant")
-      delivered = typeof finalReply?.content === "string" && finalReply.content.trim().length > 0 && result.turnOutcome !== "superseded"
+      const replyText = typeof finalReply?.content === "string" ? finalReply.content.trim() : ""
+      delivered = callbacks.deliveryState() === "confirmed" && result.turnOutcome !== "superseded"
+        && replyText.length > 0 && (result.heldNoticeDelivery?.includedIn(replyText) ?? true)
     } finally {
       if (delivered) result.heldNoticeDelivery?.confirm()
       else result.heldNoticeDelivery?.release()
