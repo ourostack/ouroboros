@@ -9,7 +9,7 @@ import { formatKick, formatError } from "../mind/format"
 import { sessionPath } from "../heart/config"
 import { stampIngressTime } from "../heart/session-events"
 import { loadSession, postTurnPersist, postTurnTrim, deferPostTurnPersist } from "../mind/context"
-import { claimHeldNotices, getPendingDir, drainDeferredReturns, drainPending, type PendingMessage } from "../mind/pending"
+import { getPendingDir, drainDeferredReturns, drainPending, type PendingMessage } from "../mind/pending"
 import type { SessionContinuityState, UsageData } from "../mind/context"
 import { createCommandRegistry, registerDefaultCommands, parseSlashCommand, getToolChoiceRequired } from "./commands"
 import { getAgentName, setAgentName, getAgentRoot, getAgentBundlesRoot, loadAgentConfig } from "../heart/identity"
@@ -1188,7 +1188,6 @@ export async function main(agentName?: string, options?: {
           enforceTrustGate,
           drainPending,
           drainDeferredReturns: (deferredFriendId) => drainDeferredReturns(currentAgentName, deferredFriendId),
-          claimHeldNotices: (heldFriendId) => claimHeldNotices(currentAgentName, heldFriendId),
           runAgent: async (msgs, cb, channel, sig, opts) => runAgent(msgs, cb, channel, sig, {
             ...opts,
             mcpManager: opts?.hardDisableTools ? undefined : await getSharedMcpManager(owner) ?? undefined,

@@ -19,7 +19,7 @@ import {
   type UsageData,
 } from "../../mind/context"
 import { accumulateFriendTokens, upsertGroupContextParticipants, FriendResolver, type FriendResolverParams, FileFriendStore, TRUSTED_LEVELS, type FriendRecord, getChannelCapabilities } from "@ouro.bot/friends"
-import { claimHeldNotices, getPendingDir, drainDeferredReturns, drainPending, holdNoticeForReturn } from "../../mind/pending"
+import { getPendingDir, drainDeferredReturns, drainPending, holdNoticeForReturn } from "../../mind/pending"
 import { buildSystem, flattenSystemPrompt } from "../../mind/prompt"
 import { getSharedMcpManager } from "../../repertoire/mcp-manager"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -2650,7 +2650,6 @@ async function handleBlueBubblesNormalizedEvent(
         enforceTrustGate,
         drainPending,
         drainDeferredReturns: (deferredFriendId) => drainDeferredReturns(resolvedDeps.getAgentName(), deferredFriendId),
-        claimHeldNotices: (heldFriendId) => claimHeldNotices(resolvedDeps.getAgentName(), heldFriendId),
         prepareRunAgentOptions: async ({ messages = [], currentUserMessages = [], runAgentOptions }) => {
           preparedBlueBubblesContext = await buildBlueBubblesContextMessages({
             agentName,

@@ -67,8 +67,12 @@ const PRESENT_ASK_PATTERN = /\b(?:please|can you|could you|would you|do you want
 
 function getRoutineNoticeReason(text: string): ProactiveContentBlockReason | null {
   if (REQUESTED_STATUS_PATTERN.test(text) || MATERIAL_RISK_PATTERN.test(text) || CORRECTION_PATTERN.test(text)) return null
-  if (FUTURE_GATE_PATTERN.test(text) && FUTURE_GATE_LATER_PATTERN.test(text)) return "routine_notice"
-  if (NO_ACTION_NOW_PATTERN.test(text) && !PRESENT_ASK_PATTERN.test(text) && !/\?/.test(text)) return "routine_notice"
+  // The announced later request ("I'll send you a tap to approve") is not a present ask; any other sentence's ask is.
+  const futureGate = FUTURE_GATE_PATTERN.test(text) && FUTURE_GATE_LATER_PATTERN.test(text)
+  const withoutAnnouncedRequest = futureGate ? text.replace(new RegExp(FUTURE_GATE_LATER_PATTERN.source + "[^.]*[.]?", "ig"), " ") : text
+  if (PRESENT_ASK_PATTERN.test(withoutAnnouncedRequest)) return null
+  if (futureGate) return "routine_notice"
+  if (NO_ACTION_NOW_PATTERN.test(text) && !/\?/.test(text)) return "routine_notice"
   return null
 }
 

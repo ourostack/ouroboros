@@ -41,6 +41,10 @@ describe("proactive content guard", () => {
       expect(getProactiveInternalContentBlockReason(reboot)).toBeNull()
     })
 
+    it("sends a mixed text whose future-gate part rides with a real present ask", () => {
+      expect(getProactiveInternalContentBlockReason("Nothing to do yet on the sign-in; when it is ready I will send the prompt. Please approve the pending deployment now.")).toBeNull()
+    })
+
     it("sends the later request for the passkey tap itself", () => {
       expect(getProactiveInternalContentBlockReason("A Microsoft sign-in is ready. Please tap to approve the passkey on your phone.")).toBeNull()
       expect(getProactiveInternalContentBlockReason("Nothing else is needed, but please approve the passkey on your phone now.")).toBeNull()

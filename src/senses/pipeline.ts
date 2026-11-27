@@ -556,6 +556,11 @@ export interface InboundTurnInput {
    * are deleted only when the turn finished and its postTurn ran; any other end puts them back.
    */
   claimHeldNotices?: (friendId: string) => PendingClaim
+  /**
+   * The sense confirms the reply reached the person: held notices stay claimed past the turn and the result carries
+   * `heldNoticeDelivery`, which the sense settles once delivery is confirmed or releases when it is not.
+   */
+  confirmHeldNoticeDelivery?: boolean
   runAgent: (
     messages: ChatCompletionMessageParam[],
     callbacks: ChannelCallbacks,
@@ -602,6 +607,8 @@ export interface InboundTurnResult {
   messages?: ChatCompletionMessageParam[]
   /** Pending envelopes drained at turn start, including deferred returns. */
   drainedPending?: PendingMessage[]
+  /** Held notices carried in this turn's return summary, awaiting the sense's delivery confirmation. */
+  heldNoticeDelivery?: { confirm(): void; release(): void }
   /** If set, the turn errored and this message should be shown to the user for failover. */
   failoverMessage?: string
   /** If set, a provider switch was executed via failover reply. */
@@ -1107,6 +1114,7 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
   let declinedForHome = false
   let pendingClaim: PendingClaim | undefined
   let heldNoticeClaim: PendingClaim | undefined
+  let handedOffHeldNotices = false
   let turnActed = false
   let turnThrew = false
   let turnFailedOnMessages = false
@@ -1509,7 +1517,7 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     await input.postTurn(...args)
     if (turnFinished) {
       pendingClaim?.settle()
-      heldNoticeClaim?.settle()
+      if (!input.confirmHeldNoticeDelivery) heldNoticeClaim?.settle()
     }
   }
 
@@ -1677,6 +1685,8 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     },
   })
 
+  const heldClaimForDelivery = heldNoticeClaim
+  handedOffHeldNotices = Boolean(input.confirmHeldNoticeDelivery && turnFinished && heldClaimForDelivery && heldClaimForDelivery.messages.length > 0)
   return {
     resolvedContext,
     gateResult,
@@ -1686,6 +1696,9 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     sessionPath: session.sessionPath,
     messages: sessionMessages,
     drainedPending: pending,
+    ...(handedOffHeldNotices && heldClaimForDelivery ? {
+      heldNoticeDelivery: { confirm: () => heldClaimForDelivery.settle(), release: () => heldClaimForDelivery.release() },
+    } : {}),
     ...(input.switchedProvider ? { switchedProvider: input.switchedProvider } : {}),
     // Every chat sense answers an errored turn. The inner channel stays silent, and the CLI keeps showing its operator the raw error.
     ...(result.outcome === "errored" && input.channel !== "inner" && input.channel !== "cli" ? { failoverMessage: erroredTurnReply(result.error?.message) } : {}),
@@ -1697,7 +1710,7 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     // Pending messages a turn did not handle go back for the next turn; a throw or an unclassified error counts
     // against them. After the first tool start the claim holds nothing, so this is a no-op.
     pendingClaim?.release({ failed: turnThrew || turnFailedOnMessages })
-    heldNoticeClaim?.release()
+    if (!(handedOffHeldNotices && !turnThrew)) heldNoticeClaim?.release()
     // Step 6b: Post-turn sync (opt-in). The commit is synchronous, so the
     // turn's edits are recorded before the reply goes out; the push runs on
     // without being awaited, holding the lock, and records its own failure.

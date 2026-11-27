@@ -657,6 +657,33 @@ describe("handleInboundTurn", () => {
         expect(claim.settle).toHaveBeenCalledWith()
       })
 
+      it("leaves the held notices claimed until the sense confirms delivery, then settles once", async () => {
+        const claim = claimOf(notices)
+        const input = makeInput({ drainPending: vi.fn().mockReturnValue([]) }) as any
+        input.claimHeldNotices = vi.fn().mockReturnValue(claim)
+        input.confirmHeldNoticeDelivery = true
+
+        const result = await handleInboundTurn(input)
+
+        expect(claim.settle).not.toHaveBeenCalled()
+        expect(claim.release).not.toHaveBeenCalled()
+        result.heldNoticeDelivery!.confirm()
+        expect(claim.settle).toHaveBeenCalledTimes(1)
+      })
+
+      it("puts the held notices back when the sense reports delivery failed or unconfirmed", async () => {
+        const claim = claimOf(notices)
+        const input = makeInput({ drainPending: vi.fn().mockReturnValue([]) }) as any
+        input.claimHeldNotices = vi.fn().mockReturnValue(claim)
+        input.confirmHeldNoticeDelivery = true
+
+        const result = await handleInboundTurn(input)
+        result.heldNoticeDelivery!.release()
+
+        expect(claim.settle).not.toHaveBeenCalled()
+        expect(claim.release).toHaveBeenCalledTimes(1)
+      })
+
       it("keeps the held notices when the turn that carried the summary did not finish", async () => {
         const claim = claimOf(notices)
         const input = makeInput({ runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "errored" }) }) as any

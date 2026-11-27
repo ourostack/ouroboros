@@ -1244,6 +1244,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
       drainPending,
       drainDeferredReturns: (deferredFriendId) => drainDeferredReturns(agentName, deferredFriendId),
       claimHeldNotices: (heldFriendId) => claimHeldNotices(agentName, heldFriendId),
+      confirmHeldNoticeDelivery: true,
       runAgent: async (msgs, cb, channel, sig, opts) => {
         consumingTeamsSteering.add(turnKey)
         try { return await runAgent(msgs, cb, channel, sig, {
@@ -1306,8 +1307,19 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
       return
     }
 
-    // Flush any remaining accumulated text at end of turn
-    await callbacks.flush()
+    // Flush any remaining accumulated text at end of turn. The held notices are settled only once this reached the
+    // person with a reply; a failed or empty delivery puts them back for the next message.
+    try {
+      await callbacks.flush()
+    } catch (error) {
+      result.heldNoticeDelivery?.release()
+      throw error
+    }
+    const finalReply = result.messages?.findLast((message) => message.role === "assistant")
+    if (result.heldNoticeDelivery) {
+      if (typeof finalReply?.content === "string" && finalReply.content.trim() && result.turnOutcome !== "superseded") result.heldNoticeDelivery.confirm()
+      else result.heldNoticeDelivery.release()
+    }
 
     // After the agent loop, check if any tool returned AUTH_REQUIRED and trigger signin.
     // This must happen after the stream is done so the OAuth card renders properly.
