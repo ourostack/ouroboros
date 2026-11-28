@@ -97,15 +97,19 @@ export async function butlerTurnContracts(input: ProductTurnContractsInput): Pro
     import("../senses/sanctuary-storage-optimization-contract"),
   ])
   const tools = input.advertisedToolNames
-  const mediaCatalog = media.sanctuaryMediaCatalogRequiredToolCalls(input.userMessage, tools)
-  if (!owner) return { contracts: mediaCatalog ? [mediaCatalog] : [] }
+  if (!owner) {
+    const mediaCatalog = media.sanctuaryMediaCatalogRequiredToolCalls(input.userMessage, tools)
+    return { contracts: mediaCatalog ? [mediaCatalog] : [] }
+  }
+  // Built in the order Telegram built them, so their obligation events log in the same order.
+  const storageOptimization = storage.sanctuaryStorageOptimizationRequiredToolCalls(input.userMessage, tools)
   const staleDockerCare = visibility.sanctuaryStaleDockerCareRequiredToolCalls(input.activeCares, input.careEvidenceNow, tools)
   const fullVisibility = visibility.sanctuaryFullVisibilityRequiredToolCalls(input.userMessage, tools, () => staleDockerCare?.currentRiskClaims() ?? [])
   const contracts = [
-    storage.sanctuaryStorageOptimizationRequiredToolCalls(input.userMessage, tools),
+    storageOptimization,
     fullVisibility,
     staleDockerCare,
-    mediaCatalog,
+    media.sanctuaryMediaCatalogRequiredToolCalls(input.userMessage, tools),
     install.sanctuaryInstallStateRequiredToolCalls(input.userMessage, tools),
     install.sanctuaryVersionQuestionRequiredToolCalls(input.userMessage, tools),
   ].filter((contract) => contract !== undefined) as ProductRequiredToolCalls[]

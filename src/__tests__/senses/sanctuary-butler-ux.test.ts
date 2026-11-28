@@ -26,6 +26,7 @@ import { getSenseSessionPath, runSenseTurn } from "../../senses/shared-turn"
 import { createProductionTelegramRelationshipComposition, createTelegramSenseApp, readOrCreateTelegramIdentityKey } from "../../senses/telegram"
 import type { TelegramLongPollOptions } from "../../senses/telegram-client"
 import { SANCTUARY_OWNER_ADDITIONS } from "../fixtures/sanctuary-containment"
+import { useButlerProduct } from "../test-helpers/butler-product"
 
 // Authorized on the owner profile but provided by the packaged `media` MCP
 // server, so they resolve only when a manager is attached to the turn.
@@ -274,6 +275,9 @@ function realToolContext(profile: "sanctuary-owner" | "sanctuary-household", age
 }
 
 describe("Ouro Butler household UX", () => {
+  // The Butler's image: its product sets the owner's and household's turn contracts.
+  useButlerProduct()
+
   afterEach(async () => {
     for (const root of rootsToRemove) {
       const owner = { agentName: "sanctuary", agentRoot: root }
