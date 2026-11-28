@@ -28,6 +28,8 @@ import { createMinimaxProviderRuntime } from "../../heart/providers/minimax"
 import { TelegramApiError, type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
 import { createTelegramApprovalEffectPort, createTelegramAuthorizedEffectExecutor, FileTelegramEffectJournal, recordTelegramEffectsInSession, type TelegramApprovalEffectPort } from "../../senses/telegram-effect-adapter"
 import { getSenseSessionPath } from "../../senses/shared-turn"
+import { readSanctuaryAcceptanceApproval } from "../../heart/daemon/sanctuary-acceptance-marker"
+import { useButlerProduct } from "../test-helpers/butler-product"
 import type { ToolContext } from "../../repertoire/tools-base"
 import { a003RetainedHistoryEnvelope } from "../fixtures/a003-session"
 import { createPhaseTimer } from "../test-helpers/phase-timer"
@@ -211,6 +213,9 @@ afterEach(() => {
 })
 
 describe("production-composed Telegram approval lifecycle", () => {
+  // The Butler's image: its product says when an acceptance run is in progress, and binds approved calls to it.
+  useButlerProduct()
+
   it.each([
     { phase: "live guard", contextRead: 3, terminalState: "drifted" },
     { phase: "dispatch", contextRead: 7, terminalState: "failed" },
@@ -730,6 +735,9 @@ describe("production-composed Telegram approval lifecycle", () => {
             approvalId: suspension.approvalId, agentRoot, sessionPath, ownerBinding: owner.binding,
             argumentDigest: canonicalApprovalArguments({ container: "calibre-web" }).digest,
             target: { id: "container-1", name: "calibre-web" },
+          })
+          expect(readSanctuaryAcceptanceApproval()).toEqual({
+            approvalId: suspension.approvalId, argumentDigest: canonicalApprovalArguments({ container: "calibre-web" }).digest,
           })
           return execTool(name, args, context)
         },
