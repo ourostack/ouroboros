@@ -21,7 +21,6 @@ import { FileFriendStore, getChannelCapabilities } from "@ouro.bot/friends"
 
 import { shieldDelegatedBanner } from "../a2a/delegated-command"
 import { getAgentRoot } from "../heart/identity"
-import type { RunAgentOptions } from "../heart/core"
 import { readRuntimeCredentialConfig, readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { emitNervesEvent, emitNervesEventDurable } from "../nerves/runtime"
 import { renderChatInteraction, resolveChatInteractionTarget } from "../heart/chat-interaction"
@@ -54,13 +53,9 @@ import type { SanctuaryTelegramAuthorityTransport } from "./telegram-authority-t
 import { openSanctuaryResidentAuthority } from "./sanctuary-authority-resident"
 import { createRootHostApprovalRuntime } from "./root-host-approval-runtime"
 import { authorizeRootHostContext } from "../repertoire/tools-sanctuary-host"
-import { productAcceptanceEventMeta, productAcceptanceMarker, productSenseOwnerName, productSenseOwnerReply, productTurnContext } from "../heart/product/active"
+import { productAcceptanceEventMeta, productAcceptanceMarker, productSenseOwnerName, productSenseOwnerReply, productSenseTurnContracts, productTurnContext } from "../heart/product/active"
 import type { ProductTurnContext } from "../heart/product/types"
 import { runWithSanctuaryToolReceiptCollection, type SanctuaryToolReceiptObserver } from "./sanctuary-runtime"
-import { sanctuaryFullVisibilityRequiredToolCalls, sanctuaryStaleDockerCareRequiredToolCalls } from "./sanctuary-full-visibility-contract"
-import { sanctuaryInstallStateRequiredToolCalls, sanctuaryVersionQuestionRequiredToolCalls } from "./sanctuary-install-state-contract"
-import { sanctuaryMediaCatalogRequiredToolCalls } from "./sanctuary-media-catalog-contract"
-import { sanctuaryStorageOptimizationRequiredToolCalls } from "./sanctuary-storage-optimization-contract"
 import { renderSanctuaryGroundedResponse, sanctuaryGroundingDigest } from "./sanctuary-grounding"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./telegram-approval-runtime"
 import { createTelegramAuditLedger, type TelegramAuditLedger } from "./telegram-audit-ledger"
@@ -1578,28 +1573,15 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     return async ({ runAgentOptions, activeCares = [], careEvidenceNow = Date.now() }) => {
       const relationshipAuthorization = await resolveLiveRelationshipAuthorization(relationshipCoordinates)
       const isSanctuaryOwner = isButlerAgent(options.agentName) && relationshipAuthorization.profileId === "sanctuary-owner"
-      const isSanctuaryHouseholdConversation = isButlerAgent(options.agentName)
-        && (relationshipAuthorization.profileId === "sanctuary-owner" || relationshipAuthorization.profileId === "sanctuary-household")
-      const storageOptimization = isSanctuaryOwner
-        ? sanctuaryStorageOptimizationRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames)
-        : undefined
-      const staleDockerCare = isSanctuaryOwner
-        ? sanctuaryStaleDockerCareRequiredToolCalls(activeCares, careEvidenceNow, relationshipAuthorization.advertisedToolNames)
-        : undefined
-      const fullVisibility = isSanctuaryOwner
-        ? sanctuaryFullVisibilityRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames, () => staleDockerCare?.currentRiskClaims() ?? [])
-        : undefined
-      const mediaCatalog = isSanctuaryHouseholdConversation
-        ? sanctuaryMediaCatalogRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames)
-        : undefined
-      const installState = isSanctuaryOwner
-        ? sanctuaryInstallStateRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames)
-        : undefined
-      const versionQuestion = isSanctuaryOwner
-        ? sanctuaryVersionQuestionRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames)
-        : undefined
-      if (input.fullVisibilityProgress && fullVisibility) input.fullVisibilityProgress.fallback = fullVisibility.emptyResponseFallback
-      const contracts = [storageOptimization, fullVisibility, staleDockerCare, mediaCatalog, installState, versionQuestion].filter(Boolean) as Array<NonNullable<RunAgentOptions["requiredToolCalls"]>>
+      const { contracts, emptyResponseFallback } = await productSenseTurnContracts("telegram", {
+        agentName: options.agentName,
+        profileId: relationshipAuthorization.profileId,
+        userMessage: input.userMessage,
+        advertisedToolNames: relationshipAuthorization.advertisedToolNames,
+        activeCares,
+        careEvidenceNow,
+      })
+      if (input.fullVisibilityProgress && emptyResponseFallback) input.fullVisibilityProgress.fallback = emptyResponseFallback
       const ownedNames = contracts.map((contract) => new Set(contract.names))
       const requiredToolCalls = contracts.length === 0 ? undefined : {
         names: [...new Set(contracts.flatMap((contract) => [...contract.names]))],

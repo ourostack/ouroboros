@@ -10,7 +10,7 @@ import {
   resolveSanctuaryPackageManagementActivation,
 } from "../heart/daemon/sanctuary-package-management"
 import { emitNervesEvent } from "../nerves/runtime"
-import type { OuroProduct, ProductHabitRunInput, ProductToolSelectionInput } from "../heart/product/types"
+import type { OuroProduct, ProductHabitRunInput, ProductRequiredToolCalls, ProductToolSelectionInput, ProductTurnContracts, ProductTurnContractsInput } from "../heart/product/types"
 import type { ToolDefinition } from "../repertoire/tools-base"
 import type { ButlerVisibilitySection } from "../repertoire/butler-status"
 import { rootHostToolDefinition, selectRootHostTool } from "../repertoire/tools-sanctuary-host"
@@ -81,6 +81,40 @@ async function runSanctuaryHealth(input: ProductHabitRunInput): Promise<DaemonRe
  * core's whole tool registry, and every process on the image loads the product. Core registers them, so a turn gets core's own.
  */
 export const BUTLER_HOUSE_CARE_TOOL_NAMES = ["house_sweep", "house_digest_send"] as const
+
+/**
+ * The tool calls the Butler's Telegram turns must make before they answer. The owner's questions about storage, stale
+ * Docker care, full visibility, install state and version, and the household's media questions, each have a contract.
+ * Everyone else's turns have none. The contract modules load at the turn, not with the product.
+ */
+export async function butlerTurnContracts(input: ProductTurnContractsInput): Promise<ProductTurnContracts> {
+  const owner = input.profileId === "sanctuary-owner"
+  if (!owner && input.profileId !== "sanctuary-household") return { contracts: [] }
+  const [visibility, install, media, storage] = await Promise.all([
+    import("../senses/sanctuary-full-visibility-contract"),
+    import("../senses/sanctuary-install-state-contract"),
+    import("../senses/sanctuary-media-catalog-contract"),
+    import("../senses/sanctuary-storage-optimization-contract"),
+  ])
+  const tools = input.advertisedToolNames
+  if (!owner) {
+    const mediaCatalog = media.sanctuaryMediaCatalogRequiredToolCalls(input.userMessage, tools)
+    return { contracts: mediaCatalog ? [mediaCatalog] : [] }
+  }
+  // Built in the order Telegram built them, so their obligation events log in the same order.
+  const storageOptimization = storage.sanctuaryStorageOptimizationRequiredToolCalls(input.userMessage, tools)
+  const staleDockerCare = visibility.sanctuaryStaleDockerCareRequiredToolCalls(input.activeCares, input.careEvidenceNow, tools)
+  const fullVisibility = visibility.sanctuaryFullVisibilityRequiredToolCalls(input.userMessage, tools, () => staleDockerCare?.currentRiskClaims() ?? [])
+  const contracts = [
+    storageOptimization,
+    fullVisibility,
+    staleDockerCare,
+    media.sanctuaryMediaCatalogRequiredToolCalls(input.userMessage, tools),
+    install.sanctuaryInstallStateRequiredToolCalls(input.userMessage, tools),
+    install.sanctuaryVersionQuestionRequiredToolCalls(input.userMessage, tools),
+  ].filter((contract) => contract !== undefined) as ProductRequiredToolCalls[]
+  return { contracts, ...(fullVisibility ? { emptyResponseFallback: fullVisibility.emptyResponseFallback } : {}) }
+}
 
 /** The tools the Butler adds to a turn's menu: the root-host tool in the owner's Telegram chat, and house care on its own private turns. */
 export function selectButlerTools(input: ProductToolSelectionInput): readonly ToolDefinition[] {
@@ -155,6 +189,8 @@ export const product: OuroProduct = {
       // "Why aren't my shows downloading?" gets the household's credit top-up reply, never the downloaders' internals.
       presentOwnerReply: (agentName, { request, text }) =>
         presentSanctuaryDownloadCreditReply(agentName, request === "why aren't my shows downloading?", text),
+      // The owner's and the household's questions about the house must be answered from the house's tools, not from memory.
+      turnContracts: butlerTurnContracts,
     },
   },
   // J8: the Butler takes delegated commands from peers the operator granted, each announced in the owner's own Telegram

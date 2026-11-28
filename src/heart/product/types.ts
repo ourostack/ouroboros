@@ -4,7 +4,8 @@ import type { SchedulerOrigin } from "../daemon/scheduler-attestation"
 import type { SupercronicSupervisorSnapshot } from "../daemon/supercronic-supervisor"
 import type { ExternalEventInput } from "../external-events/router"
 import type { ToolContext, ToolDefinition } from "../../repertoire/tools-base"
-import type { ProviderCapability } from "../core"
+import type { ProviderCapability, RunAgentOptions } from "../core"
+import type { CareRecord } from "../../arc/cares"
 
 /**
  * The product seam: how a product built on the harness (the Butler is the first) tells core what it adds, so core files
@@ -102,6 +103,28 @@ export interface ProductSense {
   ownerName?(agentName: string): string
   /** The text the owner actually gets for a reply to their request; core sends the reply unchanged otherwise. */
   presentOwnerReply?(agentName: string, reply: ProductOwnerReply): string
+  /** The tool calls a turn on the sense must make before it may answer, for the product's own relationships. */
+  turnContracts?(input: ProductTurnContractsInput): Promise<ProductTurnContracts>
+}
+
+/** What a turn's contracts are chosen from: who is asking (their relationship profile), what they asked and what the turn may call. */
+export interface ProductTurnContractsInput {
+  agentName: string
+  profileId: string | undefined
+  userMessage: string
+  advertisedToolNames: readonly string[]
+  activeCares: readonly CareRecord[]
+  careEvidenceNow: number
+}
+
+/** One contract a turn must satisfy, in core's required-tool-calls shape. */
+export type ProductRequiredToolCalls = NonNullable<RunAgentOptions["requiredToolCalls"]>
+
+export interface ProductTurnContracts {
+  /** Core combines them: the turn must satisfy every one. */
+  contracts: ProductRequiredToolCalls[]
+  /** What to send when the model's answer comes back empty, when a contract has one. */
+  emptyResponseFallback?: () => string | undefined
 }
 
 /** A reply about to go to the owner, and the request it answers (normalised: NFKC, trimmed, lower case). */

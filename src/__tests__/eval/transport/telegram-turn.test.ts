@@ -7,6 +7,7 @@ import { resetConfigCache } from "../../../heart/config"
 import { resetIdentity } from "../../../heart/identity"
 import { createProxyRuntime, serveProxyRuntime, type ProxyChannel, type ProxyMessage } from "../../../eval/transport/provider-proxy"
 import { recordModelTraffic, runTelegramTurn, withSystemLine } from "../../../eval/transport/telegram-turn"
+import { useButlerProduct } from "../../test-helpers/butler-product"
 
 function scriptedRuntime(steps: Array<{ name: string; arguments: Record<string, string> }>, seen: ProviderTurnRequest[]): ProviderRuntime {
   return {
@@ -31,6 +32,9 @@ function snapshot(root: string): Map<string, string> {
 }
 
 describe("runTelegramTurn", () => {
+  // An eval runs from the Butler's image, which loads its product; this test does the same.
+  useButlerProduct()
+
   let home: string
   let agentRoot: string
 

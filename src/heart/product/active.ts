@@ -3,7 +3,7 @@ import { readContainerRuntimePolicy } from "../daemon/container-runtime"
 import type { ToolDefinition } from "../../repertoire/tools-base"
 import type {
   OuroProduct, ProductAcceptanceMarker, ProductEventSource, ProductNotice, ProductOwnerReply, ProductHabit, ProductSense, ProductSenseReadiness, ProductSenseReadinessInput, ProductSenses, ProductStatusInput,
-  ProductToolSelectionInput, ProductTools, ProductTurnContext, ProductTurnContextInput,
+  ProductToolSelectionInput, ProductTools, ProductTurnContracts, ProductTurnContractsInput, ProductTurnContext, ProductTurnContextInput,
 } from "./types"
 
 /** The seam version this harness runs. A product built for another stops the start. */
@@ -287,4 +287,17 @@ export function productAcceptanceEventMeta(agentName: string): { scenarioHandleD
 export function productRunAcceptanceApproved<T>(agentName: string, approval: { approvalId: string; argumentDigest: string }, operation: () => T): T {
   const acceptance = productFor(agentName)?.acceptance
   return acceptance ? acceptance.runApproved(approval, operation) : operation()
+}
+
+/** The tool calls a turn on the sense must make for the product's own agent (J6), or none. A throw from the product fails the turn. */
+export async function productSenseTurnContracts(sense: keyof ProductSenses, input: ProductTurnContractsInput): Promise<ProductTurnContracts> {
+  const product = productFor(input.agentName)
+  const own = product?.senses?.[sense]?.turnContracts
+  if (!own) return { contracts: [] }
+  try {
+    return await own(input)
+  } catch (error) {
+    hookFailed(product!, "senses.turnContracts", input.agentName, error, "the product's turn contracts failed, so the turn fails")
+    throw error
+  }
 }

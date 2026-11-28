@@ -5,11 +5,15 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { createTelegramSenseApp } from "../../senses/telegram"
 import type { TelegramInboundMessage, TelegramLongPollOptions } from "../../senses/telegram-client"
+import { useButlerProduct } from "../test-helpers/butler-product"
 
 const roots: string[] = []
 const requiredNames = ["query_active_work", "query_cares", "unraid_get_system", "unraid_list_containers", "unraid_get_storage", "unraid_get_notifications", "sanctuary_get_download_queue"]
 
 describe("Sanctuary owner full-visibility activation", () => {
+  // The Butler's image: its product sets the owner's and household's turn contracts.
+  useButlerProduct()
+
   afterEach(() => {
     while (roots.length > 0) fs.rmSync(roots.pop()!, { recursive: true, force: true })
   })
