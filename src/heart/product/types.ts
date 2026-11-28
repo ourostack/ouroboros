@@ -48,6 +48,24 @@ export interface OuroProduct {
   status?: ProductStatus
   /** Core senses the product runs its own way (J6). */
   senses?: ProductSenses
+  /** What the product's agent does for other agents over A2A beyond conversation (J8). */
+  a2a?: ProductA2A
+}
+
+export interface ProductA2A {
+  /**
+   * Accept delegated commands from peers the operator granted. A delegated command runs on the owner's menu, and core
+   * announces each one through `notifyPrincipal` before it runs; a rejection refuses the command.
+   */
+  delegation?: { notifyPrincipal(agentName: string, notice: ProductNotice): Promise<void> }
+  /** File failure reports from escalation peers, and confirm each one to the owner once the running version carries its fix. */
+  escalation?: boolean
+}
+
+/** A notice for the owner: its id keeps a retry from sending it twice. */
+export interface ProductNotice {
+  noticeId: string
+  text: string
 }
 
 export interface ProductSenses {

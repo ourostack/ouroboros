@@ -2,7 +2,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { readContainerRuntimePolicy } from "../daemon/container-runtime"
 import type { ToolDefinition } from "../../repertoire/tools-base"
 import type {
-  OuroProduct, ProductEventSource, ProductOwnerReply, ProductHabit, ProductSense, ProductSenseReadiness, ProductSenseReadinessInput, ProductSenses, ProductStatusInput,
+  OuroProduct, ProductEventSource, ProductNotice, ProductOwnerReply, ProductHabit, ProductSense, ProductSenseReadiness, ProductSenseReadinessInput, ProductSenses, ProductStatusInput,
   ProductToolSelectionInput, ProductTools, ProductTurnContext, ProductTurnContextInput,
 } from "./types"
 
@@ -186,6 +186,24 @@ export async function productActiveWorkSections(input: ProductStatusInput): Prom
   } catch (error) {
     hookFailed(product, "status.activeWorkSections", input.agentName, error, "the product's status sections failed, so query_active_work fails")
     throw error
+  }
+}
+
+/**
+ * How this agent's product announces a delegated command to its owner (J8), or null when the agent takes none. A rejection
+ * refuses the command, as the A2A server does for any failed notice, and is logged as the product's.
+ */
+export function productDelegationNotifier(agentName: string): ((notice: ProductNotice) => Promise<void>) | null {
+  const product = productFor(agentName)
+  const delegation = product?.a2a?.delegation
+  if (!delegation) return null
+  return async (notice) => {
+    try {
+      await delegation.notifyPrincipal(agentName, notice)
+    } catch (error) {
+      hookFailed(product!, "a2a.delegation.notifyPrincipal", agentName, error, "the product's delegated-command notice failed, so the command is refused")
+      throw error
+    }
   }
 }
 

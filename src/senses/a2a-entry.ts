@@ -17,9 +17,7 @@ function argValue(name: string): string | undefined {
 
 import { configureDaemonRuntimeLogger } from "../heart/daemon/runtime-logging"
 import { emitNervesEvent } from "../nerves/runtime"
-import { A2A_PRINCIPAL_PROFILE_ID } from "../a2a/delegated-command"
 import { getAgentRoot } from "../heart/identity"
-import { isButlerAgent } from "../heart/butler-agent"
 
 configureDaemonRuntimeLogger("a2a")
 emitNervesEvent({
@@ -45,7 +43,7 @@ Promise.all([
     { waitForRuntimeCredentialBootstrap, readMachineRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig, mergeMachineRuntimeCredentialConfig },
     { loadOrCreateMachineIdentity },
     { ready },
-    { escalationOptionsFor, sendOwnerNoticeViaTelegram },
+    { delegationOptionsFor, escalationOptionsFor, sendOwnerNoticeViaTelegram },
     { relayConfigFrom, vaultRelayConfigStore },
     { installSenseShutdown },
   ]) => {
@@ -88,18 +86,8 @@ Promise.all([
     const handle = await startA2AServer({
       agentName,
       identity,
-      // The Butler accepts delegated commands from explicitly granted peers; each
-      // one is announced in the owner's own Telegram chat before it runs (never through the owner route, never held).
-      ...(isButlerAgent(agentName) ? {
-        delegation: {
-          principalProfileId: A2A_PRINCIPAL_PROFILE_ID,
-          agentRoot: getAgentRoot(agentName),
-          notifyPrincipal: async (notice: { noticeId: string; text: string }) => {
-            const { sendTelegramDelegatedAuditNotice } = await import("./telegram")
-            await sendTelegramDelegatedAuditNotice(agentName, { ...notice, signal: AbortSignal.timeout(30_000) })
-          },
-        },
-      } : {}),
+      // An agent whose product accepts delegated commands takes them from explicitly granted peers, each announced before it runs.
+      ...delegationOptionsFor(agentName),
       ...escalationOptionsFor(agentName, (notice) => sendOwnerNoticeViaTelegram(agentName, notice)),
       notifyOwner: (notice: { noticeId: string; text: string }) => sendOwnerNoticeViaTelegram(agentName, notice),
       // A friends-relay inbox for messages sent while this agent is offline, when the operator set a2a.relay.url

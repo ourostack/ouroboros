@@ -11,9 +11,6 @@ import { describe, expect, it } from "vitest"
  * has gone but is still listed fails the second, so whoever removes one also deletes its line.
  */
 const ALLOWED: Record<string, readonly string[]> = {
-  "a2a/escalation-wiring": [
-    "heart/butler-agent",
-  ],
   "eval/transport/telegram-turn": [
     "eval/transport/synthetic-sanctuary",
   ],
@@ -26,9 +23,6 @@ const ALLOWED: Record<string, readonly string[]> = {
     "heart/daemon/sanctuary-package-management",
   ],
   "heart/daemon/container-spec-auditor": [
-    "heart/butler-agent",
-  ],
-  "senses/a2a-entry": [
     "heart/butler-agent",
   ],
   "senses/root-host-approval-port": [
