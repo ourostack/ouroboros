@@ -28,6 +28,14 @@ describe("pingProviderInChild", () => {
     expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "engine.provider_ping_child_done", meta: { provider: "github-copilot", ok: false, classification: "auth-failure", reason: "401" } }))
   })
 
+  it("reports a child's successful ping without a classification", async () => {
+    const runChild = vi.fn(async () => ({ code: 0, stdout: '{"ok":true}\n' }))
+    const pingInProcess = vi.fn()
+    await expect(pingProviderInChild("github-copilot", config, { model: "m" }, { runChild, pingInProcess })).resolves.toEqual({ ok: true })
+    expect(pingInProcess).not.toHaveBeenCalled()
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "engine.provider_ping_child_done", meta: { provider: "github-copilot", ok: true } }))
+  })
+
   it("pings in this process when the child gives no usable result or can't start", async () => {
     const pingInProcess = vi.fn(async () => ({ ok: true as const }))
     for (const runChild of [
