@@ -58,7 +58,6 @@ export const habitToolDefinitions: ToolDefinition[] = [
     terminalProjection: {
       mode: "verbatim",
       requiresSoleCall: true,
-      clearBufferedText: true,
     },
     summaryKeys: ["habit", "evidence"],
     handler: async (args, context) => {

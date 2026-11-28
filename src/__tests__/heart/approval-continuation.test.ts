@@ -514,6 +514,41 @@ describe("same-loop approval continuation", () => {
     expect(result.outcome).toBe("settled")
   })
 
+  it("sends each message of a resumed turn on its own: narration is dropped, a speak goes out alone, then the answer", async () => {
+    const resumeApprovalContinuation = (core as any).resumeApprovalContinuation
+    // What the engine does on a sense that can't stream: narration beside a tool call is cleared at the step, a speak
+    // is flushed as its own message, and the answer follows.
+    const runAgent = vi.fn(async (_messages: any[], callbacks: any) => {
+      await callbacks.flushNow() // nothing held yet, so nothing goes out
+      callbacks.onTextChunk("Restarting it now, as promised.")
+      callbacks.onClearText()
+      callbacks.onTextChunk("It's restarting.")
+      await callbacks.flushNow()
+      callbacks.onTextChunk("calibre-web is back up")
+      return { outcome: "settled" as const }
+    })
+    for (const callerFlush of [undefined, vi.fn()]) {
+      const deliver = vi.fn()
+      await resumeApprovalContinuation({
+        record: record("succeeded", "restarted"),
+        checkpoint: checkpoint(),
+        currentSessionRevision: REVISION,
+        sessionMessages: checkpoint().preCallMessages,
+        callbacks: callerFlush ? { flushNow: callerFlush } : {},
+        channel: "telegram",
+        runAgent,
+        persist: vi.fn(),
+        deliver,
+        claimContinuation: vi.fn(() => continuationClaim(true)),
+        ...continuationLifecycle(),
+      })
+
+      // A caller with its own flush sends the speak itself; otherwise the continuation delivers it.
+      expect(deliver.mock.calls.map(([text]) => text)).toEqual(callerFlush ? ["calibre-web is back up"] : ["It's restarting.", "calibre-web is back up"])
+      if (callerFlush) expect(callerFlush).toHaveBeenCalledTimes(2)
+    }
+  })
+
   it("completes a non-resumable terminal continuation after delivering its direct notice", async () => {
     const resumeApprovalContinuation = (core as any).resumeApprovalContinuation
     const lifecycle = continuationLifecycle()
