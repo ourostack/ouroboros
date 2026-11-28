@@ -109,6 +109,9 @@ describe("daemon startup during a vault outage", () => {
     expect(onProviderFailed).toHaveBeenCalledWith("slugger", "provider failed live check: 400", "restore quota")
     expect(onDegraded).toHaveBeenCalledTimes(1)
     expect(timers).toHaveLength(2)
+    answers.push({ ok: false, providerFailure: true })
+    timers[1]!.run(); await flush()
+    expect(onProviderFailed).toHaveBeenLastCalledWith("slugger", "vault unreachable", undefined)
   })
 
   it("keeps the agent degraded with the rejection reason if the vault comes back but refuses us", async () => {
