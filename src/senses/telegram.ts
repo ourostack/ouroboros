@@ -21,7 +21,6 @@ import { FileFriendStore, getChannelCapabilities } from "@ouro.bot/friends"
 
 import { shieldDelegatedBanner } from "../a2a/delegated-command"
 import { getAgentRoot } from "../heart/identity"
-import { DEFAULT_SANCTUARY_HOUSE, readSanctuaryHouse } from "./sanctuary-house"
 import type { RunAgentOptions } from "../heart/core"
 import { readSanctuaryAcceptanceMarker, sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
 import { readRuntimeCredentialConfig, readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
@@ -32,7 +31,6 @@ import { createSanctuaryInteractiveControl } from "./sanctuary-interactive-contr
 import { approvalRelayRequestFor, createApprovalRelayDoor, type ApprovalRelayDoor } from "./telegram-approval-relay"
 import { loadSanctuarySabApiKey } from "./sanctuary-runtime"
 import { createSanctuarySabClient } from "./sanctuary-sab"
-import { presentSanctuaryDownloadCreditReply } from "./sanctuary-download-credit-presentation"
 import { getSenseSessionPath, runSenseTurn, type RunSenseTurnOptions, type RunSenseTurnResult } from "./shared-turn"
 import { canonicalizeTelegramSessionKey } from "../heart/config"
 import { canonicalTelegramIdentityKey, openSecureTelegramDirectory, readOrCreateTelegramIdentityKey } from "./telegram-identity-key"
@@ -57,7 +55,7 @@ import type { SanctuaryTelegramAuthorityTransport } from "./telegram-authority-t
 import { openSanctuaryResidentAuthority } from "./sanctuary-authority-resident"
 import { createRootHostApprovalRuntime } from "./root-host-approval-runtime"
 import { authorizeRootHostContext } from "../repertoire/tools-sanctuary-host"
-import { productTurnContext } from "../heart/product/active"
+import { productSenseOwnerName, productSenseOwnerReply, productTurnContext } from "../heart/product/active"
 import type { ProductTurnContext } from "../heart/product/types"
 import { runWithSanctuaryToolReceiptCollection, type SanctuaryToolReceiptObserver } from "./sanctuary-runtime"
 import { sanctuaryFullVisibilityRequiredToolCalls, sanctuaryStaleDockerCareRequiredToolCalls } from "./sanctuary-full-visibility-contract"
@@ -66,7 +64,6 @@ import { sanctuaryMediaCatalogRequiredToolCalls } from "./sanctuary-media-catalo
 import { sanctuaryStorageOptimizationRequiredToolCalls } from "./sanctuary-storage-optimization-contract"
 import { renderSanctuaryGroundedResponse, sanctuaryGroundingDigest } from "./sanctuary-grounding"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./telegram-approval-runtime"
-import type { SanctuaryHealthSweepResult } from "./sanctuary-health"
 import { createTelegramAuditLedger, type TelegramAuditLedger } from "./telegram-audit-ledger"
 import { extractEventText, loadSessionEnvelopeFile, selectEffectiveSessionEvents } from "../heart/session-events"
 import { OWNER_ROUTE_BACK_TEXT, OWNER_ROUTE_DOWN_TEXT, OWNER_ROUTE_FALLBACK_PREFIX, OWNER_ROUTE_WATCH_FAILURES, OWNER_ROUTE_WATCH_INTERVAL_MS, ownerRouteForAgent, ownerRouteItem, type OwnerRoute } from "./telegram-owner-route"
@@ -539,10 +536,6 @@ export interface CreateTelegramSenseAppOptions {
   runTurn?: TelegramTurnRunner
   approvalTransport?: TelegramApprovalTransport
   approvalRuntime?: TelegramApprovalRuntime
-  healthSweep?: (() => Promise<SanctuaryHealthSweepResult>) & {
-    markDeliveryAttempting?: (deliveryId: string) => void
-    markDelivered?: (deliveryId: string, messageIds: number[]) => void
-  }
   identityKey?: string
   migrateIdentity?: () => Promise<void>
   subjectIndexHooks?: { afterCreateTemporary?: (temporaryPath: string) => void }
@@ -613,10 +606,9 @@ function errorCode(error: unknown): string | undefined {
   return error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : undefined
 }
 
-/** The admitted owner's display name comes from the household's own house config. */
+/** The admitted owner's display name: the product's, or "Owner". */
 export function ownerDisplayName(agentName: string): string {
-  const { ownerName } = readSanctuaryHouse(getAgentRoot(agentName))
-  return ownerName === DEFAULT_SANCTUARY_HOUSE.ownerName ? "Owner" : ownerName
+  return productSenseOwnerName(agentName, "telegram")
 }
 
 
@@ -1327,11 +1319,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     idempotencyKey: string,
     signal?: AbortSignal,
     onMessageDelivered?: (messageId: number, chunk: string) => void,
-    exactDownloadCreditQuestion = false,
+    ownerRequest: string | null = null,
     replyToMessageId?: number,
     silent = false,
   ): Promise<TelegramEffectArtifact> => {
-    const presentedText = presentSanctuaryDownloadCreditReply(options.agentName, exactDownloadCreditQuestion, text)
+    const presentedText = productSenseOwnerReply(options.agentName, "telegram", { request: ownerRequest, text })
     return executeAuthorizedEffect({
       idempotencyKey,
       target: configuredOwnerTarget(),
@@ -1376,7 +1368,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       }
       const pacingReason = options.proactivePacing ? proactiveHoldReason(proactiveLedgerPath, new Date(), options.proactivePacing) : null
       const silent = options.ownerRoute !== undefined || pacingReason === "quiet_hours"
-      const effect = await deliverButlerEffect(text, key, input.signal, undefined, false, undefined, silent)
+      const effect = await deliverButlerEffect(text, key, input.signal, undefined, null, undefined, silent)
       emitNervesEvent({ component: "senses", event: "senses.telegram_delegated_notice_sent", message: "sent a delegated command's audit notice to the owner's Telegram chat", meta: { agentName: options.agentName, silent } })
       const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
       await recordAcceptedEffects(sessionPath, [effect])
@@ -1869,7 +1861,6 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const turnMetricsObserver = { providerInvocationCount: 0, toolInvocationCount: 0 }
     const toolReceiptObserver: SanctuaryToolReceiptObserver = { toolResultDigests: [], toolGroundings: [] }
     const normalizedRequest = message.text.normalize("NFKC").trim().toLocaleLowerCase("en-US")
-    const exactDownloadCreditQuestion = normalizedRequest === "why aren't my shows downloading?"
     const groundingIntentTool = groundedAcceptance
       ? /^(?:what['’]?s up|status)\??$/u.test(normalizedRequest) ? "unraid_get_system"
         : /^how much (?:space|storage) is left\??$/u.test(normalizedRequest) ? "unraid_get_storage"
@@ -1929,7 +1920,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             if (groundingIntentTool) {
               bufferedGroundedDeliveries.push(delivery.kind)
             } else {
-              turnEffects.push(await deliverButlerEffect(delivery.text, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }, exactDownloadCreditQuestion, chat.replyToMessageId()))
+              turnEffects.push(await deliverButlerEffect(delivery.text, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }, normalizedRequest, chat.replyToMessageId()))
             }
           },
         },
@@ -1962,7 +1953,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       } else {
         const responseFallback = responseFallbackAfterDeliveries(result, turnEffects.length)
         if (responseFallback) {
-          const artifact = await deliverButlerEffect(responseFallback, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }, exactDownloadCreditQuestion)
+          const artifact = await deliverButlerEffect(responseFallback, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }, normalizedRequest)
           turnEffects.push(artifact)
           responseFallbackArtifactId = artifact.id
         }
@@ -2006,7 +1997,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       // Every owner message runs inside its inbound turn.
       telegramInboundTurn.getStore()!.failure = `the turn failed (${errorCategory})`
       const fallback = "I couldn't complete that turn. The failure was recorded; please try again."
-      if (deliveredMessageIds.length === 0) turnEffects.push(await deliverButlerEffect(fallback, `turn:${subject}:${message.updateId}:fallback`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }, exactDownloadCreditQuestion))
+      if (deliveredMessageIds.length === 0) turnEffects.push(await deliverButlerEffect(fallback, `turn:${subject}:${message.updateId}:fallback`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }, normalizedRequest))
       await recordAcceptedEffects(currentSessionPath, turnEffects, { text: message.text, reference: inboundReference, attachmentIds: hydrated.attachmentIds })
     } finally {
       if (acceptanceMarker) {

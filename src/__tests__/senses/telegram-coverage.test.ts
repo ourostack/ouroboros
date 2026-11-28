@@ -1208,30 +1208,6 @@ describe("Telegram sense coverage contracts", () => {
     await expect(f.getOnUpdate()({ update_id: 2, callback_query: { id: "q", from: { id: 42 } } })).resolves.toBe(false)
   })
 
-  it("runs every legacy health sweep shape without transport effects", async () => {
-    for (const result of [
-      {},
-      { message: "health" },
-      { message: "health", deliveryId: "delivery-1" },
-    ]) {
-      const f = defaultFixture()
-      const healthSweep = Object.assign(vi.fn(async () => result), { markDeliveryAttempting: vi.fn(), markDelivered: vi.fn() })
-      const app = createTelegramSenseApp({ agentName: "slugger", credentials, healthSweep })
-      await app.run()
-      expect(healthSweep.markDeliveryAttempting).not.toHaveBeenCalled()
-      expect(healthSweep.markDelivered).not.toHaveBeenCalled()
-      expect(f.api.request).not.toHaveBeenCalled()
-      expect(f.poll.run).toHaveBeenCalledOnce()
-    }
-  })
-
-  it.each([new Error("health failed"), "primitive health failure"])("contains health sweep failures", async (failure) => {
-    const f = defaultFixture()
-    const app = createTelegramSenseApp({ agentName: "slugger", credentials, healthSweep: vi.fn(async () => { throw failure }) })
-    await expect(app.run()).resolves.toBeUndefined()
-    expect(f.poll.run).toHaveBeenCalledOnce()
-  })
-
   it("validates proactive messages and forwards the exact caller signal", async () => {
     const f = defaultFixture()
     const app = createTelegramSenseApp({ agentName: "slugger", credentials })

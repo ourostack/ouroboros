@@ -65,6 +65,16 @@ export interface ProductSense {
   readiness(input: ProductSenseReadinessInput): ProductSenseReadiness
   /** The repair line for a sense that isn't set up. */
   repairHint(agentName: string): string
+  /** The name the sense shows for the admitted owner, when the product knows it. Core says "Owner" otherwise. */
+  ownerName?(agentName: string): string
+  /** The text the owner actually gets for a reply to their request; core sends the reply unchanged otherwise. */
+  presentOwnerReply?(agentName: string, reply: ProductOwnerReply): string
+}
+
+/** A reply about to go to the owner, and the request it answers (normalised: NFKC, trimmed, lower case). */
+export interface ProductOwnerReply {
+  request: string | null
+  text: string
 }
 
 export interface ProductSenseReadinessInput {
