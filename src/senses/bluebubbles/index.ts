@@ -19,7 +19,7 @@ import {
   type UsageData,
 } from "../../mind/context"
 import { accumulateFriendTokens, upsertGroupContextParticipants, FriendResolver, type FriendResolverParams, FileFriendStore, TRUSTED_LEVELS, type FriendRecord, getChannelCapabilities } from "@ouro.bot/friends"
-import { getPendingDir, drainDeferredReturns, drainPending, holdNoticeForReturn } from "../../mind/pending"
+import { getPendingDir, drainDeferredReturns, drainPending, holdNoticeForReturn, claimHeldNotices } from "../../mind/pending"
 import { buildSystem, flattenSystemPrompt } from "../../mind/prompt"
 import { getSharedMcpManager } from "../../repertoire/mcp-manager"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -2523,6 +2523,9 @@ async function handleBlueBubblesNormalizedEvent(
     let resolveTimeout: ((result: BlueBubblesHandleResult) => void) | undefined
     let recoveryTimedOut = false
     let activeRunTurn: Promise<BlueBubblesHandleResult> | null = null
+    // Held notices ride this turn's reply; they are settled only once the final send was accepted, else released.
+    let heldNoticeDelivery: Awaited<ReturnType<typeof handleInboundTurn>>["heldNoticeDelivery"]
+    let heldNoticesConfirmed = false
 
     // BB-specific tool context wrappers
     const summarize = createSummarize("human")
@@ -2654,6 +2657,8 @@ async function handleBlueBubblesNormalizedEvent(
         enforceTrustGate,
         drainPending,
         drainDeferredReturns: (deferredFriendId) => drainDeferredReturns(resolvedDeps.getAgentName(), deferredFriendId),
+        claimHeldNotices: (heldFriendId) => claimHeldNotices(resolvedDeps.getAgentName(), heldFriendId),
+        confirmHeldNoticeDelivery: true,
         prepareRunAgentOptions: async ({ messages = [], currentUserMessages = [], runAgentOptions }) => {
           preparedBlueBubblesContext = await buildBlueBubblesContextMessages({
             agentName,
@@ -2777,6 +2782,7 @@ async function handleBlueBubblesNormalizedEvent(
       /* v8 ignore stop */
       const runTurn = (async (): Promise<BlueBubblesHandleResult> => {
         const result = await turnPromise
+        heldNoticeDelivery = result.heldNoticeDelivery
         if (recoveryTimedOut && !finalTransportInvoked) {
           emitNervesEvent({
             level: "warn",
@@ -2878,6 +2884,13 @@ async function handleBlueBubblesNormalizedEvent(
           }
         }
 
+        const finalReply = result.messages?.findLast((message) => message.role === "assistant")
+        const replyText = typeof finalReply?.content === "string" ? finalReply.content.trim() : ""
+        if (heldNoticeDelivery && replyText.length > 0 && heldNoticeDelivery.includedIn(replyText)) {
+          heldNoticeDelivery.confirm()
+          heldNoticesConfirmed = true
+        }
+
         // Acceptance is the visibility boundary. Publish the terminal dedupe
         // receipt first, then project the private generated tail while this
         // chat's canonical lock remains held. Even if receipt publication
@@ -2946,6 +2959,7 @@ async function handleBlueBubblesNormalizedEvent(
       // A timed-out/superseded provider may ignore abort briefly. Never release
       // the cross-process session lease until that work has actually quiesced.
       if (activeRunTurn) await activeRunTurn.catch(() => undefined)
+      if (!heldNoticesConfirmed) heldNoticeDelivery?.release()
       // If a terminal error was buffered and never replayed (e.g., handleInboundTurn threw),
       // replay it now so the user still sees the error.
       /* v8 ignore start -- error replay on throw: tested via BB error test @preserve */

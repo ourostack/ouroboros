@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 import * as fs from "fs"
@@ -17,7 +18,7 @@ import * as tempoModule from "../../heart/tempo"
 import * as temporalViewModule from "../../heart/temporal-view"
 import * as presenceModule from "../../arc/presence"
 import * as flightRecorderModule from "../../arc/flight-recorder"
-import { handleInboundTurn, selectCheckpointCurrentAsk } from "../../senses/pipeline"
+import { handleInboundTurn, heldNoticesIncludedIn, selectCheckpointCurrentAsk } from "../../senses/pipeline"
 import type { InboundTurnInput, InboundTurnResult } from "../../senses/pipeline"
 import { readAgentProviderSelectionFixture, writeAgentProviderSelectionFixture, type AgentProviderSelectionFixture } from "../helpers/agent-provider-selection"
 import { a003Event, a003RetainedHistoryEnvelope } from "../fixtures/a003-session"
@@ -635,6 +636,23 @@ describe("handleInboundTurn", () => {
     })
 
     describe("held routine notices", () => {
+      it("counts a reply as covering held notices only when it carries every notice reference", () => {
+        const held = [
+          { from: "a", friendId: "f", timestamp: 1, content: "The nightly backup finished. Nothing needed from you." },
+          { from: "a", friendId: "f", timestamp: 2, content: "夜間バックアップが完了しました" },
+        ]
+        const refs = held.map((n) => `H-${createHash("sha1").update(`${n.timestamp}\n${n.content}`).digest("hex").slice(0, 6)}`)
+        expect(heldNoticesIncludedIn(held, "The nightly backup has not started.")).toBe(false)
+        expect(heldNoticesIncludedIn(held, `Backup done. Held notices: ${refs[0]}`)).toBe(false)
+        expect(heldNoticesIncludedIn(held, `Held notices: ${refs.join(", ")}`)).toBe(true)
+        expect(heldNoticesIncludedIn(held, `Summary.\nHeld notices: ${refs.join(", ")}\n`)).toBe(true)
+        expect(heldNoticesIncludedIn(held, `Notes mention ${refs.join(" ")} inline.`)).toBe(false)
+        expect(heldNoticesIncludedIn(held, `Held notices: ${refs.join(", ")}\nand then more text`)).toBe(false)
+        expect(heldNoticesIncludedIn(held, "")).toBe(false)
+        expect(heldNoticesIncludedIn(held, "Held notices: none")).toBe(false)
+        expect(heldNoticesIncludedIn([], "anything")).toBe(true)
+      })
+
       const notices: PendingMessage[] = [
         { from: "testagent", friendId: "friend-1", content: "three sign-ins expired; nothing to do yet", timestamp: 1000, disposition: "held_notice" },
         { from: "testagent", friendId: "friend-1", content: "the nightly run finished; nothing needed from you", timestamp: 2000, disposition: "held_notice" },
@@ -652,6 +670,7 @@ describe("handleInboundTurn", () => {
         expect(options.pendingMessages).toHaveLength(1)
         const summary = options.pendingMessages![0]!.content
         expect(summary).toContain("one short summary")
+        expect(summary).toMatch(/\[H-[0-9a-f]{6}\] /)
         expect(summary).toContain("three sign-ins expired")
         expect(summary).toContain("the nightly run finished")
         expect(claim.settle).toHaveBeenCalledWith()
@@ -679,6 +698,7 @@ describe("handleInboundTurn", () => {
 
         const result = await handleInboundTurn(input)
         result.heldNoticeDelivery!.release()
+        expect(result.heldNoticeDelivery!.includedIn("nothing relevant")).toBe(false)
 
         expect(claim.settle).not.toHaveBeenCalled()
         expect(claim.release).toHaveBeenCalledTimes(1)

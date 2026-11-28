@@ -1,0 +1,1 @@
+- The summary works on iMessage as well as Teams. Held notices are only cleared once the reply carrying the summary is confirmed delivered; a failed or unconfirmed send keeps them for the next message.

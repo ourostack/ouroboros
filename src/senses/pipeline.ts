@@ -4,6 +4,7 @@
 //
 // Transport-level concerns (BB API calls, Teams cards, readline) stay in sense adapters.
 
+import { createHash } from "node:crypto"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 import type { ApprovalSuspensionResult, ChannelCallbacks, CompletionMetadata, ProviderErrorClassification, RunAgentOptions, RunAgentOutcome } from "../heart/core"
 import type { SessionTurnLease } from "../mind/session-transaction"
@@ -83,15 +84,28 @@ export interface PrepareRunAgentOptionsInput {
 
 const VOICE_PENDING_MAX_AGE_MS = 15 * 60 * 1_000
 const TELEGRAM_GENERIC_OUTREACH_PENDING_MAX_AGE_MS = 15 * 60 * 1_000
+function heldNoticeRef(notice: PendingMessage): string {
+  return `H-${createHash("sha1").update(`${notice.timestamp}\n${notice.content}`).digest("hex").slice(0, 6)}`
+}
+// Inclusion is a contract with the model, not proof that its summary is accurate: the summary prompt gives every notice a
+// reference and asks the reply to end with a "Held notices:" receipt line. Only that line is parsed, and it must name every
+// notice. Anything else counts as not included and the notices are released.
+export function heldNoticesIncludedIn(held: PendingMessage[], reply: string): boolean {
+  const receipt = reply.trimEnd().split("\n").pop()!.match(/^\s*Held notices:\s*(.*)$/i)
+  if (!receipt) return held.length === 0
+  const named = new Set(receipt[1]!.match(/H-[0-9a-f]{6}\b/g) ?? [])
+  return held.every((notice) => named.has(heldNoticeRef(notice)))
+}
+
 function renderHeldNoticeSummary(held: PendingMessage[]): PendingMessage {
   const lines = [...held]
     .sort((a, b) => a.timestamp - b.timestamp)
-    .map((notice) => `- (${new Date(notice.timestamp).toISOString()}) ${notice.content}`)
+    .map((notice) => `- [${heldNoticeRef(notice)}] (${new Date(notice.timestamp).toISOString()}) ${notice.content}`)
   return {
     from: held[0]!.from,
     friendId: held[0]!.friendId,
     timestamp: Date.now(),
-    content: `Routine notices held while they were away, not sent to them. Give them one short summary of these, folded into your reply to this message; do not send them as separate messages, and do not send this summary on its own:\n${lines.join("\n")}`,
+    content: `Routine notices held while they were away, not sent to them. Give them one short summary of these, folded into your reply to this message; do not send them as separate messages, and do not send this summary on its own. End your reply with a final line "Held notices: " followed by every reference below, so delivery can be confirmed:\n${lines.join("\n")}`,
   }
 }
 
@@ -608,7 +622,7 @@ export interface InboundTurnResult {
   /** Pending envelopes drained at turn start, including deferred returns. */
   drainedPending?: PendingMessage[]
   /** Held notices carried in this turn's return summary, awaiting the sense's delivery confirmation. */
-  heldNoticeDelivery?: { confirm(): void; release(): void }
+  heldNoticeDelivery?: { confirm(): void; release(): void; includedIn(reply: string): boolean }
   /** If set, the turn errored and this message should be shown to the user for failover. */
   failoverMessage?: string
   /** If set, a provider switch was executed via failover reply. */
@@ -1697,7 +1711,7 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     messages: sessionMessages,
     drainedPending: pending,
     ...(handedOffHeldNotices && heldClaimForDelivery ? {
-      heldNoticeDelivery: { confirm: () => heldClaimForDelivery.settle(), release: () => heldClaimForDelivery.release() },
+      heldNoticeDelivery: { confirm: () => heldClaimForDelivery.settle(), release: () => heldClaimForDelivery.release(), includedIn: (reply: string) => heldNoticesIncludedIn(heldClaimForDelivery.messages, reply) },
     } : {}),
     ...(input.switchedProvider ? { switchedProvider: input.switchedProvider } : {}),
     // Every chat sense answers an errored turn. The inner channel stays silent, and the CLI keeps showing its operator the raw error.
