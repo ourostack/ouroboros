@@ -34,16 +34,12 @@ const ALLOWED: Record<string, readonly string[]> = {
   ],
   "senses/telegram": [
     "heart/butler-agent",
-    "heart/daemon/sanctuary-acceptance-marker",
     "repertoire/tools-sanctuary-host",
     "senses/sanctuary-authority-resident",
     "senses/sanctuary-grounding",
     "senses/sanctuary-interactive-control",
     "senses/sanctuary-runtime",
     "senses/sanctuary-sab",
-  ],
-  "senses/telegram-approval-runtime": [
-    "heart/daemon/sanctuary-acceptance-marker",
   ],
   "senses/telegram-authority-transport": [
     "heart/daemon/sanctuary-authority-codec",

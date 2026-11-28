@@ -51,6 +51,8 @@ export interface OuroProduct {
   senses?: ProductSenses
   /** What the product's agent does for other agents over A2A beyond conversation (J8). */
   a2a?: ProductA2A
+  /** The live acceptance run the product's own harness may have started, which core's senses record evidence for. */
+  acceptance?: ProductAcceptance
 }
 
 export interface ProductA2A {
@@ -67,6 +69,19 @@ export interface ProductA2A {
 export interface ProductNotice {
   noticeId: string
   text: string
+}
+
+/** The acceptance run in progress, as core's senses need it: its handle's digest and, when it has one, its label. */
+export interface ProductAcceptanceMarker {
+  scenarioHandleDigest: string
+  label?: string
+}
+
+export interface ProductAcceptance {
+  /** The run in progress for this agent, or null. A marker that can't be read throws. */
+  marker(agentName: string): ProductAcceptanceMarker | null
+  /** Runs an approved tool call inside the run, bound to its approval, so the run's evidence can name it. */
+  runApproved<T>(approval: { approvalId: string; argumentDigest: string }, operation: () => T): T
 }
 
 export interface ProductSenses {

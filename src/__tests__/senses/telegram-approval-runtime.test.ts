@@ -141,6 +141,7 @@ import {
 import { ApprovalExecutionFailedError } from "../../heart/tool-approval"
 import { getSenseSessionPath } from "../../senses/shared-turn"
 import type { ToolContext } from "../../repertoire/tools-base"
+import { useButlerProduct } from "../test-helpers/butler-product"
 
 function success(text: string) { return { kind: "handler_succeeded" as const, text } }
 
@@ -389,6 +390,9 @@ describe("Telegram approval runtime safety", () => {
 })
 
 describe("Telegram approval runtime orchestration", () => {
+  // Acceptance runs are the Butler's (its product says when one is in progress), and these tests drive them as `sanctuary`.
+  useButlerProduct()
+
   it.each(["missing-producer", "wrong-root", "non-error"] as const)("refuses unavailable current authority at every decision seam: %s", async (change) => {
     if (change === "missing-producer") createTelegramApprovalRuntime({
       agentName: "sanctuary", api: { request: vi.fn(), stop: vi.fn() }, authorizedUserId: "10", authorizedChatId: "20",

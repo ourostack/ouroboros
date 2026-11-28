@@ -1,0 +1,1 @@
+The Butler's product registration now says when one of its live acceptance runs is in progress, and Telegram reads that to decide when to record the run's evidence. Telegram used to read the Butler's acceptance marker directly. Behaviour is unchanged on the Butler's image. An agent with no product never has an acceptance run.

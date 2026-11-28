@@ -8,7 +8,7 @@ import { ApprovalExecutionFailedError, commitApprovalProposal, executeApprovalDe
 import { getProviderRuntime, resumeApprovalContinuation, runAgent, type ApprovalCoordinator, type RunAgentOptions } from "../heart/core"
 import { getAgentRoot } from "../heart/identity"
 import { loadSessionEnvelopeFile, selectEffectiveSessionEvents } from "../heart/session-events"
-import { readSanctuaryAcceptanceMarker, runWithSanctuaryAcceptanceApproval } from "../heart/daemon/sanctuary-acceptance-marker"
+import { productAcceptanceMarker, productRunAcceptanceApproved } from "../heart/product/active"
 import { sanctuaryTelegramApprovalEvidenceMac } from "./telegram"
 import { saveSession } from "../mind/context"
 import { readSessionTransaction, withSessionTurnLease } from "../mind/session-transaction"
@@ -204,7 +204,7 @@ export function createTelegramApprovalRuntime(options: {
     meta: { agentName: options.agentName },
   })
   const now = options.dependencies?.now ?? Date.now
-  const acceptanceMarker = options.dependencies?.acceptanceMarker ?? (() => readSanctuaryAcceptanceMarker(options.agentName))
+  const acceptanceMarker = options.dependencies?.acceptanceMarker ?? (() => productAcceptanceMarker(options.agentName))
   const provider = options.dependencies?.runProvider ?? runAgent
   const resolveTool = options.dependencies?.resolveTool ?? resolveToolDefinition
   const agentRoot = options.dependencies?.agentRoot ?? getAgentRoot(options.agentName)
@@ -642,7 +642,8 @@ export function createTelegramApprovalRuntime(options: {
                 effectBarrier,
               )
               return decisionScenarioDigest
-                ? runWithSanctuaryAcceptanceApproval(
+                ? productRunAcceptanceApproved(
+                  options.agentName,
                   { approvalId: existing.approvalId, argumentDigest: existing.argumentDigest },
                   execute,
                 )

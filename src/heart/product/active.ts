@@ -2,7 +2,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { readContainerRuntimePolicy } from "../daemon/container-runtime"
 import type { ToolDefinition } from "../../repertoire/tools-base"
 import type {
-  OuroProduct, ProductEventSource, ProductNotice, ProductOwnerReply, ProductHabit, ProductSense, ProductSenseReadiness, ProductSenseReadinessInput, ProductSenses, ProductStatusInput,
+  OuroProduct, ProductAcceptanceMarker, ProductEventSource, ProductNotice, ProductOwnerReply, ProductHabit, ProductSense, ProductSenseReadiness, ProductSenseReadinessInput, ProductSenses, ProductStatusInput,
   ProductToolSelectionInput, ProductTools, ProductTurnContracts, ProductTurnContractsInput, ProductTurnContext, ProductTurnContextInput,
 } from "./types"
 
@@ -262,6 +262,31 @@ export function productSenseOwnerReply(agentName: string, sense: keyof ProductSe
     hookFailed(product!, "senses.presentOwnerReply", agentName, error, "the product's reply presentation failed, so the reply isn't sent")
     throw error
   }
+}
+
+/** The product's acceptance run in progress for this agent, or null (no product, or no run). A throw fails the caller. */
+export function productAcceptanceMarker(agentName: string): ProductAcceptanceMarker | null {
+  const product = productFor(agentName)
+  const acceptance = product?.acceptance
+  if (!acceptance) return null
+  try {
+    return acceptance.marker(agentName)
+  } catch (error) {
+    hookFailed(product!, "acceptance.marker", agentName, error, "the product's acceptance marker can't be read, so the caller fails")
+    throw error
+  }
+}
+
+/** The acceptance run's evidence fields for an event: its digest while a run is in progress, nothing otherwise. */
+export function productAcceptanceEventMeta(agentName: string): { scenarioHandleDigest: string } | Record<string, never> {
+  const marker = productAcceptanceMarker(agentName)
+  return marker ? { scenarioHandleDigest: marker.scenarioHandleDigest } : {}
+}
+
+/** Runs an approved tool call bound to its approval inside the product's acceptance run; runs it plainly without a product. */
+export function productRunAcceptanceApproved<T>(agentName: string, approval: { approvalId: string; argumentDigest: string }, operation: () => T): T {
+  const acceptance = productFor(agentName)?.acceptance
+  return acceptance ? acceptance.runApproved(approval, operation) : operation()
 }
 
 /** The tool calls a turn on the sense must make for the product's own agent (J6), or none. A throw from the product fails the turn. */

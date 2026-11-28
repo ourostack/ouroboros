@@ -21,7 +21,6 @@ import { FileFriendStore, getChannelCapabilities } from "@ouro.bot/friends"
 
 import { shieldDelegatedBanner } from "../a2a/delegated-command"
 import { getAgentRoot } from "../heart/identity"
-import { readSanctuaryAcceptanceMarker, sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
 import { readRuntimeCredentialConfig, readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { emitNervesEvent, emitNervesEventDurable } from "../nerves/runtime"
 import { renderChatInteraction, resolveChatInteractionTarget } from "../heart/chat-interaction"
@@ -54,7 +53,7 @@ import type { SanctuaryTelegramAuthorityTransport } from "./telegram-authority-t
 import { openSanctuaryResidentAuthority } from "./sanctuary-authority-resident"
 import { createRootHostApprovalRuntime } from "./root-host-approval-runtime"
 import { authorizeRootHostContext } from "../repertoire/tools-sanctuary-host"
-import { productSenseOwnerName, productSenseTurnContracts, productSenseOwnerReply, productTurnContext } from "../heart/product/active"
+import { productAcceptanceEventMeta, productAcceptanceMarker, productSenseOwnerName, productSenseOwnerReply, productSenseTurnContracts, productTurnContext } from "../heart/product/active"
 import type { ProductTurnContext } from "../heart/product/types"
 import { runWithSanctuaryToolReceiptCollection, type SanctuaryToolReceiptObserver } from "./sanctuary-runtime"
 import { renderSanctuaryGroundedResponse, sanctuaryGroundingDigest } from "./sanctuary-grounding"
@@ -831,7 +830,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   const useSanctuaryRuntime = isButlerAgent(options.agentName) && !options.runTurn
   const readScenarioHandleDigest = (): string | undefined => (options.acceptanceMarker
     ? options.acceptanceMarker()
-    : readSanctuaryAcceptanceMarker(options.agentName))?.scenarioHandleDigest
+    : productAcceptanceMarker(options.agentName))?.scenarioHandleDigest
   let acceptanceAuditLease: ReturnType<typeof acquireTelegramAcceptanceAudit> | undefined
   const retireAcceptanceAudit = (): void => {
     const lease = acceptanceAuditLease
@@ -1811,8 +1810,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const currentSessionKey = configuredOwnerSessionKey
     const currentSessionPath = getSenseSessionPath(options.agentName, currentFriendId, "telegram", currentSessionKey, agentRoot)
     const inboundReference = `telegram-inbound:${createHmac("sha256", identityKey).update(`${message.updateId}\0${message.messageId}`).digest("hex")}`
-    const acceptanceMarker = options.acceptanceMarker ? options.acceptanceMarker() : readSanctuaryAcceptanceMarker(options.agentName)
-    const acceptanceMeta = sanctuaryAcceptanceEventMeta(options.agentName)
+    const acceptanceMarker = options.acceptanceMarker ? options.acceptanceMarker() : productAcceptanceMarker(options.agentName)
+    const acceptanceMeta = productAcceptanceEventMeta(options.agentName)
     const groundedAcceptance = acceptanceMarker?.label === "unit-16d-whats-up" || acceptanceMarker?.label === "unit-16d-1-space"
     const acceptanceSchema = groundedAcceptance ? "sanctuary-telegram-turn-receipt-v4" : "sanctuary-telegram-turn-receipt-v3"
     const auditDigest = (purpose: string, value: string): string => sanctuaryTelegramTurnReceiptDigest(identityKey, acceptanceSchema, purpose, value)
@@ -2243,7 +2242,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         transportMetadata: authorityTransport.metadataForUpdate,
       } : {}),
       acceptanceEventMeta: (update, distinctAccount) => {
-        const marker = options.acceptanceMarker ? options.acceptanceMarker() : readSanctuaryAcceptanceMarker(options.agentName)
+        const marker = options.acceptanceMarker ? options.acceptanceMarker() : productAcceptanceMarker(options.agentName)
         if (!marker) return {}
         const auditOwnerMeta = acceptanceAuditLease ? { acceptanceAuditOwnerDigest: acceptanceAuditLease.ownerDigest } : {}
         const messageId = update?.message?.message_id ?? update?.callback_query?.message?.message_id

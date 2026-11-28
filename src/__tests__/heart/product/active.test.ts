@@ -3,12 +3,13 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
-  loadImageProduct, loadProduct, PRODUCT_SEAM_VERSION, productActiveWorkSections, productAgentAmong, productEventSource, productFor, productHabit,
+  loadImageProduct, loadProduct, productAcceptanceEventMeta, productAcceptanceMarker, productRunAcceptanceApproved, PRODUCT_SEAM_VERSION, productActiveWorkSections, productAgentAmong, productEventSource, productFor, productHabit,
   productSense, productSenseOwnerName, productSenseOwnerReply, productSenseReadiness, productSenseRepairHint, productToolDefinitions, productTools, productToolSelection, productTurnContext,
 } from "../../../heart/product/active"
 import type { ProductToolSelectionInput } from "../../../heart/product/types"
 import type { ToolDefinition } from "../../../repertoire/tools-base"
 import { product as butlerProduct } from "../../../products/butler"
+import { readSanctuaryAcceptanceApproval } from "../../../heart/daemon/sanctuary-acceptance-marker"
 import { cacheMachineRuntimeCredentialConfig } from "../../../heart/runtime-credentials"
 
 const PATH = "/opt/example/dist/product.js"
@@ -283,6 +284,43 @@ describe("the product seam", () => {
     expect(present("butler", { request: "why aren't my shows downloading?", text: broken })).toMatch(/^Downloads are paused to protect your prepaid credit\./u)
     expect(present("butler", { request: "why is it slow?", text: broken })).toBe(broken)
     expect(present("butler", { request: null, text: broken })).toBe(broken)
+  })
+
+  it("reads the product's acceptance run for its own agent only, gives its digest as event meta, and fails the caller when the read fails", () => {
+    expect(productAcceptanceMarker("helper")).toBeNull()
+    expect(productAcceptanceEventMeta("helper")).toEqual({})
+    loadProduct(PATH, () => ({ product }))
+    expect(productAcceptanceMarker("helper")).toBeNull()
+    const run = { scenarioHandleDigest: "a".repeat(64), label: "unit-16d-whats-up" }
+    const marker = vi.fn((_agent: string) => run as typeof run | null)
+    const acceptance = { marker, runApproved: <T>(_approval: unknown, operation: () => T) => operation() }
+    loadProduct(PATH, () => ({ product: { ...product, acceptance } }))
+    expect(productAcceptanceMarker("helper")).toBe(run)
+    expect(marker).toHaveBeenCalledWith("helper")
+    expect(productAcceptanceEventMeta("old-helper")).toEqual({ scenarioHandleDigest: "a".repeat(64) })
+    expect(productAcceptanceMarker("slugger")).toBeNull()
+    marker.mockReturnValueOnce(null)
+    expect(productAcceptanceEventMeta("helper")).toEqual({})
+    loadProduct(PATH, () => ({ product: { ...product, acceptance: { ...acceptance, marker: () => { throw new Error("marker is invalid") } } } }))
+    expect(() => productAcceptanceMarker("helper")).toThrow("marker is invalid")
+  })
+
+  it("runs an approved call inside the product's acceptance run for its own agent, and plainly otherwise", () => {
+    const approval = { approvalId: "approval-1", argumentDigest: "b".repeat(64) }
+    expect(productRunAcceptanceApproved("helper", approval, () => "plain")).toBe("plain")
+    const runApproved = vi.fn(<T>(_approval: unknown, operation: () => T): T => operation())
+    loadProduct(PATH, () => ({ product: { ...product, acceptance: { marker: () => null, runApproved } } }))
+    expect(productRunAcceptanceApproved("helper", approval, () => "bound")).toBe("bound")
+    expect(runApproved).toHaveBeenCalledWith(approval, expect.any(Function))
+    expect(productRunAcceptanceApproved("slugger", approval, () => "plain")).toBe("plain")
+    expect(runApproved).toHaveBeenCalledTimes(1)
+  })
+
+  it("has the Butler bind an approved call to its acceptance run, refusing an approval that isn't one", () => {
+    const approval = { approvalId: "approval-1", argumentDigest: "c".repeat(64) }
+    expect(butlerProduct.acceptance!.runApproved(approval, () => readSanctuaryAcceptanceApproval())).toEqual(approval)
+    expect(() => butlerProduct.acceptance!.runApproved({ approvalId: "", argumentDigest: "x" }, () => "ran")).toThrow("acceptance approval context is invalid")
+    expect(butlerProduct.acceptance!.marker("slugger")).toBeNull()
   })
 
   it("judges the Butler's Telegram ready only with both configs readable and no bot token in either, since the gateway holds it", () => {
