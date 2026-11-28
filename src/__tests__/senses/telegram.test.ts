@@ -80,7 +80,6 @@ function readLedger(root: string): Record<string, unknown>[] {
 
 function fixture(input: {
   agentName?: string
-  healthSweep?: any
   approvalRuntime?: any
   pollRun?: () => Promise<void>
   botToken?: string
@@ -144,7 +143,6 @@ function fixture(input: {
     runTurn,
     approvalTransport: input.approvalRuntime ? undefined : approvalTransport,
     approvalRuntime: input.approvalRuntime,
-    healthSweep: input.healthSweep,
     acceptanceMarker: input.acceptanceMarker,
     acceptanceReceiptRoot: input.acceptanceReceiptRoot,
     _agentRoot: agentRoot,
@@ -2633,38 +2631,5 @@ describe("Telegram sense", () => {
 
     await f.getOnMessage()({ updateId: 1518, messageId: "1519", userId: "42", chatId: "42", text: "What did you mean?", replyToMessageId: "71" })
     expect(f.runTurn.mock.calls[0]![0].ingressRelations.replyToEventId).toBe("evt-000002")
-  })
-
-  it("leaves startup health to the evidence-producing native habit", async () => {
-    const order: string[] = []
-    const healthSweep = Object.assign(
-      vi.fn(async () => ({ message: "Array degraded", deliveryId: "delivery-1" })),
-      {
-        markDeliveryAttempting: vi.fn(async () => { order.push("attempting") }),
-        markDelivered: vi.fn(async () => { order.push("delivered") }),
-      },
-    )
-    const f = fixture({ healthSweep })
-    ;(f.api.request as any).mockImplementation(async () => { order.push("send"); return { message_id: 71 } })
-
-    await f.app.run()
-
-    expect(order).toEqual([])
-    expect(healthSweep).not.toHaveBeenCalled()
-  })
-
-  it("does not attempt legacy health delivery even when Telegram would fail", async () => {
-    const healthSweep = Object.assign(
-      vi.fn(async () => ({ message: "Array degraded", deliveryId: "delivery-1" })),
-      { markDeliveryAttempting: vi.fn(), markDelivered: vi.fn() },
-    )
-    const f = fixture({ healthSweep })
-    ;(f.api.request as any).mockRejectedValue(new Error("offline"))
-
-    await f.app.run()
-
-    expect(healthSweep.markDeliveryAttempting).not.toHaveBeenCalled()
-    expect(healthSweep.markDelivered).not.toHaveBeenCalled()
-    expect(f.api.request).not.toHaveBeenCalled()
   })
 })

@@ -4,7 +4,7 @@ import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   loadImageProduct, loadProduct, PRODUCT_SEAM_VERSION, productActiveWorkSections, productAgentAmong, productEventSource, productFor, productHabit,
-  productSense, productSenseReadiness, productSenseRepairHint, productToolDefinitions, productTools, productToolSelection, productTurnContext,
+  productSense, productSenseOwnerName, productSenseOwnerReply, productSenseReadiness, productSenseRepairHint, productToolDefinitions, productTools, productToolSelection, productTurnContext,
 } from "../../../heart/product/active"
 import type { ProductToolSelectionInput } from "../../../heart/product/types"
 import type { ToolDefinition } from "../../../repertoire/tools-base"
@@ -248,6 +248,41 @@ describe("the product seam", () => {
     expect(productSenseRepairHint("slugger", "telegram")).toBeNull()
     loadProduct(PATH, () => ({ product: { ...product, senses: { telegram: { ...telegram, repairHint: () => { throw new Error("no hint") } } } } }))
     expect(() => productSenseRepairHint("helper", "telegram")).toThrow("no hint")
+  })
+
+  it("shows the product's owner name for its own agent only, says Owner otherwise, and fails the turn when the name fails", () => {
+    expect(productSenseOwnerName("helper", "telegram")).toBe("Owner")
+    const base = { needsMachineConfig: false, readiness: () => ({ configured: true, detail: "x" }), repairHint: () => "fix" }
+    loadProduct(PATH, () => ({ product: { ...product, senses: { telegram: base } } }))
+    expect(productSenseOwnerName("helper", "telegram")).toBe("Owner")
+    loadProduct(PATH, () => ({ product: { ...product, senses: { telegram: { ...base, ownerName: (agent: string) => `Ada of ${agent}` } } } }))
+    expect(productSenseOwnerName("helper", "telegram")).toBe("Ada of helper")
+    expect(productSenseOwnerName("slugger", "telegram")).toBe("Owner")
+    loadProduct(PATH, () => ({ product: { ...product, senses: { telegram: { ...base, ownerName: () => { throw new Error("house unreadable") } } } } }))
+    expect(() => productSenseOwnerName("helper", "telegram")).toThrow("house unreadable")
+  })
+
+  it("lets the product present its own agent's replies to the owner, sends others unchanged, and fails the send when it fails", () => {
+    const reply = { request: "why?", text: "because" }
+    expect(productSenseOwnerReply("helper", "telegram", reply)).toBe("because")
+    const base = { needsMachineConfig: false, readiness: () => ({ configured: true, detail: "x" }), repairHint: () => "fix" }
+    loadProduct(PATH, () => ({ product: { ...product, senses: { telegram: base } } }))
+    expect(productSenseOwnerReply("helper", "telegram", reply)).toBe("because")
+    const presentOwnerReply = vi.fn((_agent: string, { request, text }: { request: string | null; text: string }) => `${text}, since ${request}`)
+    loadProduct(PATH, () => ({ product: { ...product, senses: { telegram: { ...base, presentOwnerReply } } } }))
+    expect(productSenseOwnerReply("helper", "telegram", reply)).toBe("because, since why?")
+    expect(presentOwnerReply).toHaveBeenCalledWith("helper", reply)
+    expect(productSenseOwnerReply("slugger", "telegram", reply)).toBe("because")
+    loadProduct(PATH, () => ({ product: { ...product, senses: { telegram: { ...base, presentOwnerReply: () => { throw new Error("bad reply") } } } } }))
+    expect(() => productSenseOwnerReply("helper", "telegram", reply)).toThrow("bad reply")
+  })
+
+  it("has the Butler rewrite only the exact download question's credit reply, for the owner of its own agent", () => {
+    const present = butlerProduct.senses!.telegram!.presentOwnerReply!
+    const broken = "SABnzbd says credit is exhausted. Top up at https://www.astraweb.com/login."
+    expect(present("butler", { request: "why aren't my shows downloading?", text: broken })).toMatch(/^Downloads are paused to protect your prepaid credit\./u)
+    expect(present("butler", { request: "why is it slow?", text: broken })).toBe(broken)
+    expect(present("butler", { request: null, text: broken })).toBe(broken)
   })
 
   it("judges the Butler's Telegram ready only with both configs readable and no bot token in either, since the gateway holds it", () => {

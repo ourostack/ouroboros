@@ -10,17 +10,34 @@ vi.mock("../../heart/identity", async (importOriginal) => ({
 }))
 
 import { ownerDisplayName } from "../../senses/telegram"
+import { loadProduct } from "../../heart/product/active"
+import { useButlerProduct } from "../test-helpers/butler-product"
 
-describe("Telegram owner display name", () => {
-  afterEach(() => { fs.rmSync(path.join(root, "sanctuary.ouro"), { recursive: true, force: true }) })
+function nameOwner(agentName: string, ownerName: string): void {
+  fs.mkdirSync(path.join(root, `${agentName}.ouro`, "house"), { recursive: true })
+  fs.writeFileSync(path.join(root, `${agentName}.ouro`, "house", "house.json"), JSON.stringify({ ownerName }))
+}
 
-  it("uses the owner's name from house config", () => {
-    fs.mkdirSync(path.join(root, "sanctuary.ouro", "house"), { recursive: true })
-    fs.writeFileSync(path.join(root, "sanctuary.ouro", "house", "house.json"), JSON.stringify({ ownerName: "Sam" }))
-    expect(ownerDisplayName("sanctuary")).toBe("Sam")
+afterEach(() => { for (const agent of ["butler", "sanctuary", "slugger"]) fs.rmSync(path.join(root, `${agent}.ouro`), { recursive: true, force: true }) })
+
+describe("Telegram owner display name, on the Butler's image", () => {
+  useButlerProduct()
+
+  it.each(["butler", "sanctuary"])("uses the owner's name from %s's house config", (agent) => {
+    nameOwner(agent, "Ada")
+    expect(ownerDisplayName(agent)).toBe("Ada")
   })
 
   it("says Owner when the household has not named its owner", () => {
-    expect(ownerDisplayName("sanctuary")).toBe("Owner")
+    expect(ownerDisplayName("butler")).toBe("Owner")
+  })
+})
+
+describe("Telegram owner display name, for an agent with no product", () => {
+  afterEach(() => { loadProduct(undefined) })
+
+  it("says Owner, whatever a house config in its bundle says", () => {
+    nameOwner("slugger", "Ada")
+    expect(ownerDisplayName("slugger")).toBe("Owner")
   })
 })

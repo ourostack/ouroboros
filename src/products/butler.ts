@@ -15,6 +15,8 @@ import type { ToolDefinition } from "../repertoire/tools-base"
 import type { ButlerVisibilitySection } from "../repertoire/butler-status"
 import { rootHostToolDefinition, selectRootHostTool } from "../repertoire/tools-sanctuary-host"
 import { readOrCreateTelegramIdentityKey } from "../senses/telegram-identity-key"
+import { DEFAULT_SANCTUARY_HOUSE, readSanctuaryHouse } from "../senses/sanctuary-house"
+import { presentSanctuaryDownloadCreditReply } from "../senses/sanctuary-download-credit-presentation"
 import type { DaemonResponse } from "../heart/daemon/daemon"
 
 
@@ -145,6 +147,14 @@ export const product: OuroProduct = {
         ? { configured: true, detail: "root authority transport; gateway validated at process startup" }
         : { configured: false, detail: "root authority migration requires available tokenless credential inventories" },
       repairHint: () => "Agent-runnable: complete or recover the root authority migration; do not restore a resident Telegram token.",
+      // The owner's name is the household's own (house/house.json); a household that hasn't named one gets "Owner".
+      ownerName: (agentName) => {
+        const { ownerName } = readSanctuaryHouse(getAgentRoot(agentName))
+        return ownerName === DEFAULT_SANCTUARY_HOUSE.ownerName ? "Owner" : ownerName
+      },
+      // "Why aren't my shows downloading?" gets the household's credit top-up reply, never the downloaders' internals.
+      presentOwnerReply: (agentName, { request, text }) =>
+        presentSanctuaryDownloadCreditReply(agentName, request === "why aren't my shows downloading?", text),
     },
   },
   // J8: the Butler takes delegated commands from peers the operator granted, each announced in the owner's own Telegram

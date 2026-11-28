@@ -2,7 +2,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { readContainerRuntimePolicy } from "../daemon/container-runtime"
 import type { ToolDefinition } from "../../repertoire/tools-base"
 import type {
-  OuroProduct, ProductEventSource, ProductNotice, ProductHabit, ProductSense, ProductSenseReadiness, ProductSenseReadinessInput, ProductSenses, ProductStatusInput,
+  OuroProduct, ProductEventSource, ProductNotice, ProductOwnerReply, ProductHabit, ProductSense, ProductSenseReadiness, ProductSenseReadinessInput, ProductSenses, ProductStatusInput,
   ProductToolSelectionInput, ProductTools, ProductTurnContext, ProductTurnContextInput,
 } from "./types"
 
@@ -234,6 +234,32 @@ export function productSenseReadiness(agentName: string, sense: keyof ProductSen
     return own.readiness(input)
   } catch (error) {
     hookFailed(product!, "senses.readiness", agentName, error, "the product's sense readiness failed, so the sense's status can't be read")
+    throw error
+  }
+}
+
+/** The name a sense shows for the admitted owner (J6): the product's, or "Owner". A throw from the product fails the turn. */
+export function productSenseOwnerName(agentName: string, sense: keyof ProductSenses): string {
+  const product = productFor(agentName)
+  const own = product?.senses?.[sense]?.ownerName
+  if (!own) return "Owner"
+  try {
+    return own(agentName)
+  } catch (error) {
+    hookFailed(product!, "senses.ownerName", agentName, error, "the product's owner name failed, so the owner's turn fails")
+    throw error
+  }
+}
+
+/** The text the owner gets for a reply (J6): the product's presentation of it, or the reply unchanged. A throw fails the send. */
+export function productSenseOwnerReply(agentName: string, sense: keyof ProductSenses, reply: ProductOwnerReply): string {
+  const product = productFor(agentName)
+  const own = product?.senses?.[sense]?.presentOwnerReply
+  if (!own) return reply.text
+  try {
+    return own(agentName, reply)
+  } catch (error) {
+    hookFailed(product!, "senses.presentOwnerReply", agentName, error, "the product's reply presentation failed, so the reply isn't sent")
     throw error
   }
 }

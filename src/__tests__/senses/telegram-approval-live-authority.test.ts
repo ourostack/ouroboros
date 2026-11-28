@@ -89,7 +89,6 @@ describe("configured-owner Telegram approval authority", () => {
         createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }),
         migrateIdentity: async () => undefined,
         acceptanceMarker: () => null,
-        healthSweep: unused,
         _createInteractiveControl: () => ({ socketPath: path.join(root, "unused.sock"), start: unused, stop: async () => undefined }),
         productContext: { agentRoot: root, sanctuary: {
           listContainers: inventory, getContainerLogs: unused, getStorage: unused, getDisks: unused,
