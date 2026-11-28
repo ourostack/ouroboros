@@ -2,7 +2,7 @@ import * as path from "node:path"
 
 import { BUTLER_AGENT_NAMES } from "../heart/butler-agent"
 import { getAgentBundlesRoot, getAgentRoot } from "../heart/identity"
-import { readSanctuaryAcceptanceMarker, type SanctuaryAcceptanceMarker } from "../heart/daemon/sanctuary-acceptance-marker"
+import { readSanctuaryAcceptanceMarker, runWithSanctuaryAcceptanceApproval, type SanctuaryAcceptanceMarker } from "../heart/daemon/sanctuary-acceptance-marker"
 import { readSanctuaryHealthCursor, recordSanctuarySchedulerLivenessReceipt } from "../heart/daemon/sanctuary-scheduler-liveness"
 import {
   prepareSanctuaryPackageManagedBundle,
@@ -167,6 +167,11 @@ export const product: OuroProduct = {
       },
     },
     escalation: true,
+  },
+  // The Butler's live acceptance harness marks a run in its bundle; Telegram records the run's evidence while one is in progress.
+  acceptance: {
+    marker: (agentName) => readSanctuaryAcceptanceMarker(agentName),
+    runApproved: (approval, operation) => runWithSanctuaryAcceptanceApproval(approval, operation),
   },
   // J5: the house check runs in the daemon, and only Supercronic may fire it on its cron schedule.
   habits: {
