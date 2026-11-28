@@ -96,6 +96,11 @@ describe("container healthcheck", () => {
     expect(process.exitCode).toBe(1)
   })
 
+  it("fails when a provider live check is failing, even in partial status", () => {
+    readFileSync.mockReturnValue(JSON.stringify(healthyState({ status: "partial", degraded: [{ component: "provider:sanctuary", reason: "x", since: "t" }] })))
+    expect(() => run()).toThrow(expect.objectContaining({ message: "provider failed its live check" }))
+  })
+
   it("accepts a partial daemon status", () => {
     readFileSync.mockReturnValue(JSON.stringify(healthyState({ status: "partial" })))
     expect(() => run()).not.toThrow()

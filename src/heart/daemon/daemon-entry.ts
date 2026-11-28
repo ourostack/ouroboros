@@ -744,9 +744,21 @@ function setVaultDegraded(agent: string, reason: string): void {
   else degradedComponents.push({ component, reason: fullReason, since: new Date().toISOString() })
 }
 
+// The vault answered, so the vault component is cleared and the provider's own failure and repair line are shown instead.
+function setProviderFailed(agent: string, reason: string, fix: string | undefined): void {
+  clearVaultDegraded(agent)
+  const component = `provider:${agent}`
+  const fullReason = `${reason}. Fix: ${fix ?? "run 'ouro doctor'; the daemon stays up and retries."}`
+  const existing = degradedComponents.find((entry) => entry.component === component)
+  if (existing) existing.reason = fullReason
+  else degradedComponents.push({ component, reason: fullReason, since: new Date().toISOString() })
+}
+
 function clearVaultDegraded(agent: string): void {
-  const index = degradedComponents.findIndex((entry) => entry.component === `vault:${agent}`)
-  if (index >= 0) degradedComponents.splice(index, 1)
+  for (const component of [`vault:${agent}`, `provider:${agent}`]) {
+    const index = degradedComponents.findIndex((entry) => entry.component === component)
+    if (index >= 0) degradedComponents.splice(index, 1)
+  }
 }
 
 /* v8 ignore stop */
@@ -776,6 +788,7 @@ async function prepareProviderRuntime(): Promise<void> {
     check: checkProviderRuntime,
     onDegraded: setVaultDegraded,
     onRecovered: clearVaultDegraded,
+    onProviderFailed: setProviderFailed,
   })
   if (failures.length > 0) {
     throw createProviderReadinessPreparationFailure(failures)

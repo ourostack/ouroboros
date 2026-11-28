@@ -21,15 +21,17 @@ function harness(check: (agent: string) => Promise<ConfigCheckResult>) {
   const timers: Array<{ run: () => void; delayMs: number }> = []
   const onDegraded = vi.fn()
   const onRecovered = vi.fn()
+  const onProviderFailed = vi.fn()
   const deps = {
     check: vi.fn(check),
     onDegraded,
     onRecovered,
+    onProviderFailed,
     schedule: (run: () => void, delayMs: number) => { timers.push({ run, delayMs }); return { unref: vi.fn() } },
     initialDelayMs: 10,
     maxDelayMs: 25,
   }
-  return { deps, timers, onDegraded, onRecovered }
+  return { deps, timers, onDegraded, onRecovered, onProviderFailed }
 }
 
 async function boot(agents: string[], deps: ReturnType<typeof harness>["deps"]) {
@@ -97,6 +99,19 @@ describe("daemon startup during a vault outage", () => {
     expect(timers).toHaveLength(3)
     expect(onDegraded).toHaveBeenCalledTimes(3)
     answers = []
+  })
+
+  it("reports a provider failure after the vault answers, with the provider's own repair line", async () => {
+    const answers: ConfigCheckResult[] = [unreachable, { ok: false, error: "provider failed live check: 400", fix: "restore quota", providerFailure: true }]
+    const { deps, timers, onDegraded, onProviderFailed } = harness(async () => answers.shift()!)
+    await prepareProviderRuntimeTolerantOfVaultOutage(["slugger"], deps)
+    timers[0]!.run(); await flush()
+    expect(onProviderFailed).toHaveBeenCalledWith("slugger", "provider failed live check: 400", "restore quota")
+    expect(onDegraded).toHaveBeenCalledTimes(1)
+    expect(timers).toHaveLength(2)
+    answers.push({ ok: false, providerFailure: true })
+    timers[1]!.run(); await flush()
+    expect(onProviderFailed).toHaveBeenLastCalledWith("slugger", "vault request to /identity/accounts/prelogin timed out", undefined)
   })
 
   it("keeps the agent degraded with the rejection reason if the vault comes back but refuses us", async () => {
