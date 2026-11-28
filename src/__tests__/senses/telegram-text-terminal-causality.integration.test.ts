@@ -50,6 +50,7 @@ import { getSenseSessionPath } from "../../senses/shared-turn"
 import type { TelegramInboundMessage, TelegramLongPollOptions } from "../../senses/telegram-client"
 import * as nervesRuntime from "../../nerves/runtime"
 import type { ProviderRuntime } from "../../heart/core"
+import { useButlerProduct } from "../test-helpers/butler-product"
 
 const DRAFT = "Yes, I can see titles like The Pitt."
 const MID_TURN = "i found the shelf — checking the final count now"
@@ -61,6 +62,9 @@ const CATALOG_RESULT = JSON.stringify({
 })
 
 describe("Telegram text-terminal delivery causality", () => {
+  // The Butler's image: its product sets the owner's and household's turn contracts.
+  useButlerProduct()
+
   let originalArgv: string[]
   const identityKey = "k".repeat(43)
   const botToken = "777:fake-telegram-token"
