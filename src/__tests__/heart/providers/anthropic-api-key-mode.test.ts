@@ -170,6 +170,8 @@ describe("Anthropic API-key mode", () => {
     const creditLow = '400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}'
     expect(classifyAnthropicError(httpError(400, creditLow))).toBe("usage-limit")
     expect(classifyAnthropicError(httpError(402, "YOUR CREDIT BALANCE IS TOO LOW"))).toBe("usage-limit")
+    const workspaceLimit = '400 {"type":"error","error":{"type":"invalid_request_error","message":"You have reached your specified workspace API usage limits. You will regain access on 2026-12-01 at 00:00 UTC."}}'
+    expect(classifyAnthropicError(httpError(400, workspaceLimit))).toBe("usage-limit")
     expect(classifyAnthropicError(httpError(400, "messages: field required"))).toBe("unknown")
     expect(classifyAnthropicError(httpError(500, creditLow))).toBe("server-error")
     expect(classifyAnthropicError(httpError(undefined, '{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}'))).toBe("auth-failure")

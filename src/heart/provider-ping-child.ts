@@ -83,7 +83,7 @@ export async function pingProviderInChild(
     const outcome = await (deps.runChild ?? runProviderPingChild)(JSON.stringify(request))
     const result = parsePingResult(outcome.stdout)
     if (result) {
-      emitNervesEvent({ component: "engine", event: "engine.provider_ping_child_done", message: "provider ping ran in a child process", meta: { provider, ok: result.ok } })
+      emitNervesEvent({ component: "engine", event: "engine.provider_ping_child_done", message: "provider ping ran in a child process", meta: result.ok ? { provider, ok: true } : { provider, ok: false, classification: result.classification, reason: result.message } })
       return result
     }
     failure = `exit ${outcome.code} without a result`

@@ -25,7 +25,15 @@ describe("pingProviderInChild", () => {
     expect(result).toEqual({ ok: false, classification: "auth-failure", message: "401" })
     expect(JSON.parse(runChild.mock.calls[0]![0])).toEqual({ provider: "github-copilot", config, options: { model: "m", timeoutMs: 5, attemptPolicy: { maxAttempts: 1 } } })
     expect(pingInProcess).not.toHaveBeenCalled()
-    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "engine.provider_ping_child_done", meta: { provider: "github-copilot", ok: false } }))
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "engine.provider_ping_child_done", meta: { provider: "github-copilot", ok: false, classification: "auth-failure", reason: "401" } }))
+  })
+
+  it("reports a child's successful ping without a classification", async () => {
+    const runChild = vi.fn(async () => ({ code: 0, stdout: '{"ok":true}\n' }))
+    const pingInProcess = vi.fn()
+    await expect(pingProviderInChild("github-copilot", config, { model: "m" }, { runChild, pingInProcess })).resolves.toEqual({ ok: true })
+    expect(pingInProcess).not.toHaveBeenCalled()
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "engine.provider_ping_child_done", meta: { provider: "github-copilot", ok: true } }))
   })
 
   it("pings in this process when the child gives no usable result or can't start", async () => {
