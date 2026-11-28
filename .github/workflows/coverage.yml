@@ -743,14 +743,14 @@ jobs:
 
   # Waits out npm's registry propagation, then hands the exact published bytes to the
   # GitHub release. It runs beside the container build, not before it, so the wait
-  # (up to ten minutes) holds up nothing but the GitHub release.
+  # (up to an hour per package) holds up nothing but the GitHub release.
   verify-npm:
     needs:
       - publish
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.publish.outputs.release == 'true'
     runs-on: ubuntu-latest
-    # Room for the two exact-version waits (60 min each at most), the two latest-tag waits (10 min each), the
-    # tarball wait (about 21 min), the install and the smoke: 120 + 20 + 21 + 5 = 166 min, 14 min of slack.
+    # Room for the two exact-version waits (60 min each at most), the tarball wait (about 21 min), the install
+    # and the smoke: 120 + 21 + 5 = 146 min, 34 min of slack.
     timeout-minutes: 180
     steps:
       - name: Checkout
@@ -763,7 +763,7 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
-      # For the latest check's semver, from the lockfile.
+      # For the release smoke's dependencies, from the lockfile.
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
@@ -774,14 +774,9 @@ jobs:
           CLI_TAG="${{ needs.publish.outputs.cli_tag }}"
           WRAPPER_TAG="${{ needs.publish.outputs.wrapper_tag }}"
 
-          # npm's public read path can lag a successful publish by minutes — observed
-          # at roughly four minutes for 0.1.0-alpha.821. A window shorter than the lag
-          # fails a release that actually succeeded, and a false failure here also
-          # fails the GitHub release that follows.
-          PROPAGATION_DEADLINE_SECONDS=600
-
-          # The exact-version window is longer, as a mitigation budget and not a registry
-          # guarantee. For 0.1.0-alpha.1519 the exact-version endpoint answered 404 on every 30 s
+          # npm's public read path can lag a successful publish by minutes, and a window
+          # shorter than the lag fails a release that actually succeeded. The window is a
+          # mitigation budget, not a registry guarantee. For 0.1.0-alpha.1519 the exact-version endpoint answered 404 on every 30 s
           # read until 12:22:01Z and 200 at 12:22:31Z, about 55 minutes after its publish job
           # ended, and the packument then listed it; the same gap appears in the registry's own
           # `time` for 1476, 1488 and 1493 (issue 1740, comment 7131366023). 3600 s is that
@@ -795,12 +790,9 @@ jobs:
           scripts/npm-verify-exact-version.sh "@ouro.bot/cli" "$LOCAL"
           scripts/npm-verify-exact-version.sh "ouro.bot" "$LOCAL"
 
-          # Published on latest: latest must now read this version or a later one,
-          # never an older one. It can lag the version, so this waits out the same window,
-          # then prints diagnostics from other registry read paths if it still reads older.
-          export LATEST_DEADLINE_SECONDS="$PROPAGATION_DEADLINE_SECONDS"
-          if [ "$CLI_TAG" = latest ]; then scripts/npm-verify-latest-tag.sh "@ouro.bot/cli" "$LOCAL"; fi
-          if [ "$WRAPPER_TAG" = latest ]; then scripts/npm-verify-latest-tag.sh "ouro.bot" "$LOCAL"; fi
+          # No wait on the latest dist-tag itself: npm has left latest behind a version published
+          # on it for over ten minutes (0.1.0-alpha.1630 while 1631 to 1635 went out, 2026-11-26),
+          # and the tag catches up on its own. publish-tag already refuses to move latest back.
 
           echo "selected npm dist-tags verified by exact version ${LOCAL} (tags: cli=${CLI_TAG}, wrapper=${WRAPPER_TAG})"
 

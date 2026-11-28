@@ -91,8 +91,8 @@ function resolvePublishTag(packageName, localVersion, deps = {}) {
   return { ...plan, latestVersion };
 }
 
-// After a publish on latest: latest must read the version just published or a later one. Publishes run one at a time
-// in push order, so an older latest means a publish went out of order or npm has not caught up yet.
+// Whether latestVersion is at or after publishedVersion; github-release uses it to keep an older release from
+// becoming latest.
 function assessLatestAfterPublish({ publishedVersion, latestVersion }) {
   if (!semver.valid(latestVersion)) {
     return { ok: false, reason: `latest reads ${latestVersion || "nothing"}, not a version` };
@@ -106,7 +106,6 @@ function assessLatestAfterPublish({ publishedVersion, latestVersion }) {
 function printUsageAndExit() {
   console.error("usage:");
   console.error("  node scripts/npm-dist-tag-policy.cjs publish-tag <package> <version>");
-  console.error("  node scripts/npm-dist-tag-policy.cjs latest-check <package> <published-version>");
   process.exit(2);
 }
 
@@ -119,12 +118,6 @@ if (require.main === module) {
       const result = resolvePublishTag(packageName, localVersion);
       console.error(`${packageName}: ${result.reason}`);
       console.log(result.tag);
-    } else if (command === "latest-check") {
-      const [packageName, publishedVersion] = args;
-      if (!packageName || !publishedVersion) printUsageAndExit();
-      const result = assessLatestAfterPublish({ publishedVersion, latestVersion: npmViewLatestVersion(packageName) });
-      console.log(`${packageName}: ${result.reason}`);
-      if (!result.ok) process.exit(1);
     } else {
       printUsageAndExit();
     }
