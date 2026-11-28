@@ -147,6 +147,17 @@ export const product: OuroProduct = {
       repairHint: () => "Agent-runnable: complete or recover the root authority migration; do not restore a resident Telegram token.",
     },
   },
+  // J8: the Butler takes delegated commands from peers the operator granted, each announced in the owner's own Telegram
+  // chat before it runs (never through the owner route, never held), and files and confirms failure reports.
+  a2a: {
+    delegation: {
+      notifyPrincipal: async (agentName, notice) => {
+        const { sendTelegramDelegatedAuditNotice } = await import("../senses/telegram")
+        await sendTelegramDelegatedAuditNotice(agentName, { ...notice, signal: AbortSignal.timeout(30_000) })
+      },
+    },
+    escalation: true,
+  },
   // J5: the house check runs in the daemon, and only Supercronic may fire it on its cron schedule.
   habits: {
     "sanctuary-health": {
