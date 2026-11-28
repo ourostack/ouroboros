@@ -26,7 +26,7 @@ import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { createBridgeManager } from "./bridges/manager"
 import { getAgentName, getAgentRoot, loadAgentConfig, type AgentSensesConfig, type SenseName } from "./identity"
-import { isButlerAgent } from "./butler-agent"
+import { productSenseReadiness } from "./product/active"
 import { getCodingSessionManager } from "../repertoire/coding"
 import { listSessionActivity } from "./session-activity"
 import { readPrivateRuntimeRawData, derivePrivateRuntimeStatus, deriveInnerJob, getPrivateRuntimeSessionPath } from "./daemon/thoughts"
@@ -287,14 +287,11 @@ export function readSenseStatusLines(): string[] {
         ? openAIRealtimeVoiceReady
         : cascadeVoiceReady,
     a2a: true,
-    // Sanctuary's resident is deliberately tokenless: the root authority gateway holds the
-    // token, so a token in the resident's config would be the misconfiguration. Mirror the
-    // daemon's rule (sense-manager) instead of reporting a working sense as needs_config (D-047).
-    telegram: isButlerAgent(agentName)
-      ? runtimeConfig.ok && machineRuntimeConfig.ok && !Object.hasOwn(runtimePayload, "telegramBotToken") && !Object.hasOwn(machinePayload, "telegramBotToken")
-      : hasTextField(runtimePayload, "telegramBotToken")
+    // A product that runs Telegram its own way judges its readiness, the same judgement the daemon's sense status reads (D-047).
+    telegram: productSenseReadiness(agentName, "telegram", { runtime: { ok: runtimeConfig.ok, config: runtimePayload }, machine: { ok: machineRuntimeConfig.ok, config: machinePayload } })?.configured
+      ?? (hasTextField(runtimePayload, "telegramBotToken")
         && hasTextField(runtimePayload, "telegramAuthorizedUserId")
-        && hasTextField(runtimePayload, "telegramAuthorizedChatId"),
+        && hasTextField(runtimePayload, "telegramAuthorizedChatId")),
     workbench: false,
     shepherd: shepherdSenseStatus(true, machinePayload) === "ready",
     "app-sessions": true,

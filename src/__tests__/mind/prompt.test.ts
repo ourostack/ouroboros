@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, onTestFinished } from "vitest"
 import * as path from "path"
 import * as nodeFs from "node:fs"
 
@@ -776,6 +776,38 @@ describe("buildSystem", () => {
     })
     resetPsycheCache()
     expect(flattenSystemPrompt(await buildSystem("cli"))).toContain("Telegram: ready")
+  })
+
+  it("reports a product's own Telegram by the product's readiness, not core's token rule", async () => {
+    setupReadFileSync()
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { maxTokens: 80000, contextMargin: 20 },
+      senses: { telegram: { enabled: true } },
+      phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    const { cacheRuntimeCredentialConfig, cacheMachineRuntimeCredentialConfig } = await import("../../heart/runtime-credentials")
+    const { loadProduct } = await import("../../heart/product/active")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    let tokenless = true
+    const readiness = vi.fn(() => ({ configured: tokenless, detail: "gateway" }))
+    loadProduct("/opt/example/product.js", () => ({ product: { seamVersion: 1, id: "example", agents: ["testagent"], senses: { telegram: { needsMachineConfig: true, readiness, repairHint: () => "fix" } } } }))
+    onTestFinished(() => { loadProduct(undefined) })
+    cacheRuntimeCredentialConfig("testagent", {})
+    cacheMachineRuntimeCredentialConfig("testagent", {})
+    resetPsycheCache()
+    expect(flattenSystemPrompt(await buildSystem("cli"))).toContain("Telegram: ready")
+    expect(readiness).toHaveBeenCalledWith({ runtime: { ok: true, config: {} }, machine: { ok: true, config: {} } })
+    tokenless = false
+    cacheRuntimeCredentialConfig("testagent", { telegramBotToken: "token", telegramAuthorizedUserId: "42", telegramAuthorizedChatId: "7" })
+    resetPsycheCache()
+    expect(flattenSystemPrompt(await buildSystem("cli"))).toContain("Telegram: needs_config")
   })
 
   it("reports cmux ready only when this machine holds cmux socket auth", async () => {

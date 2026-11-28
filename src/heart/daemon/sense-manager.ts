@@ -4,7 +4,7 @@ import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { DEFAULT_AGENT_SENSES, hasStaleWorkbenchBundleEntry, normalizeAppSessionsConfig, type AgentSensesConfig, type SenseName } from "../identity"
-import { isButlerAgent } from "../butler-agent"
+import { productSense, productSenseReadiness, productSenseRepairHint } from "../product/active"
 import {
   confirmedAbsentRuntimeCredentialItems,
   readMachineRuntimeCredentialConfig,
@@ -277,7 +277,7 @@ function runtimeConfigUnavailableDetail(
 }
 
 function needsMachineRuntimeConfig(agent: string, sense: SenseName): boolean {
-  return sense === "bluebubbles" || sense === "voice" || sense === "a2a" || sense === "shepherd" || (isButlerAgent(agent) && sense === "telegram")
+  return sense === "bluebubbles" || sense === "voice" || sense === "a2a" || sense === "shepherd" || (sense === "telegram" && productSense(agent, "telegram")?.needsMachineConfig === true)
 }
 
 function senseFactsFromRuntimeConfig(
@@ -312,12 +312,11 @@ function senseFactsFromRuntimeConfig(
   const voice = machinePayload.voice as Record<string, unknown> | undefined
   const a2a = machinePayload.a2a as Record<string, unknown> | undefined
 
-  if (senses.telegram.enabled && isButlerAgent(agent)) {
-    const ready = runtimeConfig.ok && machineRuntimeConfig.ok
-      && !Object.hasOwn(payload, "telegramBotToken") && !Object.hasOwn(machinePayload, "telegramBotToken")
-    base.telegram = ready
-      ? { configured: true, detail: "root authority transport; gateway validated at process startup" }
-      : { configured: false, detail: "root authority migration requires available tokenless credential inventories" }
+  const productTelegram = senses.telegram.enabled
+    ? productSenseReadiness(agent, "telegram", { runtime: { ok: runtimeConfig.ok, config: payload }, machine: { ok: machineRuntimeConfig.ok, config: machinePayload } })
+    : null
+  if (productTelegram) {
+    base.telegram = productTelegram
   } else if (senses.telegram.enabled) {
     const missing = ["telegramBotToken", "telegramAuthorizedUserId", "telegramAuthorizedChatId"]
       .filter((field) => !textField(payload, field))
@@ -510,9 +509,8 @@ function senseRepairHint(agent: string, sense: SenseName): string {
     return `Agent-runnable: run 'ouro connect a2a --agent ${agent}', then restart with 'ouro up'.`
   }
   if (sense === "telegram") {
-    return isButlerAgent(agent)
-      ? "Agent-runnable: complete or recover the root authority migration; do not restore a resident Telegram token."
-      : `Agent-runnable: store Telegram bot/user/chat coordinates with 'ouro connect telegram --agent ${agent}', then restart with 'ouro up'.`
+    return productSenseRepairHint(agent, "telegram")
+      ?? `Agent-runnable: store Telegram bot/user/chat coordinates with 'ouro connect telegram --agent ${agent}', then restart with 'ouro up'.`
   }
   if (sense === "shepherd") return shepherdRepairHint(agent)
   /* v8 ignore next -- Workbench is deliberately not daemon-managed, so getSenseInventory never asks the daemon manager for a repair hint @preserve */

@@ -4,7 +4,7 @@ import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   loadImageProduct, loadProduct, PRODUCT_SEAM_VERSION, productActiveWorkSections, productAgentAmong, productEventSource, productFor, productHabit,
-  productToolDefinitions, productTools, productToolSelection, productTurnContext,
+  productSense, productSenseReadiness, productSenseRepairHint, productToolDefinitions, productTools, productToolSelection, productTurnContext,
 } from "../../../heart/product/active"
 import type { ProductToolSelectionInput } from "../../../heart/product/types"
 import type { ToolDefinition } from "../../../repertoire/tools-base"
@@ -219,6 +219,47 @@ describe("the product seam", () => {
     await expect(productActiveWorkSections({ ...input, agentName: "slugger" })).resolves.toBeNull()
     loadProduct(PATH, () => ({ product: { ...product, status: { activeWorkSections: async () => { throw new Error("ledger unreadable") } } } }))
     await expect(productActiveWorkSections(input)).rejects.toThrow("ledger unreadable")
+  })
+
+  it("lets a product judge a core sense's readiness for its own agent only, and fails the status when that judgement fails", () => {
+    const input = { runtime: { ok: true, config: {} }, machine: { ok: true, config: {} } }
+    expect(productSense("helper", "telegram")).toBeNull()
+    expect(productSenseReadiness("helper", "telegram", input)).toBeNull()
+    loadProduct(PATH, () => ({ product }))
+    expect(productSense("helper", "telegram")).toBeNull()
+    expect(productSenseReadiness("helper", "telegram", input)).toBeNull()
+    const telegram = { needsMachineConfig: true, readiness: vi.fn(() => ({ configured: true, detail: "gateway" })), repairHint: () => "fix it" }
+    loadProduct(PATH, () => ({ product: { ...product, senses: { telegram } } }))
+    expect(productSense("helper", "telegram")).toBe(telegram)
+    expect(productSenseReadiness("helper", "telegram", input)).toEqual({ configured: true, detail: "gateway" })
+    expect(telegram.readiness).toHaveBeenCalledWith(input)
+    expect(productSenseReadiness("slugger", "telegram", input)).toBeNull()
+    loadProduct(PATH, () => ({ product: { ...product, senses: { telegram: { ...telegram, readiness: () => { throw new Error("config shape unknown") } } } } }))
+    expect(() => productSenseReadiness("helper", "telegram", input)).toThrow("config shape unknown")
+  })
+
+  it("gives a product's repair line for its own agent's sense only, and fails the status when that line fails", () => {
+    expect(productSenseRepairHint("helper", "telegram")).toBeNull()
+    loadProduct(PATH, () => ({ product }))
+    expect(productSenseRepairHint("helper", "telegram")).toBeNull()
+    const telegram = { needsMachineConfig: false, readiness: () => ({ configured: true, detail: "x" }), repairHint: vi.fn((agent: string) => `fix ${agent}`) }
+    loadProduct(PATH, () => ({ product: { ...product, senses: { telegram } } }))
+    expect(productSenseRepairHint("helper", "telegram")).toBe("fix helper")
+    expect(productSenseRepairHint("slugger", "telegram")).toBeNull()
+    loadProduct(PATH, () => ({ product: { ...product, senses: { telegram: { ...telegram, repairHint: () => { throw new Error("no hint") } } } } }))
+    expect(() => productSenseRepairHint("helper", "telegram")).toThrow("no hint")
+  })
+
+  it("judges the Butler's Telegram ready only with both configs readable and no bot token in either, since the gateway holds it", () => {
+    const telegram = butlerProduct.senses!.telegram!
+    const both = (runtime: Record<string, unknown>, machine: Record<string, unknown>, ok = { runtime: true, machine: true }) => telegram.readiness({ runtime: { ok: ok.runtime, config: runtime }, machine: { ok: ok.machine, config: machine } })
+    expect(telegram.needsMachineConfig).toBe(true)
+    expect(both({}, {})).toEqual({ configured: true, detail: "root authority transport; gateway validated at process startup" })
+    expect(both({ telegramBotToken: "123:leaked" }, {}).configured).toBe(false)
+    expect(both({}, { telegramBotToken: "123:leaked" }).configured).toBe(false)
+    expect(both({}, {}, { runtime: true, machine: false })).toEqual({ configured: false, detail: "root authority migration requires available tokenless credential inventories" })
+    expect(both({}, {}, { runtime: false, machine: true }).configured).toBe(false)
+    expect(telegram.repairHint("butler")).toBe("Agent-runnable: complete or recover the root authority migration; do not restore a resident Telegram token.")
   })
 
   it("gives the Butler's turns its house runtime, which needs the machine's house config", async () => {
