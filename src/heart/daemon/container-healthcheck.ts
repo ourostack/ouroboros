@@ -44,6 +44,8 @@ export function runContainerHealthcheck(options: { argv?: string[]; now?: () => 
   if (checkedAt - stat.mtimeMs > 90_000 || stat.mtimeMs > checkedAt + 1_000) fail("health state stale")
   if (health.pid !== 1 || !fs.existsSync("/proc/1")) fail("daemon is not PID 1")
   if (health.status !== "healthy" && health.status !== "partial") fail("daemon status is not ready")
+  const degraded = Array.isArray(health.degraded) ? health.degraded as Array<{ component?: unknown }> : []
+  if (degraded.some((entry) => typeof entry.component === "string" && entry.component.startsWith("provider:"))) fail("provider failed its live check")
   const agents = health.agents as Record<string, { status?: unknown; pid?: unknown }> | undefined
   const managed = agents?.[agent]
   if (!managed || managed.status !== "running" || typeof managed.pid !== "number" || managed.pid <= 0) fail("managed agent is not running")

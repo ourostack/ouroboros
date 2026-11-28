@@ -1,0 +1,1 @@
+When the provider (for example an out-of-quota Anthropic workspace) fails after a vault outage, the daemon now shows the provider's own repair line instead of "the agent's vault is unreachable", and the container healthcheck no longer reports healthy while that provider check is failing.

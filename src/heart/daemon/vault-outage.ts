@@ -11,6 +11,8 @@ export interface VaultOutageDeps {
   check: (agent: string) => Promise<ConfigCheckResult>
   onDegraded: (agent: string, reason: string) => void
   onRecovered: (agent: string) => void
+  /** The vault answered on a retry but the provider failed its live check: not a vault outage, so it needs its own repair line. */
+  onProviderFailed: (agent: string, reason: string, fix: string | undefined) => void
   schedule?: (run: () => void, delayMs: number) => { unref?: () => void } | undefined
   initialDelayMs?: number
   maxDelayMs?: number
@@ -75,6 +77,11 @@ function beginVaultOutageRecovery(agent: string, reason: string, deps: VaultOuta
           message: "vault reachable again; agent left degraded mode",
           meta: { agent },
         })
+        return
+      }
+      if (result.providerFailure) {
+        deps.onProviderFailed(agent, result.error ?? reason, result.fix)
+        scheduleNext()
         return
       }
       // A rejection (not just silence) needs a human; it stays degraded and visible while we keep retrying slowly.

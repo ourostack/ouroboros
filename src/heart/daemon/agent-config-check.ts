@@ -29,6 +29,8 @@ export interface ConfigCheckResult {
   issue?: AgentReadinessIssue
   /** The vault didn't answer (network/timeout); never set for an auth rejection or a locked vault. */
   vaultUnreachable?: boolean
+  /** The vault answered; the provider itself failed its live check. */
+  providerFailure?: boolean
 }
 
 export type ProviderPing = (
@@ -369,6 +371,7 @@ function failedPingResult(
   return {
     ok: false,
     error: `${lane} provider ${provider} model ${model} failed live check: ${result.message}`,
+    providerFailure: true,
     fix: providerLiveCheckFix({
       agentName,
       lane,
