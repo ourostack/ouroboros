@@ -2,7 +2,8 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { readContainerRuntimePolicy } from "../daemon/container-runtime"
 import type { ToolDefinition } from "../../repertoire/tools-base"
 import type {
-  OuroProduct, ProductEventSource, ProductHabit, ProductStatusInput, ProductToolSelectionInput, ProductTools, ProductTurnContext, ProductTurnContextInput,
+  OuroProduct, ProductEventSource, ProductHabit, ProductSense, ProductSenseReadiness, ProductSenseReadinessInput, ProductSenses, ProductStatusInput,
+  ProductToolSelectionInput, ProductTools, ProductTurnContext, ProductTurnContextInput,
 } from "./types"
 
 /** The seam version this harness runs. A product built for another stops the start. */
@@ -184,6 +185,37 @@ export async function productActiveWorkSections(input: ProductStatusInput): Prom
     return await product.status.activeWorkSections(input)
   } catch (error) {
     hookFailed(product, "status.activeWorkSections", input.agentName, error, "the product's status sections failed, so query_active_work fails")
+    throw error
+  }
+}
+
+/** How this agent's product runs one of core's senses (J6), or null when it runs it core's way. */
+export function productSense(agentName: unknown, sense: keyof ProductSenses): ProductSense | null {
+  return productFor(agentName)?.senses?.[sense] ?? null
+}
+
+/** The product's repair line for a sense that isn't set up (J6), or null when core gives it. A throw from the product fails the status. */
+export function productSenseRepairHint(agentName: string, sense: keyof ProductSenses): string | null {
+  const product = productFor(agentName)
+  const own = product?.senses?.[sense]
+  if (!own) return null
+  try {
+    return own.repairHint(agentName)
+  } catch (error) {
+    hookFailed(product!, "senses.repairHint", agentName, error, "the product's sense repair line failed, so the sense's status can't be read")
+    throw error
+  }
+}
+
+/** The product's judgement of whether a sense is set up (J6), or null when core judges it. A throw from the product fails the status. */
+export function productSenseReadiness(agentName: string, sense: keyof ProductSenses, input: ProductSenseReadinessInput): ProductSenseReadiness | null {
+  const product = productFor(agentName)
+  const own = product?.senses?.[sense]
+  if (!own) return null
+  try {
+    return own.readiness(input)
+  } catch (error) {
+    hookFailed(product!, "senses.readiness", agentName, error, "the product's sense readiness failed, so the sense's status can't be read")
     throw error
   }
 }

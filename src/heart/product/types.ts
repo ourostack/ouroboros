@@ -46,6 +46,38 @@ export interface OuroProduct {
   tools?: ProductTools
   /** What the agent reads about itself (J7). */
   status?: ProductStatus
+  /** Core senses the product runs its own way (J6). */
+  senses?: ProductSenses
+}
+
+export interface ProductSenses {
+  telegram?: ProductSense
+}
+
+/**
+ * How a product's agent sets up one of core's senses. The daemon's sense status and the prompt's both judge readiness
+ * here, so they can't disagree.
+ */
+export interface ProductSense {
+  /** Whether the sense reads this machine's config (`runtime/machines/<machine-id>/config`) as well as the portable one. */
+  needsMachineConfig: boolean
+  /** Whether the sense is set up, from the agent's two runtime configs. */
+  readiness(input: ProductSenseReadinessInput): ProductSenseReadiness
+  /** The repair line for a sense that isn't set up. */
+  repairHint(agentName: string): string
+}
+
+export interface ProductSenseReadinessInput {
+  /** The portable runtime config: whether it could be read, and what it holds ({} when it couldn't). */
+  runtime: { ok: boolean; config: Record<string, unknown> }
+  /** This machine's runtime config, the same way. */
+  machine: { ok: boolean; config: Record<string, unknown> }
+}
+
+export interface ProductSenseReadiness {
+  configured: boolean
+  /** What the status shows: how the sense runs when it's set up, or what is missing when it isn't. */
+  detail: string
 }
 
 export interface ProductTools {

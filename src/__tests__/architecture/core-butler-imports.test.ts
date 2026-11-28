@@ -28,12 +28,6 @@ const ALLOWED: Record<string, readonly string[]> = {
   "heart/daemon/container-spec-auditor": [
     "heart/butler-agent",
   ],
-  "heart/daemon/sense-manager": [
-    "heart/butler-agent",
-  ],
-  "heart/turn-context": [
-    "heart/butler-agent",
-  ],
   "senses/a2a-entry": [
     "heart/butler-agent",
   ],

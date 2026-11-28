@@ -12,6 +12,7 @@ import { getAgentRoot, getAgentName, getRepoRoot, loadAgentConfig, type AgentSen
 import { recoverRuntimeCwd } from "../heart/runtime-cwd";
 import { loadConfig } from "../heart/config";
 import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig } from "../heart/runtime-credentials";
+import { productSenseReadiness } from "../heart/product/active";
 import { detectRuntimeMode } from "../heart/daemon/runtime-mode";
 import { isTrustedLevel, describeTrustContext, getChannelCapabilities, isRemoteChannel, channelToFacing, type Channel, type ChannelCapabilities, type ResolvedContext } from "@ouro.bot/friends";
 import { emitNervesEvent } from "../nerves/runtime";
@@ -591,9 +592,11 @@ function localSenseStatusLines(): string[] {
       && hasTextField(voice, "whisperCliPath")
       && hasTextField(voice, "whisperModelPath"),
     a2a: true,
-    telegram: hasTextField(runtimePayload, "telegramBotToken")
-      && hasTextField(runtimePayload, "telegramAuthorizedUserId")
-      && hasTextField(runtimePayload, "telegramAuthorizedChatId"),
+    // A product that runs Telegram its own way judges its readiness, as the daemon and turn-context do.
+    telegram: productSenseReadiness(getAgentName(), "telegram", { runtime: { ok: runtimeConfig.ok, config: runtimePayload }, machine: { ok: machineRuntimeConfig.ok, config: machinePayload } })?.configured
+      ?? (hasTextField(runtimePayload, "telegramBotToken")
+        && hasTextField(runtimePayload, "telegramAuthorizedUserId")
+        && hasTextField(runtimePayload, "telegramAuthorizedChatId")),
     workbench: false,
     shepherd: shepherdSenseStatus(true, machinePayload) === "ready",
     "app-sessions": true,

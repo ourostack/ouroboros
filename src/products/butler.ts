@@ -135,6 +135,18 @@ export const product: OuroProduct = {
       })
     },
   },
+  // J6: the Butler's Telegram holds no bot token. The root authority gateway holds it, so a token in the Butler's own config
+  // is the misconfiguration, and both configs must be readable for the gateway to be validated at startup.
+  senses: {
+    telegram: {
+      needsMachineConfig: true,
+      readiness: ({ runtime, machine }) => runtime.ok && machine.ok
+        && !Object.hasOwn(runtime.config, "telegramBotToken") && !Object.hasOwn(machine.config, "telegramBotToken")
+        ? { configured: true, detail: "root authority transport; gateway validated at process startup" }
+        : { configured: false, detail: "root authority migration requires available tokenless credential inventories" },
+      repairHint: () => "Agent-runnable: complete or recover the root authority migration; do not restore a resident Telegram token.",
+    },
+  },
   // J5: the house check runs in the daemon, and only Supercronic may fire it on its cron schedule.
   habits: {
     "sanctuary-health": {

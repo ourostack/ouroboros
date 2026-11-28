@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
+import { loadButlerProductNow } from "../../test-helpers/butler-product"
 
 function writeAgentJson(root: string, agent: string, payload: unknown): void {
   const agentRoot = path.join(root, `${agent}.ouro`)
@@ -117,6 +118,7 @@ describe("daemon sense manager", () => {
       },
     }))
     try {
+      await loadButlerProductNow()
       const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
       const manager = new DaemonSenseManager({ agents: ["sanctuary"], bundlesRoot })
       await manager.startAutoStartSenses()
@@ -162,6 +164,7 @@ describe("daemon sense manager", () => {
       },
     }))
     try {
+      await loadButlerProductNow()
       const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
       new DaemonSenseManager({ agents: ["sanctuary"], bundlesRoot })
       expect(await check("sanctuary:telegram")).toEqual({ ok: true })
@@ -177,7 +180,13 @@ describe("daemon sense manager", () => {
       expect((await check("sanctuary:telegram")).ok).toBe(false)
       runtime = { ok: true, config: {} }
       machine = { ok: false, reason: "missing", itemPath: "vault:sanctuary:runtime/machines/sanctuary/config" }
-      expect((await check("sanctuary:telegram")).ok).toBe(false)
+      // The Butler's own repair line, never core's: core's would tell it to restore the token the gateway holds.
+      expect(await check("sanctuary:telegram")).toEqual({
+        ok: false,
+        skip: true,
+        error: "telegram is enabled for sanctuary but runtime credentials are not ready: root authority migration requires available tokenless credential inventories",
+        fix: "Agent-runnable: complete or recover the root authority migration; do not restore a resident Telegram token.",
+      })
     } finally { fs.rmSync(bundlesRoot, { recursive: true, force: true }) }
   })
   afterEach(() => {

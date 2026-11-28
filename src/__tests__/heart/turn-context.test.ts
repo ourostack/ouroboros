@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, onTestFinished } from "vitest"
+import { loadButlerProductNow } from "../test-helpers/butler-product"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 // ── Mocks ────────────────────────────────────────────────────────
@@ -879,6 +880,8 @@ describe("buildTurnContext", () => {
   })
 
   it("reports Sanctuary's tokenless root-authority Telegram as ready, and a token in the resident as needs_config (D-047)", async () => {
+    const unload = await loadButlerProductNow()
+    onTestFinished(unload)
     mockGetAgentName.mockReturnValue("sanctuary")
     mockLoadAgentConfig.mockReturnValue({ senses: { telegram: { enabled: true } } })
     const runtime = (config: Record<string, unknown>, ok = true) => ok

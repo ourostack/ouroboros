@@ -13,3 +13,14 @@ export function useButlerProduct(): void {
   })
   afterEach(() => { loadProduct(undefined) })
 }
+
+/**
+ * Loads the Butler's product into the module graph the test is using now, for a test that resets modules and imports the
+ * code under test afresh. Returns the unload for that same graph.
+ */
+export async function loadButlerProductNow(): Promise<() => void> {
+  const active = await import("../../heart/product/active")
+  const { product } = await import("../../products/butler")
+  active.loadProduct(BUTLER_PRODUCT_PATH, () => ({ product }))
+  return () => { active.loadProduct(undefined) }
+}
