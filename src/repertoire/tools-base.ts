@@ -345,7 +345,6 @@ export interface ToolDefinition {
   terminalProjection?: {
     mode: "verbatim";
     requiresSoleCall: true;
-    clearBufferedText: true;
   };
   /** For first-class MCP tools: the server this tool belongs to. */
   mcpServer?: string;

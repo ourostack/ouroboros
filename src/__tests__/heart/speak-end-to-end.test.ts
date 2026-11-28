@@ -156,11 +156,11 @@ describe("speak end-to-end (Unit 10)", () => {
 
     expect(result.outcome).toBe("settled")
 
-    // Verify ordered sub-sequence: text "got it, kicking off" → flush → onToolStart "read_file" → text "done"
+    // Verify ordered sub-sequence: text "got it, kicking off" → flush → onToolStart "read_file" → text "done", on a new paragraph
     const textKickoffIdx = events.findIndex((e) => e.kind === "text" && e.text === "got it, kicking off")
     const firstFlushIdx = events.findIndex((e) => e.kind === "flush")
     const readFileStartIdx = events.findIndex((e) => e.kind === "toolStart" && e.name === "read_file")
-    const textDoneIdx = events.findIndex((e) => e.kind === "text" && e.text === "done")
+    const textDoneIdx = events.findIndex((e) => e.kind === "text" && e.text === "\n\ndone")
 
     expect(textKickoffIdx).toBeGreaterThanOrEqual(0)
     expect(firstFlushIdx).toBeGreaterThan(textKickoffIdx)

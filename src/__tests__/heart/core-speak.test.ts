@@ -187,10 +187,10 @@ describe("speak interception in runAgent", () => {
     expect(callbacks.onToolDispatch).toHaveBeenCalledWith("speak")
     expect(vi.mocked(callbacks.onToolDispatch!).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(callbacks.flushNow!).mock.invocationCallOrder[0]!)
 
-    // onTextChunk: speak first, then settle answer
+    // onTextChunk: speak first, then the settle answer on a new paragraph (the terminal streams both)
     const textChunkCalls = (callbacks.onTextChunk as any).mock.calls.map((c: any[]) => c[0])
     expect(textChunkCalls[0]).toBe("got it, kicking off")
-    expect(textChunkCalls).toContain("done")
+    expect(textChunkCalls).toContain("\n\ndone")
 
     // flushNow called exactly once (after the speak)
     expect(callbacks.flushNow).toHaveBeenCalledTimes(1)

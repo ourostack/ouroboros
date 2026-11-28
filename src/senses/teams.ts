@@ -569,7 +569,9 @@ export function createTeamsCallbacks(
       textBuffer = ""
     },
     flushNow: async () => {
-      const trimmed = textBuffer.trim()
+      // The stream keeps the paragraph break the engine leads a message with; a separate fallback message does not.
+      const paragraph = textBuffer.trimEnd()
+      const trimmed = paragraph.trimStart()
       if (!trimmed) return
       // Cancel pending periodic flush — we're delivering now.
       stopFlushTimer()
@@ -587,7 +589,7 @@ export function createTeamsCallbacks(
       let delivered = false
       let lastError: Error | null = null
       if (!stopped) {
-        const ok = await tryEmitNoAbort(trimmed)
+        const ok = await tryEmitNoAbort(paragraph)
         if (ok) delivered = true
         else lastError = new Error("stream emit failed")
       }

@@ -635,7 +635,7 @@ export interface ResumeApprovalContinuationOptions {
   execute?: (...args: unknown[]) => unknown
 }
 
-function continuationCallbacks(callbacks: Partial<ChannelCallbacks>, text: { value: string }): ChannelCallbacks {
+function continuationCallbacks(callbacks: Partial<ChannelCallbacks>, text: { value: string }, deliver: (text: string) => void | Promise<void>): ChannelCallbacks {
   const noop = () => undefined
   return {
     onModelStart: callbacks.onModelStart ?? noop,
@@ -649,8 +649,17 @@ function continuationCallbacks(callbacks: Partial<ChannelCallbacks>, text: { val
     ...(callbacks.onToolDispatch ? { onToolDispatch: callbacks.onToolDispatch } : {}),
     onToolEnd: callbacks.onToolEnd ?? noop,
     onError: callbacks.onError ?? noop,
-    ...(callbacks.onClearText ? { onClearText: callbacks.onClearText } : {}),
-    ...(callbacks.flushNow ? { flushNow: callbacks.flushNow } : {}),
+    onClearText: () => {
+      text.value = ""
+      callbacks.onClearText?.()
+    },
+    // A speak is its own message: the caller's sense sends it, or the continuation does.
+    flushNow: async () => {
+      const spoken = text.value.trim()
+      text.value = ""
+      if (callbacks.flushNow) await callbacks.flushNow()
+      else if (spoken) await deliver(spoken)
+    },
     ...(callbacks.settleOutputMode ? { settleOutputMode: callbacks.settleOutputMode } : {}),
   }
 }
@@ -710,7 +719,7 @@ export async function resumeApprovalContinuation(options: ResumeApprovalContinua
   }
 
   const outward = { value: "" }
-  const callbacks = continuationCallbacks(options.callbacks, outward)
+  const callbacks = continuationCallbacks(options.callbacks, outward, options.deliver)
   await options.markContinuationAttempted()
   const result = await options.runAgent(
     materialized.messages,
@@ -1563,14 +1572,42 @@ export async function runAgent(
   }
 }
 
+/** A turn's text reaches a sense as one stream, and this marks where each message in it ends: at a tool step, and once
+ *  a speak is delivered. A sense that streams has already shown the last message, so the next starts a new paragraph.
+ *  A sense that can't stream drops narration it never sent, so the answer goes out on its own. */
+function messageBoundaries(callbacks: ChannelCallbacks, streams: boolean): { callbacks: ChannelCallbacks; endStep(): void } {
+  let wrote = false
+  let breakNext = false
+  const ended = (): void => { breakNext = streams && wrote }
+  const bounded = new Proxy(callbacks, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver)
+      if (property === "onTextChunk") {
+        return (text: string): void => {
+          value.call(target, breakNext && text ? `\n\n${text}` : text)
+          if (text) { wrote = true; breakNext = false }
+        }
+      }
+      if (property !== "flushNow" || typeof value !== "function") return value
+      return async (): Promise<void> => { await value.call(target); ended() }
+    },
+  })
+  return {
+    callbacks: bounded,
+    endStep: () => { if (streams) ended(); else callbacks.onClearText?.() },
+  }
+}
+
 async function runCountedTurn(
   turnTally: TurnTally,
   messages: OpenAI.ChatCompletionMessageParam[],
-  callbacks: ChannelCallbacks,
+  unboundedCallbacks: ChannelCallbacks,
   channel?: Channel,
   signal?: AbortSignal,
   options?: RunAgentOptions,
 ): Promise<RunAgentResult> {
+  const boundaries = messageBoundaries(unboundedCallbacks, !channel || getChannelCapabilities(channel).supportsStreaming)
+  const callbacks = boundaries.callbacks
   const generatedMessages: OpenAI.ChatCompletionMessageParam[] = [];
   let nextAttemptControls: OpenAI.ChatCompletionMessageParam[] = [];
   let rejectedAttempt: OpenAI.ChatCompletionMessageParam[] = [];
@@ -2723,15 +2760,9 @@ async function runCountedTurn(
           : undefined
         if (soleTerminalCall && soleTerminalProjection?.mode === "verbatim") {
           const terminalArgs = validatedCallArguments.get(soleTerminalCall)!
-          if (
-            soleTerminalProjection.clearBufferedText
-            || callbacks.settleOutputMode === "final_only"
-          ) {
-            streamCallbackBuffer?.discard()
-          } else {
-            await streamCallbackBuffer?.flush()
-          }
-          if (soleTerminalProjection.clearBufferedText) callbacks.onClearText?.()
+          // The tool's receipt is the whole answer, so prose written beside the call never reaches the person with it.
+          streamCallbackBuffer?.discard()
+          callbacks.onClearText?.()
           callbacks.onToolStart(soleTerminalCall.name, terminalArgs)
           let terminalResult: string
           let terminalSucceeded = false
@@ -3223,6 +3254,7 @@ async function runCountedTurn(
         }
 
         await streamCallbackBuffer?.flush()
+        boundaries.endStep()
         pushGenerated(msg);
         const batchToolImages: ToolCallImages[] = [];
         // Every pre-dispatch gate accepted the complete batch.
@@ -3275,8 +3307,6 @@ async function runCountedTurn(
               continue;
             }
             callbacks.onToolDispatch?.("speak");
-            // A sense that can't stream holds the model's narration unsent (settle clears it); keep it out of the speak.
-            if (channel && !getChannelCapabilities(channel).supportsStreaming) callbacks.onClearText?.();
             callbacks.onTextChunk(speakMessage);
             let speakDeliveryError: Error | null = null;
             try {
