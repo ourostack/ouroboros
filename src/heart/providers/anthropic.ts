@@ -317,13 +317,14 @@ function mergeAnthropicToolArguments(current: string, partial: string): string {
   return current + partial
 }
 
-// An org whose prepaid API credits are used up gets HTTP 400 (or 402) with this phrase. That is a
-// usage limit, not a malformed request, so failover tells the human the right thing.
-const ANTHROPIC_CREDIT_LOW_PHRASE = "credit balance is too low";
+// An org whose prepaid API credits are used up, or whose workspace hit its spend limit ("You have reached your
+// specified workspace API usage limits. You will regain access on <date>"), gets HTTP 400 (or 402) with one of
+// these phrases. That is a usage limit, not a malformed request, so failover tells the human the right thing.
+const ANTHROPIC_USAGE_LIMIT_PHRASES = ["credit balance is too low", "workspace api usage limits"];
 
 function isAnthropicCreditExhausted(error: Error): boolean {
   const status = (error as HttpError).status;
-  return (status === 400 || status === 402) && error.message.toLowerCase().includes(ANTHROPIC_CREDIT_LOW_PHRASE);
+  return (status === 400 || status === 402) && ANTHROPIC_USAGE_LIMIT_PHRASES.some((phrase) => error.message.toLowerCase().includes(phrase));
 }
 
 export function classifyAnthropicError(error: Error): ProviderErrorClassification {

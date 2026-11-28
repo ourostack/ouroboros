@@ -1,0 +1,1 @@
+An Anthropic workspace that has hit its spend limit ("workspace API usage limits") is now treated as out of quota instead of an unknown failure, so the repair line says to restore quota or pick another provider rather than send you to `ouro auth`. The startup provider ping now logs why it failed.
