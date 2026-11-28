@@ -111,7 +111,7 @@ describe("daemon startup during a vault outage", () => {
     expect(timers).toHaveLength(2)
     answers.push({ ok: false, providerFailure: true })
     timers[1]!.run(); await flush()
-    expect(onProviderFailed).toHaveBeenLastCalledWith("slugger", "vault unreachable", undefined)
+    expect(onProviderFailed).toHaveBeenLastCalledWith("slugger", "vault request to /identity/accounts/prelogin timed out", undefined)
   })
 
   it("keeps the agent degraded with the rejection reason if the vault comes back but refuses us", async () => {
