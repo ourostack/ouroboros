@@ -86,14 +86,12 @@ describe("package metadata", () => {
     const start = workflow.indexOf("  verify-npm:")
     const verifyJob = workflow.slice(start, workflow.indexOf("  github-release:", start))
     const versionWaits = (verifyJob.match(/^          scripts\/npm-verify-exact-version\.sh /gmu) ?? []).length
-    const latestWaits = (verifyJob.match(/^          if \[ "\$(CLI|WRAPPER)_TAG" = latest \]; then scripts\/npm-verify-latest-tag\.sh /gmu) ?? []).length
     expect(versionWaits).toBe(2)
-    expect(latestWaits).toBe(2)
-    // The latest-tag waits keep their 10 minutes; only the exact-version waits are 60.
-    expect(verifyJob).toContain("PROPAGATION_DEADLINE_SECONDS=600")
+    // The latest dist-tag lags on its own; a wait on it only reds main.
+    expect(verifyJob).not.toContain("npm-verify-latest-tag")
     expect(verifyJob).toContain("VERSION_DEADLINE_SECONDS=3600")
-    // Two 60-minute version waits, two 10-minute latest waits, the tarball wait (about 21 minutes), install and smoke.
-    expect(Number(/timeout-minutes: (\d+)/u.exec(verifyJob)?.[1])).toBeGreaterThanOrEqual(2 * 60 + 2 * 10 + 21 + 5)
+    // Two 60-minute version waits, the tarball wait (about 21 minutes), install and smoke.
+    expect(Number(/timeout-minutes: (\d+)/u.exec(verifyJob)?.[1])).toBeGreaterThanOrEqual(2 * 60 + 21 + 5)
   })
 
   it("gates publish on both packed artifact E2E suites", () => {

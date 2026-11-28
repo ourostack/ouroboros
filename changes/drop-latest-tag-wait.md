@@ -1,0 +1,1 @@
+A release no longer fails because npm is slow to move the `latest` tag onto the version it just published. The release still waits for that exact version to be readable on npm, and still never moves `latest` back to an older version.
